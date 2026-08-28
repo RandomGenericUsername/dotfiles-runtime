@@ -15,6 +15,6 @@ class IEffectsGenerator(ABC):
     ) -> EffectsEntry:
         """Generate effects from wallpaper hash + effects catalog.
 
-        Writes effect PNGs to output_dir.
+        Writes effect artifacts to output_dir.
         Returns the EffectsEntry with artifact_hashes computed.
         """

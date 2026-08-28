@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Literal
+
+from runtime.domain.models import FitMode
 
 
 class IStaticWallpaperBackend(ABC):
     @abstractmethod
-    def set_image(self, path: str, monitor: str, fit_mode: str) -> None:
+    def set_image(self, path: str, monitor: str, fit_mode: FitMode) -> None:
         """Set a static image as wallpaper on the given monitor."""
 
     @abstractmethod
@@ -27,7 +30,7 @@ class IVideoWallpaperBackend(ABC):
         ipc_socket: str | None,
         auto_pause: bool,
         auto_stop: bool,
-        layer: str,
+        layer: Literal["background", "bottom", "top", "overlay"],
     ) -> None:
         """Set a video as wallpaper on the given monitor."""
 
@@ -41,5 +44,5 @@ class IVideoWallpaperBackend(ABC):
         """Set a video playlist as wallpaper."""
 
     @abstractmethod
-    def control(self, monitor: str, command: str) -> None:
+    def control(self, monitor: str, command: Literal["pause", "resume", "next", "prev", "stop"]) -> None:
         """Send a control command (pause, resume, next, etc.)."""
