@@ -41,8 +41,10 @@ to catch it.
 from __future__ import annotations
 
 import ast
+import os
 import re
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -88,6 +90,8 @@ _DOMAIN_BANNED_STDLIB = frozenset(
         "select",
         "selectors",
         "socket",
+        "pathlib",
+        "io",
     }
 )
 
@@ -305,12 +309,18 @@ def _check_file(file_path: Path) -> list[str]:
             f"hexagon; expected a top-level dir in {_LAYERS} or the package __init__.py"
         ]
     allowed = _ALLOWED_TARGETS[layer]
-    source = file_path.read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(file_path))
+    rel = file_path.relative_to(_SRC_ROOT)
+    try:
+        source = file_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        return [f"{rel} has an encoding error: {exc}"]
+    try:
+        tree = ast.parse(source, filename=str(file_path))
+    except SyntaxError as exc:
+        return [f"{rel} has a syntax error: {exc}"]
     violations: list[str] = []
     for target in _resolve_in_package_targets(tree, file_path):
         target_layer = _classify_layer(target)
-        rel = file_path.relative_to(_SRC_ROOT)
         target_rel = target.relative_to(_SRC_ROOT)
         if target_layer == "invalid":
             violations.append(f"{layer} layer imports a non-hexagon module: {rel} -> {target_rel}")
@@ -322,6 +332,26 @@ def _check_file(file_path: Path) -> list[str]:
                 f"{layer} layer contains an invalid relative import "
                 f"(level exceeds package depth): {rel}"
             )
+    # Star imports in domain/ports bypass name-level resolution and may leak
+    # symbols from higher layers through __init__.py re-exports.
+    if layer in ("domain", "ports"):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.names:
+                if any(alias.name == "*" for alias in node.names):
+                    violations.append(
+                        f"{layer} layer uses star import from "
+                        f"{node.module or '<relative>'}: {rel}"
+                    )
+    # Domain must not call open() — full file I/O bypasses the Path-method ban.
+    if layer == "domain":
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Name) and func.id == "open":
+                    violations.append(f"{layer} layer calls open(): {rel}:{node.lineno}")
+                elif isinstance(func, ast.Attribute) and func.attr == "open":
+                    # e.g., pathlib.Path.open() — caught by Path-method ban, skip here
+                    pass
     return violations
 
 
@@ -432,7 +462,7 @@ def _scan_for_banned_method_calls(tree: ast.AST) -> list[tuple[int, str]]:
 def _allowed_third_party_roots() -> set[str]:
     """Derive allowed third-party import roots from declared package deps."""
     data = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
-    roots = {"cli_output"}
+    roots: set[str] = set()
     for dep in data["project"].get("dependencies", []):
         name = dep.split(";")[0].split("[")[0].strip()
         roots.add(_import_root(name))
@@ -442,12 +472,16 @@ def _allowed_third_party_roots() -> set[str]:
 
 
 def _import_root(package_name: str) -> str:
-    """Normalize a distribution name to its import root."""
+    """Normalize a distribution name to its import root.
+
+    ``types-*`` stub packages are excluded from contributing their target
+    root — stubs are dev-only and must not silently allow the real package.
+    """
     name = re.split(r"[\s<>=!~]+", package_name)[0]
     name = name.split("[")[0]
     name = _DIST_TO_IMPORT_ROOT.get(name, name)
     if name.startswith("types-"):
-        name = name[len("types-") :]
+        return ""  # stub packages do not contribute an allowed root
     return name.replace("-", "_")
 
 
@@ -538,7 +572,8 @@ class TestHexagonalLayering:
         mods = _extract_import_modules(tree, _SRC_ROOT / "domain" / "__init__.py")
         assert any(m.startswith("<invalid") for m in mods), mods
         # A same-layer relative import from domain must pass the layering check.
-        probe = _SRC_ROOT / "domain" / "_tmp_relative_probe.py"
+        _uid = f"{os.getpid()}_{int(time.time_ns())}"
+        probe = _SRC_ROOT / "domain" / f"_tmp_relative_probe_{_uid}.py"
         try:
             probe.write_text("from . import __init__\n", encoding="utf-8")
             assert _check_file(probe) == []
@@ -557,7 +592,8 @@ class TestHexagonalLayering:
 
     def test_enforcement_loop_self_test(self) -> None:
         """AC 3 end-to-end: a violating import fails the full enforcement path."""
-        probe = _SRC_ROOT / "domain" / "_tmp_violation_probe.py"
+        _uid = f"{os.getpid()}_{int(time.time_ns())}"
+        probe = _SRC_ROOT / "domain" / f"_tmp_violation_probe_{_uid}.py"
         try:
             probe.write_text(
                 "from runtime import cli\n"
@@ -832,7 +868,8 @@ class TestHexagonalLayering:
         """Self-test: dist-name -> import-root normalization."""
         assert _import_root("typer>=0.12") == "typer"
         assert _import_root("cli-output") == "cli_output"
-        assert _import_root("types-requests") == "requests"
+        # types-* stubs do not contribute their target root to the allowed set.
+        assert _import_root("types-requests") == ""
 
 
 def _run_standalone() -> None:
@@ -850,16 +887,18 @@ def _run_standalone() -> None:
             _fail(line)
 
     # 2. Domain stdlib rules + Path-FS ban.
-    for f in sorted((_SRC_ROOT / "domain").rglob("*.py")):
-        tree = ast.parse(f.read_text(encoding="utf-8"), filename=str(f))
-        for module in _extract_stdlib_imports(tree):
-            top = module.split(".")[0]
-            if top not in _DOMAIN_ALLOWED_STDLIB:
-                _fail(f"{f.relative_to(_SRC_ROOT)} imports non-allowlisted stdlib {module}")
-            if top in _DOMAIN_BANNED_STDLIB:
-                _fail(f"{f.relative_to(_SRC_ROOT)} imports banned stdlib {module}")
-        for lineno, method in _scan_for_banned_method_calls(tree):
-            _fail(f"{f.relative_to(_SRC_ROOT)}:{lineno} calls Path.{method}() in domain")
+    domain_dir = _SRC_ROOT / "domain"
+    if domain_dir.exists():
+        for f in sorted(domain_dir.rglob("*.py")):
+            tree = ast.parse(f.read_text(encoding="utf-8"), filename=str(f))
+            for module in _extract_stdlib_imports(tree):
+                top = module.split(".")[0]
+                if top not in _DOMAIN_ALLOWED_STDLIB:
+                    _fail(f"{f.relative_to(_SRC_ROOT)} imports non-allowlisted stdlib {module}")
+                if top in _DOMAIN_BANNED_STDLIB:
+                    _fail(f"{f.relative_to(_SRC_ROOT)} imports banned stdlib {module}")
+            for lineno, method in _scan_for_banned_method_calls(tree):
+                _fail(f"{f.relative_to(_SRC_ROOT)}:{lineno} calls Path.{method}() in domain")
 
     # 3. Ports ABC-only rule.
     ports_dir = _SRC_ROOT / "ports"
