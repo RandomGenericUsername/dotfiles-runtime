@@ -1,0 +1,24 @@
+{
+  "ts": "2026-08-28T18:54:46.145524Z",
+  "wallpaper_hash": "619cd350283e11c3cc9ee7b3d67dce93738e87e7fefa16144840ebd716534381",
+  "template_hash": "dab5e116470883970a5054f27ba38456b936ab1e7c60a16d542a22ab734c0ec4",
+  "templates_dir": "/home/inumaki/Development/dotfiles-new-architectures/dotfiles-repo-v3/src/cli-tools/color-scheme-generator/src/color_scheme_generator/defaults/templates",
+  "backend": "pywal",
+  "run1_hashes": {
+    "colors.yaml": "a775f7fe643abf9941bf6ce84e8e48f3e09e5a2835b35ffe7a608799155df0df",
+    "colors.yaml.normalized": "4c529cae0540a26482bf7a88f6700883b1267cfd055154be895cbdfee5a70ff7",
+    "colors.conf": "5ef15386a15ec850832d40246699c335bfecd5be117cdff6484e0226455567bb",
+    "colors.gtk.css": "79f3ad9e5421c426dfa56d495e0aaa4d104ffd256dca7fba6e758fe2e09d3528"
+  },
+  "run2_hashes": {
+    "colors.yaml": "475b4463927bc4e293828db6bd31039737853ea5278840bd48e2309eaf579cb3",
+    "colors.yaml.normalized": "4c529cae0540a26482bf7a88f6700883b1267cfd055154be895cbdfee5a70ff7",
+    "colors.conf": "5ef15386a15ec850832d40246699c335bfecd5be117cdff6484e0226455567bb",
+    "colors.gtk.css": "79f3ad9e5421c426dfa56d495e0aaa4d104ffd256dca7fba6e758fe2e09d3528"
+  },
+  "deterministic": true,
+  "container_mode": true,
+  "engine": "podman",
+  "hash_algorithm": "sha256",
+  "notes": "colors.yaml raw hashes intentionally differ by generated_at; deterministic flag compares normalized yaml + raw conf/gtk.css"
+}
