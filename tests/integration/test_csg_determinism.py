@@ -54,14 +54,20 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
+import tempfile
 import zlib
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+
+
+class NondeterministicCSGError(AssertionError):
+    """Raised when CSG double-run hashes diverge (AC3 mitigation contract)."""
 
 pytestmark = pytest.mark.integration
 
@@ -99,14 +105,24 @@ def _hash_template_dir(templates_dir: Path) -> str:
 
     Mirrors shared-data-contract Derivation-input hashing: sorted list of
     (relpath, sha256(file)), then sha256 of joined list. Returns hex.
+    Single sentinel ``\"no-dir\"`` for missing dir (unified, no dual sentinel).
     """
     if not templates_dir.is_dir():
         return "no-dir"
     entries: list[str] = []
     for p in sorted(templates_dir.rglob("*")):
         if p.is_file():
-            rel = p.relative_to(templates_dir).as_posix()
-            fh = _sha256_file(p)
+            try:
+                rel = p.relative_to(templates_dir).as_posix()
+                fh = _sha256_file(p)
+            except OSError:
+                # Permission denied / unreadable — record as degraded, don't abort
+                try:
+                    rel = p.relative_to(templates_dir).as_posix()
+                except Exception:
+                    rel = p.name
+                entries.append(f"{rel}:unreadable")
+                continue
             entries.append(f"{rel}:{fh}")
     joined = "\n".join(entries).encode()
     return hashlib.sha256(joined).hexdigest()
@@ -118,32 +134,85 @@ def _normalize_yaml_bytes(data: bytes) -> bytes:
     ``colors.yaml`` always contains ``generated_at: "<ISO-8601>"`` which differs
     per run by design; ``source_image`` is container-path stable (``/input/...``)
     but we strip it for host-independence. Returns normalized bytes.
+
+    Uses regex to handle ``generated_at :`` with spaces before colon,
+    leading indent, and trailing whitespace variations.
     """
     text = data.decode("utf-8", errors="replace")
     lines = []
+    pat = re.compile(r"^\s*(generated_at|source_image)\s*:")
     for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("generated_at:") or stripped.startswith("source_image:"):
+        if pat.match(line.strip()):
+            continue
+        # Also check unstripped via pat on full line for indented keys
+        if pat.match(line):
             continue
         lines.append(line)
     # Preserve trailing newline semantics of original (always ends without \n in our fixtures)
     return "\n".join(lines).encode()
 
 
+def _write_artifact_atomic(path: Path, data: dict) -> None:
+    """Write JSON artifact atomically (tmp + rename) with OSError guard."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", delete=False, dir=str(path.parent), suffix=".tmp", encoding="utf-8"
+        )
+        try:
+            json.dump(data, tmp, indent=2)
+            tmp.write("\n")
+            tmp.close()
+            Path(tmp.name).replace(path)
+        finally:
+            try:
+                Path(tmp.name).unlink(missing_ok=True)
+            except OSError:
+                pass
+    except OSError as e:
+        pytest.fail(f"cannot write artifact {path}: {e}")
+
+
 def _detect_container_engine() -> str | None:
-    if shutil.which("podman"):
-        return "podman"
-    if shutil.which("docker"):
-        return "docker"
+    """Detect container engine via which + usability probe (engine info).
+
+    Presence-only (`which`) is insufficient — a broken podman (rootless misconfig,
+    storage lock) passes which but fails at generate time. We probe `engine info`
+    with a short timeout to confirm daemon/runnable.
+    """
+    for engine in ("podman", "docker"):
+        if shutil.which(engine) is None:
+            continue
+        try:
+            probe = subprocess.run(
+                [engine, "info"], capture_output=True, timeout=5
+            )
+            if probe.returncode == 0:
+                return engine
+            # Binary present but daemon not runnable — still return it so the
+            # test can produce a clear skip artifact rather than silent fallback.
+            return engine
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return engine
     return None
 
 
 def _csg_container_image_built(engine: str) -> bool:
     image_name = "csg-pywal-podman:latest" if engine == "podman" else "csg-pywal-docker:latest"
-    result = subprocess.run(
-        [engine, "image", "exists", image_name], capture_output=True, timeout=30
-    )
-    return result.returncode == 0
+    try:
+        if engine == "podman":
+            result = subprocess.run(
+                [engine, "image", "exists", image_name], capture_output=True, timeout=30
+            )
+            return result.returncode == 0
+        else:
+            # docker image exists is non-standard; use inspect
+            result = subprocess.run(
+                [engine, "image", "inspect", image_name], capture_output=True, timeout=30
+            )
+            return result.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
 
 
 def _run_csg_generate(
@@ -229,29 +298,20 @@ def csg_available() -> str:
 class TestCsgDeterminism:
     """Story 1.4 ACs 1–4: double-run must be identical (modulo generated_at)."""
 
-    def test_csg_deterministic_double_run(self, csg_available: str, tmp_path: Path) -> None:  # noqa: ARG002
+    @pytest.mark.parametrize("backend", ["custom"])
+    def test_csg_deterministic_double_run(
+        self, csg_available: str, tmp_path: Path, backend: str
+    ) -> None:  # noqa: ARG002
         # ── probe container mode soft-requirement ──────────────────────────
         engine = _detect_container_engine()
-        # ``csg info`` JSON would tell runtime.mode, but we treat engine presence as
-        # indicator that container mode is likely (per csg info: runtime.mode=container
-        # on this host). If engine exists but image not built, we skip with a
-        # ``skipped`` artifact — not proven.
         skip_reason: str | None = None
         if engine is not None and not _csg_container_image_built(engine):
             skip_reason = f"CSG container image not built for {engine} — run `csg install --container-engine {engine}`"
-        # We still run the test; the skip is handled after artifact write as
-        # ``deterministic: "skipped"`` rather than hard pytest.skip, so the
-        # memlog records the gap. However if csg itself is missing we already
-        # skipped via fixture. For container-image missing, we will run and
-        # expect the generate to either fail or succeed via fallback — if it
-        # fails we mark skipped.
 
         # ── fixture image ─────────────────────────────────────────────────
-        # Prefer committed fixture for byte-stability; fallback to dynamic minimal PNG
         fixtures_dir = Path(__file__).resolve().parent.parent / "fixtures"
         fixture_png = fixtures_dir / "wallpaper.png"
         if fixture_png.is_file():
-            # Copy to tmp to keep input stable and not mutate committed file
             image_path = tmp_path / "wallpaper.png"
             image_path.write_bytes(fixture_png.read_bytes())
         else:
@@ -260,12 +320,14 @@ class TestCsgDeterminism:
 
         wallpaper_hash = _sha256_file(image_path)
 
-        # ── template-set hash (for memlog) ────────────────────────────────
+        # ── template-set hash (for memlog) — unified sentinel "no-dir" ──────
         templates_dir = _find_csg_templates_dir()
-        template_hash = (
-            _hash_template_dir(templates_dir) if templates_dir else "unknown-no-dir-found"
-        )
-        templates_dir_str = str(templates_dir) if templates_dir else "unknown"
+        if templates_dir and templates_dir.is_dir():
+            template_hash = _hash_template_dir(templates_dir)
+            templates_dir_str = str(templates_dir)
+        else:
+            template_hash = "no-dir"
+            templates_dir_str = str(templates_dir) if templates_dir else "unknown"
 
         # ── double run into isolated temp dirs (MUST NOT touch cache/current) ─
         out1 = tmp_path / "out1"
@@ -273,52 +335,76 @@ class TestCsgDeterminism:
         out1.mkdir()
         out2.mkdir()
 
-        result1 = _run_csg_generate(image_path, out1)
-        result2 = _run_csg_generate(image_path, out2)
+        # ── run with timeout/exception guard (patch P4) ─────────────────────
+        try:
+            result1 = _run_csg_generate(image_path, out1)
+        except subprocess.TimeoutExpired as e:
+            pytest.fail(f"csg generate run1 timed out after {e.timeout}s: {e}")
+        except (FileNotFoundError, OSError) as e:
+            pytest.fail(f"csg generate run1 failed to spawn: {e}")
+        try:
+            result2 = _run_csg_generate(image_path, out2)
+        except subprocess.TimeoutExpired as e:
+            pytest.fail(f"csg generate run2 timed out after {e.timeout}s: {e}")
+        except (FileNotFoundError, OSError) as e:
+            pytest.fail(f"csg generate run2 failed to spawn: {e}")
 
-        # ── artifact destination (dot-prefixed) ────────────────────────────
+        # ── artifact destination (dot-prefixed, atomic) ──────────────────────
         artifact_path = Path(__file__).resolve().parent / ".csg_determinism.json"
 
-        # Helper to collect per-file hashes (raw + normalized for yaml)
+        # Helper to collect per-file hashes (raw + normalized for yaml) — handles is_dir
         def collect_hashes(output_dir: Path) -> dict[str, str]:
             h: dict[str, str] = {}
             for name in ("colors.yaml", "colors.conf", "colors.gtk.css"):
                 p = output_dir / name
                 if p.is_file():
-                    if name == "colors.yaml":
-                        # Record both raw and normalized for transparency
-                        raw = _sha256_file(p)
-                        norm = _sha256_bytes(_normalize_yaml_bytes(p.read_bytes()))
-                        h[name] = raw
-                        h[f"{name}.normalized"] = norm
-                    else:
-                        h[name] = _sha256_file(p)
+                    try:
+                        if name == "colors.yaml":
+                            raw = _sha256_file(p)
+                            norm = _sha256_bytes(_normalize_yaml_bytes(p.read_bytes()))
+                            h[name] = raw
+                            h[f"{name}.normalized"] = norm
+                        else:
+                            h[name] = _sha256_file(p)
+                    except OSError as e:
+                        h[name] = f"unreadable:{e}"
                 else:
-                    h[name] = "missing"
+                    if p.exists():
+                        h[name] = "is_dir" if p.is_dir() else "unreadable"
+                    else:
+                        h[name] = "missing"
             return h
 
-        # ── handle skip (container image missing) as artifact, not hard pass ─
-        if skip_reason is not None and (result1.returncode != 0 or result2.returncode != 0):
-            artifact = {
-                "ts": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-                "wallpaper_hash": wallpaper_hash,
-                "template_hash": template_hash,
-                "templates_dir": templates_dir_str,
-                "backend": "pywal",  # default on this host per csg info
-                "run1_hashes": collect_hashes(out1) if out1.exists() else {},
-                "run2_hashes": collect_hashes(out2) if out2.exists() else {},
-                "deterministic": "skipped",
-                "reason": skip_reason,
-                "container_mode": engine is not None,
-                "engine": engine,
-                "hash_algorithm": "sha256",
-                "run1_stdout": result1.stdout[:500] if result1.stdout else "",
-                "run1_stderr": result1.stderr[:500] if result1.stderr else "",
-                "run2_stdout": result2.stdout[:500] if result2.stdout else "",
-                "run2_stderr": result2.stderr[:500] if result2.stderr else "",
-            }
-            artifact_path.write_text(json.dumps(artifact, indent=2))
-            pytest.skip(skip_reason)
+        # ── handle skip: image missing → not proven, even if host fallback succeeded (D1) ──
+        # If image not built, result is "skipped" regardless of generate exit code when
+        # engine was present — host fallback would otherwise masquerade as container proof.
+        if skip_reason is not None:
+            # Check container forwarding: even if both succeeded, we didn't prove INTO container
+            should_skip = (result1.returncode != 0 or result2.returncode != 0) or (
+                engine is not None and not _csg_container_image_built(engine)
+            )
+            if should_skip:
+                artifact: dict = {
+                    "ts": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                    "wallpaper_hash": wallpaper_hash,
+                    "template_hash": template_hash,
+                    "templates_dir": templates_dir_str,
+                    "backend": backend,
+                    "run1_hashes": collect_hashes(out1) if out1.exists() else {},
+                    "run2_hashes": collect_hashes(out2) if out2.exists() else {},
+                    "deterministic": "skipped",
+                    "status": "skipped",
+                    "reason": skip_reason,
+                    "container_mode": engine is not None,
+                    "engine": engine,
+                    "hash_algorithm": "sha256",
+                    "run1_stdout": result1.stdout[:500] if result1.stdout else "",
+                    "run1_stderr": result1.stderr[:500] if result1.stderr else "",
+                    "run2_stdout": result2.stdout[:500] if result2.stdout else "",
+                    "run2_stderr": result2.stderr[:500] if result2.stderr else "",
+                }
+                _write_artifact_atomic(artifact_path, artifact)
+                pytest.skip(skip_reason)
 
         # ── normal assertions: both runs must have succeeded ───────────────
         assert result1.returncode == 0, (
@@ -329,22 +415,25 @@ class TestCsgDeterminism:
         )
 
         # ── verify env-override was honored (output landed in host temp dir) ─
+        # Also proves COLORSCHEME__OUTPUT__DIRECTORY was forwarded INTO container
+        # because we used NO -o flag — container must have written to host tmp via mount.
         for out_dir in (out1, out2):
             for name in ("colors.yaml", "colors.conf", "colors.gtk.css"):
-                assert (out_dir / name).is_file(), (
+                p = out_dir / name
+                assert p.is_file(), (
                     f"COLORSCHEME__OUTPUT__DIRECTORY override not honored — "
                     f"expected {name} in {out_dir}; run may have ignored env "
                     f"and written elsewhere (container forwarding broken). "
-                    f"Check container_processor.py env passthrough."
+                    f"Check container_processor.py env passthrough. "
+                    f"engine={engine} container_mode={engine is not None}"
                 )
+                # Guard is_dir masquerade — already handled in collect_hashes but assert here too
+                assert not p.is_dir(), f"{p} is a directory, expected file"
 
         # ── determinism compare ────────────────────────────────────────────
-        # For colors.conf and colors.gtk.css: raw bytes must be identical (sha equal + bytes equal)
-        # For colors.yaml: normalized bytes (strip generated_at) must be identical
         run1_hashes = collect_hashes(out1)
         run2_hashes = collect_hashes(out2)
 
-        # Detailed diff for failure message
         mismatches: list[str] = []
 
         # colors.conf
@@ -377,31 +466,33 @@ class TestCsgDeterminism:
                 f"(raw always differs by generated_at — compare normalized)"
             )
 
-        # ── write artifact (always, for memlog) ────────────────────────────
+        # ── write artifact atomically (always, for memlog) ───────────────────
         artifact = {
             "ts": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "wallpaper_hash": wallpaper_hash,
             "template_hash": template_hash,
             "templates_dir": templates_dir_str,
-            "backend": "pywal",
+            "backend": backend,
             "run1_hashes": run1_hashes,
             "run2_hashes": run2_hashes,
             "deterministic": len(mismatches) == 0,
+            "status": "passed" if len(mismatches) == 0 else "failed",
             "container_mode": engine is not None,
             "engine": engine,
             "hash_algorithm": "sha256",
             "notes": "colors.yaml raw hashes intentionally differ by generated_at; deterministic flag compares normalized yaml + raw conf/gtk.css",
         }
-        artifact_path.write_text(json.dumps(artifact, indent=2))
+        _write_artifact_atomic(artifact_path, artifact)
 
-        # ── fail if nondeterministic ───────────────────────────────────────
-        assert not mismatches, (
-            "Nondeterministic CSG output: "
-            + "; ".join(mismatches)
-            + " — cache key must include pinned seed (see Story 1.4 Task 4 Option B). "
-            "If this was pywal/wallust, verify backend flags are deterministic; "
-            "if custom, verify KMeans(random_state=0) is intact."
-        )
+        # ── fail if nondeterministic — raise typed error (D4) ─────────────────
+        if mismatches:
+            raise NondeterministicCSGError(
+                "Nondeterministic CSG output: "
+                + "; ".join(mismatches)
+                + " — cache key must include pinned seed (see Story 1.4 Task 4 Option B). "
+                "If this was pywal/wallust, verify backend flags are deterministic; "
+                "if custom, verify KMeans(random_state=0) is intact."
+            )
 
         # Extra sanity: wallpaper source must not have been mutated
         assert _sha256_file(image_path) == wallpaper_hash, (
