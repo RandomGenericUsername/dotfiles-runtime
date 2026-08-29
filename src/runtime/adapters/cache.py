@@ -43,7 +43,8 @@ from typing import Final
 
 from runtime.adapters.hashing import HASH_ALGORITHM
 
-assert HASH_ALGORITHM == "sha256"
+if HASH_ALGORITHM != "sha256":
+    raise AssertionError(f"HASH_ALGORITHM must be 'sha256', got {HASH_ALGORITHM!r}")
 
 CACHE_LAYERS: Final[frozenset[str]] = frozenset({"wallpapers", "palettes", "effects", "icons"})
 CACHE_STAGING_PREFIX: Final[str] = ".staging-"
@@ -60,7 +61,13 @@ def _validate_target(target: Path) -> None:
     - ``target.parent.name not in CACHE_LAYERS``
     - ``target.parent.parent.name != "cache"``
     - ``target.name`` is not 64-char lowercase hex
+    - path contains traversal components (``..``) or is not at least 3 parts deep
     """
+    # Reject traversal components and shallow paths before name checks
+    if ".." in target.parts:
+        raise ValueError(f"target must not contain '..', got {target}")
+    if len(target.parts) < 3:
+        raise ValueError(f"target must be at least cache/<layer>/<hash>, got {target}")
     layer = target.parent.name
     if layer not in CACHE_LAYERS:
         raise ValueError(f"unknown layer {layer!r}, expected one of {sorted(CACHE_LAYERS)}")
@@ -102,13 +109,14 @@ def cache_entry_path(state_root: Path, layer: str, entry_hash: str) -> Path:
 
 
 def _staging_dir_for(target: Path) -> Path:
-    """Return sibling staging dir for ``target``: ``cache/.staging-<pid>-<uuid8>``."""
+    """Return sibling staging dir for ``target``: ``cache/.staging-<pid>-<uuid>``."""
     cache_dir = target.parent
     # Sibling of cache/ → cache_dir.parent / ".staging-<pid>-<rand>"
     # e.g. target = state_root/cache/wallpapers/<hash>
     #      cache_dir = state_root/cache/wallpapers
-    #      staging = state_root/cache/.staging-<pid>-<8hex>
-    return cache_dir.parent / f"{CACHE_STAGING_PREFIX}{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    #      staging = state_root/cache/.staging-<pid>-<uuid>
+    # Full uuid4 hex (128 bits) avoids 32-bit birthday collisions of truncated 8-char.
+    return cache_dir.parent / f"{CACHE_STAGING_PREFIX}{os.getpid()}-{uuid.uuid4().hex}"
 
 
 def hardlink_or_copy(src: Path, dst: Path) -> None:
@@ -122,6 +130,8 @@ def hardlink_or_copy(src: Path, dst: Path) -> None:
       before link/copy — staging dir is fresh but defensive.
     - Does NOT use ``Path.hardlink_to`` or ``os.symlink``.
     """
+    if not src.is_file():
+        raise ValueError(f"src must be a regular file, got {src!r}")
     dst.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.link(src, dst)
@@ -143,7 +153,7 @@ def populate_via_staging(target: Path, populate_fn: Callable[[Path], None]) -> b
       ``meta.json`` inside it (with ``hash_algorithm == HASH_ALGORITHM``).
     - Validates ``target`` is under ``cache/<layer>/<64hex>`` (ValueError otherwise).
     - Handles TOCTOU race: ``target.exists()`` fast-path plus ``FileExistsError``/
-      ``ENOTEMPTY``/``EEXIST``/``"File exists"`` on ``os.rename`` → discard staging.
+      ``ENOTEMPTY``/``EEXIST``/``EISDIR`` on ``os.rename`` → discard staging.
     - Cleans staging in all error paths (populate_fn exception, rename race,
       unexpected OSError) — no orphan ``cache/.staging-*`` left behind.
     """
@@ -151,20 +161,39 @@ def populate_via_staging(target: Path, populate_fn: Callable[[Path], None]) -> b
 
     # Fast-path: existing final entry never overwritten
     if target.exists():
+        if not target.is_dir():
+            raise ValueError(f"cache entry exists but is not a directory: {target}")
         return False
 
     cache_dir = target.parent
     staging = _staging_dir_for(target)
+
+    # Sweep stale orphans from previous unclean crash (best-effort, ignore errors)
+    # Only sweep siblings matching prefix to avoid unbounded recursion.
+    try:
+        cache_root = cache_dir.parent
+        if cache_root.exists():
+            for orphan in cache_root.glob(f"{CACHE_STAGING_PREFIX}*"):
+                # Defensive: only remove directories that look like staging
+                if orphan.is_dir():
+                    shutil.rmtree(orphan, ignore_errors=True)
+    except OSError:
+        pass
 
     # Ensure cache_dir exists (e.g. state_root/cache/wallpapers)
     cache_dir.mkdir(parents=True, exist_ok=True)
     # staging is sibling of cache/, so parent (state_root/cache) already exists after above
     # but ensure parent exists for robustness
     staging.parent.mkdir(parents=True, exist_ok=True)
-    staging.mkdir(parents=True, exist_ok=False)
 
     try:
+        staging.mkdir(parents=True, exist_ok=False)
         populate_fn(staging)
+        # Guard: populate_fn must have created at least one file and meta.json
+        if not any(staging.iterdir()):
+            raise RuntimeError(f"populate_fn left staging empty: {staging}")
+        if not (staging / "meta.json").is_file():
+            raise RuntimeError(f"populate_fn must create meta.json in staging: {staging}")
 
         try:
             os.rename(staging, target)
@@ -173,8 +202,13 @@ def populate_via_staging(target: Path, populate_fn: Callable[[Path], None]) -> b
             shutil.rmtree(staging, ignore_errors=True)
             return False
         except OSError as e:
-            # Handle ENOTEMPTY/EEXIST and string "File exists" variants
-            if e.errno in (errno.ENOTEMPTY, errno.EEXIST) or "File exists" in str(e):
+            # Handle directory-exists variants; keep narrow string fallback only when errno is None
+            # (covers OSError("File exists") without errno as used in tests). Avoids locale-fragile
+            # over-broad suppression when errno is set (e.g., ENOSPC with "File exists" in log).
+            if e.errno in (errno.ENOTEMPTY, errno.EEXIST, errno.EISDIR):
+                shutil.rmtree(staging, ignore_errors=True)
+                return False
+            if e.errno is None and "File exists" in str(e):
                 shutil.rmtree(staging, ignore_errors=True)
                 return False
             raise
@@ -184,7 +218,7 @@ def populate_via_staging(target: Path, populate_fn: Callable[[Path], None]) -> b
         shutil.rmtree(staging, ignore_errors=True)
         raise
     finally:
-        # Defensive: if staging still exists (rename succeeded but outer
-        # exception), ensure removed
+        # Defensive: if staging still exists (e.g., rename succeeded but outer
+        # exception after return), ensure removed. Single cleanup path.
         if staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
