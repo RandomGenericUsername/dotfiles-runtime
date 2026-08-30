@@ -136,9 +136,35 @@ def test_csg_adapter_never_touches_settings_toml(
     ph = palette_entry_hash(hash_file(wallpaper), canonical_hash_dir(templates_dir))
     output_dir = tmp_path / "state" / "cache" / "palettes" / ph
 
-    settings = tmp_path / "settings.toml"
-    settings.write_text('[color_scheme]\nbackend = "custom"\n')
-    mtime_before = settings.stat().st_mtime_ns
+    # Check real provisioning settings.toml if it exists (AD-7: never edits)
+    # Fall back to tmp sentinel if real file not found — but now test proves
+    # adapter never touches the *actual* settings path, not just a tmp file.
+    candidates = [
+        Path(__file__).resolve().parents[4]
+        / "src"
+        / "cli-tools"
+        / "color-scheme-generator"
+        / "src"
+        / "color_scheme_generator"
+        / "defaults"
+        / "settings.toml",
+        Path(__file__).resolve().parents[3]
+        / "src"
+        / "cli-tools"
+        / "color-scheme-generator"
+        / "defaults"
+        / "settings.toml",
+    ]
+    real_settings = next((p for p in candidates if p.is_file()), None)
+    if real_settings is not None:
+        mtime_before = real_settings.stat().st_mtime_ns
+        content_before = real_settings.read_bytes()
+    else:
+        # No real settings — use tmp sentinel as fallback proof of no global write
+        real_settings = tmp_path / "settings.toml"
+        real_settings.write_text('[color_scheme]\nbackend = "custom"\n')
+        mtime_before = real_settings.stat().st_mtime_ns
+        content_before = real_settings.read_bytes()
 
     fake = _fake_success_factory()
     monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake)
@@ -146,9 +172,8 @@ def test_csg_adapter_never_touches_settings_toml(
     adapter = CsgAdapter(templates_dir=templates_dir)
     adapter.generate(wallpaper, output_dir)
 
-    assert settings.stat().st_mtime_ns == mtime_before
-    # Adapter never opened settings file — content unchanged
-    assert settings.read_text() == '[color_scheme]\nbackend = "custom"\n'
+    assert real_settings.stat().st_mtime_ns == mtime_before
+    assert real_settings.read_bytes() == content_before
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +366,7 @@ def test_csg_adapter_artifact_hashes_are_hex64(
 
 def test_csg_adapter_is_available(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("runtime.adapters.csg_adapter.shutil.which", lambda x: "/usr/bin/csg")
+    monkeypatch.setattr("runtime.adapters.csg_adapter.os.access", lambda p, mode: True)
     assert CsgAdapter().is_available() is True
     monkeypatch.setattr("runtime.adapters.csg_adapter.shutil.which", lambda x: None)
     assert CsgAdapter().is_available() is False
@@ -364,12 +390,35 @@ def test_csg_adapter_no_settings_toml_rewrite_even_on_container(
     ph = palette_entry_hash(hash_file(wallpaper), canonical_hash_dir(templates_dir))
     output_dir = tmp_path / "state" / "cache" / "palettes" / ph
 
-    # Simulate settings.toml that would be rewritten if container logic were wrong
-    settings = tmp_path / "settings.toml"
-    settings.write_text("overwrite = false\n")
-    mtime = settings.stat().st_mtime_ns
+    candidates = [
+        Path(__file__).resolve().parents[4]
+        / "src"
+        / "cli-tools"
+        / "color-scheme-generator"
+        / "src"
+        / "color_scheme_generator"
+        / "defaults"
+        / "settings.toml",
+        Path(__file__).resolve().parents[3]
+        / "src"
+        / "cli-tools"
+        / "color-scheme-generator"
+        / "defaults"
+        / "settings.toml",
+    ]
+    real_settings = next((p for p in candidates if p.is_file()), None)
+    if real_settings is not None:
+        mtime = real_settings.stat().st_mtime_ns
+        content = real_settings.read_bytes()
+    else:
+        settings = tmp_path / "settings.toml"
+        settings.write_text("overwrite = false\n")
+        real_settings = settings
+        mtime = settings.stat().st_mtime_ns
+        content = settings.read_bytes()
 
     captured_env: dict[str, str] = {}
+    captured_args: list[str] = []
 
     def fake_container_run(
         args: list[str],
@@ -380,6 +429,7 @@ def test_csg_adapter_no_settings_toml_rewrite_even_on_container(
     ) -> subprocess.CompletedProcess[str]:  # noqa: ARG001
         assert env is not None
         captured_env.update(env)
+        captured_args.extend(args)
         # Simulate container mode: still writes to host env path
         out = Path(env["COLORSCHEME__OUTPUT__DIRECTORY"])
         out.mkdir(parents=True, exist_ok=True)
@@ -393,7 +443,10 @@ def test_csg_adapter_no_settings_toml_rewrite_even_on_container(
     adapter = CsgAdapter(templates_dir=templates_dir)
     adapter.generate(wallpaper, output_dir)
 
-    assert settings.stat().st_mtime_ns == mtime
+    assert real_settings.stat().st_mtime_ns == mtime
+    assert real_settings.read_bytes() == content
     assert captured_env["COLORSCHEME__OUTPUT__DIRECTORY"] == str(output_dir)
     assert captured_env["COLORSCHEME__OUTPUT__OVERWRITE"] == "true"
-    assert "-o" not in captured_env
+    # Verify no -o/--output flag in args (not in env dict)
+    assert "-o" not in captured_args
+    assert "--output" not in captured_args
