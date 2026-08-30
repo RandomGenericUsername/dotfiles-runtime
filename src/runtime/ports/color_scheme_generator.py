@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 from runtime.domain.models import PaletteEntry
 
@@ -9,12 +10,12 @@ class IColorSchemeGenerator(ABC):
     @abstractmethod
     def generate(
         self,
-        wallpaper_hash: str,
-        template_dir: str,
-        output_dir: str,
+        wallpaper_path: Path,
+        output_dir: Path,
     ) -> PaletteEntry:
-        """Generate palette from wallpaper hash + CSG templates.
+        """Generate palette from wallpaper file via CSG templates.
 
-        Writes color scheme artifacts to output_dir.
-        Returns the PaletteEntry with artifact_hashes computed.
+        Writes color scheme artifacts (colors.yaml, colors.conf, colors.gtk.css)
+        into output_dir via env override. Returns the PaletteEntry with
+        artifact_hashes computed.
         """
