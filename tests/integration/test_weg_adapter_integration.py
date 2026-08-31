@@ -23,36 +23,17 @@ def test_weg_adapter_integration_real_binary(tmp_path: Path) -> None:
     if shutil.which("magick") is None:
         pytest.skip("magick not on PATH (needed by weg)")
 
-    # Copy fixture wallpaper
+    # Copy fixture wallpaper — Path(__file__)-only, no CWD
     fixture = Path(__file__).parent.parent / "fixtures" / "wallpaper.png"
-    if not fixture.is_file():
-        fixture = Path("tests/fixtures/wallpaper.png")
-    if not fixture.is_file():
-        fixture = Path("src/runtime/tests/fixtures/wallpaper.png")
     assert fixture.is_file(), f"wallpaper fixture not found: {fixture}"
     wallpaper = tmp_path / "wallpaper.png"
     wallpaper.write_bytes(fixture.read_bytes())
 
-    catalog_candidates = [
-        Path(__file__).resolve().parents[3]
-        / "src"
-        / "cli-tools"
-        / "wallpaper-effects-generator"
-        / "src"
-        / "wallpaper_effects_generator"
-        / "defaults"
-        / "effects.yaml",
-        Path(__file__).resolve().parents[4]
-        / "src"
-        / "cli-tools"
-        / "wallpaper-effects-generator"
-        / "src"
-        / "wallpaper_effects_generator"
-        / "defaults"
-        / "effects.yaml",
-    ]
-    catalog = next((p for p in catalog_candidates if p.is_file()), None)
-    if catalog is None:
+    # Reuse adapter catalog discovery instead of brittle parents[3]/[4]
+    from runtime.adapters.weg_adapter import _find_default_effects_catalog
+
+    catalog = _find_default_effects_catalog()
+    if catalog is None or not catalog.is_file():
         pytest.skip("WEG effects catalog not found")
 
     wallpaper_hash = hash_file(wallpaper)

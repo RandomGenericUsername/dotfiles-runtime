@@ -30,13 +30,9 @@ def _make_catalog_file(tmp_path: Path) -> Path:
 
 def _copy_wallpaper_fixture(tmp_path: Path) -> Path:
     """Copy deterministic wallpaper.png fixture (619cd350...) into tmp_path."""
-    candidates = [
-        Path("tests/fixtures/wallpaper.png"),
-        Path("src/runtime/tests/fixtures/wallpaper.png"),
-        Path(__file__).parent.parent / "fixtures" / "wallpaper.png",
-    ]
-    fixture = next((p for p in candidates if p.exists()), None)
-    assert fixture is not None, f"wallpaper.png fixture not found, tried {candidates}"
+    # Robust: only Path(__file__)-relative, no CWD dependence
+    fixture = Path(__file__).parent.parent / "fixtures" / "wallpaper.png"
+    assert fixture.is_file(), f"wallpaper.png fixture not found: {fixture}"
     dest = tmp_path / "wallpaper.png"
     dest.write_bytes(fixture.read_bytes())
     return dest
@@ -51,6 +47,8 @@ def _fake_success_factory() -> MagicMock:
         text: bool = False,  # noqa: ARG001
         env: dict[str, str] | None = None,
         timeout: int | None = None,  # noqa: ARG001
+        errors: str | None = None,  # noqa: ARG001
+        **_kw: object,  # noqa: ARG001
     ) -> subprocess.CompletedProcess[str]:
         assert env is not None
         out = Path(env["WALLPAPER__OUTPUT__DIRECTORY"])
@@ -196,7 +194,9 @@ def test_weg_adapter_container_env_passthrough(
         capture_output: bool = False,
         text: bool = False,
         env: dict[str, str] | None = None,
-        timeout: int | None = None,
+        timeout: int | None = None,  # noqa: ARG001
+        errors: str | None = None,  # noqa: ARG001
+        **_kw: object,  # noqa: ARG001
     ) -> subprocess.CompletedProcess[str]:  # noqa: ARG001
         assert env is not None
         captured.update(env)
@@ -232,7 +232,9 @@ def test_weg_adapter_raises_on_non_zero_exit(
         capture_output: bool = False,
         text: bool = False,
         env: dict[str, str] | None = None,
-        timeout: int | None = None,
+        timeout: int | None = None,  # noqa: ARG001
+        errors: str | None = None,  # noqa: ARG001
+        **_kw: object,  # noqa: ARG001
     ) -> subprocess.CompletedProcess[str]:  # noqa: ARG001
         return subprocess.CompletedProcess(args, 1, "", "backend not available")
 
@@ -403,7 +405,9 @@ def test_weg_adapter_no_settings_toml_rewrite_even_on_container(
         capture_output: bool = False,
         text: bool = False,
         env: dict[str, str] | None = None,
-        timeout: int | None = None,
+        timeout: int | None = None,  # noqa: ARG001
+        errors: str | None = None,  # noqa: ARG001
+        **_kw: object,  # noqa: ARG001
     ) -> subprocess.CompletedProcess[str]:  # noqa: ARG001
         assert env is not None
         captured_env.update(env)

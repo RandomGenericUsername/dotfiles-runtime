@@ -32,6 +32,7 @@ import stat
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from runtime.adapters.env import build_env
 from runtime.adapters.hashing import (
@@ -39,7 +40,7 @@ from runtime.adapters.hashing import (
     effects_entry_hash,
     hash_file,
 )
-from runtime.domain.models import EffectsEntry
+from runtime.domain.models import EffectsArtifacts, EffectsEntry
 from runtime.ports.effects_generator import IEffectsGenerator
 
 # Guard from Story 1.6 learnings — fail-closed on algorithm drift (not assert)
@@ -48,7 +49,53 @@ if HASH_ALGORITHM != "sha256":  # pragma: no cover
 
 
 def _find_default_effects_catalog() -> Path | None:
-    """Search repo for ``wallpaper_effects_generator/defaults/effects.yaml``."""
+    """Search for ``effects.yaml`` — install spine first, repo fallback.
+
+    Priority per AC1 (shared-data-contract):
+    1. ``<install>/config/weg/effects.yaml`` (legacy) and
+       ``<install>/config/wallpaper/effects.yaml`` — XDG-based install spine
+       where ``<install>`` is ``$XDG_DATA_HOME/wallpaper`` or
+       ``~/.local/share/wallpaper`` etc. Resolved via ``XDG_DATA_HOME``,
+       ``XDG_CONFIG_HOME`` and ``HOME`` env.
+    2. Repo fallback ``wallpaper_effects_generator/defaults/effects.yaml``
+       (parent walk).
+    """
+    # 1) install-spine candidates (XDG)
+    xdg_data = os.environ.get("XDG_DATA_HOME")
+    xdg_config = os.environ.get("XDG_CONFIG_HOME")
+    home = os.environ.get("HOME") or str(Path.home())
+    install_candidates: list[Path] = []
+    if xdg_data:
+        install_candidates.extend(
+            [
+                Path(xdg_data) / "wallpaper" / "config" / "weg" / "effects.yaml",
+                Path(xdg_data) / "wallpaper" / "config" / "wallpaper" / "effects.yaml",
+            ]
+        )
+    if xdg_config:
+        install_candidates.extend(
+            [
+                Path(xdg_config) / "wallpaper" / "config" / "weg" / "effects.yaml",
+                Path(xdg_config) / "wallpaper" / "config" / "wallpaper" / "effects.yaml",
+            ]
+        )
+    # HOME fallback
+    install_candidates.extend(
+        [
+            Path(home) / ".local" / "share" / "wallpaper" / "config" / "weg" / "effects.yaml",
+            Path(home) / ".local" / "share" / "wallpaper" / "config" / "wallpaper" / "effects.yaml",
+            Path(home) / ".config" / "wallpaper" / "config" / "weg" / "effects.yaml",
+            Path(home) / ".config" / "wallpaper" / "config" / "wallpaper" / "effects.yaml",
+            Path(home) / ".config" / "wallpaper-effects-generator" / "effects.yaml",
+        ]
+    )
+    for candidate in install_candidates:
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+
     for parent in Path(__file__).resolve().parents:
         candidates = [
             parent
@@ -70,7 +117,7 @@ def _find_default_effects_catalog() -> Path | None:
             try:
                 if candidate.is_file():
                     return candidate
-            except PermissionError:
+            except OSError:
                 continue
     return None
 
@@ -80,23 +127,36 @@ def _validate_weg_bin(weg_bin: str | None) -> str | None:
         return None
     if weg_bin == "":
         raise ValueError("weg_bin cannot be empty string (use None for default 'weg')")
-    if any(c in weg_bin for c in ";|&`$"):
-        raise ValueError(f"weg_bin contains shell metacharacter: {weg_bin!r}")
+    # Reject control chars, whitespace, null byte, and shell metachars.
+    # With shell=False injection still matters via arg-injection; block broadly.
+    if "\x00" in weg_bin or "\n" in weg_bin or "\r" in weg_bin:
+        raise ValueError(f"weg_bin contains control character: {weg_bin!r}")
+    if any(c in weg_bin for c in " \t;|&`$><*?~!()[]{}#\\'\""):
+        raise ValueError(f"weg_bin contains shell/whitespace metacharacter: {weg_bin!r}")
     return weg_bin
 
 
 def _validate_output_dir(output_dir: Path, expected_hash: str) -> None:
-    if str(output_dir) in ("", "."):
+    s = str(output_dir)
+    if "\x00" in s:
+        raise ValueError(f"output_dir contains null byte: {output_dir!r}")
+    if s in ("", "."):
         raise ValueError(f"output_dir must be a non-empty path, got {output_dir!r}")
-    if ".." in output_dir.parts:
-        raise ValueError(f"output_dir must not contain '..': {output_dir}")
+    if ".." in output_dir.parts or "." in output_dir.parts:
+        raise ValueError(f"output_dir must not contain '.' or '..': {output_dir}")
+    # Symlink check — fail-closed: propagate OSError instead of swallowing
+    if output_dir.is_symlink():
+        raise ValueError(f"output_dir must not be a symlink: {output_dir}")
+    if output_dir.parent.is_symlink():
+        raise ValueError(f"output_dir parent must not be a symlink: {output_dir.parent}")
+    # Also reject wallpaper-style symlink escape via ancestors: check if any
+    # parent component up to two levels is a symlink (covers grandparent)
     try:
-        if output_dir.is_symlink():
-            raise ValueError(f"output_dir must not be a symlink: {output_dir}")
-        if output_dir.parent.is_symlink():
-            raise ValueError(f"output_dir parent must not be a symlink: {output_dir.parent}")
-    except OSError:
-        pass
+        for p in (output_dir.parent, output_dir.parent.parent):
+            if p != Path(".") and p.exists() and p.is_symlink():
+                raise ValueError(f"output_dir ancestor must not be a symlink: {p}")
+    except OSError as exc:
+        raise RuntimeError(f"cannot validate output_dir symlink: {exc}") from exc
     if output_dir.name != expected_hash:
         raise ValueError(
             f"output_dir hash mismatch: expected {expected_hash}, got {output_dir.name}"
@@ -118,10 +178,12 @@ class WegAdapter(IEffectsGenerator):
         weg_bin: str | None = None,
         catalog_path: Path | None = None,
     ) -> None:
-        if not isinstance(timeout, int):
+        if type(timeout) is not int:
             raise ValueError(f"timeout must be int, got {type(timeout).__name__}")
         if timeout <= 0:
             raise ValueError(f"timeout must be > 0, got {timeout}")
+        if catalog_path is not None and not isinstance(catalog_path, Path):
+            raise TypeError(f"catalog_path must be Path or None, got {type(catalog_path).__name__}")
         self._timeout = timeout
         self._weg_bin = _validate_weg_bin(weg_bin)
         self._catalog_path = catalog_path
@@ -147,7 +209,7 @@ class WegAdapter(IEffectsGenerator):
         try:
             return os.access(result, os.X_OK)
         except OSError:
-            return True
+            return False
 
     def generate(self, wallpaper_path: Path, output_dir: Path) -> EffectsEntry:
         """Generate effects from wallpaper via ``weg`` with env override.
@@ -170,8 +232,17 @@ class WegAdapter(IEffectsGenerator):
             TimeoutError: if weg hangs beyond timeout.
         """
         # 1. Validate wallpaper_path before spawning subprocess
-        if str(wallpaper_path) in ("", "."):
+        wp_str = str(wallpaper_path)
+        if "\x00" in wp_str:
+            raise ValueError(f"wallpaper_path contains null byte: {wallpaper_path!r}")
+        if wp_str in ("", "."):
             raise ValueError(f"wallpaper_path must be non-empty, got {wallpaper_path!r}")
+        # Reject symlink wallpaper (arbitrary file read)
+        try:
+            if wallpaper_path.is_symlink():
+                raise ValueError(f"wallpaper_path must not be a symlink: {wallpaper_path}")
+        except OSError as exc:
+            raise RuntimeError(f"cannot validate wallpaper_path symlink: {exc}") from exc
         if not wallpaper_path.exists():
             raise FileNotFoundError(wallpaper_path)
         if wallpaper_path.is_dir():
@@ -203,14 +274,23 @@ class WegAdapter(IEffectsGenerator):
             catalog_path = _find_default_effects_catalog()
         if catalog_path is None:
             raise FileNotFoundError("WEG catalog not found: no default effects.yaml discovered")
+        if "\x00" in str(catalog_path):
+            raise ValueError(f"catalog_path contains null byte: {catalog_path!r}")
+        try:
+            if catalog_path.is_symlink():
+                raise ValueError(f"catalog_path must not be a symlink: {catalog_path}")
+        except OSError as exc:
+            raise RuntimeError(f"cannot validate catalog symlink: {exc}") from exc
         if not catalog_path.exists():
             raise FileNotFoundError(f"WEG catalog not found: {catalog_path}")
         if not catalog_path.is_file():
             raise IsADirectoryError(f"WEG catalog is not a file: {catalog_path}")
         try:
             c_st = catalog_path.stat()
+            if not stat.S_ISREG(c_st.st_mode):
+                raise ValueError(f"catalog_path is not a regular file: {catalog_path}")
             if c_st.st_size == 0:
-                raise ValueError(f"WEG catalog is empty (0 bytes): {catalog_path}")
+                raise FileNotFoundError(f"WEG catalog is empty (0 bytes): {catalog_path}")
         except OSError as exc:
             if isinstance(exc, (FileNotFoundError, IsADirectoryError, ValueError)):
                 raise
@@ -230,7 +310,7 @@ class WegAdapter(IEffectsGenerator):
         except FileExistsError as exc:
             raise RuntimeError(f"output_dir parent exists as file: {output_dir.parent}") from exc
         except OSError as exc:
-            if exc.errno in (errno.ENOTEMPTY, errno.EEXIST, errno.EISDIR):
+            if exc.errno in (errno.ENOTEMPTY, errno.EEXIST, errno.EISDIR, errno.ENOTDIR):
                 raise RuntimeError(
                     f"output_dir parent collision: {output_dir.parent}: {exc}"
                 ) from exc
@@ -242,7 +322,7 @@ class WegAdapter(IEffectsGenerator):
         except FileExistsError as exc:
             raise RuntimeError(f"output_dir exists as file, not dir: {output_dir}") from exc
         except OSError as exc:
-            if exc.errno in (errno.ENOTEMPTY, errno.EEXIST, errno.EISDIR):
+            if exc.errno in (errno.ENOTEMPTY, errno.EEXIST, errno.EISDIR, errno.ENOTDIR):
                 raise RuntimeError(f"output_dir collision: {output_dir}: {exc}") from exc
             raise RuntimeError(f"cannot create output_dir {output_dir}: {exc}") from exc
 
@@ -254,11 +334,13 @@ class WegAdapter(IEffectsGenerator):
         )
 
         # 7. Build args — intentionally NO -o/--output flag, only positional wallpaper_path
+        # Use -- separator to prevent leading-dash wallpaper from being parsed as flag
         bin_name = self._weg_bin or "weg"
         args = [
             bin_name,
             "batch",
             "all",
+            "--",
             str(wallpaper_path),
         ]
 
@@ -270,17 +352,38 @@ class WegAdapter(IEffectsGenerator):
                 text=True,
                 env=env,
                 timeout=self._timeout,
+                errors="replace",
             )
         except FileNotFoundError as exc:
             raise FileNotFoundError("weg not on PATH") from exc
         except PermissionError as exc:
             raise FileNotFoundError("weg not on PATH (permission denied)") from exc
         except subprocess.TimeoutExpired as exc:
-            stderr_part = str(exc.stderr or "")[:2048]
+            # Handle both str and bytes stderr (text=True vs errors)
+            raw_err = exc.stderr
+            if isinstance(raw_err, bytes):
+                try:
+                    stderr_part = raw_err.decode(errors="replace")[:2048]
+                except Exception:
+                    stderr_part = str(raw_err)[:2048]
+            else:
+                stderr_part = str(raw_err or "")[:2048]
+            raw_out = getattr(exc, "stdout", None)
+            if isinstance(raw_out, bytes):
+                try:
+                    stdout_part = raw_out.decode(errors="replace")[:500]
+                except Exception:
+                    stdout_part = str(raw_out)[:500]
+            else:
+                stdout_part = str(raw_out or "")[:500]
             msg = f"weg batch all timed out after {self._timeout}s"
             if stderr_part:
                 msg += f": {stderr_part}"
+            if stdout_part:
+                msg += f" stdout:{stdout_part}"
             raise TimeoutError(msg) from exc
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise RuntimeError(f"weg batch all failed to spawn (bad arg/encoding): {exc}") from exc
         except OSError as exc:
             if exc.errno == errno.E2BIG:
                 raise RuntimeError(f"weg batch all env too large (E2BIG): {exc}") from exc
@@ -309,13 +412,16 @@ class WegAdapter(IEffectsGenerator):
             )
 
         # 9. Verify PNG artifacts exist (recursive, weg nests as output_dir/<stem>/effect/*.png)
-        png_files = [p for p in output_dir.rglob("*.png") if p.is_file()]
+        # Case-insensitive: collect *.png and *.PNG and filter case-insensitively
+        try:
+            all_files = [p for p in output_dir.rglob("*") if p.is_file()]
+        except OSError as exc:
+            raise RuntimeError(f"cannot list weg output_dir {output_dir}: {exc}") from exc
+        png_files = [p for p in all_files if p.suffix.lower() == ".png"]
         if not png_files:
-            # Check if output_dir has any files at all for better error
-            any_files = [p for p in output_dir.rglob("*") if p.is_file()]
             raise RuntimeError(
                 f"weg did not write expected PNG artifacts: {output_dir} "
-                f"(found {len(any_files)} files, 0 png)"
+                f"(found {len(all_files)} files, 0 png)"
             )
 
         # 10. Compute artifact hashes via binary chunked hash_file — wrap TOCTOU
@@ -329,17 +435,27 @@ class WegAdapter(IEffectsGenerator):
         try:
             for p in png_files:
                 h = hash_file(p)
-                # Key: basename if unique, else relative path
+                # Key: basename if unique, else relative path (handle symlink escape)
                 if basename_counts[p.name] == 1:
                     key = p.name
                 else:
-                    key = p.relative_to(output_dir).as_posix()
+                    try:
+                        key = p.relative_to(output_dir).as_posix()
+                    except ValueError as exc:
+                        raise RuntimeError(
+                            f"artifact outside output_dir (symlink escape): {p} not in {output_dir}"
+                        ) from exc
                 # Double-check uniqueness after fallback (should be unique now)
                 if key in artifact_hashes:
                     # Extremely unlikely duplicate relative — suffix with hash prefix
                     key = f"{key}:{h[:8]}"
                 artifact_hashes[key] = h
         except (FileNotFoundError, PermissionError, IsADirectoryError, OSError) as exc:
+            raise RuntimeError(f"cannot hash weg artifacts in {output_dir}: {exc}") from exc
+        except ValueError as exc:
+            # from relative_to escape already wrapped, but also catch hash_file TypeError etc
+            if "outside output_dir" in str(exc):
+                raise
             raise RuntimeError(f"cannot hash weg artifacts in {output_dir}: {exc}") from exc
 
         # Verify all hashes are 64-char hex
@@ -355,6 +471,6 @@ class WegAdapter(IEffectsGenerator):
             entry_hash=eh,
             source_wallpaper_hash=wallpaper_hash,
             input_catalog_hash=catalog_hash,
-            artifact_hashes=artifact_hashes,  # type: ignore[arg-type]
+            artifact_hashes=cast(EffectsArtifacts, artifact_hashes),
             generated_at=generated_at,
         )

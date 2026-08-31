@@ -1,17 +1,17 @@
 {
-  "ts": "2026-08-30T02:23:17.080724Z",
+  "ts": "2026-08-30T23:55:28.312372Z",
   "wallpaper_hash": "619cd350283e11c3cc9ee7b3d67dce93738e87e7fefa16144840ebd716534381",
   "template_hash": "dab5e116470883970a5054f27ba38456b936ab1e7c60a16d542a22ab734c0ec4",
   "templates_dir": "/home/inumaki/Development/dotfiles-new-architectures/dotfiles-repo-v3/src/cli-tools/color-scheme-generator/src/color_scheme_generator/defaults/templates",
   "backend": "custom",
   "run1_hashes": {
-    "colors.yaml": "23e252665fb8675e0c76e1def98a761d46799ed20daaf80c974ab64edae26cd0",
+    "colors.yaml": "146b9f54bea9f4df23af70bf7d1e326222ea16e106a1a7f923bedea676289c92",
     "colors.yaml.normalized": "4c529cae0540a26482bf7a88f6700883b1267cfd055154be895cbdfee5a70ff7",
     "colors.conf": "5ef15386a15ec850832d40246699c335bfecd5be117cdff6484e0226455567bb",
     "colors.gtk.css": "79f3ad9e5421c426dfa56d495e0aaa4d104ffd256dca7fba6e758fe2e09d3528"
   },
   "run2_hashes": {
-    "colors.yaml": "4547dfaab7fcf0fae70ebf45f42cdc08a1c36d7b021fb534295634e3f6182ae7",
+    "colors.yaml": "c106a6d0fc9fc819cf71772306028b33383e0e0eb375240aba6cd5e63ffb6faa",
     "colors.yaml.normalized": "4c529cae0540a26482bf7a88f6700883b1267cfd055154be895cbdfee5a70ff7",
     "colors.conf": "5ef15386a15ec850832d40246699c335bfecd5be117cdff6484e0226455567bb",
     "colors.gtk.css": "79f3ad9e5421c426dfa56d495e0aaa4d104ffd256dca7fba6e758fe2e09d3528"
