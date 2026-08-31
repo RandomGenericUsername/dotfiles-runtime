@@ -1,0 +1,344 @@
+"""Concrete seeding adapter — filesystem I/O for first-run bootstrap.
+
+Implements AD-1 (hexagonal), AD-6 (swap symlinks lead), AD-8 (SHA-256),
+AD-9 (staging-dir), AD-11 (first-run self-seeding), AD-14 (domain purity),
+AD-16 (hardlink), AD-17 (consumer wiring).
+
+Handles:
+- Hardlinking wallpaper into cache (AD-16)
+- Atomic symlink repoint (AD-6): tmp symlink + os.replace
+- Writing meta.json with hash_algorithm: "sha256" per shared-data-contract
+- Creating current/ directory structure
+
+Domain purity (AD-1, AD-14):
+- This module lives in ``adapters/`` only (allowed ``os``/``pathlib``/``json``/``uuid``).
+- ``domain/`` stays pure — no ``os`` imported there.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Final
+
+from runtime.adapters.cache import hardlink_or_copy
+from runtime.adapters.hashing import HASH_ALGORITHM
+
+# O_APPEND flag for atomic history append (AD-4)
+_O_APPEND = os.O_APPEND | os.O_WRONLY | os.O_CREAT
+
+if HASH_ALGORITHM != "sha256":  # pragma: no cover
+    raise AssertionError(f"HASH_ALGORITHM must be 'sha256', got {HASH_ALGORITHM!r}")
+
+# Hash algorithm literal for meta.json (AD-8)
+_META_HASH_ALGORITHM: Final[str] = "sha256"
+
+
+def _repoint_symlink(current_path: Path, target: Path) -> None:
+    """Atomic symlink repoint: create tmp symlink, os.replace.
+
+    AD-6: symlink repoint is atomic on same filesystem.
+    tmp name includes PID + random to avoid collisions.
+    """
+    current_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_name = f"{current_path.name}.tmp.{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    tmp = current_path.parent / tmp_name
+    tmp.symlink_to(target)
+    os.replace(str(tmp), str(current_path))
+
+
+def _now_iso_z() -> str:
+    """Current UTC time as strict ISO-8601 ending with Z."""
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _write_meta_json(meta_path: Path, data: dict[str, Any]) -> None:
+    """Write meta.json atomically (sibling tmp + os.replace)."""
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_name = f"meta.json.tmp.{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    tmp = meta_path.parent / tmp_name
+    try:
+        content = json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(str(tmp), str(meta_path))
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+class CacheSeeder:
+    """Concrete adapter for first-run seeding filesystem I/O.
+
+    Responsibilities:
+    - Copy install_spine wallpaper into cache via hardlink (AD-16)
+    - Repoint current/ symlinks atomically (AD-6)
+    - Write meta.json with hash_algorithm literal per shared-data-contract
+    - Ensure current/ directory structure exists
+    """
+
+    def __init__(self, state_root: Path) -> None:
+        self._state_root = state_root
+
+    def hardlink_wallpaper(self, src: Path, wallpaper_hash: str) -> Path:
+        """Hardlink wallpaper from provisioning into cache (AD-16).
+
+        Args:
+            src: source wallpaper file (install_spine/generated/default.png)
+            wallpaper_hash: SHA-256 hex of the wallpaper content
+
+        Returns:
+            Path to the cached wallpaper file
+
+        Raises:
+            ValueError: if src is not a regular file
+            OSError: on hardlink/copy failure
+        """
+        if not src.is_file():
+            raise ValueError(f"src must be a regular file, got {src!r}")
+        dst = self._state_root / "cache" / "wallpapers" / wallpaper_hash / "wallpaper.png"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        hardlink_or_copy(src, dst)
+        return dst
+
+    def write_wallpaper_meta(
+        self,
+        wallpaper_hash: str,
+        source_path: str,
+        imported_at: str | None = None,
+    ) -> None:
+        """Write wallpaper cache meta.json.
+
+        Schema per shared-data-contract:
+        {hash_algorithm, kind: "wallpaper", content_hash, source_path, imported_at}
+        """
+        if imported_at is None:
+            imported_at = _now_iso_z()
+        meta_path = self._state_root / "cache" / "wallpapers" / wallpaper_hash / "meta.json"
+        _write_meta_json(
+            meta_path,
+            {
+                "hash_algorithm": _META_HASH_ALGORITHM,
+                "kind": "wallpaper",
+                "content_hash": wallpaper_hash,
+                "source_path": source_path,
+                "imported_at": imported_at,
+            },
+        )
+
+    def write_palette_meta(
+        self,
+        entry_hash: str,
+        source_wallpaper_hash: str,
+        input_template_hash: str,
+        artifact_hashes: dict[str, str],
+        generated_at: str | None = None,
+    ) -> None:
+        """Write palette cache meta.json.
+
+        Schema per shared-data-contract:
+        {hash_algorithm, kind: "palette", entry_hash, source_wallpaper_hash,
+         input_template_hash, artifact_hashes, generated_at}
+        """
+        if generated_at is None:
+            generated_at = _now_iso_z()
+        meta_path = self._state_root / "cache" / "palettes" / entry_hash / "meta.json"
+        _write_meta_json(
+            meta_path,
+            {
+                "hash_algorithm": _META_HASH_ALGORITHM,
+                "kind": "palette",
+                "entry_hash": entry_hash,
+                "source_wallpaper_hash": source_wallpaper_hash,
+                "input_template_hash": input_template_hash,
+                "artifact_hashes": artifact_hashes,
+                "generated_at": generated_at,
+            },
+        )
+
+    def write_effects_meta(
+        self,
+        entry_hash: str,
+        source_wallpaper_hash: str,
+        input_catalog_hash: str,
+        artifact_hashes: dict[str, str],
+        generated_at: str | None = None,
+    ) -> None:
+        """Write effects cache meta.json.
+
+        Schema per shared-data-contract:
+        {hash_algorithm, kind: "effects", entry_hash, source_wallpaper_hash,
+         input_catalog_hash, artifact_hashes, generated_at}
+        """
+        if generated_at is None:
+            generated_at = _now_iso_z()
+        meta_path = self._state_root / "cache" / "effects" / entry_hash / "meta.json"
+        _write_meta_json(
+            meta_path,
+            {
+                "hash_algorithm": _META_HASH_ALGORITHM,
+                "kind": "effects",
+                "entry_hash": entry_hash,
+                "source_wallpaper_hash": source_wallpaper_hash,
+                "input_catalog_hash": input_catalog_hash,
+                "artifact_hashes": artifact_hashes,
+                "generated_at": generated_at,
+            },
+        )
+
+    def write_icons_meta(
+        self,
+        entry_hash: str,
+        source_palette_hash: str,
+        input_templates_hash: str,
+        input_mappings_hash: str,
+        artifact_hashes: dict[str, str],
+        generated_at: str | None = None,
+    ) -> None:
+        """Write icons cache meta.json.
+
+        Schema per shared-data-contract:
+        {hash_algorithm, kind: "icons", entry_hash, source_palette_hash,
+         input_templates_hash, input_mappings_hash, artifact_hashes, generated_at}
+        """
+        if generated_at is None:
+            generated_at = _now_iso_z()
+        meta_path = self._state_root / "cache" / "icons" / entry_hash / "meta.json"
+        _write_meta_json(
+            meta_path,
+            {
+                "hash_algorithm": _META_HASH_ALGORITHM,
+                "kind": "icons",
+                "entry_hash": entry_hash,
+                "source_palette_hash": source_palette_hash,
+                "input_templates_hash": input_templates_hash,
+                "input_mappings_hash": input_mappings_hash,
+                "artifact_hashes": artifact_hashes,
+                "generated_at": generated_at,
+            },
+        )
+
+    def ensure_current_dir(self) -> Path:
+        """Ensure current/ directory exists under state_root.
+
+        Returns:
+            Path to the current/ directory
+        """
+        current_dir = self._state_root / "current"
+        current_dir.mkdir(parents=True, exist_ok=True)
+        return current_dir
+
+    def repoint_current_symlink(self, name: str, target: Path) -> Path:
+        """Repoint a single current/ symlink atomically (AD-6).
+
+        Args:
+            name: symlink name (e.g., "wallpaper-DP-1.png", "colors.conf")
+            target: target path (must exist or be resolvable)
+
+        Returns:
+            Path to the created/updated symlink
+        """
+        current_dir = self.ensure_current_dir()
+        symlink_path = current_dir / name
+        _repoint_symlink(symlink_path, target)
+        return symlink_path
+
+    def repoint_current_symlinks(
+        self,
+        wallpaper_target: Path,
+        monitor_names: list[str],
+        palette_entry_hash: str | None = None,
+        effects_entry_hash: str | None = None,
+        icons_entry_hash: str | None = None,
+    ) -> list[Path]:
+        """Repoint all current/ symlinks atomically (AD-6, AD-17).
+
+        Creates symlinks in current/ pointing to cache entries:
+        - current/wallpaper-<monitor>.png → cache/wallpapers/<wh>/wallpaper.png
+        - current/colors.conf → cache/palettes/<ph>/colors.conf
+        - current/colors.gtk.css → cache/palettes/<ph>/colors.gtk.css
+        - current/colors.yaml → cache/palettes/<ph>/colors.yaml
+        - current/effects/ → cache/effects/<eh>/
+        - current/icons/ → cache/icons/<ih>/
+
+        Returns:
+            List of created/updated symlink paths
+        """
+        created: list[Path] = []
+
+        # Wallpaper symlinks per monitor
+        for monitor_name in monitor_names:
+            name = f"wallpaper-{monitor_name}.png"
+            created.append(self.repoint_current_symlink(name, wallpaper_target))
+
+        # Palette symlinks
+        if palette_entry_hash is not None:
+            palette_dir = self._state_root / "cache" / "palettes" / palette_entry_hash
+            for artifact_name in ("colors.conf", "colors.gtk.css", "colors.yaml"):
+                target = palette_dir / artifact_name
+                if target.exists():
+                    created.append(self.repoint_current_symlink(artifact_name, target))
+
+        # Effects directory symlink
+        if effects_entry_hash is not None:
+            effects_dir = self._state_root / "cache" / "effects" / effects_entry_hash
+            if effects_dir.exists():
+                created.append(self.repoint_current_symlink("effects", effects_dir))
+
+        # Icons directory symlink
+        if icons_entry_hash is not None:
+            icons_dir = self._state_root / "cache" / "icons" / icons_entry_hash
+            if icons_dir.exists():
+                created.append(self.repoint_current_symlink("icons", icons_dir))
+
+        return created
+
+    def append_history(
+        self,
+        trigger: str,
+        wallpaper_hash: str,
+        palette_hash: str | None = None,
+        effects_hash: str | None = None,
+        icons_hash: str | None = None,
+        source_path: str = "",
+    ) -> None:
+        """Append a line to history.jsonl atomically (AD-4, AR-3).
+
+        Uses O_APPEND + os.fsync for atomic persistence guarantee.
+        Never truncates or rewrites — append only.
+
+        Args:
+            trigger: event trigger (e.g., "seed", "apply")
+            wallpaper_hash: SHA-256 hex of wallpaper content
+            palette_hash: SHA-256 hex of palette entry or None
+            effects_hash: SHA-256 hex of effects entry or None
+            icons_hash: SHA-256 hex of icons entry or None
+            source_path: source path or empty string
+        """
+        history_path = self._state_root / "history.jsonl"
+        line = (
+            json.dumps(
+                {
+                    "ts": _now_iso_z(),
+                    "trigger": trigger,
+                    "wallpaper": wallpaper_hash,
+                    "palette": palette_hash,
+                    "effects": effects_hash,
+                    "icons": icons_hash,
+                    "source_path": source_path,
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+
+        fd = os.open(str(history_path), _O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, line.encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
