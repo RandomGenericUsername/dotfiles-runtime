@@ -137,3 +137,7 @@ class DesktopState:
     effects: EffectsEntry | None  # None only when never derived
     icons: IconsEntry | None  # None only when never derived
     applied_at: str  # ISO-8601 UTC timestamp
+
+
+class SeedLockedError(RuntimeError):
+    """Raised when another process already holds the seed mutex (AD-11)."""

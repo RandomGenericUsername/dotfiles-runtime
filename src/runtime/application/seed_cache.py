@@ -13,15 +13,25 @@ Scope boundary (Story 1.11):
 
 Architecture:
 - Lives in ``application/`` (use-case layer) per AD-1, AD-13
-- Imports only ``ports/``, ``domain/models.py``, and ``adapters/``
+- Orchestrates injected ports and the injected ``CacheSeeder`` adapter;
+  constructs no concrete adapters itself (composition root wires them)
+- Single-flight: acquires the injected ``ISeedMutex`` and re-checks
+  ``load_current()`` inside the critical section (double-checked locking),
+  so concurrent CLI invocations cannot double-seed
+- Failure policy: the palette is a hard dependency (consumers and icon
+  rendering both require it) — a CSG failure aborts seeding entirely so
+  the next command retries. Effects/icons degrade gracefully with a
+  visible warning.
 - No raw ``os``/``json`` I/O in use case (delegated to adapters)
 - Cross-package boundary respected (AD-15): never imports provisioning code
 """
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder
@@ -38,8 +48,11 @@ from runtime.domain.models import (
 from runtime.ports.color_scheme_generator import IColorSchemeGenerator
 from runtime.ports.effects_generator import IEffectsGenerator
 from runtime.ports.icon_renderer import IIconRenderer
+from runtime.ports.seed_mutex import ISeedMutex
 from runtime.ports.state_repository import IStateRepository
 from runtime.ports.wallpaper_backend_factory import IWallpaperBackendFactory
+
+logger = logging.getLogger(__name__)
 
 # Default monitor name for Phase 2 (full detection deferred to later story)
 _DEFAULT_MONITOR = "DP-1"
@@ -48,7 +61,7 @@ _DEFAULT_MONITOR = "DP-1"
 class SeedCacheUseCase:
     """First-run self-seeding orchestrator.
 
-    When ``current.json`` is absent and provisioning's ``generated/``
+    When ``current.json`` is absent and provisioning's ``generated``
     output exists, seeds the cache from default wallpaper/effects/icons,
     writes ``current.json`` with ``schema_version: 2``, creates
     ``current/`` symlinks, and appends ``history.jsonl``.
@@ -56,8 +69,8 @@ class SeedCacheUseCase:
     The seeder performs the identical swap sequence as
     ``ReconcileDesktopStateUseCase`` (AD-6) but exactly once at first boot.
 
-    Constructor receives ports (dependency inversion) and paths.
-    Adapter I/O delegated to injected ``CacheSeeder``.
+    Constructor receives ports and the ``CacheSeeder`` adapter (dependency
+    inversion): the use case wires no concrete adapters itself.
     """
 
     def __init__(
@@ -69,6 +82,8 @@ class SeedCacheUseCase:
         factory: IWallpaperBackendFactory,
         install_spine: Path,
         state_root: Path,
+        seeder: CacheSeeder,
+        mutex: ISeedMutex,
     ) -> None:
         self._state_repo = state_repo
         self._csg = csg
@@ -77,25 +92,30 @@ class SeedCacheUseCase:
         self._factory = factory
         self._install_spine = install_spine
         self._state_root = state_root
-        self._seeder = CacheSeeder(state_root)
+        self._seeder = seeder
+        self._mutex = mutex
 
     def run(self) -> None:
         """Execute first-run seeding if needed.
 
         Steps:
-        1. Check if current.json exists (load_current returns non-None → no-op)
-        2. Verify install_spine/generated/ exists
-        3. Hash default.png to get wallpaper_hash
-        4. Detect monitors (stub: single DP-1)
-        5. Populate cache entries (wallpaper hardlink, CSG, WEG, ITR)
-        6. Construct domain objects
-        7. Perform swap sequence: repoint symlinks → save → append history
+        1. Fail loudly if current.json exists but is corrupt/incompatible
+           (seeding must not silently paper over unreadable state)
+        2. Verify install_spine/generated/default.png exists
+        3. Acquire the seed mutex and re-check load_current() — concurrent
+           first runs serialize; the loser observes the winner's state and
+           no-ops
+        4. Seed: cache entries → symlinks → current.json → history.jsonl
 
         Raises:
-            RuntimeError: if provisioning output not found
+            RuntimeError: if provisioning output not found, or palette
+                (hard dependency) generation fails
+            ValueError: propagated from a corrupt/incompatible current.json
             OSError: on filesystem operations
         """
-        # 1. AC 4: Skip if current.json already exists (non-first-run)
+        # 1. AC 4 fast path — also the corrupt-state guard (D3): a
+        # ValueError/RuntimeError from load_current() propagates loudly
+        # instead of being swallowed into a reseed.
         existing = self._state_repo.load_current()
         if existing is not None:
             return
@@ -108,47 +128,51 @@ class SeedCacheUseCase:
                 f"(install_spine={self._install_spine})"
             )
 
-        # 3. Hash default.png
         default_png = generated_dir / "default.png"
         if not default_png.is_file():
             raise RuntimeError(
                 f"default wallpaper not found: {default_png} (install_spine={self._install_spine})"
             )
+
+        # 3. Single-flight: double-checked locking around load_current()
+        with self._mutex.hold():
+            existing = self._state_repo.load_current()
+            if existing is not None:
+                return
+            self._seed(default_png)
+
+    def _seed(self, default_png: Path) -> None:
+        """Perform the seeding swap sequence. Caller holds the seed mutex."""
         wallpaper_hash = hash_file(default_png)
 
-        # 4. Detect monitors (stub: single DP-1 for Phase 2)
+        # Detect monitors (stub: single DP-1 for Phase 2)
         monitor_names = [_DEFAULT_MONITOR]
 
-        # 5. Populate cache entries
-        palette_entry_hash_value: str | None = None
-        effects_entry_hash_value: str | None = None
-        icons_entry_hash_value: str | None = None
-
-        # 5a. Wallpaper: hardlink into cache
+        # Populate cache entries
+        # 5a. Wallpaper: hardlink into cache (idempotent after a crashed run)
         cached_wallpaper = self._seeder.hardlink_wallpaper(default_png, wallpaper_hash)
         self._seeder.write_wallpaper_meta(
             wallpaper_hash=wallpaper_hash,
             source_path=str(default_png),
         )
 
-        # 5b. Palette via CSG
-        palette_entry_hash_value = self._populate_palette(default_png, wallpaper_hash)
+        # 5b. Palette via CSG — hard dependency (AC 2): failure aborts seeding
+        palette_entry = self._populate_palette(default_png, wallpaper_hash)
 
-        # 5c. Effects via WEG
-        effects_entry_hash_value = self._populate_effects(default_png, wallpaper_hash)
+        # 5c/5d. Effects via WEG, icons via ITR — degrade gracefully with a
+        # visible warning; history schema allows null entries (AC 3)
+        effects_entry = self._populate_effects(default_png, wallpaper_hash)
+        icons_entry = self._populate_icons(palette_entry.entry_hash)
 
-        # 5d. Icons via ITR (requires palette)
-        if palette_entry_hash_value is not None:
-            icons_entry_hash_value = self._populate_icons(palette_entry_hash_value)
-
-        # 6. Construct domain objects
+        # 6. Construct domain objects (real hashes from the adapters — the
+        # seeded state must agree with the meta.json beside each cache entry)
         now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
         wallpaper_entry = WallpaperEntry(
             hash_algorithm="sha256",
             kind="wallpaper",
             content_hash=wallpaper_hash,
-            source_path=str(default_png),
+            source_path="",
             imported_at=now,
         )
 
@@ -162,17 +186,13 @@ class SeedCacheUseCase:
                 ipc_socket=None,
             )
 
-        palette = self._reconstruct_palette(palette_entry_hash_value, wallpaper_hash, now)
-        effects = self._reconstruct_effects(effects_entry_hash_value, wallpaper_hash, now)
-        icons = self._reconstruct_icons(icons_entry_hash_value, palette_entry_hash_value, now)
-
         state = DesktopState(
             schema_version=2,
             wallpaper=wallpaper_entry,
             monitors=monitors,
-            palette=palette,
-            effects=effects,
-            icons=icons,
+            palette=palette_entry,
+            effects=effects_entry,
+            icons=icons_entry,
             applied_at=now,
         )
 
@@ -181,9 +201,9 @@ class SeedCacheUseCase:
         self._seeder.repoint_current_symlinks(
             wallpaper_target=cached_wallpaper,
             monitor_names=monitor_names,
-            palette_entry_hash=palette_entry_hash_value,
-            effects_entry_hash=effects_entry_hash_value,
-            icons_entry_hash=icons_entry_hash_value,
+            palette_entry_hash=palette_entry.entry_hash,
+            effects_entry_hash=effects_entry.entry_hash if effects_entry else None,
+            icons_entry_hash=icons_entry.entry_hash if icons_entry else None,
         )
 
         # 7b. Write current.json via state_repo (atomic tmp + os.replace)
@@ -193,86 +213,141 @@ class SeedCacheUseCase:
         self._seeder.append_history(
             trigger="seed",
             wallpaper_hash=wallpaper_hash,
-            palette_hash=palette_entry_hash_value,
-            effects_hash=effects_entry_hash_value,
-            icons_hash=icons_entry_hash_value,
+            palette_hash=palette_entry.entry_hash,
+            effects_hash=effects_entry.entry_hash if effects_entry else None,
+            icons_hash=icons_entry.entry_hash if icons_entry else None,
             source_path="",
         )
 
-    def _populate_palette(self, wallpaper_path: Path, wallpaper_hash: str) -> str | None:
-        """Populate palette cache via CSG. Returns entry hash or None on failure."""
+    def _populate_palette(self, wallpaper_path: Path, wallpaper_hash: str) -> PaletteEntry:
+        """Populate palette cache via CSG. Returns the palette entry.
+
+        Palette is a hard dependency: any failure raises (aborts seeding)
+        with a ``palette seeding failed:`` context prefix. The adapter
+        generates into ``staging/<peh>`` (its output-dir name contract),
+        artifacts are drained into the staging root, and ``meta.json`` is
+        written there so ``populate_via_staging``'s rename-to-target
+        contract is satisfied with real hashes throughout.
+        """
         try:
-            from runtime.adapters.cache import cache_entry_path, populate_via_staging
-            from runtime.adapters.hashing import canonical_hash_dir, palette_entry_hash
+            return self._populate_palette_inner(wallpaper_path, wallpaper_hash)
+        except Exception as exc:
+            raise RuntimeError(f"palette seeding failed: {exc}") from exc
 
-            templates_dir = self._find_templates_dir()
-            if templates_dir is None:
-                return None
+    def _populate_palette_inner(
+        self, wallpaper_path: Path, wallpaper_hash: str
+    ) -> PaletteEntry:
+        from runtime.adapters.cache import cache_entry_path, populate_via_staging
+        from runtime.adapters.hashing import canonical_hash_dir, palette_entry_hash
 
-            template_set_hash = canonical_hash_dir(templates_dir)
-            peh = palette_entry_hash(wallpaper_hash, template_set_hash)
-            target = cache_entry_path(self._state_root, "palettes", peh)
+        templates_dir = self._find_templates_dir()
+        if templates_dir is None:
+            raise RuntimeError(
+                f"CSG templates dir not found (install_spine={self._install_spine})"
+            )
 
-            def _populate(staging: Path) -> None:
-                self._csg.generate(wallpaper_path, staging)
+        template_set_hash = canonical_hash_dir(templates_dir)
+        peh = palette_entry_hash(wallpaper_hash, template_set_hash)
+        target = cache_entry_path(self._state_root, "palettes", peh)
+        entry_holder: list[PaletteEntry] = []
 
-            created = populate_via_staging(target, _populate)
-
-            # Write meta.json if we created or target already exists
-            if created or target.exists():
-                artifact_hashes: dict[str, str] = {}
-                for name in ("colors.yaml", "colors.conf", "colors.gtk.css"):
-                    p = target / name
-                    if p.exists():
-                        artifact_hashes[name] = hash_file(p)
-                self._seeder.write_palette_meta(
+        def _populate(staging: Path) -> None:
+            work = staging / peh
+            generated = self._csg.generate(wallpaper_path, work)
+            if generated.entry_hash != peh:
+                raise RuntimeError(
+                    f"adapter entry hash mismatch: adapter={generated.entry_hash} "
+                    f"computed={peh} (templates dir divergence)"
+                )
+            self._seeder.drain_work_dir(work, staging)
+            self._seeder.write_palette_meta_in(
+                staging,
+                entry_hash=peh,
+                source_wallpaper_hash=wallpaper_hash,
+                input_template_hash=template_set_hash,
+                artifact_hashes={
+                    "colors.yaml": generated.artifact_hashes["colors_yaml"],
+                    "colors.conf": generated.artifact_hashes["colors_conf"],
+                    "colors.gtk.css": generated.artifact_hashes["colors_gtk_css"],
+                },
+                generated_at=generated.generated_at,
+            )
+            entry_holder.append(
+                PaletteEntry(
+                    hash_algorithm="sha256",
+                    kind="palette",
                     entry_hash=peh,
                     source_wallpaper_hash=wallpaper_hash,
                     input_template_hash=template_set_hash,
-                    artifact_hashes=artifact_hashes,
+                    artifact_hashes=generated.artifact_hashes,
+                    generated_at=generated.generated_at,
                 )
-                return peh
-        except FileNotFoundError, RuntimeError, OSError:
-            pass
-        return None
+            )
 
-    def _populate_effects(self, wallpaper_path: Path, wallpaper_hash: str) -> str | None:
-        """Populate effects cache via WEG. Returns entry hash or None on failure."""
+        created = populate_via_staging(target, _populate)
+        if created:
+            return entry_holder[0]
+        # Entry already existed (crashed prior run): rebuild from its
+        # meta.json so the state still carries real hashes.
+        return self._seeder.load_palette_entry(target)
+
+    def _populate_effects(
+        self, wallpaper_path: Path, wallpaper_hash: str
+    ) -> EffectsEntry | None:
+        """Populate effects cache via WEG. None (with warning) on failure."""
         try:
             from runtime.adapters.cache import cache_entry_path, populate_via_staging
             from runtime.adapters.hashing import effects_entry_hash
 
             catalog_path = self._find_effects_catalog()
             if catalog_path is None:
+                logger.warning("seeding: effects catalog not found; effects disabled")
                 return None
 
             catalog_hash = hash_file(catalog_path)
             eeh = effects_entry_hash(wallpaper_hash, catalog_hash)
             target = cache_entry_path(self._state_root, "effects", eeh)
+            entry_holder: list[EffectsEntry] = []
 
             def _populate(staging: Path) -> None:
-                self._weg.generate(wallpaper_path, staging)
-
-            created = populate_via_staging(target, _populate)
-
-            if created or target.exists():
-                artifact_hashes: dict[str, str] = {}
-                for p in target.rglob("*.png"):
-                    if p.is_file():
-                        artifact_hashes[p.name] = hash_file(p)
-                self._seeder.write_effects_meta(
+                work = staging / eeh
+                generated = self._weg.generate(wallpaper_path, work)
+                if generated.entry_hash != eeh:
+                    raise RuntimeError(
+                        f"adapter entry hash mismatch: adapter={generated.entry_hash} "
+                        f"computed={eeh}"
+                    )
+                self._seeder.drain_work_dir(work, staging)
+                self._seeder.write_effects_meta_in(
+                    staging,
                     entry_hash=eeh,
                     source_wallpaper_hash=wallpaper_hash,
                     input_catalog_hash=catalog_hash,
-                    artifact_hashes=artifact_hashes,
+                    artifact_hashes=cast("dict[str, str]", generated.artifact_hashes),
+                    generated_at=generated.generated_at,
                 )
-                return eeh
-        except FileNotFoundError, RuntimeError, OSError:
-            pass
-        return None
+                entry_holder.append(
+                    EffectsEntry(
+                        hash_algorithm="sha256",
+                        kind="effects",
+                        entry_hash=eeh,
+                        source_wallpaper_hash=wallpaper_hash,
+                        input_catalog_hash=catalog_hash,
+                        artifact_hashes=generated.artifact_hashes,
+                        generated_at=generated.generated_at,
+                    )
+                )
 
-    def _populate_icons(self, palette_entry_hash: str) -> str | None:
-        """Populate icons cache via ITR. Returns entry hash or None on failure."""
+            created = populate_via_staging(target, _populate)
+            if created:
+                return entry_holder[0]
+            return self._seeder.load_effects_entry(target)
+        except Exception as exc:
+            logger.warning("seeding: effects generation failed; continuing: %s", exc)
+            return None
+
+    def _populate_icons(self, palette_entry_hash: str) -> IconsEntry | None:
+        """Populate icons cache via ITR. None (with warning) on failure."""
         try:
             from runtime.adapters.cache import cache_entry_path, populate_via_staging
             from runtime.adapters.hashing import canonical_hash_dir, icons_entry_hash
@@ -280,6 +355,7 @@ class SeedCacheUseCase:
             templates_dir = self._find_icon_templates()
             mappings_path = self._find_icon_mappings()
             if templates_dir is None or mappings_path is None:
+                logger.warning("seeding: icon templates/mappings not found; icons disabled")
                 return None
 
             if templates_dir.is_dir():
@@ -287,6 +363,7 @@ class SeedCacheUseCase:
             elif templates_dir.is_file():
                 templates_hash = hash_file(templates_dir)
             else:
+                logger.warning("seeding: icon templates path missing; icons disabled")
                 return None
 
             if mappings_path.is_dir():
@@ -294,94 +371,53 @@ class SeedCacheUseCase:
             elif mappings_path.is_file():
                 mappings_hash_val = hash_file(mappings_path)
             else:
+                logger.warning("seeding: icon mappings path missing; icons disabled")
                 return None
 
             ieh = icons_entry_hash(palette_entry_hash, templates_hash, mappings_hash_val)
             target = cache_entry_path(self._state_root, "icons", ieh)
+            entry_holder: list[IconsEntry] = []
 
             def _populate(staging: Path) -> None:
-                self._itr.render(palette_entry_hash, templates_dir, mappings_path, staging)
-
-            created = populate_via_staging(target, _populate)
-
-            if created or target.exists():
-                artifact_hashes: dict[str, str] = {}
-                for p in target.rglob("*.svg"):
-                    if p.is_file():
-                        artifact_hashes[p.name] = hash_file(p)
-                self._seeder.write_icons_meta(
+                work = staging / ieh
+                generated = self._itr.render(
+                    palette_entry_hash, templates_dir, mappings_path, work
+                )
+                if generated.entry_hash != ieh:
+                    raise RuntimeError(
+                        f"adapter entry hash mismatch: adapter={generated.entry_hash} "
+                        f"computed={ieh}"
+                    )
+                self._seeder.drain_work_dir(work, staging)
+                self._seeder.write_icons_meta_in(
+                    staging,
                     entry_hash=ieh,
                     source_palette_hash=palette_entry_hash,
                     input_templates_hash=templates_hash,
                     input_mappings_hash=mappings_hash_val,
-                    artifact_hashes=artifact_hashes,
+                    artifact_hashes=cast("dict[str, str]", generated.artifact_hashes),
+                    generated_at=generated.generated_at,
                 )
-                return ieh
-        except FileNotFoundError, RuntimeError, OSError:
-            pass
-        return None
+                entry_holder.append(
+                    IconsEntry(
+                        hash_algorithm="sha256",
+                        kind="icons",
+                        entry_hash=ieh,
+                        source_palette_hash=palette_entry_hash,
+                        input_templates_hash=templates_hash,
+                        input_mappings_hash=mappings_hash_val,
+                        artifact_hashes=generated.artifact_hashes,
+                        generated_at=generated.generated_at,
+                    )
+                )
 
-    def _reconstruct_palette(
-        self, entry_hash: str | None, wallpaper_hash: str, now: str
-    ) -> PaletteEntry | None:
-        """Reconstruct PaletteEntry from cache or return None."""
-        if entry_hash is None:
+            created = populate_via_staging(target, _populate)
+            if created:
+                return entry_holder[0]
+            return self._seeder.load_icons_entry(target)
+        except Exception as exc:
+            logger.warning("seeding: icon rendering failed; continuing: %s", exc)
             return None
-        from runtime.domain.models import PaletteArtifacts, PaletteEntry
-
-        return PaletteEntry(
-            hash_algorithm="sha256",
-            kind="palette",
-            entry_hash=entry_hash,
-            source_wallpaper_hash=wallpaper_hash,
-            input_template_hash="0" * 64,
-            artifact_hashes=PaletteArtifacts(
-                colors_yaml="0" * 64,
-                colors_conf="0" * 64,
-                colors_gtk_css="0" * 64,
-            ),
-            generated_at=now,
-        )
-
-    def _reconstruct_effects(
-        self, entry_hash: str | None, wallpaper_hash: str, now: str
-    ) -> EffectsEntry | None:
-        """Reconstruct EffectsEntry from cache or return None."""
-        if entry_hash is None:
-            return None
-        from runtime.domain.models import EffectsEntry
-
-        return EffectsEntry(
-            hash_algorithm="sha256",
-            kind="effects",
-            entry_hash=entry_hash,
-            source_wallpaper_hash=wallpaper_hash,
-            input_catalog_hash="0" * 64,
-            artifact_hashes={},
-            generated_at=now,
-        )
-
-    def _reconstruct_icons(
-        self,
-        entry_hash: str | None,
-        palette_entry_hash: str | None,
-        now: str,
-    ) -> IconsEntry | None:
-        """Reconstruct IconsEntry from cache or return None."""
-        if entry_hash is None:
-            return None
-        from runtime.domain.models import IconsEntry
-
-        return IconsEntry(
-            hash_algorithm="sha256",
-            kind="icons",
-            entry_hash=entry_hash,
-            source_palette_hash=palette_entry_hash or "0" * 64,
-            input_templates_hash="0" * 64,
-            input_mappings_hash="0" * 64,
-            artifact_hashes={},
-            generated_at=now,
-        )
 
     def _find_templates_dir(self) -> Path | None:
         """Discover CSG templates directory."""
@@ -452,6 +488,15 @@ class SeedCacheUseCase:
 
     def _find_icon_templates(self) -> Path | None:
         """Discover ITR icon templates directory."""
+        # Check install spine first
+        spine_templates = self._install_spine / "config" / "icon-templates-renderer" / "templates"
+        try:
+            if spine_templates.is_dir():
+                return spine_templates
+        except OSError:
+            pass
+
+        # Repo fallback
         for parent in self._install_spine.parents:
             candidates = [
                 parent
@@ -474,6 +519,15 @@ class SeedCacheUseCase:
 
     def _find_icon_mappings(self) -> Path | None:
         """Discover ITR icon mappings."""
+        # Check install spine first
+        spine_mappings = self._install_spine / "config" / "icon-templates-renderer" / "icons.yaml"
+        try:
+            if spine_mappings.is_file():
+                return spine_mappings
+        except OSError:
+            pass
+
+        # Repo fallback
         for parent in self._install_spine.parents:
             candidates = [
                 parent

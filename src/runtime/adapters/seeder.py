@@ -18,17 +18,31 @@ Domain purity (AD-1, AD-14):
 from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from runtime.adapters.cache import hardlink_or_copy
-from runtime.adapters.hashing import HASH_ALGORITHM
+from runtime.adapters.hashing import HASH_ALGORITHM, hash_file
+from runtime.domain.models import (
+    EffectsArtifacts,
+    EffectsEntry,
+    IconsArtifacts,
+    IconsEntry,
+    PaletteArtifacts,
+    PaletteEntry,
+)
 
-# O_APPEND flag for atomic history append (AD-4)
-_O_APPEND = os.O_APPEND | os.O_WRONLY | os.O_CREAT
+logger = logging.getLogger(__name__)
+
+# O_APPEND + O_NOFOLLOW for atomic history append (AD-4).
+# O_NOFOLLOW hardens against a symlinked history.jsonl (consistency with the
+# current.json symlink guard): appending through a symlink could write
+# outside state_root, breaking the AD-5 boundary.
+_O_APPEND = os.O_APPEND | os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW
 
 if HASH_ALGORITHM != "sha256":  # pragma: no cover
     raise AssertionError(f"HASH_ALGORITHM must be 'sha256', got {HASH_ALGORITHM!r}")
@@ -42,12 +56,21 @@ def _repoint_symlink(current_path: Path, target: Path) -> None:
 
     AD-6: symlink repoint is atomic on same filesystem.
     tmp name includes PID + random to avoid collisions.
+    The tmp symlink is removed in a finally block so a failed replace
+    (e.g. target path exists as a real directory) never leaks
+    ``*.tmp.*`` orphans into current/.
     """
     current_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_name = f"{current_path.name}.tmp.{os.getpid()}-{uuid.uuid4().hex[:8]}"
     tmp = current_path.parent / tmp_name
     tmp.symlink_to(target)
-    os.replace(str(tmp), str(current_path))
+    try:
+        os.replace(str(tmp), str(current_path))
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _now_iso_z() -> str:
@@ -87,6 +110,11 @@ class CacheSeeder:
     def hardlink_wallpaper(self, src: Path, wallpaper_hash: str) -> Path:
         """Hardlink wallpaper from provisioning into cache (AD-16).
 
+        Idempotent: if the cache entry already exists (e.g. a previous run
+        crashed between hardlink and ``save()``), its content is verified
+        against ``wallpaper_hash`` — a matching entry is reused, a mismatching
+        one raises (hash-addressed cache must never hold wrong content).
+
         Args:
             src: source wallpaper file (install_spine/generated/default.png)
             wallpaper_hash: SHA-256 hex of the wallpaper content
@@ -96,11 +124,24 @@ class CacheSeeder:
 
         Raises:
             ValueError: if src is not a regular file
+            RuntimeError: if the cache entry exists with different content
             OSError: on hardlink/copy failure
         """
         if not src.is_file():
             raise ValueError(f"src must be a regular file, got {src!r}")
         dst = self._state_root / "cache" / "wallpapers" / wallpaper_hash / "wallpaper.png"
+        if dst.exists() or dst.is_symlink():
+            # Idempotent re-entry after a crashed first run (FileExistsError
+            # from os.link would otherwise block re-seeding forever).
+            if dst.is_symlink() or not dst.is_file():
+                raise RuntimeError(
+                    f"cache entry exists but is not a regular file: {dst}"
+                )
+            if hash_file(dst) != wallpaper_hash:
+                raise RuntimeError(
+                    f"cache entry content does not match its hash address: {dst}"
+                )
+            return dst
         dst.parent.mkdir(parents=True, exist_ok=True)
         hardlink_or_copy(src, dst)
         return dst
@@ -111,16 +152,32 @@ class CacheSeeder:
         source_path: str,
         imported_at: str | None = None,
     ) -> None:
-        """Write wallpaper cache meta.json.
+        """Write wallpaper cache meta.json to its final cache entry dir."""
+        entry_dir = self._state_root / "cache" / "wallpapers" / wallpaper_hash
+        self.write_wallpaper_meta_in(
+            entry_dir,
+            wallpaper_hash=wallpaper_hash,
+            source_path=source_path,
+            imported_at=imported_at,
+        )
+
+    def write_wallpaper_meta_in(
+        self,
+        entry_dir: Path,
+        *,
+        wallpaper_hash: str,
+        source_path: str,
+        imported_at: str | None = None,
+    ) -> None:
+        """Write wallpaper cache meta.json into ``entry_dir`` (staging or final).
 
         Schema per shared-data-contract:
         {hash_algorithm, kind: "wallpaper", content_hash, source_path, imported_at}
         """
         if imported_at is None:
             imported_at = _now_iso_z()
-        meta_path = self._state_root / "cache" / "wallpapers" / wallpaper_hash / "meta.json"
         _write_meta_json(
-            meta_path,
+            entry_dir / "meta.json",
             {
                 "hash_algorithm": _META_HASH_ALGORITHM,
                 "kind": "wallpaper",
@@ -138,7 +195,28 @@ class CacheSeeder:
         artifact_hashes: dict[str, str],
         generated_at: str | None = None,
     ) -> None:
-        """Write palette cache meta.json.
+        """Write palette cache meta.json to its final cache entry dir."""
+        entry_dir = self._state_root / "cache" / "palettes" / entry_hash
+        self.write_palette_meta_in(
+            entry_dir,
+            entry_hash=entry_hash,
+            source_wallpaper_hash=source_wallpaper_hash,
+            input_template_hash=input_template_hash,
+            artifact_hashes=artifact_hashes,
+            generated_at=generated_at,
+        )
+
+    def write_palette_meta_in(
+        self,
+        entry_dir: Path,
+        *,
+        entry_hash: str,
+        source_wallpaper_hash: str,
+        input_template_hash: str,
+        artifact_hashes: dict[str, str],
+        generated_at: str | None = None,
+    ) -> None:
+        """Write palette cache meta.json into ``entry_dir`` (staging or final).
 
         Schema per shared-data-contract:
         {hash_algorithm, kind: "palette", entry_hash, source_wallpaper_hash,
@@ -146,9 +224,8 @@ class CacheSeeder:
         """
         if generated_at is None:
             generated_at = _now_iso_z()
-        meta_path = self._state_root / "cache" / "palettes" / entry_hash / "meta.json"
         _write_meta_json(
-            meta_path,
+            entry_dir / "meta.json",
             {
                 "hash_algorithm": _META_HASH_ALGORITHM,
                 "kind": "palette",
@@ -168,7 +245,28 @@ class CacheSeeder:
         artifact_hashes: dict[str, str],
         generated_at: str | None = None,
     ) -> None:
-        """Write effects cache meta.json.
+        """Write effects cache meta.json to its final cache entry dir."""
+        entry_dir = self._state_root / "cache" / "effects" / entry_hash
+        self.write_effects_meta_in(
+            entry_dir,
+            entry_hash=entry_hash,
+            source_wallpaper_hash=source_wallpaper_hash,
+            input_catalog_hash=input_catalog_hash,
+            artifact_hashes=artifact_hashes,
+            generated_at=generated_at,
+        )
+
+    def write_effects_meta_in(
+        self,
+        entry_dir: Path,
+        *,
+        entry_hash: str,
+        source_wallpaper_hash: str,
+        input_catalog_hash: str,
+        artifact_hashes: dict[str, str],
+        generated_at: str | None = None,
+    ) -> None:
+        """Write effects cache meta.json into ``entry_dir`` (staging or final).
 
         Schema per shared-data-contract:
         {hash_algorithm, kind: "effects", entry_hash, source_wallpaper_hash,
@@ -176,9 +274,8 @@ class CacheSeeder:
         """
         if generated_at is None:
             generated_at = _now_iso_z()
-        meta_path = self._state_root / "cache" / "effects" / entry_hash / "meta.json"
         _write_meta_json(
-            meta_path,
+            entry_dir / "meta.json",
             {
                 "hash_algorithm": _META_HASH_ALGORITHM,
                 "kind": "effects",
@@ -199,7 +296,30 @@ class CacheSeeder:
         artifact_hashes: dict[str, str],
         generated_at: str | None = None,
     ) -> None:
-        """Write icons cache meta.json.
+        """Write icons cache meta.json to its final cache entry dir."""
+        entry_dir = self._state_root / "cache" / "icons" / entry_hash
+        self.write_icons_meta_in(
+            entry_dir,
+            entry_hash=entry_hash,
+            source_palette_hash=source_palette_hash,
+            input_templates_hash=input_templates_hash,
+            input_mappings_hash=input_mappings_hash,
+            artifact_hashes=artifact_hashes,
+            generated_at=generated_at,
+        )
+
+    def write_icons_meta_in(
+        self,
+        entry_dir: Path,
+        *,
+        entry_hash: str,
+        source_palette_hash: str,
+        input_templates_hash: str,
+        input_mappings_hash: str,
+        artifact_hashes: dict[str, str],
+        generated_at: str | None = None,
+    ) -> None:
+        """Write icons cache meta.json into ``entry_dir`` (staging or final).
 
         Schema per shared-data-contract:
         {hash_algorithm, kind: "icons", entry_hash, source_palette_hash,
@@ -207,9 +327,8 @@ class CacheSeeder:
         """
         if generated_at is None:
             generated_at = _now_iso_z()
-        meta_path = self._state_root / "cache" / "icons" / entry_hash / "meta.json"
         _write_meta_json(
-            meta_path,
+            entry_dir / "meta.json",
             {
                 "hash_algorithm": _META_HASH_ALGORITHM,
                 "kind": "icons",
@@ -221,6 +340,91 @@ class CacheSeeder:
                 "generated_at": generated_at,
             },
         )
+
+    def read_entry_meta(self, entry_dir: Path) -> dict[str, Any]:
+        """Read a cache entry's meta.json into a dict.
+
+        Raises:
+            FileNotFoundError: if meta.json is absent
+            ValueError: if meta.json is not valid JSON
+        """
+        meta_path = entry_dir / "meta.json"
+        data: dict[str, Any] = json.loads(meta_path.read_text(encoding="utf-8"))
+        return data
+
+    def load_palette_entry(self, entry_dir: Path) -> PaletteEntry:
+        """Rebuild a PaletteEntry from a cache entry's meta.json (real hashes).
+
+        Used when the cache entry already exists (crashed prior run) and the
+        adapter was therefore never invoked for it — the state written to
+        current.json must still carry the entry's real hashes, not sentinels.
+        """
+        meta = self.read_entry_meta(entry_dir)
+        artifact_hashes: dict[str, str] = meta.get("artifact_hashes", {})
+        return PaletteEntry(
+            hash_algorithm="sha256",
+            kind="palette",
+            entry_hash=meta["entry_hash"],
+            source_wallpaper_hash=meta["source_wallpaper_hash"],
+            input_template_hash=meta["input_template_hash"],
+            artifact_hashes=PaletteArtifacts(
+                colors_yaml=artifact_hashes["colors.yaml"],
+                colors_conf=artifact_hashes["colors.conf"],
+                colors_gtk_css=artifact_hashes["colors.gtk.css"],
+            ),
+            generated_at=meta["generated_at"],
+        )
+
+    def load_effects_entry(self, entry_dir: Path) -> EffectsEntry:
+        """Rebuild an EffectsEntry from a cache entry's meta.json (real hashes)."""
+        meta = self.read_entry_meta(entry_dir)
+        artifact_hashes: EffectsArtifacts = cast(
+            "EffectsArtifacts", meta.get("artifact_hashes", {})
+        )
+        return EffectsEntry(
+            hash_algorithm="sha256",
+            kind="effects",
+            entry_hash=meta["entry_hash"],
+            source_wallpaper_hash=meta["source_wallpaper_hash"],
+            input_catalog_hash=meta["input_catalog_hash"],
+            artifact_hashes=artifact_hashes,
+            generated_at=meta["generated_at"],
+        )
+
+    def load_icons_entry(self, entry_dir: Path) -> IconsEntry:
+        """Rebuild an IconsEntry from a cache entry's meta.json (real hashes)."""
+        meta = self.read_entry_meta(entry_dir)
+        artifact_hashes: IconsArtifacts = cast(
+            "IconsArtifacts", meta.get("artifact_hashes", {})
+        )
+        return IconsEntry(
+            hash_algorithm="sha256",
+            kind="icons",
+            entry_hash=meta["entry_hash"],
+            source_palette_hash=meta["source_palette_hash"],
+            input_templates_hash=meta["input_templates_hash"],
+            input_mappings_hash=meta["input_mappings_hash"],
+            artifact_hashes=artifact_hashes,
+            generated_at=meta["generated_at"],
+        )
+
+    def drain_work_dir(self, work_dir: Path, staging_dir: Path) -> None:
+        """Move adapter-generated artifacts from work dir into the staging dir.
+
+        Real CSG/WEG/ITR adapters validate that their output dir's *name*
+        equals the expected entry hash, so they must be given
+        ``staging_dir / <entry_hash>``. After generation, the artifacts are
+        drained (structure-preserving) into the staging dir root where
+        ``populate_via_staging`` expects them plus ``meta.json``.
+        """
+        for item in sorted(work_dir.rglob("*")):
+            dest = staging_dir / item.relative_to(work_dir)
+            if item.is_dir() and not item.is_symlink():
+                dest.mkdir(parents=True, exist_ok=True)
+            else:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                os.rename(item, dest)
+        work_dir.rmdir()
 
     def ensure_current_dir(self) -> Path:
         """Ensure current/ directory exists under state_root.
@@ -280,20 +484,31 @@ class CacheSeeder:
             palette_dir = self._state_root / "cache" / "palettes" / palette_entry_hash
             for artifact_name in ("colors.conf", "colors.gtk.css", "colors.yaml"):
                 target = palette_dir / artifact_name
-                if target.exists():
+                # exists() follows symlinks — a dangling symlink at the target
+                # path is still repointed so it never lingers half-broken.
+                if target.exists() or target.is_symlink():
                     created.append(self.repoint_current_symlink(artifact_name, target))
+                else:
+                    logger.warning(
+                        "seeding: palette artifact missing, consumer symlink skipped: %s",
+                        target,
+                    )
 
         # Effects directory symlink
         if effects_entry_hash is not None:
             effects_dir = self._state_root / "cache" / "effects" / effects_entry_hash
-            if effects_dir.exists():
+            if effects_dir.exists() or effects_dir.is_symlink():
                 created.append(self.repoint_current_symlink("effects", effects_dir))
+            else:
+                logger.warning("seeding: effects entry missing, consumer symlink skipped")
 
         # Icons directory symlink
         if icons_entry_hash is not None:
             icons_dir = self._state_root / "cache" / "icons" / icons_entry_hash
-            if icons_dir.exists():
+            if icons_dir.exists() or icons_dir.is_symlink():
                 created.append(self.repoint_current_symlink("icons", icons_dir))
+            else:
+                logger.warning("seeding: icons entry missing, consumer symlink skipped")
 
         return created
 
@@ -336,9 +551,15 @@ class CacheSeeder:
             + "\n"
         )
 
-        fd = os.open(str(history_path), _O_APPEND | os.O_CREAT, 0o644)
+        fd = os.open(str(history_path), _O_APPEND, 0o644)
         try:
-            os.write(fd, line.encode("utf-8"))
+            # Loop until the whole line is written — os.write may perform a
+            # short write under memory pressure, and a partial line would
+            # corrupt the append-only JSONL log (AD-4).
+            data = memoryview(line.encode("utf-8"))
+            while data:
+                written = os.write(fd, data)
+                data = data[written:]
             os.fsync(fd)
         finally:
             os.close(fd)

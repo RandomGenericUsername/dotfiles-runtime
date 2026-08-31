@@ -36,6 +36,7 @@ from __future__ import annotations
 import errno
 import os
 import shutil
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -48,6 +49,32 @@ if HASH_ALGORITHM != "sha256":
 
 CACHE_LAYERS: Final[frozenset[str]] = frozenset({"wallpapers", "palettes", "effects", "icons"})
 CACHE_STAGING_PREFIX: Final[str] = ".staging-"
+# Grace window before a dead-PID staging dir is reaped — protects against
+# clock skew and pid reuse racing a just-finished sibling process.
+STAGING_REAP_GRACE_SECONDS: Final[int] = 900
+
+
+def _staging_dir_is_live(name: str) -> bool:
+    """Return True if the staging dir's embedded PID belongs to a live process.
+
+    Staging names are ``.staging-<pid>-<uuid>``. Malformed names (no numeric
+    PID) are treated as not live and reaped by mtime grace instead.
+    """
+    pid_part = name[len(CACHE_STAGING_PREFIX):].split("-", 1)[0]
+    if not pid_part.isdigit():
+        return False
+    pid = int(pid_part)
+    if pid == os.getpid():
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by another user
+    except OSError:
+        return True  # defensive: cannot determine → treat as live
+    return True
 
 
 def _is_hex64(value: str) -> bool:
@@ -169,14 +196,26 @@ def populate_via_staging(target: Path, populate_fn: Callable[[Path], None]) -> b
     staging = _staging_dir_for(target)
 
     # Sweep stale orphans from previous unclean crash (best-effort, ignore errors)
-    # Only sweep siblings matching prefix to avoid unbounded recursion.
+    # Only siblings matching the staging prefix are considered. A sibling whose
+    # embedded PID is still alive is NEVER removed — deleting another live
+    # process's staging dir would corrupt its in-flight populate_fn. Dead-PID
+    # dirs are reaped only after a mtime grace window.
     try:
         cache_root = cache_dir.parent
         if cache_root.exists():
+            now = time.time()
             for orphan in cache_root.glob(f"{CACHE_STAGING_PREFIX}*"):
                 # Defensive: only remove directories that look like staging
-                if orphan.is_dir():
-                    shutil.rmtree(orphan, ignore_errors=True)
+                if not orphan.is_dir():
+                    continue
+                if _staging_dir_is_live(orphan.name):
+                    continue
+                try:
+                    if now - orphan.stat().st_mtime < STAGING_REAP_GRACE_SECONDS:
+                        continue
+                except OSError:
+                    continue
+                shutil.rmtree(orphan, ignore_errors=True)
     except OSError:
         pass
 

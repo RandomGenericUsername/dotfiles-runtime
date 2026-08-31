@@ -349,8 +349,10 @@ class TestCsgDeterminism:
         except (FileNotFoundError, OSError) as e:
             pytest.fail(f"csg generate run2 failed to spawn: {e}")
 
-        # ── artifact destination (dot-prefixed, atomic) ──────────────────────
-        artifact_path = Path(__file__).resolve().parent / ".csg_determinism.json"
+        # ── artifact destination (tmp-scoped, atomic) ────────────────────────
+        # Never write into the tests directory: a tracked file rewritten by
+        # test runs pollutes git status and sweeps churn into feature commits.
+        artifact_path = tmp_path / ".csg_determinism.json"
 
         # Helper to collect per-file hashes (raw + normalized for yaml) — handles is_dir
         def collect_hashes(output_dir: Path) -> dict[str, str]:

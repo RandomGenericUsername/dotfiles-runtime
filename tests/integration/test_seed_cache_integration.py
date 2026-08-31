@@ -1,18 +1,22 @@
 """Integration tests for SeedCacheUseCase — real filesystem, real JsonStateRepository.
 
 Tests end-to-end: absent current.json → seed.run() → verify current.json written
-+ current/ symlinks resolve + history.jsonl has seed line.
++ current/ symlinks resolve + history.jsonl has seed line. Also covers corrupt
+state surfacing and reseed after a crashed prior run.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from runtime.adapters.flock_seed_mutex import FlockSeedMutex
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.json_state_repository import JsonStateRepository
+from runtime.adapters.seeder import CacheSeeder
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 WALLPAPER_PNG = FIXTURES / "wallpaper.png"
@@ -23,34 +27,21 @@ def _make_wallpaper_hash() -> str:
 
 
 class _FakeCsg:
+    """Contract-honest fake: output dir name is the entry hash identity."""
+
     def generate(self, wallpaper_path: Path, output_dir: Path) -> object:
-        from runtime.adapters.hashing import canonical_hash_dir, palette_entry_hash
+        from runtime.domain.models import PaletteArtifacts, PaletteEntry
 
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "colors.yaml").write_text("colors: []")
         (output_dir / "colors.conf").write_text("colors {}")
         (output_dir / "colors.gtk.css").write_text("colors {}")
-
-        # Compute hashes for meta
-        wh = hash_file(wallpaper_path)
-        templates_dir = Path(__file__).resolve().parents[3] / (
-            "src/cli-tools/color-scheme-generator/src/"
-            "color_scheme_generator/defaults/templates"
-        )
-        if templates_dir.is_dir():
-            th = canonical_hash_dir(templates_dir)
-        else:
-            th = "0" * 64
-
-        from runtime.domain.models import PaletteArtifacts, PaletteEntry
-
-        peh = palette_entry_hash(wh, th)
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
-            entry_hash=peh,
-            source_wallpaper_hash=wh,
-            input_template_hash=th,
+            entry_hash=output_dir.name,
+            source_wallpaper_hash=hash_file(wallpaper_path),
+            input_template_hash="c" * 64,
             artifact_hashes=PaletteArtifacts(
                 colors_yaml=hash_file(output_dir / "colors.yaml"),
                 colors_conf=hash_file(output_dir / "colors.conf"),
@@ -62,17 +53,18 @@ class _FakeCsg:
 
 class _FakeWeg:
     def generate(self, wallpaper_path: Path, output_dir: Path) -> object:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "effect.png").write_bytes(b"\x89PNG\r\n\x1a\n")
         from runtime.domain.models import EffectsArtifacts, EffectsEntry
 
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "effect.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        effect_hash = hash_file(output_dir / "effect.png")
         return EffectsEntry(
             hash_algorithm="sha256",
             kind="effects",
-            entry_hash="1" * 64,
-            source_wallpaper_hash="a" * 64,
+            entry_hash=output_dir.name,
+            source_wallpaper_hash=hash_file(wallpaper_path),
             input_catalog_hash="2" * 64,
-            artifact_hashes=EffectsArtifacts(**{"effect.png": "3" * 64}),
+            artifact_hashes=EffectsArtifacts(**{"effect.png": effect_hash}),
             generated_at="2026-01-01T00:00:00Z",
         )
 
@@ -85,18 +77,18 @@ class _FakeItr:
         mappings_path: Path,
         output_dir: Path,
     ) -> object:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "icon.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
         from runtime.domain.models import IconsArtifacts, IconsEntry
 
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "icon.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
         return IconsEntry(
             hash_algorithm="sha256",
             kind="icons",
-            entry_hash="4" * 64,
+            entry_hash=output_dir.name,
             source_palette_hash=palette_hash,
             input_templates_hash="5" * 64,
             input_mappings_hash="6" * 64,
-            artifact_hashes=IconsArtifacts(**{"icon.svg": "7" * 64}),
+            artifact_hashes=IconsArtifacts(**{"icon.svg": hash_file(output_dir / "icon.svg")}),
             generated_at="2026-01-01T00:00:00Z",
         )
 
@@ -115,19 +107,30 @@ class _FakeFactory:
 class TestSeedCacheIntegration:
     """End-to-end integration: absent current.json → seed → verify."""
 
-    def _setup_install_spine(self, install_spine: Path) -> None:
+    def _setup(self, tmp_path: Path) -> tuple[Path, Path, JsonStateRepository, Any]:
+        install_spine = tmp_path / "install"
         generated = install_spine / "generated"
         generated.mkdir(parents=True)
         (generated / "default.png").write_bytes(WALLPAPER_PNG.read_bytes())
+        # Templates/catalog/icon assets so palette/effects/icons seed fully
+        csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
+        csg_templates.mkdir(parents=True)
+        (csg_templates / "default.yaml").write_text("window: {}\n")
+        weg_config = install_spine / "config" / "weg"
+        weg_config.mkdir(parents=True)
+        (weg_config / "effects.yaml").write_text("effects: []\n")
+        itr_templates = install_spine / "config" / "icon-templates-renderer" / "templates"
+        itr_templates.mkdir(parents=True)
+        (itr_templates / "terminal.svg").write_text("<svg/>")
+        (install_spine / "config" / "icon-templates-renderer" / "icons.yaml").write_text(
+            "icons: {}\n"
+        )
 
-    def test_end_to_end_seeding(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        state_repo = JsonStateRepository(state_root=state_root)
+
         from runtime.application.seed_cache import SeedCacheUseCase
 
-        install_spine = tmp_path / "install"
-        self._setup_install_spine(install_spine)
-        state_root = tmp_path / "state"
-
-        state_repo = JsonStateRepository(state_root=state_root)
         use_case = SeedCacheUseCase(
             state_repo=state_repo,
             csg=_FakeCsg(),
@@ -136,7 +139,13 @@ class TestSeedCacheIntegration:
             factory=_FakeFactory(),
             install_spine=install_spine,
             state_root=state_root,
+            seeder=CacheSeeder(state_root),
+            mutex=FlockSeedMutex(state_root / ".seed.lock"),
         )
+        return install_spine, state_root, state_repo, use_case
+
+    def test_end_to_end_seeding(self, tmp_path: Path) -> None:
+        install_spine, state_root, state_repo, use_case = self._setup(tmp_path)
 
         # No current.json initially
         assert state_repo.load_current() is None
@@ -149,7 +158,30 @@ class TestSeedCacheIntegration:
         assert loaded is not None
         assert loaded.schema_version == 2
         assert loaded.wallpaper.content_hash == _make_wallpaper_hash()
+        assert loaded.wallpaper.source_path == ""
         assert "DP-1" in loaded.monitors
+
+        # Seeded entries carry real hashes — meta.json agrees with on-disk content.
+        # (current.json's minimal Story 1.10 projection stores {hash, generated_at}
+        # only and reconstructs with sentinels on load; hydration is deferred.)
+        assert loaded.palette is not None
+        peh = loaded.palette.entry_hash
+        meta = json.loads(
+            (state_root / "cache" / "palettes" / peh / "meta.json").read_text()
+        )
+        assert meta["entry_hash"] == peh
+        assert meta["input_template_hash"] != "0" * 64
+        assert meta["artifact_hashes"]["colors.yaml"] == hash_file(
+            state_root / "cache" / "palettes" / peh / "colors.yaml"
+        )
+        assert meta["artifact_hashes"]["colors.conf"] == hash_file(
+            state_root / "cache" / "palettes" / peh / "colors.conf"
+        )
+        assert meta["artifact_hashes"]["colors.gtk.css"] == hash_file(
+            state_root / "cache" / "palettes" / peh / "colors.gtk.css"
+        )
+        assert loaded.effects is not None
+        assert loaded.icons is not None
 
         # current/ symlinks exist and resolve
         current_dir = state_root / "current"
@@ -157,6 +189,13 @@ class TestSeedCacheIntegration:
         wp_link = current_dir / "wallpaper-DP-1.png"
         assert wp_link.is_symlink()
         assert wp_link.exists()  # symlink resolves
+        for name in ("colors.conf", "colors.gtk.css", "colors.yaml"):
+            assert (current_dir / name).is_symlink()
+            assert (current_dir / name).exists()
+        assert (current_dir / "effects").is_symlink()
+        assert (current_dir / "effects").exists()
+        assert (current_dir / "icons").is_symlink()
+        assert (current_dir / "icons").exists()
 
         # history.jsonl has seed line
         history_path = state_root / "history.jsonl"
@@ -170,22 +209,7 @@ class TestSeedCacheIntegration:
 
     def test_no_dangling_symlinks(self, tmp_path: Path) -> None:
         """AC 1: No dangling symlinks on fresh machine."""
-        from runtime.application.seed_cache import SeedCacheUseCase
-
-        install_spine = tmp_path / "install"
-        self._setup_install_spine(install_spine)
-        state_root = tmp_path / "state"
-
-        state_repo = JsonStateRepository(state_root=state_root)
-        use_case = SeedCacheUseCase(
-            state_repo=state_repo,
-            csg=_FakeCsg(),
-            weg=_FakeWeg(),
-            itr=_FakeItr(),
-            factory=_FakeFactory(),
-            install_spine=install_spine,
-            state_root=state_root,
-        )
+        _, state_root, _, use_case = self._setup(tmp_path)
         use_case.run()
 
         # All symlinks in current/ resolve
@@ -196,27 +220,47 @@ class TestSeedCacheIntegration:
 
     def test_install_spine_not_modified(self, tmp_path: Path) -> None:
         """AC 5: Nothing written under install_spine."""
-        from runtime.application.seed_cache import SeedCacheUseCase
-
-        install_spine = tmp_path / "install"
-        self._setup_install_spine(install_spine)
-        state_root = tmp_path / "state"
+        install_spine, _, _, use_case = self._setup(tmp_path)
 
         # Record before
         before = set(install_spine.rglob("*"))
-
-        state_repo = JsonStateRepository(state_root=state_root)
-        use_case = SeedCacheUseCase(
-            state_repo=state_repo,
-            csg=_FakeCsg(),
-            weg=_FakeWeg(),
-            itr=_FakeItr(),
-            factory=_FakeFactory(),
-            install_spine=install_spine,
-            state_root=state_root,
-        )
         use_case.run()
 
         # Install spine unchanged
         after = set(install_spine.rglob("*"))
         assert before == after
+
+    def test_corrupt_current_json_fails_loudly(self, tmp_path: Path) -> None:
+        """Corrupt state must surface as a loud error, not a silent reseed."""
+        _, state_root, state_repo, use_case = self._setup(tmp_path)
+        state_root.mkdir(parents=True)
+        (state_root / "current.json").write_text("{not valid json")
+        with pytest.raises(ValueError):
+            use_case.run()
+        # State untouched, no seeding performed
+        assert (state_root / "current.json").read_text() == "{not valid json"
+        assert not (state_root / "history.jsonl").exists()
+
+    def test_reseed_after_crashed_run(self, tmp_path: Path) -> None:
+        """Crash between cache population and save: reseed reuses cache entries."""
+        _, state_root, state_repo, use_case = self._setup(tmp_path)
+        use_case.run()
+        first = state_repo.load_current()
+        assert first is not None
+
+        # Simulate crash: wipe state, keep cache + current/ symlinks
+        (state_root / "current.json").unlink()
+        (state_root / "history.jsonl").unlink()
+
+        use_case.run()
+
+        second = state_repo.load_current()
+        assert second is not None
+        assert second.palette is not None
+        assert first.palette is not None
+        assert second.palette.entry_hash == first.palette.entry_hash
+        assert second.effects is not None
+        assert second.icons is not None
+        lines = (state_root / "history.jsonl").read_text().strip().split("\n")
+        assert len(lines) == 1
+        assert json.loads(lines[0])["trigger"] == "seed"
