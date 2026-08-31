@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -453,3 +454,31 @@ class TestXdgFallback:
         custom = tmp_path / "custom.json"
         repo = JsonStateRepository(state_root=tmp_path, current_json=custom)
         assert repo._path == custom
+
+
+class TestPermissionError:
+    """Verify PermissionError on read propagates as RuntimeError."""
+
+    def test_load_raises_on_permission_error(self, tmp_path: Path) -> None:
+        current = tmp_path / "current.json"
+        current.write_text('{"schema_version": 2}')
+        current.chmod(stat.S_IRUSR)  # read-only for owner is fine, remove all
+        # On root, read still works; skip if running as root
+        if os.getuid() == 0:
+            pytest.skip("root can read any file")
+        current.chmod(0o000)
+        repo = JsonStateRepository(state_root=tmp_path)
+        with pytest.raises(RuntimeError, match="failed to read current.json"):
+            repo.load_current()
+
+
+class TestFileExistsErrorOnSave:
+    """Verify save fails when state_root is a file, not a directory."""
+
+    def test_save_raises_when_state_root_is_file(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "not_a_dir"
+        state_root.write_text("I am a file, not a directory")
+        repo = JsonStateRepository(state_root=state_root)
+        state = _make_state()
+        with pytest.raises(FileExistsError):
+            repo.save(state)

@@ -36,8 +36,10 @@ References:
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+import stat
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -118,23 +120,40 @@ class JsonStateRepository(IStateRepository):
         Raises ValueError on schema mismatch, symlink, or invalid JSON.
         Returns None ONLY for truly absent file (non-symlink, not exists).
         """
-        # Symlink guard first (TOCTOU)
-        if self._path.is_symlink():
-            raise ValueError(f"current.json is not a regular file (symlink): {self._path}")
-
-        # Fast-path absent
-        if not self._path.exists():
+        # Atomic open with O_NOFOLLOW: fails with ELOOP if symlink, closes TOCTOU gap
+        try:
+            fd = os.open(str(self._path), os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
             return None
+        except IsADirectoryError as e:
+            raise ValueError(
+                f"current.json is not a regular file (is a directory): {self._path}"
+            ) from e
+        except PermissionError as e:
+            raise RuntimeError(f"failed to read current.json: {e}") from e
+        except OSError as e:
+            if e.errno == errno.ELOOP:
+                raise ValueError(
+                    f"current.json is not a regular file (symlink): {self._path}"
+                ) from e
+            raise RuntimeError(f"failed to read current.json: {e}") from e
 
-        # Guard: must be regular file
-        if not self._path.is_file():
+        # Verify it's a regular file (not a directory) after opening
+        try:
+            st = os.fstat(fd)
+        except OSError as e:
+            os.close(fd)
+            raise RuntimeError(f"failed to read current.json: {e}") from e
+        if not stat.S_ISREG(st.st_mode):
+            os.close(fd)
             raise ValueError(f"current.json is not a regular file: {self._path}")
 
-        # Read and parse JSON
         try:
-            raw = self._path.read_text(encoding="utf-8")
+            raw = os.read(fd, st.st_size if st.st_size > 0 else 4096).decode("utf-8")
         except OSError as e:
             raise RuntimeError(f"failed to read current.json: {e}") from e
+        finally:
+            os.close(fd)
 
         try:
             data = json.loads(raw)
@@ -244,12 +263,11 @@ class JsonStateRepository(IStateRepository):
             # POSIX atomic replace
             os.replace(tmp, path)
         finally:
-            # Best-effort cleanup of tmp on failure
-            if tmp.exists():
-                try:
-                    tmp.unlink()
-                except OSError:
-                    pass
+            # Best-effort cleanup of tmp on failure (missing_ok eliminates TOCTOU)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _dict_to_state(self, data: dict[str, Any]) -> DesktopState:
         """Deserialize dict to DesktopState with validation."""
@@ -289,9 +307,17 @@ class JsonStateRepository(IStateRepository):
                 raise ValueError(f"monitor name must be non-empty string, got {name!r}")
             if not isinstance(cfg, dict):
                 raise ValueError(f"monitor {name!r} config must be a dict")
-            backend = BackendType(cfg["backend"])
+            try:
+                backend = BackendType(cfg["backend"])
+            except ValueError as e:
+                raise ValueError(f"monitor {name!r} backend invalid: {cfg.get('backend')!r}") from e
             _validate_hex64(f"monitor {name!r}.source_hash", cfg["source_hash"])
-            fit_mode = FitMode(cfg["fit_mode"])
+            try:
+                fit_mode = FitMode(cfg["fit_mode"])
+            except ValueError as e:
+                raise ValueError(
+                    f"monitor {name!r} fit_mode invalid: {cfg.get('fit_mode')!r}"
+                ) from e
             mpv_options = cfg.get("mpv_options")
             ipc_socket = cfg.get("ipc_socket")
             # mpv guard
