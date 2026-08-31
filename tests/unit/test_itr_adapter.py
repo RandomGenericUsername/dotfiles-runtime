@@ -332,7 +332,7 @@ def test_itr_adapter_timeout_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         mappings_path=mappings_path,
         palette_cache_dir=palette_entry,
     )
-    with pytest.raises((TimeoutError, RuntimeError), match="timed out"):
+    with pytest.raises(TimeoutError, match="timed out"):
         adapter.render(palette_hash, templates_dir, mappings_path, output_dir)
 
 

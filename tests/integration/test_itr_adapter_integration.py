@@ -156,8 +156,6 @@ def test_itr_adapter_integration_real_binary(tmp_path: Path) -> None:
     assert entry.entry_hash == ih
     assert entry.hash_algorithm == "sha256"
     assert entry.kind == "icons"
-    assert entry.source_palette_hash == hash_file(palette_entry / "colors.yaml") or palette_hash
-    # Actually source_palette_hash is palette_hash as passed
     assert entry.source_palette_hash == palette_hash
     for key, h in entry.artifact_hashes.items():
         assert len(h) == 64

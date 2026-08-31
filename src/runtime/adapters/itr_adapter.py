@@ -402,41 +402,18 @@ class ItrAdapter(IIconRenderer):
                     raise ValueError(f"palette_cache_dir must not be a symlink: {base}")
             except OSError as exc:
                 raise RuntimeError(f"cannot validate palette_cache_dir symlink: {exc}") from exc
-            # If base name equals palette_hash, it's the entry dir itself
+            # Three clear branches:
+            # 1) base is the palette entry dir itself (name == hash)
+            # 2) base is a parent dir containing the entry as subdir
+            # 3) base is the entry dir but with a non-hash name (e.g. tmp)
             if base.name == palette_hash:
                 colors_yaml_path = base / "colors.yaml"
-            elif (base / palette_hash).exists():
-                # base is palettes base dir
+            elif (base / palette_hash / "colors.yaml").exists():
                 colors_yaml_path = base / palette_hash / "colors.yaml"
+            elif (base / "colors.yaml").is_file():
+                colors_yaml_path = base / "colors.yaml"
             else:
-                # Assume base is state/cache/palettes base, construct
                 colors_yaml_path = base / palette_hash / "colors.yaml"
-                # Also try base directly if it ends with palettes
-                if base.name == "palettes":
-                    colors_yaml_path = base / palette_hash / "colors.yaml"
-                else:
-                    # Fallback: base / colors.yaml (when base is already entry dir)
-                    alt = base / "colors.yaml"
-                    if alt.exists():
-                        colors_yaml_path = alt
-                    else:
-                        colors_yaml_path = base / palette_hash / "colors.yaml"
-            # If base itself contains colors.yaml (entry dir without hash
-            # in name), prefer it
-            if (
-                base.is_dir()
-                and (base / "colors.yaml").is_file()
-                and base.name != "palettes"
-            ):
-                # Heuristic: if base directly has colors.yaml, treat as entry dir
-                # Overrides previous logic when base is entry dir but name != hash
-                if (base / "colors.yaml").exists():
-                    # If palette_hash matches entry hash, keep base/colors.yaml
-                    # Already handled via name check, but handle tmp entry case
-                    if base.name != palette_hash and not (
-                        base / palette_hash
-                    ).exists():
-                        colors_yaml_path = base / "colors.yaml"
         else:
             # Derive from output_dir: .../cache/icons/<ih> -> .../cache/palettes/<ph>/colors.yaml
             try:
@@ -506,7 +483,7 @@ class ItrAdapter(IIconRenderer):
         except FileNotFoundError as exc:
             raise FileNotFoundError("itr not on PATH") from exc
         except PermissionError as exc:
-            raise FileNotFoundError("itr not on PATH (permission denied)") from exc
+            raise PermissionError(f"itr not on PATH (permission denied): {exc}") from exc
         except subprocess.TimeoutExpired as exc:
             raw_err = exc.stderr
             if isinstance(raw_err, bytes):
