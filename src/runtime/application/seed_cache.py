@@ -31,10 +31,10 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
 
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder
+from runtime.application.derive import DerivationPipeline
 from runtime.domain.models import (
     BackendType,
     DesktopState,
@@ -94,6 +94,17 @@ class SeedCacheUseCase:
         self._state_root = state_root
         self._seeder = seeder
         self._mutex = mutex
+        # Shared derivation plumbing (Story 1.13): spine discovery + per-layer
+        # ensure-entry pattern live in application/derive.py; seed and apply
+        # compose the same pipeline so behavior stays identical.
+        self._pipeline = DerivationPipeline(
+            state_root=state_root,
+            seeder=seeder,
+            csg=csg,
+            weg=weg,
+            itr=itr,
+            install_spine=install_spine,
+        )
 
     def run(self) -> None:
         """Execute first-run seeding if needed.
@@ -220,335 +231,33 @@ class SeedCacheUseCase:
         )
 
     def _populate_palette(self, wallpaper_path: Path, wallpaper_hash: str) -> PaletteEntry:
-        """Populate palette cache via CSG. Returns the palette entry.
+        """Populate palette cache via the shared pipeline. Hard dependency.
 
-        Palette is a hard dependency: any failure raises (aborts seeding)
-        with a ``palette seeding failed:`` context prefix. The adapter
-        generates into ``staging/<peh>`` (its output-dir name contract),
-        artifacts are drained into the staging root, and ``meta.json`` is
-        written there so ``populate_via_staging``'s rename-to-target
-        contract is satisfied with real hashes throughout.
+        Any failure raises (aborts seeding) with a ``palette seeding
+        failed:`` context prefix.
         """
         try:
-            return self._populate_palette_inner(wallpaper_path, wallpaper_hash)
+            entry, _cache_hit = self._pipeline.ensure_palette(wallpaper_path, wallpaper_hash)
+            return entry
         except Exception as exc:
             raise RuntimeError(f"palette seeding failed: {exc}") from exc
-
-    def _populate_palette_inner(
-        self, wallpaper_path: Path, wallpaper_hash: str
-    ) -> PaletteEntry:
-        from runtime.adapters.cache import cache_entry_path, populate_via_staging
-        from runtime.adapters.hashing import canonical_hash_dir, palette_entry_hash
-
-        templates_dir = self._find_templates_dir()
-        if templates_dir is None:
-            raise RuntimeError(
-                f"CSG templates dir not found (install_spine={self._install_spine})"
-            )
-
-        template_set_hash = canonical_hash_dir(templates_dir)
-        peh = palette_entry_hash(wallpaper_hash, template_set_hash)
-        target = cache_entry_path(self._state_root, "palettes", peh)
-        entry_holder: list[PaletteEntry] = []
-
-        def _populate(staging: Path) -> None:
-            work = staging / peh
-            generated = self._csg.generate(wallpaper_path, work)
-            if generated.entry_hash != peh:
-                raise RuntimeError(
-                    f"adapter entry hash mismatch: adapter={generated.entry_hash} "
-                    f"computed={peh} (templates dir divergence)"
-                )
-            self._seeder.drain_work_dir(work, staging)
-            self._seeder.write_palette_meta_in(
-                staging,
-                entry_hash=peh,
-                source_wallpaper_hash=wallpaper_hash,
-                input_template_hash=template_set_hash,
-                artifact_hashes={
-                    "colors.yaml": generated.artifact_hashes["colors_yaml"],
-                    "colors.conf": generated.artifact_hashes["colors_conf"],
-                    "colors.gtk.css": generated.artifact_hashes["colors_gtk_css"],
-                },
-                generated_at=generated.generated_at,
-            )
-            entry_holder.append(
-                PaletteEntry(
-                    hash_algorithm="sha256",
-                    kind="palette",
-                    entry_hash=peh,
-                    source_wallpaper_hash=wallpaper_hash,
-                    input_template_hash=template_set_hash,
-                    artifact_hashes=generated.artifact_hashes,
-                    generated_at=generated.generated_at,
-                )
-            )
-
-        created = populate_via_staging(target, _populate)
-        if created:
-            return entry_holder[0]
-        # Entry already existed (crashed prior run): rebuild from its
-        # meta.json so the state still carries real hashes.
-        return self._seeder.load_palette_entry(target)
 
     def _populate_effects(
         self, wallpaper_path: Path, wallpaper_hash: str
     ) -> EffectsEntry | None:
-        """Populate effects cache via WEG. None (with warning) on failure."""
+        """Populate effects cache via the shared pipeline. None (with warning) on failure."""
         try:
-            from runtime.adapters.cache import cache_entry_path, populate_via_staging
-            from runtime.adapters.hashing import effects_entry_hash
-
-            catalog_path = self._find_effects_catalog()
-            if catalog_path is None:
-                logger.warning("seeding: effects catalog not found; effects disabled")
-                return None
-
-            catalog_hash = hash_file(catalog_path)
-            eeh = effects_entry_hash(wallpaper_hash, catalog_hash)
-            target = cache_entry_path(self._state_root, "effects", eeh)
-            entry_holder: list[EffectsEntry] = []
-
-            def _populate(staging: Path) -> None:
-                work = staging / eeh
-                generated = self._weg.generate(wallpaper_path, work)
-                if generated.entry_hash != eeh:
-                    raise RuntimeError(
-                        f"adapter entry hash mismatch: adapter={generated.entry_hash} "
-                        f"computed={eeh}"
-                    )
-                self._seeder.drain_work_dir(work, staging)
-                self._seeder.write_effects_meta_in(
-                    staging,
-                    entry_hash=eeh,
-                    source_wallpaper_hash=wallpaper_hash,
-                    input_catalog_hash=catalog_hash,
-                    artifact_hashes=cast("dict[str, str]", generated.artifact_hashes),
-                    generated_at=generated.generated_at,
-                )
-                entry_holder.append(
-                    EffectsEntry(
-                        hash_algorithm="sha256",
-                        kind="effects",
-                        entry_hash=eeh,
-                        source_wallpaper_hash=wallpaper_hash,
-                        input_catalog_hash=catalog_hash,
-                        artifact_hashes=generated.artifact_hashes,
-                        generated_at=generated.generated_at,
-                    )
-                )
-
-            created = populate_via_staging(target, _populate)
-            if created:
-                return entry_holder[0]
-            return self._seeder.load_effects_entry(target)
+            entry, _cache_hit = self._pipeline.ensure_effects(wallpaper_path, wallpaper_hash)
+            return entry
         except Exception as exc:
             logger.warning("seeding: effects generation failed; continuing: %s", exc)
             return None
 
     def _populate_icons(self, palette_entry_hash: str) -> IconsEntry | None:
-        """Populate icons cache via ITR. None (with warning) on failure."""
+        """Populate icons cache via the shared pipeline. None (with warning) on failure."""
         try:
-            from runtime.adapters.cache import cache_entry_path, populate_via_staging
-            from runtime.adapters.hashing import canonical_hash_dir, icons_entry_hash
-
-            templates_dir = self._find_icon_templates()
-            mappings_path = self._find_icon_mappings()
-            if templates_dir is None or mappings_path is None:
-                logger.warning("seeding: icon templates/mappings not found; icons disabled")
-                return None
-
-            if templates_dir.is_dir():
-                templates_hash = canonical_hash_dir(templates_dir)
-            elif templates_dir.is_file():
-                templates_hash = hash_file(templates_dir)
-            else:
-                logger.warning("seeding: icon templates path missing; icons disabled")
-                return None
-
-            if mappings_path.is_dir():
-                mappings_hash_val = canonical_hash_dir(mappings_path)
-            elif mappings_path.is_file():
-                mappings_hash_val = hash_file(mappings_path)
-            else:
-                logger.warning("seeding: icon mappings path missing; icons disabled")
-                return None
-
-            ieh = icons_entry_hash(palette_entry_hash, templates_hash, mappings_hash_val)
-            target = cache_entry_path(self._state_root, "icons", ieh)
-            entry_holder: list[IconsEntry] = []
-
-            def _populate(staging: Path) -> None:
-                work = staging / ieh
-                generated = self._itr.render(
-                    palette_entry_hash, templates_dir, mappings_path, work
-                )
-                if generated.entry_hash != ieh:
-                    raise RuntimeError(
-                        f"adapter entry hash mismatch: adapter={generated.entry_hash} "
-                        f"computed={ieh}"
-                    )
-                self._seeder.drain_work_dir(work, staging)
-                self._seeder.write_icons_meta_in(
-                    staging,
-                    entry_hash=ieh,
-                    source_palette_hash=palette_entry_hash,
-                    input_templates_hash=templates_hash,
-                    input_mappings_hash=mappings_hash_val,
-                    artifact_hashes=cast("dict[str, str]", generated.artifact_hashes),
-                    generated_at=generated.generated_at,
-                )
-                entry_holder.append(
-                    IconsEntry(
-                        hash_algorithm="sha256",
-                        kind="icons",
-                        entry_hash=ieh,
-                        source_palette_hash=palette_entry_hash,
-                        input_templates_hash=templates_hash,
-                        input_mappings_hash=mappings_hash_val,
-                        artifact_hashes=generated.artifact_hashes,
-                        generated_at=generated.generated_at,
-                    )
-                )
-
-            created = populate_via_staging(target, _populate)
-            if created:
-                return entry_holder[0]
-            return self._seeder.load_icons_entry(target)
+            entry, _cache_hit = self._pipeline.ensure_icons(palette_entry_hash)
+            return entry
         except Exception as exc:
             logger.warning("seeding: icon rendering failed; continuing: %s", exc)
             return None
-
-    def _find_templates_dir(self) -> Path | None:
-        """Discover CSG templates directory."""
-        # Check install spine first
-        spine_templates = self._install_spine / "config" / "color-scheme-generator" / "templates"
-        try:
-            if spine_templates.is_dir():
-                return spine_templates
-        except OSError:
-            pass
-
-        # Repo fallback
-        for parent in self._install_spine.parents:
-            candidates = [
-                parent
-                / "src"
-                / "cli-tools"
-                / "color-scheme-generator"
-                / "src"
-                / "color_scheme_generator"
-                / "defaults"
-                / "templates",
-                parent / "src" / "cli-tools" / "color-scheme-generator" / "defaults" / "templates",
-            ]
-            for candidate in candidates:
-                try:
-                    if candidate.is_dir():
-                        return candidate
-                except OSError:
-                    continue
-        return None
-
-    def _find_effects_catalog(self) -> Path | None:
-        """Discover WEG effects catalog."""
-        # Check install spine first
-        spine_catalog = self._install_spine / "config" / "weg" / "effects.yaml"
-        try:
-            if spine_catalog.is_file():
-                return spine_catalog
-        except OSError:
-            pass
-
-        # Repo fallback
-        for parent in self._install_spine.parents:
-            candidates = [
-                parent
-                / "src"
-                / "cli-tools"
-                / "wallpaper-effects-generator"
-                / "src"
-                / "wallpaper_effects_generator"
-                / "defaults"
-                / "effects.yaml",
-                parent
-                / "src"
-                / "cli-tools"
-                / "wallpaper-effects-generator"
-                / "defaults"
-                / "effects.yaml",
-            ]
-            for candidate in candidates:
-                try:
-                    if candidate.is_file():
-                        return candidate
-                except OSError:
-                    continue
-        return None
-
-    def _find_icon_templates(self) -> Path | None:
-        """Discover ITR icon templates directory."""
-        # Check install spine first
-        spine_templates = self._install_spine / "config" / "icon-templates-renderer" / "templates"
-        try:
-            if spine_templates.is_dir():
-                return spine_templates
-        except OSError:
-            pass
-
-        # Repo fallback
-        for parent in self._install_spine.parents:
-            candidates = [
-                parent
-                / "src"
-                / "cli-tools"
-                / "icon-templates-renderer"
-                / "src"
-                / "icon_templates_renderer"
-                / "defaults"
-                / "templates",
-                parent / "src" / "cli-tools" / "icon-templates-renderer" / "defaults" / "templates",
-            ]
-            for candidate in candidates:
-                try:
-                    if candidate.is_dir():
-                        return candidate
-                except OSError:
-                    continue
-        return None
-
-    def _find_icon_mappings(self) -> Path | None:
-        """Discover ITR icon mappings."""
-        # Check install spine first
-        spine_mappings = self._install_spine / "config" / "icon-templates-renderer" / "icons.yaml"
-        try:
-            if spine_mappings.is_file():
-                return spine_mappings
-        except OSError:
-            pass
-
-        # Repo fallback
-        for parent in self._install_spine.parents:
-            candidates = [
-                parent
-                / "src"
-                / "cli-tools"
-                / "icon-templates-renderer"
-                / "src"
-                / "icon_templates_renderer"
-                / "defaults"
-                / "icons.yaml",
-                parent
-                / "src"
-                / "cli-tools"
-                / "icon-templates-renderer"
-                / "defaults"
-                / "icons.yaml",
-            ]
-            for candidate in candidates:
-                try:
-                    if candidate.exists():
-                        return candidate
-                except OSError:
-                    continue
-        return None

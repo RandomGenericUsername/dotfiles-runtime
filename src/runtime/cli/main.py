@@ -13,15 +13,21 @@ from cli_output.adapters.factory import create_renderer
 from cli_output.domain.enums import OutputFormat
 from cli_output.domain.views import CustomView, ErrorView
 
+from runtime.application.apply_wallpaper import ApplyWallpaperResult
+
 app = typer.Typer(
     name="dotfiles-runtime",
     help=(
         "Dotfiles runtime engine.\n\n"
         "Manages wallpaper, state, history, and cache for the dotfiles system.\n\n"
         "Commands:\n"
-        "  version  Show the installed package version"
+        "  version  Show the installed package version\n"
+        "  wallpaper set  Derive, cache, and persist state for a wallpaper"
     ),
 )
+
+wallpaper_app = typer.Typer(help="Wallpaper commands")
+app.add_typer(wallpaper_app, name="wallpaper")
 
 logger = logging.getLogger(__name__)
 
@@ -159,8 +165,42 @@ def main_callback(
     _run_seed_if_needed()
 
 
+def _run_wallpaper_set(image_path: Path) -> ApplyWallpaperResult:
+    """Compose and run ApplyWallpaperUseCase (wallpaper set command).
+
+    Mirrors ``_run_seed_if_needed``'s wiring: resolve state_root /
+    install_spine (both absolute), construct the JSON state repository,
+    the CSG/WEG/ITR adapters, and the ``CacheSeeder``, then inject all of
+    them into ``ApplyWallpaperUseCase``. No seed mutex: the staging-dir
+    pattern and atomic current.json writes make concurrent applies
+    converge (recorded concurrency decision, Story 1.13).
+    """
+    state_root = _resolve_state_root()
+    install_spine = _resolve_install_spine()
+
+    from runtime.adapters.csg_adapter import CsgAdapter
+    from runtime.adapters.itr_adapter import ItrAdapter
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.adapters.seeder import CacheSeeder
+    from runtime.adapters.weg_adapter import WegAdapter
+    from runtime.application.apply_wallpaper import ApplyWallpaperUseCase
+
+    use_case = ApplyWallpaperUseCase(
+        state_repo=JsonStateRepository(state_root=state_root),
+        csg=CsgAdapter(),
+        weg=WegAdapter(),
+        itr=ItrAdapter(),
+        install_spine=install_spine,
+        state_root=state_root,
+        seeder=CacheSeeder(state_root),
+    )
+    return use_case.run(image_path)
+
+
 @app.command(help="Show the installed package version")
-def version(output_format: OutputFormat = typer.Option(OutputFormat.PLAIN, "--format", "-f")) -> None:
+def version(
+    output_format: OutputFormat = typer.Option(OutputFormat.PLAIN, "--format", "-f"),
+) -> None:
     renderer = create_renderer(output_format)
     try:
         ver = _pkg_version("dotfiles-runtime")
@@ -174,6 +214,72 @@ def version(output_format: OutputFormat = typer.Option(OutputFormat.PLAIN, "--fo
         raise typer.Exit(code=1) from None
 
     renderer.custom(CustomView(plain=ver, object={"version": ver}, rich=ver))
+
+
+_IMAGE_PATH_ARG = typer.Argument(help="Path to the wallpaper image file")
+_OUTPUT_FORMAT_OPTION = typer.Option(OutputFormat.PLAIN, "--format", "-f")
+
+
+@wallpaper_app.command("set")
+def wallpaper_set(
+    image_path: Path = _IMAGE_PATH_ARG,
+    output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
+) -> None:
+    """Derive, cache, and persist the desktop state for a wallpaper.
+
+    The root callback has already run first-run seeding; the apply
+    ensures cache entries for the derived layers (zero tool invocations
+    on cache hits) and writes current.json. Symlink repoint, history,
+    and desktop reload are Epic 2 scope (ReconcileDesktopStateUseCase).
+    """
+    renderer = create_renderer(output_format)
+    try:
+        result = _run_wallpaper_set(image_path)
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.error("wallpaper set failed: %s", exc)
+        renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
+        raise typer.Exit(code=1) from None
+    except Exception:
+        logger.exception("wallpaper set failed unexpectedly")
+        renderer.error(
+            ErrorView(
+                kind="UnexpectedError",
+                message="wallpaper set failed unexpectedly; see logs",
+            )
+        )
+        raise typer.Exit(code=1) from None
+
+    state = result.state
+    palette_desc = "cache hit" if result.cache_hit_palette else "generated"
+    effects_desc = (
+        "cache hit"
+        if result.cache_hit_effects
+        else ("generated" if result.effects else "unavailable")
+    )
+    icons_desc = (
+        "cache hit" if result.cache_hit_icons else ("generated" if result.icons else "unavailable")
+    )
+    summary = (
+        f"wallpaper applied: {result.wallpaper_hash[:12]}"
+        f" (palette {palette_desc}, effects {effects_desc}, icons {icons_desc})"
+    )
+    renderer.custom(
+        CustomView(
+            plain=summary,
+            object={
+                "wallpaper": result.wallpaper_hash,
+                "palette": state.palette.entry_hash if state.palette else None,
+                "effects": state.effects.entry_hash if state.effects else None,
+                "icons": state.icons.entry_hash if state.icons else None,
+                "cache_hits": {
+                    "palette": result.cache_hit_palette,
+                    "effects": result.cache_hit_effects,
+                    "icons": result.cache_hit_icons,
+                },
+            },
+            rich=summary,
+        )
+    )
 
 
 if __name__ == "__main__":
