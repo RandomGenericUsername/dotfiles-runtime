@@ -35,6 +35,7 @@ from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder
 from runtime.application.derive import DerivationPipeline
 from runtime.domain.models import (
+    DEFAULT_MONITOR,
     BackendType,
     DesktopState,
     EffectsEntry,
@@ -47,13 +48,10 @@ from runtime.domain.models import (
 from runtime.ports.color_scheme_generator import IColorSchemeGenerator
 from runtime.ports.effects_generator import IEffectsGenerator
 from runtime.ports.icon_renderer import IIconRenderer
+from runtime.ports.seed_mutex import ISeedMutex
 from runtime.ports.state_repository import IStateRepository
 
 logger = logging.getLogger(__name__)
-
-# Default monitor for machines without seeded state (full monitor
-# detection is Epic 2; the convention mirrors the seeder).
-_DEFAULT_MONITOR = "DP-1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,17 +73,23 @@ class ApplyWallpaperUseCase:
 
     Steps:
     1. Resolve + validate the input (absolute, existing regular file)
-    2. Hash the wallpaper (sha256 of file bytes) and hardlink it into the
-       cache (idempotent, content-verified; meta.json written only when
-       the entry did not pre-exist — cache entries are write-once)
-    3. Ensure palette (hard), effects and icons (graceful) cache entries
-       via the shared ``DerivationPipeline``
-    4. Build ``DesktopState`` — monitors preserved with ``source_hash``
-       updated (AD-18), defaulted when no state or empty monitors
-    5. Save ``current.json`` via the injected state repository (atomic)
+    2. Load current state (fail-fast corrupt-state guard)
+    3. Hash the wallpaper (sha256 of file bytes) and import it into the
+       cache via the seeder (copy policy — the cache owns its bytes for
+       user-supplied files; content-verified; meta.json write-once)
+    4. Ensure palette (hard), effects and icons (graceful) cache entries
+       via the shared ``DerivationPipeline`` — outside the mutex (staging
+       is race-safe; tool invocations stay parallel)
+    5. Hold the state mutex (blocking) around the read-modify-write of
+       ``current.json`` — a concurrent first-run seed can never be
+       overtaken by an applier that observed absent state; monitors
+       preserved with ``source_hash`` updated (AD-18), defaulted when no
+       state or empty monitors
+    6. Save ``current.json`` via the injected state repository (atomic)
 
-    Constructor receives ports and the ``CacheSeeder`` adapter (dependency
-    inversion): the use case wires no concrete adapters itself.
+    Constructor receives ports, the injected ``CacheSeeder`` adapter and
+    the state mutex (dependency inversion): the use case wires no concrete
+    adapters itself.
     """
 
     def __init__(
@@ -97,11 +101,13 @@ class ApplyWallpaperUseCase:
         install_spine: Path,
         state_root: Path,
         seeder: CacheSeeder,
+        mutex: ISeedMutex,
     ) -> None:
         self._state_repo = state_repo
         self._install_spine = install_spine
         self._state_root = state_root
         self._seeder = seeder
+        self._mutex = mutex
         self._pipeline = DerivationPipeline(
             state_root=state_root,
             seeder=seeder,
@@ -123,23 +129,17 @@ class ApplyWallpaperUseCase:
         """
         img = self._validate_input(image_path)
 
-        # Corrupt-state guard: a ValueError/RuntimeError from a corrupt
-        # store propagates loudly — do NOT swallow into a fresh state.
-        existing = self._state_repo.load_current()
+        # Corrupt-state guard (fail fast, mirrors seed's fast path): a
+        # ValueError/RuntimeError from a corrupt store propagates loudly —
+        # do NOT swallow into a fresh state. Re-read inside the critical
+        # section below (double-checked pattern).
+        self._state_repo.load_current()
 
         wallpaper_hash = hash_file(img)
 
-        # Wallpaper layer: hardlink into cache (idempotent + content-
-        # verified). meta.json is write-once: only written when the
-        # entry dir did not pre-exist.
-        wallpaper_entry_dir = self._state_root / "cache" / "wallpapers" / wallpaper_hash
-        wallpaper_pre_existed = wallpaper_entry_dir.exists()
-        self._seeder.hardlink_wallpaper(img, wallpaper_hash)
-        if not wallpaper_pre_existed:
-            self._seeder.write_wallpaper_meta(
-                wallpaper_hash=wallpaper_hash,
-                source_path=str(img),
-            )
+        # Wallpaper layer: import into the cache (copy policy — cache owns
+        # its bytes; idempotent, content-verified, meta.json write-once).
+        self._seeder.import_wallpaper(img, wallpaper_hash, source_mutable=True)
 
         # Palette (hard dependency): failure aborts the apply — save()
         # happens only after all layers succeed/degrade, so current.json
@@ -165,28 +165,33 @@ class ApplyWallpaperUseCase:
         except Exception as exc:
             logger.warning("apply: icon rendering failed; continuing: %s", exc)
 
-        now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-        wallpaper_entry = WallpaperEntry(
-            hash_algorithm="sha256",
-            kind="wallpaper",
-            content_hash=wallpaper_hash,
-            source_path=str(img),
-            imported_at=now,
-        )
-        state = DesktopState(
-            schema_version=2,
-            wallpaper=wallpaper_entry,
-            monitors=self._build_monitors(existing, wallpaper_hash),
-            palette=palette,
-            effects=effects,
-            icons=icons,
-            applied_at=now,
-        )
-
         # Persist ONLY current.json — no symlink repoint, no history
         # append, no reload (AC 6; ReconcileDesktopStateUseCase owns the
-        # swap sequence in Epic 2).
-        self._state_repo.save(state)
+        # swap sequence in Epic 2). The read-modify-write of the state is
+        # serialized against a concurrent first-run seed (and other
+        # applies) via the blocking state mutex: the authoritative
+        # load_current() happens inside the critical section so a seed
+        # landing between derivation and save can never be overtaken.
+        with self._mutex.hold(blocking=True):
+            existing = self._state_repo.load_current()
+            now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            wallpaper_entry = WallpaperEntry(
+                hash_algorithm="sha256",
+                kind="wallpaper",
+                content_hash=wallpaper_hash,
+                source_path=str(img),
+                imported_at=now,
+            )
+            state = DesktopState(
+                schema_version=2,
+                wallpaper=wallpaper_entry,
+                monitors=self._build_monitors(existing, wallpaper_hash),
+                palette=palette,
+                effects=effects,
+                icons=icons,
+                applied_at=now,
+            )
+            self._state_repo.save(state)
 
         return ApplyWallpaperResult(
             wallpaper_hash=wallpaper_hash,
@@ -223,9 +228,9 @@ class ApplyWallpaperUseCase:
 
         When ``existing`` is None (seed skipped — no provisioning spine)
         or its ``monitors`` dict is empty, default to the seeder's
-        convention: single ``DP-1`` monitor, ``hyprpaper`` backend,
-        ``cover`` fit (AD-18: a wallpaper change must never silently
-        reset a user's per-monitor backend).
+        convention: single ``DEFAULT_MONITOR`` monitor, ``hyprpaper``
+        backend, ``cover`` fit (AD-18: a wallpaper change must never
+        silently reset a user's per-monitor backend).
         """
         if existing is not None and existing.monitors:
             return {
@@ -239,7 +244,7 @@ class ApplyWallpaperUseCase:
                 for name, cfg in existing.monitors.items()
             }
         return {
-            _DEFAULT_MONITOR: MonitorWallpaperConfig(
+            DEFAULT_MONITOR: MonitorWallpaperConfig(
                 backend=BackendType.hyprpaper,
                 source_hash=wallpaper_hash,
                 fit_mode=FitMode.cover,

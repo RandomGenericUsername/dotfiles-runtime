@@ -161,6 +161,7 @@ class TestApplyWallpaperIntegration:
             install_spine=install_spine,
             state_root=state_root,
             seeder=seeder,
+            mutex=FlockSeedMutex(state_root / ".seed.lock"),
         )
         # Seeding consumed one derivation per layer; counters count APPLY
         # invocations only.

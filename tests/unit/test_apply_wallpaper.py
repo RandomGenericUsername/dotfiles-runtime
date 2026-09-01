@@ -44,31 +44,62 @@ def _now_z() -> str:
 
 
 class _FakeStateRepo:
-    """Fake IStateRepository for testing."""
+    """Fake IStateRepository for testing (records load/save event order)."""
 
-    def __init__(self, state: DesktopState | None = None) -> None:
+    def __init__(
+        self,
+        state: DesktopState | None = None,
+        events: list[str] | None = None,
+    ) -> None:
         self._state = state
         self.saved: list[DesktopState] = []
+        self.events = events if events is not None else []
 
     def load_current(self) -> DesktopState | None:
+        self.events.append("load")
         return self._state
 
     def save(self, state: DesktopState) -> None:
+        self.events.append("save")
         self._state = state
         self.saved.append(state)
+
+
+class _FakeMutex:
+    """Fake ISeedMutex: records acquire/release + blocking flag into events."""
+
+    def __init__(self, events: list[str] | None = None) -> None:
+        self.events = events if events is not None else []
+        self.holds = 0
+
+    def hold(self, blocking: bool = False) -> Any:
+        self.holds += 1
+        self.events.append(f"acquire(blocking={blocking})")
+
+        class _Hold:
+            def __enter__(self_inner) -> None:
+                return None
+
+            def __exit__(self_inner, *exc: object) -> None:
+                self.events.append("release")
+
+        return _Hold()
 
 
 class _FakeCsg:
     """Contract-honest fake: echoes the output dir's name as entry hash."""
 
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(self, *, fail: bool = False, events: list[str] | None = None) -> None:
         self.fail = fail
         self.calls = 0
+        self.events = events
 
     def generate(self, wallpaper_path: Path, output_dir: Path) -> Any:
         from runtime.domain.models import PaletteArtifacts, PaletteEntry
 
         self.calls += 1
+        if self.events is not None:
+            self.events.append("csg")
         if self.fail:
             raise RuntimeError("csg exploded")
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -164,12 +195,13 @@ def _setup_spine(install_spine: Path) -> None:
 
 def _make_use_case(
     tmp_path: Path,
-    repo: _FakeStateRepo,
+    repo: Any,
     *,
     csg: _FakeCsg | None = None,
     weg: _FakeWeg | None = None,
     itr: _FakeItr | None = None,
     install_spine: Path | None = None,
+    mutex: Any | None = None,
 ) -> Any:
     from runtime.application.apply_wallpaper import ApplyWallpaperUseCase
 
@@ -183,6 +215,7 @@ def _make_use_case(
         install_spine=spine,
         state_root=state_root,
         seeder=CacheSeeder(state_root),
+        mutex=mutex if mutex is not None else _FakeMutex(),
     )
 
 
@@ -200,6 +233,34 @@ def _spine_paths(tmp_path: Path) -> dict[str, str]:
         ),
         "catalog_hash": hash_file(install_spine / "config" / "weg" / "effects.yaml"),
     }
+
+
+def _existing_state(wh: str) -> DesktopState:
+    """A minimal pre-existing DesktopState (one DP-1 hyprpaper monitor)."""
+    now = _now_z()
+    return DesktopState(
+        schema_version=2,
+        wallpaper=WallpaperEntry(
+            hash_algorithm="sha256",
+            kind="wallpaper",
+            content_hash=wh,
+            source_path="",
+            imported_at=now,
+        ),
+        monitors={
+            "DP-1": MonitorWallpaperConfig(
+                backend=BackendType.hyprpaper,
+                source_hash=wh,
+                fit_mode=FitMode.cover,
+                mpv_options=None,
+                ipc_socket=None,
+            )
+        },
+        palette=None,
+        effects=None,
+        icons=None,
+        applied_at=now,
+    )
 
 
 class TestApplyWallpaperHappyPath:
@@ -375,7 +436,8 @@ class TestApplyWallpaperFailurePolicy:
         self, tmp_path: Path
     ) -> None:
         _setup_spine(tmp_path / "install")
-        repo = _FakeStateRepo()
+        existing = _existing_state("a" * 64)
+        repo = _FakeStateRepo(existing)
         csg = _FakeCsg(fail=True)
         use_case = _make_use_case(tmp_path, repo, csg=csg)
         img = _img_in(tmp_path, "wall.png", b"doomed bytes")
@@ -383,8 +445,22 @@ class TestApplyWallpaperFailurePolicy:
         with pytest.raises(RuntimeError, match="palette apply failed:"):
             use_case.run(img)
 
-        assert repo.saved == []  # current.json untouched
-        assert not (tmp_path / "state" / "current.json").exists()
+        assert repo.saved == []  # no save reached
+        assert repo.load_current() is existing  # current.json unchanged
+
+    def test_palette_failure_when_spine_missing_wraps_loudly(
+        self, tmp_path: Path
+    ) -> None:
+        """Missing spine inputs surface as ``palette apply failed:`` (hard dep)."""
+        repo = _FakeStateRepo()  # no spine setup at all
+        use_case = _make_use_case(tmp_path, repo)
+        img = _img_in(tmp_path, "wall.png", b"no spine bytes")
+
+        with pytest.raises(RuntimeError, match="palette apply failed:.*templates"):
+            use_case.run(img)
+
+        assert repo.saved == []
+        assert repo.load_current() is None
 
     def test_effects_failure_degrades_to_null(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -570,14 +646,223 @@ class TestApplyWallpaperMonitors:
 
 
 class TestApplyWallpaperScopeBoundary:
-    """AC 6: apply does NOT repoint symlinks, append history, or reload."""
+    """AC 6: apply does NOT repoint symlinks, append history, or reload.
+
+    Uses the REAL JsonStateRepository (not the in-memory fake) so the
+    filesystem negative assertions are meaningful.
+    """
 
     def test_no_symlinks_and_no_history(self, tmp_path: Path) -> None:
+        from runtime.adapters.json_state_repository import JsonStateRepository
+
         _setup_spine(tmp_path / "install")
-        repo = _FakeStateRepo()
+        state_root = tmp_path / "state"
+        state_root.mkdir()
+        repo = JsonStateRepository(state_root=state_root)
         use_case = _make_use_case(tmp_path, repo)
         img = _img_in(tmp_path, "wall.png", b"scope boundary bytes")
         use_case.run(img)
 
-        assert not (tmp_path / "state" / "current").exists()
-        assert not (tmp_path / "state" / "history.jsonl").exists()
+        assert (state_root / "current.json").is_file()  # only artifact
+        assert not (state_root / "current").exists()
+        assert not (state_root / "history.jsonl").exists()
+
+
+class TestApplyWallpaperMutex:
+    """D1 review decision: state read-modify-write is serialized."""
+
+    def test_save_happens_inside_the_mutex_critical_section(
+        self, tmp_path: Path
+    ) -> None:
+        _setup_spine(tmp_path / "install")
+        events: list[str] = []
+        repo = _FakeStateRepo(events=events)
+        mutex = _FakeMutex(events=events)
+        use_case = _make_use_case(tmp_path, repo, mutex=mutex)
+        img = _img_in(tmp_path, "wall.png", b"mutex ordering bytes")
+
+        use_case.run(img)
+
+        # Fast-path load precedes the lock (fail-fast corrupt guard);
+        # the authoritative reload + save happen strictly inside it.
+        assert events == [
+            "load",
+            "acquire(blocking=True)",
+            "load",
+            "save",
+            "release",
+        ]
+        assert mutex.holds == 1
+
+    def test_derivation_happens_outside_the_lock(self, tmp_path: Path) -> None:
+        """Tool invocations run before the mutex is acquired (stay parallel)."""
+        _setup_spine(tmp_path / "install")
+        events: list[str] = []
+        repo = _FakeStateRepo(events=events)
+        mutex = _FakeMutex(events=events)
+        csg = _FakeCsg(events=events)
+        use_case = _make_use_case(tmp_path, repo, csg=csg, mutex=mutex)
+        img = _img_in(tmp_path, "wall.png", b"outside lock bytes")
+
+        use_case.run(img)
+
+        assert events.index("csg") < events.index("acquire(blocking=True)")
+        assert events[-1] == "release"
+
+
+class TestApplyWallpaperLostRenameRace:
+    """Review P7: lost populate_via_staging race rebuilds from meta.json."""
+
+    def test_lost_palette_race_returns_winner_entry_from_meta(
+        self, tmp_path: Path
+    ) -> None:
+        _setup_spine(tmp_path / "install")
+        state_root = tmp_path / "state"
+        repo = _FakeStateRepo()
+        img = _img_in(tmp_path, "wall.png", b"race loser bytes")
+
+        wh = hash_file(img)
+        tsh = canonical_hash_dir(
+            tmp_path / "install" / "config" / "color-scheme-generator" / "templates"
+        )
+        peh = palette_entry_hash(wh, tsh)
+        target = state_root / "cache" / "palettes" / peh
+
+        class _RaceWinnerCsg(_FakeCsg):
+            """Honest fake that ALSO simulates the concurrent winner: it
+            creates the final target entry (artifacts + meta.json) while
+            the loser's staging populate is in flight."""
+
+            def generate(self, wallpaper_path: Path, output_dir: Path) -> Any:
+                entry = super().generate(wallpaper_path, output_dir)
+                target.mkdir(parents=True, exist_ok=True)
+                for name in ("colors.yaml", "colors.conf", "colors.gtk.css"):
+                    (target / name).write_text("winner")
+                (target / "meta.json").write_text(
+                    json.dumps(
+                        {
+                            "hash_algorithm": "sha256",
+                            "kind": "palette",
+                            "entry_hash": peh,
+                            "source_wallpaper_hash": wh,
+                            "input_template_hash": tsh,
+                            "artifact_hashes": {
+                                name: hash_file(target / name)
+                                for name in (
+                                    "colors.yaml",
+                                    "colors.conf",
+                                    "colors.gtk.css",
+                                )
+                            },
+                            "generated_at": _now_z(),
+                        }
+                    )
+                )
+                return entry
+
+        csg = _RaceWinnerCsg()
+        use_case = _make_use_case(tmp_path, repo, csg=csg)
+
+        result = use_case.run(img)
+
+        assert csg.calls == 1  # invoked, but lost the rename
+        assert result.cache_hit_palette  # reported as a hit: entry exists
+        assert result.palette.entry_hash == peh
+        assert repo.saved[0].palette is not None
+        assert repo.saved[0].palette.entry_hash == peh  # real hashes, no sentinel
+
+
+class TestSeederImportWallpaper:
+    """Review D2 decision: cache owns its bytes + write-once meta backfill."""
+
+    def _seeder(self, tmp_path: Path) -> Any:
+        return CacheSeeder(tmp_path / "state")
+
+    def test_copy_policy_owns_bytes_not_an_alias(self, tmp_path: Path) -> None:
+        seeder = self._seeder(tmp_path)
+        img = _img_in(tmp_path, "wall.png", b"user-owned bytes")
+        wh = hash_file(img)
+
+        dst = seeder.import_wallpaper(img, wh, source_mutable=True)
+
+        assert dst.is_file()
+        assert dst.read_bytes() == b"user-owned bytes"
+        assert dst.stat().st_ino != img.stat().st_ino  # copy, not hardlink
+        meta = json.loads(dst.parent.joinpath("meta.json").read_text())
+        assert meta["content_hash"] == wh
+        assert meta["source_path"] == str(img)
+
+    def test_hardlink_policy_preserves_ad16(self, tmp_path: Path) -> None:
+        seeder = self._seeder(tmp_path)
+        img = _img_in(tmp_path, "wall.png", b"provisioning bytes")
+        wh = hash_file(img)
+
+        dst = seeder.import_wallpaper(img, wh, source_mutable=False)
+
+        assert dst.stat().st_ino == img.stat().st_ino  # hardlink (AD-16)
+
+    def test_preexisting_entry_with_wrong_content_raises(self, tmp_path: Path) -> None:
+        seeder = self._seeder(tmp_path)
+        img = _img_in(tmp_path, "wall.png", b"the real bytes")
+        wh = hash_file(img)
+        entry_dir = tmp_path / "state" / "cache" / "wallpapers" / wh
+        entry_dir.mkdir(parents=True)
+        (entry_dir / "wallpaper.png").write_bytes(b"corrupt content")
+
+        with pytest.raises(RuntimeError, match="does not match its hash address"):
+            seeder.import_wallpaper(img, wh, source_mutable=True)
+
+    def test_source_mutated_between_hash_and_import_is_never_cached(
+        self, tmp_path: Path
+    ) -> None:
+        """TOCTOU guard: post-place verification removes the poisoned entry."""
+        seeder = self._seeder(tmp_path)
+        img = _img_in(tmp_path, "wall.png", b"original bytes")
+        wh = hash_file(img)
+        img.write_bytes(b"MUTATED in-place between hashing and import")  # same inode
+
+        with pytest.raises(RuntimeError, match="does not match its hash address"):
+            seeder.import_wallpaper(img, wh, source_mutable=True)
+
+        assert not (
+            tmp_path / "state" / "cache" / "wallpapers" / wh
+        ).exists()  # poisoned entry removed, cache not silently wrong
+
+    def test_missing_meta_json_is_backfilled(self, tmp_path: Path) -> None:
+        """A prior crash mid-entry is repaired on the next import."""
+        seeder = self._seeder(tmp_path)
+        img = _img_in(tmp_path, "wall.png", b"crash survivor bytes")
+        wh = hash_file(img)
+        entry_dir = tmp_path / "state" / "cache" / "wallpapers" / wh
+        entry_dir.mkdir(parents=True)
+        (entry_dir / "wallpaper.png").write_bytes(b"crash survivor bytes")
+
+        seeder.import_wallpaper(img, wh, source_mutable=True)
+
+        meta = json.loads((entry_dir / "meta.json").read_text())
+        assert meta["content_hash"] == wh
+
+    def test_existing_meta_json_is_never_overwritten(self, tmp_path: Path) -> None:
+        seeder = self._seeder(tmp_path)
+        img = _img_in(tmp_path, "wall.png", b"write-once check bytes")
+        wh = hash_file(img)
+        entry_dir = tmp_path / "state" / "cache" / "wallpapers" / wh
+        entry_dir.mkdir(parents=True)
+        (entry_dir / "wallpaper.png").write_bytes(b"write-once check bytes")
+        (entry_dir / "meta.json").write_text(
+            json.dumps(
+                {
+                    "hash_algorithm": "sha256",
+                    "kind": "wallpaper",
+                    "content_hash": wh,
+                    "source_path": "/original/first/import.png",
+                    "imported_at": "2026-01-01T00:00:00Z",
+                }
+            )
+        )
+
+        seeder.import_wallpaper(img, wh, source_mutable=True)
+
+        meta = json.loads((entry_dir / "meta.json").read_text())
+        assert meta["source_path"] == "/original/first/import.png"
+        assert meta["imported_at"] == "2026-01-01T00:00:00Z"

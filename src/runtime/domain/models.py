@@ -126,6 +126,12 @@ class MonitorWallpaperConfig:
                 )
 
 
+# Default monitor name for Phase 2 (full monitor detection is Epic 2).
+# Single source of truth for the seeder's and applier's default-monitor
+# convention so they cannot drift (AD-18).
+DEFAULT_MONITOR = "DP-1"
+
+
 @dataclass(frozen=True, slots=True)
 class DesktopState:
     """Projection of current derivation outputs — maps to current.json."""

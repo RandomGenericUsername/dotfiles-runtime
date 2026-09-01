@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -110,41 +111,94 @@ class CacheSeeder:
     def hardlink_wallpaper(self, src: Path, wallpaper_hash: str) -> Path:
         """Hardlink wallpaper from provisioning into cache (AD-16).
 
-        Idempotent: if the cache entry already exists (e.g. a previous run
-        crashed between hardlink and ``save()``), its content is verified
-        against ``wallpaper_hash`` — a matching entry is reused, a mismatching
-        one raises (hash-addressed cache must never hold wrong content).
+        Delegates to :meth:`import_wallpaper` with ``source_mutable=False``
+        (provisioning output is immutable; hardlink is the AD-16 policy).
+        """
+        return self.import_wallpaper(src, wallpaper_hash, source_mutable=False)
+
+    def import_wallpaper(self, src: Path, wallpaper_hash: str, *, source_mutable: bool) -> Path:
+        """Import a wallpaper file into the hash-addressed wallpaper cache.
+
+        One idempotent operation owning the whole wallpaper cache layer:
+
+        - Pre-existing entry: content is verified against ``wallpaper_hash``
+          (a matching entry is reused, a mismatching one raises — a
+          hash-addressed cache must never hold wrong content).
+        - Fresh entry: the content is placed per policy — hardlink for
+          immutable provisioning output (AD-16), an atomic copy (tmp +
+          ``os.replace``) for user-supplied files so the cache owns its
+          bytes and never aliases a mutable source file.
+        - Post-place verification: freshly placed content is re-hashed and
+          must match ``wallpaper_hash`` — a source mutated between hashing
+          and placement cannot poison the hash-addressed entry (the just-
+          created entry is removed before raising).
+        - Write-once meta backfill: ``meta.json`` is written only when
+          absent, so a prior crash mid-entry is repaired on the next import
+          and concurrent imports never overwrite each other's provenance.
 
         Args:
-            src: source wallpaper file (install_spine/generated/default.png)
+            src: source wallpaper file
             wallpaper_hash: SHA-256 hex of the wallpaper content
+            source_mutable: ``True`` for user-supplied files (copy policy),
+                ``False`` for immutable provisioning output (hardlink policy)
 
         Returns:
             Path to the cached wallpaper file
 
         Raises:
             ValueError: if src is not a regular file
-            RuntimeError: if the cache entry exists with different content
-            OSError: on hardlink/copy failure
+            RuntimeError: if the cache entry exists with different content,
+                or freshly placed content does not match its hash address
+            OSError: on filesystem failure
         """
         if not src.is_file():
             raise ValueError(f"src must be a regular file, got {src!r}")
-        dst = self._state_root / "cache" / "wallpapers" / wallpaper_hash / "wallpaper.png"
+        entry_dir = self._state_root / "cache" / "wallpapers" / wallpaper_hash
+        dst = entry_dir / "wallpaper.png"
         if dst.exists() or dst.is_symlink():
             # Idempotent re-entry after a crashed first run (FileExistsError
             # from os.link would otherwise block re-seeding forever).
             if dst.is_symlink() or not dst.is_file():
-                raise RuntimeError(
-                    f"cache entry exists but is not a regular file: {dst}"
-                )
+                raise RuntimeError(f"cache entry exists but is not a regular file: {dst}")
             if hash_file(dst) != wallpaper_hash:
-                raise RuntimeError(
-                    f"cache entry content does not match its hash address: {dst}"
-                )
+                raise RuntimeError(f"cache entry content does not match its hash address: {dst}")
+            self._backfill_wallpaper_meta(entry_dir, wallpaper_hash, src)
             return dst
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        hardlink_or_copy(src, dst)
+        entry_dir.mkdir(parents=True, exist_ok=True)
+        if source_mutable:
+            self._copy_owning_bytes(src, dst)
+        else:
+            hardlink_or_copy(src, dst)
+        if hash_file(dst) != wallpaper_hash:
+            # The source mutated between hashing and placement (TOCTOU) or
+            # the copy was corrupted — never leave wrong content under a
+            # hash address.
+            shutil.rmtree(entry_dir, ignore_errors=True)
+            raise RuntimeError(
+                f"cached wallpaper content does not match its hash address "
+                f"(source mutated during import?): {dst}"
+            )
+        self._backfill_wallpaper_meta(entry_dir, wallpaper_hash, src)
         return dst
+
+    def _copy_owning_bytes(self, src: Path, dst: Path) -> None:
+        """Copy ``src`` → ``dst`` atomically (sibling tmp + ``os.replace``)."""
+        tmp_name = f".wallpaper.png.tmp.{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        tmp = dst.parent / tmp_name
+        try:
+            shutil.copyfile(src, tmp)
+            os.replace(str(tmp), str(dst))
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    def _backfill_wallpaper_meta(self, entry_dir: Path, wallpaper_hash: str, src: Path) -> None:
+        """Write wallpaper meta.json only when absent (write-once invariant)."""
+        if (entry_dir / "meta.json").exists():
+            return
+        self.write_wallpaper_meta(
+            wallpaper_hash=wallpaper_hash,
+            source_path=str(src),
+        )
 
     def write_wallpaper_meta(
         self,

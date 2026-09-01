@@ -1,7 +1,9 @@
-"""flock-based seed mutex adapter.
+"""flock-based state mutex adapter.
 
-Implements ``ISeedMutex`` using ``fcntl.flock(LOCK_EX | LOCK_NB)`` on
-``state_root/.seed.lock``. flock is kernel-owned: the lock is released
+Implements ``ISeedMutex`` using ``fcntl.flock`` on
+``state_root/.seed.lock`` — non-blocking (``LOCK_EX | LOCK_NB``, raises
+``SeedLockedError``) by default, blocking (``LOCK_EX``) when requested for
+apply's read-modify-write. flock is kernel-owned: the lock is released
 automatically when the holding process exits or dies — no stale-lockfile
 cleanup logic is needed, which is why it is preferred over PID-file or
 mkdir-based locks here.
@@ -28,16 +30,17 @@ class FlockSeedMutex(ISeedMutex):
     def __init__(self, lock_path: Path) -> None:
         self._lock_path = lock_path
 
-    def hold(self) -> AbstractContextManager[None]:
-        return self._acquire()
+    def hold(self, blocking: bool = False) -> AbstractContextManager[None]:
+        return self._acquire(blocking)
 
     @contextmanager
-    def _acquire(self) -> Generator[None]:
+    def _acquire(self, blocking: bool) -> Generator[None]:
         self._lock_path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(self._lock_path), os.O_RDWR | os.O_CREAT, 0o600)
         try:
+            flags = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, flags)
             except OSError as exc:
                 raise SeedLockedError(
                     f"seeding already in progress (lock held): {self._lock_path}"

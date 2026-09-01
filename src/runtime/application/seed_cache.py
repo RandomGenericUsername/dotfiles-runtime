@@ -36,6 +36,7 @@ from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder
 from runtime.application.derive import DerivationPipeline
 from runtime.domain.models import (
+    DEFAULT_MONITOR,
     BackendType,
     DesktopState,
     EffectsEntry,
@@ -53,9 +54,6 @@ from runtime.ports.state_repository import IStateRepository
 from runtime.ports.wallpaper_backend_factory import IWallpaperBackendFactory
 
 logger = logging.getLogger(__name__)
-
-# Default monitor name for Phase 2 (full detection deferred to later story)
-_DEFAULT_MONITOR = "DP-1"
 
 
 class SeedCacheUseCase:
@@ -86,9 +84,6 @@ class SeedCacheUseCase:
         mutex: ISeedMutex,
     ) -> None:
         self._state_repo = state_repo
-        self._csg = csg
-        self._weg = weg
-        self._itr = itr
         self._factory = factory
         self._install_spine = install_spine
         self._state_root = state_root
@@ -157,7 +152,7 @@ class SeedCacheUseCase:
         wallpaper_hash = hash_file(default_png)
 
         # Detect monitors (stub: single DP-1 for Phase 2)
-        monitor_names = [_DEFAULT_MONITOR]
+        monitor_names = [DEFAULT_MONITOR]
 
         # Populate cache entries
         # 5a. Wallpaper: hardlink into cache (idempotent after a crashed run)

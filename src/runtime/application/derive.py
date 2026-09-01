@@ -166,7 +166,7 @@ def find_icon_mappings(install_spine: Path) -> Path | None:
         ]
         for candidate in candidates:
             try:
-                if candidate.exists():
+                if candidate.is_file():
                     return candidate
             except OSError:
                 continue

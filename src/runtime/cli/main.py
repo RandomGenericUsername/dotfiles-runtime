@@ -7,13 +7,15 @@ import os
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 from cli_output.adapters.factory import create_renderer
 from cli_output.domain.enums import OutputFormat
 from cli_output.domain.views import CustomView, ErrorView
 
-from runtime.application.apply_wallpaper import ApplyWallpaperResult
+if TYPE_CHECKING:
+    from runtime.application.apply_wallpaper import ApplyWallpaperResult
 
 app = typer.Typer(
     name="dotfiles-runtime",
@@ -170,15 +172,17 @@ def _run_wallpaper_set(image_path: Path) -> ApplyWallpaperResult:
 
     Mirrors ``_run_seed_if_needed``'s wiring: resolve state_root /
     install_spine (both absolute), construct the JSON state repository,
-    the CSG/WEG/ITR adapters, and the ``CacheSeeder``, then inject all of
-    them into ``ApplyWallpaperUseCase``. No seed mutex: the staging-dir
-    pattern and atomic current.json writes make concurrent applies
-    converge (recorded concurrency decision, Story 1.13).
+    the CSG/WEG/ITR adapters, the ``CacheSeeder``, and the state mutex,
+    then inject all of them into ``ApplyWallpaperUseCase``. The mutex is
+    the same flock file the seeder uses: apply holds it blocking around
+    its read-modify-write of current.json, so a concurrent first-run seed
+    can never be overtaken (Story 1.13 review, D1 decision).
     """
     state_root = _resolve_state_root()
     install_spine = _resolve_install_spine()
 
     from runtime.adapters.csg_adapter import CsgAdapter
+    from runtime.adapters.flock_seed_mutex import FlockSeedMutex
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
@@ -193,6 +197,7 @@ def _run_wallpaper_set(image_path: Path) -> ApplyWallpaperResult:
         install_spine=install_spine,
         state_root=state_root,
         seeder=CacheSeeder(state_root),
+        mutex=FlockSeedMutex(state_root / ".seed.lock"),
     )
     return use_case.run(image_path)
 
