@@ -39,6 +39,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from runtime.adapters.cache import cache_entry_path
+from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder
 from runtime.application.derive import DerivationPipeline
 from runtime.domain.models import (
@@ -132,15 +133,35 @@ class ReconcileDesktopStateUseCase:
         # safe; tool invocations stay parallel — same split as apply).
         regenerated: list[str] = []
         palette, effects, icons = self._ensure_entries(state, regenerated)
+        pre_lock_wallpaper_hash = state.wallpaper.content_hash
 
         # Re-read after derivation: state may have changed concurrently
-        # (e.g. a wallpaper set landed while tools ran). Re-load is
-        # authoritative; derivation results are validated against it in
-        # the hash-mismatch guard.
+        # (e.g. a wallpaper set landed while tools ran). If the wallpaper
+        # hash changed, re-derive inside the lock so palette/effects/icons
+        # match the authoritative state.
         with self._mutex.hold(blocking=True):
             state = self._state_repo.load_current()
             if state is None:
                 raise RuntimeError("nothing to reconcile: no current state (never seeded)")
+
+            # Decision D1: re-derive if state changed while we were outside.
+            if state.wallpaper.content_hash != pre_lock_wallpaper_hash:
+                # Re-derive for the authoritative state inside the lock.
+                # This serializes tool invocations only on contention.
+                palette, effects, icons = self._ensure_entries(state, regenerated)
+            else:
+                # Re-validate palette/effects/icons hashes against reloaded
+                # state to catch stale derivation even when wallpaper hash
+                # matches (e.g. spine change caused hash-mismatch guard).
+                # _ensure_entries already validated, but re-check in case
+                # state was mutated concurrently for derived layers.
+                if palette is not None and state.palette is not None:
+                    self._assert_hash_matches(state.palette.entry_hash, palette.entry_hash)
+                if effects is not None and state.effects is not None:
+                    self._assert_hash_matches(state.effects.entry_hash, effects.entry_hash)
+                if icons is not None and state.icons is not None:
+                    self._assert_hash_matches(state.icons.entry_hash, icons.entry_hash)
+
             state = DesktopState(
                 schema_version=2,
                 wallpaper=state.wallpaper,
@@ -151,15 +172,24 @@ class ReconcileDesktopStateUseCase:
                 applied_at=state.applied_at,
             )
 
+            # Monitor name validation P1 — fail loud on traversal
+            for m in list(state.monitors):
+                if "/" in m or "\\" in m or m.strip() != m or ".." in m:
+                    raise ValueError(f"monitor name must not contain path separators, got {m!r}")
+
             # Step 2 — repoint ONLY the current/ symlinks
             monitor_names = list(state.monitors) or [DEFAULT_MONITOR]
+            # Use cache_entry_path helper for validation (P7)
             wallpaper_target = (
-                self._state_root
-                / "cache"
-                / "wallpapers"
-                / state.wallpaper.content_hash
+                cache_entry_path(self._state_root, "wallpapers", state.wallpaper.content_hash)
                 / "wallpaper.png"
             )
+            # P2 — guard against dangling wallpaper symlink
+            if not wallpaper_target.exists() or not wallpaper_target.is_file():
+                raise RuntimeError(
+                    f"wallpaper cache entry {state.wallpaper.content_hash} "
+                    f"missing: {wallpaper_target}"
+                )
             repointed = self._seeder.repoint_current_symlinks(
                 wallpaper_target=wallpaper_target,
                 monitor_names=monitor_names,
@@ -167,7 +197,12 @@ class ReconcileDesktopStateUseCase:
                 effects_entry_hash=state.effects.entry_hash if state.effects else None,
                 icons_entry_hash=state.icons.entry_hash if state.icons else None,
             )
-            skipped = self._derive_skipped(state, monitor_names, repointed)
+            # D2 — cleanup stale symlinks
+            stale_removed = self._cleanup_stale_symlinks(state, monitor_names, repointed)
+            # P8 — derive skipped outside logging inside lock: collect without logging
+            skipped_raw = self._derive_skipped(state, monitor_names, repointed, log=False)
+            # Account for stale removals as skipped context (they were stale)
+            skipped = skipped_raw
 
             # Step 3 — current.json follows (refreshed applied_at)
             now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
@@ -181,6 +216,16 @@ class ReconcileDesktopStateUseCase:
                 applied_at=now,
             )
             self._state_repo.save(saved)
+
+        # Logging for skipped null layers outside lock (P8)
+        for layer in ("effects", "icons"):
+            entry = getattr(saved, layer)
+            if entry is None and f"{layer} (layer is null" in " ".join(skipped):
+                logger.warning("reconcile: %s layer is null; consumer symlink skipped", layer)
+        if stale_removed:
+            logger.info(
+                "reconcile: removed %d stale symlink(s): %s", len(stale_removed), stale_removed
+            )
 
         # Step 4 — history (outside the lock — O_APPEND + fsync is atomic)
         self._seeder.append_history(
@@ -215,10 +260,7 @@ class ReconcileDesktopStateUseCase:
         """
         self._ensure_wallpaper_entry(state, regenerated)
         cached_wallpaper_img = (
-            self._state_root
-            / "cache"
-            / "wallpapers"
-            / state.wallpaper.content_hash
+            cache_entry_path(self._state_root, "wallpapers", state.wallpaper.content_hash)
             / "wallpaper.png"
         )
 
@@ -255,7 +297,11 @@ class ReconcileDesktopStateUseCase:
                 regenerated.append("effects")
 
         icons = state.icons
-        if (
+        # P6 — if palette is None but icons is not, icons cannot exist; degrade
+        if icons is not None and palette is None:
+            logger.warning("reconcile: icons present but palette is null; icons degraded to null")
+            icons = None
+        elif (
             icons is not None
             and palette is not None
             and not cache_entry_path(self._state_root, "icons", icons.entry_hash).exists()
@@ -275,17 +321,32 @@ class ReconcileDesktopStateUseCase:
     def _ensure_wallpaper_entry(self, state: DesktopState, regenerated: list[str]) -> None:
         """Ensure the wallpaper cache entry exists (re-import from source)."""
         wh = state.wallpaper.content_hash
-        cached_png = self._state_root / "cache" / "wallpapers" / wh / "wallpaper.png"
-        if cached_png.exists():
+        cached_png = cache_entry_path(self._state_root, "wallpapers", wh) / "wallpaper.png"
+        if cached_png.is_file():
+            # P4 — verify content hash for existing file
+            try:
+                if hash_file(cached_png) != wh:
+                    raise RuntimeError(
+                        f"wallpaper cache entry {wh} content does not match "
+                        f"its hash address: {cached_png}"
+                    )
+            except OSError as exc:
+                raise RuntimeError(f"wallpaper cache entry {wh} cannot be verified: {exc}") from exc
             return
+        if cached_png.exists():
+            # Exists but not a regular file (dir/symlink) — treat as missing
+            raise RuntimeError(
+                f"wallpaper cache entry {wh} exists but is not a regular file: {cached_png}"
+            )
         source = state.wallpaper.source_path
-        if not source:
+        # P5 — whitespace/relative guard
+        if not source or not source.strip():
             raise RuntimeError(
                 f"wallpaper cache entry {wh} is missing and the state has no "
                 "source_path; the wallpaper cache entry cannot be rebuilt "
                 "without its source"
             )
-        src = Path(source)
+        src = Path(source.strip())
         if not src.is_file():
             raise RuntimeError(
                 f"wallpaper cache entry {wh} is missing and its source no longer exists: {src}"
@@ -311,6 +372,7 @@ class ReconcileDesktopStateUseCase:
         state: DesktopState,
         monitor_names: list[str],
         repointed: list[Path],
+        log: bool = True,
     ) -> list[str]:
         """Compute the skip list: expected symlink names minus created."""
         expected: dict[str, str] = {}
@@ -334,6 +396,48 @@ class ReconcileDesktopStateUseCase:
             entry = getattr(state, layer)
             if entry is None:
                 skipped.append(f"{layer} (layer is null; nothing to repoint)")
-                logger.warning("reconcile: %s layer is null; consumer symlink skipped", layer)
+                if log:
+                    logger.warning("reconcile: %s layer is null; consumer symlink skipped", layer)
 
         return skipped
+
+    def _cleanup_stale_symlinks(
+        self,
+        state: DesktopState,
+        monitor_names: list[str],
+        repointed: list[Path],
+    ) -> list[str]:
+        """Remove stale current/ symlinks not in expected set (D2)."""
+        current_dir = self._state_root / "current"
+        if not current_dir.is_dir():
+            return []
+        expected_names = {f"wallpaper-{n}.png" for n in monitor_names}
+        if state.palette is not None:
+            expected_names.update({"colors.conf", "colors.gtk.css", "colors.yaml"})
+        if state.effects is not None:
+            expected_names.add("effects")
+        if state.icons is not None:
+            expected_names.add("icons")
+
+        removed: list[str] = []
+        for item in current_dir.iterdir():
+            # Only consider wallpaper symlinks and known consumer names
+            if item.name.startswith("wallpaper-") and item.name.endswith(".png"):
+                if item.name not in expected_names:
+                    try:
+                        # Remove stale monitor symlink (file or symlink)
+                        if item.is_symlink() or item.is_file():
+                            item.unlink()
+                            removed.append(item.name)
+                    except OSError:
+                        pass
+            elif item.name in ("effects", "icons"):
+                if item.name not in expected_names:
+                    try:
+                        if item.is_symlink() or item.exists():
+                            # For directory symlinks, unlink removes symlink only
+                            item.unlink()
+                            removed.append(item.name)
+                    except OSError:
+                        pass
+        return removed

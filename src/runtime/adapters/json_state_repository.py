@@ -220,6 +220,8 @@ class JsonStateRepository(IStateRepository):
         for name, cfg in monitors.items():
             if not isinstance(name, str) or not name:
                 raise ValueError(f"monitor name must be non-empty string, got {name!r}")
+            if "/" in name or "\\" in name or ".." in name or name.strip() != name:
+                raise ValueError(f"monitor name has invalid path chars, got {name!r}")
             if not isinstance(cfg, dict):
                 raise ValueError(f"monitor {name!r} config must be a dict")
             if cfg.get("backend") not in BackendType.__members__.values():
@@ -305,6 +307,8 @@ class JsonStateRepository(IStateRepository):
         for name, cfg in monitors_raw.items():
             if not isinstance(name, str) or not name:
                 raise ValueError(f"monitor name must be non-empty string, got {name!r}")
+            if "/" in name or "\\" in name or ".." in name or name.strip() != name:
+                raise ValueError(f"monitor name has invalid path chars, got {name!r}")
             if not isinstance(cfg, dict):
                 raise ValueError(f"monitor {name!r} config must be a dict")
             try:

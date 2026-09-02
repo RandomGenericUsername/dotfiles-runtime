@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -165,6 +166,9 @@ def main_callback(
         help="Output format",
     ),
 ) -> None:
+    # P3 — do not auto-seed before reconcile (reconcile must fail loud on absent state)
+    if "reconcile" in sys.argv:
+        return
     _run_seed_if_needed()
 
 
