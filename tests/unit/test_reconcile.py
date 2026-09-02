@@ -705,8 +705,9 @@ class TestReconcileStructuralScopeLock:
             "state_root",
             "seeder",
             "mutex",
+            "reloaders",
         }
-        assert not any("reload" in p or "backend" in p or "factory" in p for p in params)
+        assert not any("backend" in p or "factory" in p for p in params)
 
     def test_writes_confined_to_state_root(self, tmp_path: Path) -> None:
         applied = _apply_state(tmp_path)

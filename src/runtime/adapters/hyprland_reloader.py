@@ -1,0 +1,87 @@
+"""Hyprland reload adapter — invokes ``hyprctl reload`` (AD-17, FR-6, R5).
+
+Implements ``IDesktopReloader``: after the swap repoints
+``current/colors.conf`` (through the ``~/.config/hypr`` spine symlink),
+the adapter triggers ``hyprctl reload`` so Hyprland re-reads the new
+palette. Failures are reported as ``False`` with warning logs; the
+reconcile use case collects them into ``ReconcileResult.reload_failures``.
+
+Binary resolution mirrors ``csg_adapter.py:135-163`` (path-separator
+check → ``shutil.which`` → ``os.access`` executable verification).
+Subprocess handling mirrors ``csg_adapter.py:297-319`` (``text=True``,
+``capture_output=True``, ``timeout=10``, exception set
+``FileNotFoundError, PermissionError, TimeoutExpired, OSError``).
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+from runtime.ports.desktop_reloader import IDesktopReloader
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_hyprctl(hyprctl_path: Path | None) -> Path | None:
+    """Resolve ``hyprctl`` binary path.
+
+    When ``hyprctl_path`` is ``None``, search ``PATH`` via
+    ``shutil.which`` and verify executable access. When a path is
+    explicitly provided, return it as-is (caller controls existence).
+    """
+    if hyprctl_path is not None:
+        return hyprctl_path
+    which_result = shutil.which("hyprctl")
+    if which_result is None:
+        return None
+    # Mirror csg_adapter pattern: verify executable bit where possible.
+    try:
+        if not os.access(which_result, os.X_OK):
+            return None
+    except OSError:
+        return None
+    return Path(which_result)
+
+
+class HyprlandReloader(IDesktopReloader):
+    """Adapter that reloads Hyprland via ``hyprctl reload``.
+
+    Args:
+        hyprctl_path: explicit path to ``hyprctl`` binary. When ``None``,
+            resolved via ``shutil.which("hyprctl")``; if not found, the
+            adapter stores ``None`` and ``reload()`` returns ``False``
+            without spawning a subprocess.
+    """
+
+    def __init__(self, hyprctl_path: Path | None = None) -> None:
+        self._hyprctl_path: Path | None = _resolve_hyprctl(hyprctl_path)
+
+    def reload(self) -> bool:
+        """Reload Hyprland configuration.
+
+        Returns:
+            True on ``hyprctl reload`` exit 0; False on non-zero exit,
+            missing binary, timeout, or OS errors. Warnings are logged
+            with stderr details where available.
+        """
+        if self._hyprctl_path is None:
+            logger.warning("hyprctl not found in PATH; Hyprland reload skipped")
+            return False
+        try:
+            result = subprocess.run(
+                [str(self._hyprctl_path), "reload"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired, OSError) as exc:
+            logger.warning("Hyprland reload failed: %s", exc)
+            return False
+        if result.returncode == 0:
+            return True
+        logger.warning("Hyprland reload failed (exit %d): %s", result.returncode, result.stderr)
+        return False

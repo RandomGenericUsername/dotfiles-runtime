@@ -50,6 +50,7 @@ from runtime.domain.models import (
     PaletteEntry,
 )
 from runtime.ports.color_scheme_generator import IColorSchemeGenerator
+from runtime.ports.desktop_reloader import IDesktopReloader
 from runtime.ports.effects_generator import IEffectsGenerator
 from runtime.ports.icon_renderer import IIconRenderer
 from runtime.ports.seed_mutex import ISeedMutex
@@ -97,11 +98,13 @@ class ReconcileDesktopStateUseCase:
         state_root: Path,
         seeder: CacheSeeder,
         mutex: ISeedMutex,
+        reloaders: list[IDesktopReloader] | None = None,
     ) -> None:
         self._state_repo = state_repo
         self._state_root = state_root
         self._seeder = seeder
         self._mutex = mutex
+        self._reloaders: list[IDesktopReloader] = list(reloaders) if reloaders is not None else []
         self._pipeline = DerivationPipeline(
             state_root=state_root,
             seeder=seeder,
@@ -126,7 +129,7 @@ class ReconcileDesktopStateUseCase:
         # Fail-fast corrupt/absent guard (mirrors apply):
         state = self._state_repo.load_current()
         if state is None:
-                raise RuntimeError("nothing to reconcile")
+            raise RuntimeError("nothing to reconcile")
         # ValueError from a corrupt store propagates loudly here — never
         # swallowed into a reseed or fallback.
 
@@ -247,11 +250,23 @@ class ReconcileDesktopStateUseCase:
             source_path=saved.wallpaper.source_path,
         )
 
+        # Step 5 — reload desktop consumers (outside lock, fire-and-report)
+        reload_failures: list[str] = []
+        for reloader in self._reloaders:
+            try:
+                ok = reloader.reload()
+            except Exception as exc:
+                logger.warning("desktop reload failed for %s: %s", type(reloader).__name__, exc)
+                ok = False
+            if not ok:
+                reload_failures.append(type(reloader).__name__)
+
         return ReconcileResult(
             repointed=repointed,
             skipped=skipped,
             state=saved,
             cache_regenerated=regenerated,
+            reload_failures=reload_failures,
         )
 
     # ------------------------------------------------------------------

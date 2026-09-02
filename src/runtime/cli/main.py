@@ -308,6 +308,7 @@ def _run_reconcile() -> ReconcileResult:
 
     from runtime.adapters.csg_adapter import CsgAdapter
     from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+    from runtime.adapters.hyprland_reloader import HyprlandReloader
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
@@ -323,6 +324,7 @@ def _run_reconcile() -> ReconcileResult:
         state_root=state_root,
         seeder=CacheSeeder(state_root),
         mutex=FlockSeedMutex(state_root / ".seed.lock"),
+        reloaders=[HyprlandReloader()],
     )
     return use_case.run()
 
