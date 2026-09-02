@@ -39,11 +39,13 @@ free of a ``current.json`` read. Mapping table: cover→cover,
 contain→contain, tile→tile, stretch→stretch, fill→cover (unrepresentable),
 center→cover (unrepresentable).
 
-A resolved path containing a space is NOT representable through this
-channel (the space would corrupt hyprctl's argv join and hyprpaper's comma
-split); this is safe for the hash-named default cache layout — a
-space-containing state_root surfaces as an invocation failure (known
-limitation).
+The single segment is comma-delimited: ``doWallpaper`` splits the RHS
+only on commas (``CVarList2 args(RHS, 0, ',')``), and hyprctl slices the
+RHS off after the ``wallpaper `` keyword (``rq.find(' ', 12)``) with no
+space-split, so a SPACE inside the path survives the channel while a
+COMMA anywhere in monitor or path truncates the parse and is
+unrepresentable. A space/comma-containing state_root would otherwise
+surface as an (opaque) invocation failure (known limitation).
 
 Naming note: this is the RELOADER (mirrors ``hyprland_reloader.py`` /
 ``ags_reloader.py``). It is NOT the AD-18 ``IStaticWallpaperBackend``
@@ -61,6 +63,15 @@ naming the monitor; the reconcile use case collects the class name into
 ``ReconcileResult.reload_failures`` — mirroring ``HyprlandReloader`` /
 ``AgsReloader``. Missing ``hyprctl`` in PATH is a surfaced failure, not a
 skip (spec-literal R5, carried decision).
+
+Wiring note (rt-2.5 review, deferred-work 2026-09-02): the composition
+root currently drives the Phase-2 monitor-detection stub — every
+``current/wallpaper-*.png`` is named for ``DEFAULT_MONITOR = "DP-1"``
+(``seed_cache.py``), and the live desktop's outputs usually don't include
+``DP-1``, so hyprpaper rejects the monitor (``Invalid monitor``) and the
+reload surfaces ``HyprpaperReloader`` as a failure. Accepted R5-literal
+behavior until real monitor detection lands (future story); this adapter
+also probes only ``hyprctl`` presence, never hyprpaper liveness.
 
 Binary resolution imports ``_resolve_via_which`` from ``hyprland_reloader``
 (adapters→adapters import — layering-green); the
@@ -151,13 +162,17 @@ class HyprpaperReloader(IDesktopReloader):
             True only when EVERY monitor's ``hyprctl hyprpaper wallpaper``
             invocation succeeds. Zero ``current/wallpaper-*.png`` symlinks
             (or no ``current/`` dir) is a vacuous ``True``. False on a
-            missing ``hyprctl``, a dangling symlink, a non-zero exit
-            (hyprctl prints ``error: <detail>``), a timeout, or any
-            subprocess error — each logged with the monitor name.
+            missing ``hyprctl`` (only when there is a wallpaper to apply),
+            a dangling symlink, a non-zero exit (hyprctl prints
+            ``error: <detail>``), a timeout, or any subprocess error —
+            each logged with the monitor name.
+
+            Precedence: the vacuous state wins over the missing-binary
+            rule — a machine with nothing to apply returns ``True`` even
+            when ``hyprctl`` is absent (AC 4); a missing ``hyprctl`` fails
+            only when at least one ``wallpaper-*.png`` symlink exists
+            (R5, carried decision).
         """
-        if self._hyprctl_path is None:
-            logger.warning("hyprctl not found in PATH; Hyprpaper reload skipped")
-            return False
         current_dir = self._state_root / "current"
         if not current_dir.is_dir():
             logger.debug("no current/ dir under %s; no wallpaper to apply", self._state_root)
@@ -166,6 +181,9 @@ class HyprpaperReloader(IDesktopReloader):
         if not links:
             logger.debug("no wallpaper-*.png symlinks in %s; nothing to apply", current_dir)
             return True
+        if self._hyprctl_path is None:
+            logger.warning("hyprctl not found in PATH; Hyprpaper reload failed")
+            return False
         all_ok = True
         for link in links:
             monitor = link.name[10:-4]

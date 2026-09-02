@@ -24,6 +24,8 @@ from runtime.domain.models import (
     WallpaperEntry,
 )
 
+import runtime.cli.main as cli_main
+
 runner = CliRunner()
 
 
@@ -134,6 +136,37 @@ class TestReconcileCliSuccess:
 
         assert result.exit_code == 0
         assert "1 skipped" in result.output
+
+
+class TestReconcileCompositionRootWiring:
+    def test_composition_root_wires_all_reloaders(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AC 5 — the reconcile composition root wires Hyprland, AGS and
+        Hyprpaper (with the reconcile ``state_root``), in that order."""
+        captured: dict[str, Any] = {}
+
+        class _FakeUseCase:
+            def __init__(self, **kwargs: Any) -> None:
+                captured["reloaders"] = kwargs.get("reloaders")
+                captured["state_root"] = kwargs.get("state_root")
+
+            def run(self) -> Any:
+                return _reconcile_result()
+
+        monkeypatch.setattr(
+            "runtime.application.reconcile.ReconcileDesktopStateUseCase", _FakeUseCase
+        )
+        cli_main._run_reconcile()
+
+        from runtime.adapters.ags_reloader import AgsReloader
+        from runtime.adapters.hyprland_reloader import HyprlandReloader
+        from runtime.adapters.hyprpaper_reloader import HyprpaperReloader
+
+        reloaders = captured["reloaders"]
+        assert reloaders is not None
+        assert [type(r) for r in reloaders] == [HyprlandReloader, AgsReloader, HyprpaperReloader]
+        assert reloaders[2]._state_root == captured["state_root"]  # type: ignore[attr-defined]
 
 
 class TestReconcileCliErrorMapping:

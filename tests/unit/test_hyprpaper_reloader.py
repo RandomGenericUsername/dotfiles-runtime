@@ -100,6 +100,14 @@ class TestHyprpaperReloaderSuccess:
             assert reloader.reload() is True
             mock_run.assert_not_called()
 
+    def test_current_dir_exists_empty_returns_true(self, hyprctl_bin: Path, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        (state_root / "current").mkdir(parents=True)
+        reloader = HyprpaperReloader(hyprctl_path=hyprctl_bin, state_root=state_root)
+        with patch("runtime.adapters.hyprpaper_reloader.subprocess.run") as mock_run:
+            assert reloader.reload() is True
+            mock_run.assert_not_called()
+
     def test_monitor_order_sorted_deterministic(self, hyprctl_bin: Path, tmp_path: Path) -> None:
         state_root = tmp_path / "state"
         targets = _make_current(state_root, ["eDP-1", "HDMI-A-1", "DP-1"])
@@ -192,22 +200,50 @@ class TestHyprpaperReloaderMissing:
             assert reloader.reload() is False
             mock_run.assert_not_called()
 
+    def test_missing_hyprctl_zero_symlinks_returns_true(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        (state_root / "current").mkdir(parents=True)
+        with patch(
+            "runtime.adapters.hyprland_reloader.shutil.which", return_value=None
+        ) as mock_which:
+            reloader = HyprpaperReloader(hyprctl_path=None, state_root=state_root)
+        mock_which.assert_called_once_with("hyprctl")
+        with patch("runtime.adapters.hyprpaper_reloader.subprocess.run") as mock_run:
+            assert reloader.reload() is True
+            mock_run.assert_not_called()
+
     def test_non_executable_hyprctl_returns_false(self, tmp_path: Path) -> None:
         non_exec = tmp_path / "hyprctl"
         non_exec.write_text("#!/bin/sh\nexit 0\n")
         non_exec.chmod(0o644)
+        state_root = tmp_path / "state"
+        _make_current(state_root, ["DP-1"])
         with patch(
             "runtime.adapters.hyprland_reloader.shutil.which", return_value=str(non_exec)
         ):
-            reloader = HyprpaperReloader(hyprctl_path=None, state_root=tmp_path / "state")
+            reloader = HyprpaperReloader(hyprctl_path=None, state_root=state_root)
         with patch("runtime.adapters.hyprpaper_reloader.subprocess.run") as mock_run:
             assert reloader.reload() is False
             mock_run.assert_not_called()
 
     def test_resolve_explicit_missing_path_fails_later(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        _make_current(state_root, ["DP-1"])
         reloader = HyprpaperReloader(
-            hyprctl_path=tmp_path / "does-not-exist", state_root=tmp_path / "state"
+            hyprctl_path=tmp_path / "does-not-exist", state_root=state_root
         )
+        with patch("runtime.adapters.hyprpaper_reloader.subprocess.run") as mock_run:
+            assert reloader.reload() is False
+            mock_run.assert_not_called()
+
+    def test_explicit_non_executable_separator_path_fails_later(self, tmp_path: Path) -> None:
+        non_exec = tmp_path / "bin" / "hyprctl"
+        non_exec.parent.mkdir(parents=True)
+        non_exec.write_text("#!/bin/sh\nexit 0\n")
+        non_exec.chmod(0o644)
+        state_root = tmp_path / "state"
+        _make_current(state_root, ["DP-1"])
+        reloader = HyprpaperReloader(hyprctl_path=non_exec, state_root=state_root)
         with patch("runtime.adapters.hyprpaper_reloader.subprocess.run") as mock_run:
             assert reloader.reload() is False
             mock_run.assert_not_called()
