@@ -306,6 +306,7 @@ def _run_reconcile() -> ReconcileResult:
     state_root = _resolve_state_root()
     install_spine = _resolve_install_spine()
 
+    from runtime.adapters.ags_reloader import AgsReloader
     from runtime.adapters.csg_adapter import CsgAdapter
     from runtime.adapters.flock_seed_mutex import FlockSeedMutex
     from runtime.adapters.hyprland_reloader import HyprlandReloader
@@ -324,7 +325,7 @@ def _run_reconcile() -> ReconcileResult:
         state_root=state_root,
         seeder=CacheSeeder(state_root),
         mutex=FlockSeedMutex(state_root / ".seed.lock"),
-        reloaders=[HyprlandReloader()],
+        reloaders=[HyprlandReloader(), AgsReloader()],
     )
     return use_case.run()
 
