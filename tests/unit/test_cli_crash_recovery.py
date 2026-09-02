@@ -150,6 +150,21 @@ def _prepare_state(tmp_path: Path, state_root: Path) -> Path:
     return install_spine
 
 
+class _PassingHyprpaperReloader:
+    """Isolates the CLI from the real hyprctl/hyprpaper session on this host.
+
+    The composition root wires a real ``HyprpaperReloader``, whose IPC
+    invocation would reach the live desktop hyprpaper when a session is
+    running; the crash-recovery tests must not touch it.
+    """
+
+    def __init__(self, **_kwargs: object) -> None:
+        pass
+
+    def reload(self) -> bool:
+        return True
+
+
 class TestCliCrashRecoveryLogging:
     def test_reconcile_recovery_logs_stray_reverts(self, tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch) -> None:
         state_root = tmp_path / "dotfiles"
@@ -167,6 +182,10 @@ class TestCliCrashRecoveryLogging:
 
         monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(install_spine))
         monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "runtime.adapters.hyprpaper_reloader.HyprpaperReloader",
+            _PassingHyprpaperReloader,
+        )
 
         with caplog.at_level(logging.INFO, logger="runtime.application.reconcile"):
             result = runner.invoke(app, ["reconcile"])
@@ -181,6 +200,10 @@ class TestCliCrashRecoveryLogging:
         install_spine = tmp_path / "install"
         monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(install_spine))
         monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "runtime.adapters.hyprpaper_reloader.HyprpaperReloader",
+            _PassingHyprpaperReloader,
+        )
 
         with caplog.at_level(logging.DEBUG, logger="runtime.application.reconcile"):
             result = runner.invoke(app, ["reconcile"])
