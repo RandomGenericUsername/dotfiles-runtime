@@ -356,6 +356,22 @@ def reconcile(
         )
         raise typer.Exit(code=1) from None
 
+    # Forward-looking placeholder for reload adapters (Stories 2.3-2.6):
+    # ReconcileResult.reload_failures is [] until adapters land; when populated
+    # we surface the failure and exit non-zero per AC 4 (no daemon retry).
+    if result.reload_failures:
+        failed = ", ".join(result.reload_failures)
+        logger.error("reconcile: reload failed for %s", failed)
+        renderer.error(
+            ErrorView(
+                kind="ReloadError",
+                message=f"reload failed for: {failed}",
+            )
+        )
+        raise typer.Exit(code=1) from None
+    # Structural placeholder: reload adapters will populate skipped with
+    # entries containing "reload" or "consumer" — CLI already renders skipped.
+
     summary = (
         f"desktop reconciled: {len(result.repointed)} symlink(s) repointed"
         + (f", {len(result.skipped)} skipped" if result.skipped else "")
@@ -372,6 +388,7 @@ def reconcile(
                 "repointed": [str(p) for p in result.repointed],
                 "skipped": list(result.skipped),
                 "cache_regenerated": list(result.cache_regenerated),
+                "reload_failures": list(result.reload_failures),
             },
             rich=summary,
         )

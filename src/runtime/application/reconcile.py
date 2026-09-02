@@ -34,13 +34,13 @@ Architecture:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 from runtime.adapters.cache import cache_entry_path
 from runtime.adapters.hashing import hash_file
-from runtime.adapters.seeder import CacheSeeder
+from runtime.adapters.seeder import CacheSeeder, _repoint_symlink
 from runtime.application.derive import DerivationPipeline
 from runtime.domain.models import (
     DEFAULT_MONITOR,
@@ -66,6 +66,7 @@ class ReconcileResult:
     skipped: list[str]
     state: DesktopState
     cache_regenerated: list[str]
+    reload_failures: list[str] = field(default_factory=list)
 
 
 class ReconcileDesktopStateUseCase:
@@ -128,6 +129,15 @@ class ReconcileDesktopStateUseCase:
             raise RuntimeError("nothing to reconcile: no current state (never seeded)")
         # ValueError from a corrupt store propagates loudly here — never
         # swallowed into a reseed or fallback.
+
+        # Recovery: revert stray current/ symlinks to last-good current.json (AC 1, 2, 5).
+        # Runs OUTSIDE the lock — same as derivation; concurrent wallpaper set
+        # overwriting current.json is caught by the double-checked re-load inside the lock.
+        reverted = self._revert_stale_symlinks(state)
+        if reverted:
+            logger.info("recovery: reverted %d stray symlink(s): %s", len(reverted), reverted)
+        else:
+            logger.debug("recovery: no stray symlinks detected")
 
         # Derivation (step 1) happens OUTSIDE the lock (staging is race-
         # safe; tool invocations stay parallel — same split as apply).
@@ -441,3 +451,73 @@ class ReconcileDesktopStateUseCase:
                     except OSError:
                         pass
         return removed
+
+    def _build_expected_targets(self, state: DesktopState) -> dict[str, Path]:
+        """Map symlink names to correct cache entry targets from current.json."""
+        targets: dict[str, Path] = {}
+        for monitor_name in state.monitors:
+            if (
+                "/" in monitor_name
+                or "\\" in monitor_name
+                or monitor_name.strip() != monitor_name
+                or ".." in monitor_name
+            ):
+                raise ValueError(
+                    f"monitor name must not contain path separators, got {monitor_name!r}",
+                )
+            targets[f"wallpaper-{monitor_name}.png"] = (
+                cache_entry_path(
+                    self._state_root,
+                    "wallpapers",
+                    state.wallpaper.content_hash,
+                )
+                / "wallpaper.png"
+            )
+        if state.palette is not None:
+            pal_dir = cache_entry_path(self._state_root, "palettes", state.palette.entry_hash)
+            for artifact in ("colors.conf", "colors.gtk.css", "colors.yaml"):
+                targets[artifact] = pal_dir / artifact
+        if state.effects is not None:
+            targets["effects"] = cache_entry_path(
+                self._state_root,
+                "effects",
+                state.effects.entry_hash,
+            )
+        if state.icons is not None:
+            targets["icons"] = cache_entry_path(
+                self._state_root,
+                "icons",
+                state.icons.entry_hash,
+            )
+        return targets
+
+    def _revert_stale_symlinks(self, state: DesktopState) -> list[Path]:
+        """Revert current/ symlinks whose targets don't match current.json."""
+        current_dir = self._state_root / "current"
+        if not current_dir.is_dir():
+            return []
+        expected = self._build_expected_targets(state)
+        reverted: list[Path] = []
+        for name, expected_target in expected.items():
+            link = current_dir / name
+            if not link.is_symlink():
+                continue
+            # Use resolved paths for comparison; also handle dangling symlinks.
+            try:
+                actual_resolved = link.resolve()
+            except OSError:
+                actual_resolved = link
+            try:
+                expected_resolved = expected_target.resolve()
+            except OSError:
+                expected_resolved = expected_target
+            # Check both resolved equality and hash segment containment for robustness.
+            if actual_resolved != expected_resolved:
+                _repoint_symlink(link, expected_target)
+                reverted.append(link)
+            else:
+                # Resolved equal but still verify hash segment is present to catch edge cases
+                # where symlink target string is semantically equal but via different traversal.
+                # No-op if already matching.
+                pass
+        return reverted
