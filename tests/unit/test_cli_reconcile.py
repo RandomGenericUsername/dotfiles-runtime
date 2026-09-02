@@ -142,8 +142,9 @@ class TestReconcileCompositionRootWiring:
     def test_composition_root_wires_all_reloaders(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """AC 5 — the reconcile composition root wires Hyprland, AGS and
-        Hyprpaper (with the reconcile ``state_root``), in that order."""
+        """AC 5 — the reconcile composition root wires Hyprland, AGS,
+        Hyprpaper and the terminal palette applier (each with the
+        reconcile ``state_root``), in that order."""
         captured: dict[str, Any] = {}
 
         class _FakeUseCase:
@@ -162,11 +163,18 @@ class TestReconcileCompositionRootWiring:
         from runtime.adapters.ags_reloader import AgsReloader
         from runtime.adapters.hyprland_reloader import HyprlandReloader
         from runtime.adapters.hyprpaper_reloader import HyprpaperReloader
+        from runtime.adapters.terminal_color_applier import TerminalColorApplier
 
         reloaders = captured["reloaders"]
         assert reloaders is not None
-        assert [type(r) for r in reloaders] == [HyprlandReloader, AgsReloader, HyprpaperReloader]
+        assert [type(r) for r in reloaders] == [
+            HyprlandReloader,
+            AgsReloader,
+            HyprpaperReloader,
+            TerminalColorApplier,
+        ]
         assert reloaders[2]._state_root == captured["state_root"]  # type: ignore[attr-defined]
+        assert reloaders[3]._state_root == captured["state_root"]  # type: ignore[attr-defined]
 
 
 class TestReconcileCliErrorMapping:

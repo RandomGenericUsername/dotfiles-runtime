@@ -9,8 +9,8 @@ Scope boundary (Stories 2.1–2.3):
 - Repoints ``current/`` symlinks to converge the desktop with
   ``current.json``, appends ``history.jsonl``, persists refreshed
   ``current.json``, and triggers one reload per injected
-  ``IDesktopReloader`` (Hyprland is Story 2.3; AGS is Story 2.4;
-  Hyprpaper is Story 2.5; terminal follows in 2.6).
+``IDesktopReloader`` (Hyprland is Story 2.3; AGS is Story 2.4;
+   Hyprpaper is Story 2.5; terminal is Story 2.6).
 - Does NOT rewire ``wallpaper set`` (Story 2.7 capstone).
 
 Swap sequence order (shared-data-contract, non-negotiable):

@@ -155,8 +155,22 @@ class _PassingHyprpaperReloader:
 
     The composition root wires a real ``HyprpaperReloader``, whose IPC
     invocation would reach the live desktop hyprpaper when a session is
-    running; the crash-recovery tests must not touch it.
+    running; the crash-recovery tests must not touch it. The terminal
+    palette applier (``_PassingTerminalColorApplier`` below) is isolated
+    for the same reason: the real adapter would write OSC bytes to the
+    dev host's live ``/dev/tty`` (recoloring the developer's actual
+    terminal) or fail surfaced and flip ``reload_failures``.
     """
+
+    def __init__(self, **_kwargs: object) -> None:
+        pass
+
+    def reload(self) -> bool:
+        return True
+
+
+class _PassingTerminalColorApplier:
+    """Isolates the CLI from the real ``/dev/tty`` on this host."""
 
     def __init__(self, **_kwargs: object) -> None:
         pass
@@ -186,6 +200,10 @@ class TestCliCrashRecoveryLogging:
             "runtime.adapters.hyprpaper_reloader.HyprpaperReloader",
             _PassingHyprpaperReloader,
         )
+        monkeypatch.setattr(
+            "runtime.adapters.terminal_color_applier.TerminalColorApplier",
+            _PassingTerminalColorApplier,
+        )
 
         with caplog.at_level(logging.INFO, logger="runtime.application.reconcile"):
             result = runner.invoke(app, ["reconcile"])
@@ -203,6 +221,10 @@ class TestCliCrashRecoveryLogging:
         monkeypatch.setattr(
             "runtime.adapters.hyprpaper_reloader.HyprpaperReloader",
             _PassingHyprpaperReloader,
+        )
+        monkeypatch.setattr(
+            "runtime.adapters.terminal_color_applier.TerminalColorApplier",
+            _PassingTerminalColorApplier,
         )
 
         with caplog.at_level(logging.DEBUG, logger="runtime.application.reconcile"):

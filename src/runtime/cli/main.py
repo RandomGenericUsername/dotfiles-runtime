@@ -314,6 +314,7 @@ def _run_reconcile() -> ReconcileResult:
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
+    from runtime.adapters.terminal_color_applier import TerminalColorApplier
     from runtime.adapters.weg_adapter import WegAdapter
     from runtime.application.reconcile import ReconcileDesktopStateUseCase
 
@@ -326,7 +327,12 @@ def _run_reconcile() -> ReconcileResult:
         state_root=state_root,
         seeder=CacheSeeder(state_root),
         mutex=FlockSeedMutex(state_root / ".seed.lock"),
-        reloaders=[HyprlandReloader(), AgsReloader(), HyprpaperReloader(state_root=state_root)],
+        reloaders=[
+            HyprlandReloader(),
+            AgsReloader(),
+            HyprpaperReloader(state_root=state_root),
+            TerminalColorApplier(state_root=state_root),
+        ],
     )
     return use_case.run()
 
@@ -341,9 +347,10 @@ def reconcile(
     on miss), repoints current/ symlinks atomically, saves refreshed
     current.json, and appends a history.jsonl line with trigger "reconcile".
 
-    Desktop reload (contract step 5) restarts Hyprland, restarts AGS, and
-    applies the Hyprpaper wallpaper IPC per monitor via the reloaders wired
-    in the composition root.
+    Desktop reload (contract step 5) restarts Hyprland, restarts AGS,
+    applies the Hyprpaper wallpaper IPC per monitor, and applies the
+    terminal palette via OSC sequences via the reloaders wired in the
+    composition root.
     """
     renderer = create_renderer(output_format)
     try:
