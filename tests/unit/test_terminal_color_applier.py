@@ -113,6 +113,23 @@ def _truncated(text: str) -> str:
     return "\n".join(text.splitlines()[:6]) + "\n"
 
 
+def _junk_line(text: str) -> str:
+    return text.replace('background: "#1a1b26"', 'background: "#1a1b26"\njunk: "line"')
+
+
+def _duplicate_scalar(text: str) -> str:
+    lines = [*text.splitlines()]
+    lines.insert(1, 'foreground: "#ffffff"')
+    return "\n".join(lines) + "\n"
+
+
+def _split_colors_list(text: str) -> str:
+    lines = [*text.splitlines()]
+    start = lines.index("colors:")
+    lines.insert(start + 9, "colors:")
+    return "\n".join(lines) + "\n"
+
+
 class TestTerminalColorApplierParseAndSequence:
     def test_builds_osc_sequences_from_pinned_schema(self, tmp_path: Path) -> None:
         state_root = _make_colors_yaml(tmp_path)
@@ -162,10 +179,11 @@ class TestTerminalColorApplierVacuous:
     def test_vacuous_true_wins_without_tty(self, tmp_path: Path) -> None:
         state_root = tmp_path / "state"
         (state_root / "current").mkdir(parents=True)
-        unseen = tmp_path / "sink"
-        applier = TerminalColorApplier(state_root=state_root, tty_path=unseen)
+        unreachable = tmp_path / "is-a-dir"
+        unreachable.mkdir()
+        applier = TerminalColorApplier(state_root=state_root, tty_path=unreachable)
         assert applier.reload() is True
-        assert not unseen.exists()
+        assert not any(unreachable.iterdir()), "vacuous path must not touch the TTY"
 
     def test_missing_consumer_no_write_attempted(self, tmp_path: Path) -> None:
         state_root = tmp_path / "state"
@@ -186,7 +204,16 @@ class TestTerminalColorApplierFailure:
 
     @pytest.mark.parametrize(
         "mutate",
-        [_drop_cursor, _fifteen_colors, _seventeen_colors, _non_hex_color, _truncated],
+        [
+            _drop_cursor,
+            _fifteen_colors,
+            _seventeen_colors,
+            _non_hex_color,
+            _truncated,
+            _junk_line,
+            _duplicate_scalar,
+            _split_colors_list,
+        ],
     )
     def test_malformed_yaml_is_failure(self, tmp_path: Path, mutate: Callable[[str], str]) -> None:
         state_root = _make_colors_yaml(tmp_path, mutate(_canonical()))
@@ -194,6 +221,48 @@ class TestTerminalColorApplierFailure:
         applier = TerminalColorApplier(state_root=state_root, tty_path=sink)
         assert applier.reload() is False
         assert not sink.exists()
+
+    def test_regular_file_entry_is_traversed(self, tmp_path: Path) -> None:
+        """An existing-but-not-symlink entry is not dangling — it is read and applied."""
+        state_root = tmp_path / "state"
+        current = state_root / "current"
+        current.mkdir(parents=True)
+        (current / "colors.yaml").write_text(_canonical())
+        sink = tmp_path / "tty"
+        applier = TerminalColorApplier(state_root=state_root, tty_path=sink)
+        assert applier.reload() is True
+        assert sink.read_bytes() == _expected_payload()
+
+    def test_unreadable_colors_yaml_is_failure(self, tmp_path: Path) -> None:
+        state_root = _make_colors_yaml(tmp_path)
+        (state_root / "palette" / "colors.yaml").chmod(0)
+        sink = tmp_path / "sink"
+        applier = TerminalColorApplier(state_root=state_root, tty_path=sink)
+        assert applier.reload() is False
+        assert not sink.exists()
+
+    def test_non_utf8_colors_yaml_is_failure(self, tmp_path: Path) -> None:
+        state_root = _make_colors_yaml(tmp_path)
+        (state_root / "palette" / "colors.yaml").write_bytes(b"\xff\xfe\x00binary-garbage")
+        sink = tmp_path / "sink"
+        applier = TerminalColorApplier(state_root=state_root, tty_path=sink)
+        assert applier.reload() is False
+        assert not sink.exists()
+
+    def test_bom_prefixed_yaml_is_failure(self, tmp_path: Path) -> None:
+        state_root = _make_colors_yaml(tmp_path, "\ufeff" + _canonical())
+        sink = tmp_path / "sink"
+        applier = TerminalColorApplier(state_root=state_root, tty_path=sink)
+        assert applier.reload() is False
+        assert not sink.exists()
+
+    def test_crlf_yaml_is_accepted(self, tmp_path: Path) -> None:
+        """``read_text`` universal-newline translation normalizes CRLF before parsing."""
+        state_root = _make_colors_yaml(tmp_path, _canonical().replace("\n", "\r\n"))
+        sink = tmp_path / "tty"
+        applier = TerminalColorApplier(state_root=state_root, tty_path=sink)
+        assert applier.reload() is True
+        assert sink.read_bytes() == _expected_payload()
 
     @pytest.mark.parametrize(
         "make_target", [_target_is_dir, _target_missing_dir, _target_no_permission]
@@ -222,9 +291,7 @@ class TestTerminalColorApplierFailure:
 
 class TestTerminalColorApplierInterface:
     def test_port_conformance(self, tmp_path: Path) -> None:
-        applier = TerminalColorApplier(
-            state_root=tmp_path / "state", tty_path=tmp_path / "tty"
-        )
+        applier = TerminalColorApplier(state_root=tmp_path / "state", tty_path=tmp_path / "tty")
         assert isinstance(applier, IDesktopReloader)
 
 
@@ -238,9 +305,7 @@ class TestTerminalColorApplierStateRoot:
 
         with patch.dict(os.environ, {"XDG_STATE_HOME": ""}):
             fallback = TerminalColorApplier(state_root=None)
-        assert fallback._state_root == (
-            Path.home() / ".local" / "state" / "dotfiles"
-        ).resolve()
+        assert fallback._state_root == (Path.home() / ".local" / "state" / "dotfiles").resolve()
 
 
 class _FakeMutex:
@@ -261,7 +326,7 @@ class _FakeCsg:
         from runtime.domain.models import PaletteArtifacts, PaletteEntry
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "colors.yaml").write_text("colors: []")
+        (output_dir / "colors.yaml").write_text(_canonical())
         (output_dir / "colors.conf").write_text("colors {}")
         (output_dir / "colors.gtk.css").write_text("colors {}")
         return PaletteEntry(
@@ -299,7 +364,9 @@ class _FakeWeg:
 
 
 class _FakeItr:
-    def render(self, palette_hash: str, templates_dir: Path, mappings_path: Path, output_dir: Path) -> object:
+    def render(
+        self, palette_hash: str, templates_dir: Path, mappings_path: Path, output_dir: Path
+    ) -> object:
         from runtime.adapters.hashing import hash_file
         from runtime.domain.models import IconsArtifacts, IconsEntry
 
@@ -312,9 +379,7 @@ class _FakeItr:
             source_palette_hash=palette_hash,
             input_templates_hash="5" * 64,
             input_mappings_hash="6" * 64,
-            artifact_hashes=IconsArtifacts(
-                **{"icon.svg": hash_file(output_dir / "icon.svg")}
-            ),
+            artifact_hashes=IconsArtifacts(**{"icon.svg": hash_file(output_dir / "icon.svg")}),
             generated_at=_now_z(),
         )
 
@@ -360,11 +425,6 @@ def _make_applied(tmp_path: Path) -> tuple[object, Path, Path]:
     return repo, state_root, install_spine
 
 
-def _canonicalize_palette_yaml(state_root: Path) -> None:
-    for colors_yaml in sorted((state_root / "cache" / "palettes").glob("*/colors.yaml")):
-        colors_yaml.write_text(_canonical())
-
-
 def _make_reconcile_with_reloaders(
     repo: object,
     state_root: Path,
@@ -399,7 +459,9 @@ class _CountingReloader(IDesktopReloader):
 class TestTerminalColorApplierReconcile:
     def test_terminal_failure_populates_reload_failures(self, tmp_path: Path) -> None:
         repo, state_root, install_spine = _make_applied(tmp_path)
-        terminal = TerminalColorApplier(state_root=state_root, tty_path=tmp_path / "sink")
+        unwritable = tmp_path / "unwritable-sink"
+        unwritable.mkdir()
+        terminal = TerminalColorApplier(state_root=state_root, tty_path=unwritable)
         passing = _CountingReloader()
         use_case = _make_reconcile_with_reloaders(
             repo, state_root, install_spine, [passing, terminal]
@@ -407,6 +469,7 @@ class TestTerminalColorApplierReconcile:
         result = use_case.run()  # type: ignore[attr-defined]
         assert "TerminalColorApplier" in result.reload_failures
         assert "_CountingReloader" not in result.reload_failures
+        assert not any(unwritable.iterdir()), "no palette bytes may be written on failure"
 
     def test_all_reloaders_invoked_once(self, tmp_path: Path) -> None:
         repo, state_root, install_spine = _make_applied(tmp_path)

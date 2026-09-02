@@ -73,9 +73,7 @@ class _FakeCsg:
     def generate(self, wallpaper_path: Path, output_dir: Path) -> object:
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "colors.yaml").write_text(_pinned_colors_yaml())
-        (output_dir / "colors.conf").write_text(
-            "background: #1a1b26\nforeground: #c0caf5\n"
-        )
+        (output_dir / "colors.conf").write_text("background: #1a1b26\nforeground: #c0caf5\n")
         (output_dir / "colors.gtk.css").write_text("/* palette */")
         return PaletteEntry(
             hash_algorithm="sha256",
