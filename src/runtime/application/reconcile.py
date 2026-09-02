@@ -5,20 +5,25 @@ Implements AD-1 (hexagonal), AD-2 (input changes invalidate), AD-5
 (consumer wiring), AD-18 (preserve monitor configs), AD-20 (CLI
 rendering).
 
-Scope boundary (Stories 2.1–2.3):
+Scope boundary (Stories 2.1–2.3, 2.7):
 - Repoints ``current/`` symlinks to converge the desktop with
   ``current.json``, appends ``history.jsonl``, persists refreshed
   ``current.json``, and triggers one reload per injected
   ``IDesktopReloader`` (Hyprland is Story 2.3; AGS is Story 2.4;
   Hyprpaper is Story 2.5; terminal is Story 2.6).
-- Does NOT rewire ``wallpaper set`` (Story 2.7 capstone).
+- ``wallpaper set`` (Story 2.7 capstone, shipped) chains this use case
+  after ``ApplyWallpaperUseCase`` in the CLI composition root, passing
+  the history trigger ``"set"``; the standalone ``reconcile`` command
+  keeps the default trigger ``"reconcile"``.
 
 Swap sequence order (shared-data-contract, non-negotiable):
 1. Ensure cache entries (wallpaper re-import on miss; palette/icons/effects
    regeneration with hash-mismatch guard; effects/icons graceful).
 2. Repoint ONLY ``current/`` symlinks via ``CacheSeeder``.
 3. ``current.json`` follows (refreshed ``applied_at``).
-4. History: append one ``history.jsonl`` line (trigger ``"reconcile"``).
+4. History: append one ``history.jsonl`` line (trigger ``"reconcile"``
+   by default; ``wallpaper set`` passes ``"set"`` via ``run(trigger=...)``
+   — the pinned enum is ``seed|set|reconcile|force``).
 5. Reload desktop consumers (fire-and-report, per injected reloader).
 
 Derivation (step 1) runs OUTSIDE the lock (staging is race-safe;
@@ -60,6 +65,8 @@ from runtime.ports.state_repository import IStateRepository
 
 logger = logging.getLogger(__name__)
 
+_VALID_TRIGGERS = frozenset({"seed", "set", "reconcile", "force"})
+
 
 @dataclass(frozen=True, slots=True)
 class ReconcileResult:
@@ -82,7 +89,8 @@ class ReconcileDesktopStateUseCase:
        ``ApplyWallpaperUseCase``)
     4. Repoint symlinks via ``CacheSeeder.repoint_current_symlinks``
     5. Re-save ``current.json`` with refreshed ``applied_at``
-    6. Append ``history.jsonl`` (trigger ``"reconcile"``)
+    6. Append ``history.jsonl`` (trigger ``"reconcile"`` by default;
+       ``wallpaper set`` passes ``"set"`` via ``run(trigger=...)``)
     7. Reload desktop consumers (fire-and-report, per injected reloader)
 
     Constructor receives ports, the injected ``CacheSeeder`` adapter, the
@@ -118,18 +126,28 @@ class ReconcileDesktopStateUseCase:
             install_spine=install_spine,
         )
 
-    def run(self) -> ReconcileResult:
+    def run(self, trigger: str = "reconcile") -> ReconcileResult:
         """Reconcile: entries → symlinks → current.json → history → reload.
 
+        Args:
+            trigger: history line trigger, validated against the pinned
+                enum ``seed|set|reconcile|force`` (the standalone
+                ``reconcile`` command keeps the default; the
+                ``wallpaper set`` capstone passes ``"set"``).
+
         Raises:
+            ValueError: if ``trigger`` is not one of the pinned enum
+                values (fail-loud — never invent triggers), or
+                propagated from a corrupt ``current.json``.
             RuntimeError: if ``current.json`` is absent (nothing to
                 reconcile), palette (hard dependency) regeneration fails,
                 wallpaper entry cannot be rebuilt, or hash-mismatch guard
                 fires (AC 6b).
-            ValueError: propagated from a corrupt ``current.json`` (fail-
-                fast — never swallowed into a reseed).
             OSError: on filesystem failures.
         """
+        if trigger not in _VALID_TRIGGERS:
+            valid = ", ".join(sorted(_VALID_TRIGGERS))
+            raise ValueError(f"invalid history trigger: {trigger!r} (expected one of {valid})")
         # Fail-fast corrupt/absent guard (mirrors apply):
         state = self._state_repo.load_current()
         if state is None:
@@ -246,7 +264,7 @@ class ReconcileDesktopStateUseCase:
 
         # Step 4 — history (outside the lock — O_APPEND + fsync is atomic)
         self._seeder.append_history(
-            trigger="reconcile",
+            trigger=trigger,
             wallpaper_hash=saved.wallpaper.content_hash,
             palette_hash=saved.palette.entry_hash if saved.palette else None,
             effects_hash=saved.effects.entry_hash if saved.effects else None,

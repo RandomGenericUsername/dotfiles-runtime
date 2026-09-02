@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -18,6 +19,7 @@ from cli_output.domain.views import CustomView, ErrorView
 if TYPE_CHECKING:
     from runtime.application.apply_wallpaper import ApplyWallpaperResult
     from runtime.application.reconcile import ReconcileResult
+    from runtime.ports.desktop_reloader import IDesktopReloader
 
 app = typer.Typer(
     name="dotfiles-runtime",
@@ -26,7 +28,7 @@ app = typer.Typer(
         "Manages wallpaper, state, history, and cache for the dotfiles system.\n\n"
         "Commands:\n"
         "  version  Show the installed package version\n"
-        "  wallpaper set  Derive, cache, and persist state for a wallpaper"
+        "  wallpaper set  Derive, cache, swap, reload, and persist state for a wallpaper"
     ),
 )
 
@@ -172,16 +174,55 @@ def main_callback(
     _run_seed_if_needed()
 
 
-def _run_wallpaper_set(image_path: Path) -> ApplyWallpaperResult:
-    """Compose and run ApplyWallpaperUseCase (wallpaper set command).
+@dataclass(frozen=True, slots=True)
+class _WallpaperSetResult:
+    """Combined outcome of the ``wallpaper set`` apply→reconcile chain.
 
-    Mirrors ``_run_seed_if_needed``'s wiring: resolve state_root /
-    install_spine (both absolute), construct the JSON state repository,
-    the CSG/WEG/ITR adapters, the ``CacheSeeder``, and the state mutex,
-    then inject all of them into ``ApplyWallpaperUseCase``. The mutex is
-    the same flock file the seeder uses: apply holds it blocking around
-    its read-modify-write of current.json, so a concurrent first-run seed
-    can never be overtaken (Story 1.13 review, D1 decision).
+    Keeps the apply's per-layer cache-hit descriptors (which layers were
+    derived vs served from cache) alongside the reconcile's swap/reload
+    data (``repointed``/``skipped``/``cache_regenerated``/
+    ``reload_failures``) so the CLI renders both coherently.
+    """
+
+    apply: ApplyWallpaperResult
+    reconcile: ReconcileResult
+
+
+def _build_reloaders(state_root: Path) -> list[IDesktopReloader]:
+    """Build the deterministic four-consumer reloader list (AD-17).
+
+    Shared by ``reconcile`` and ``wallpaper set`` so both commands reload
+    the IDENTICAL consumers in the same order: Hyprland (``hyprctl
+    reload``), AGS (restart), Hyprpaper (per-monitor IPC from
+    ``current.json``), terminal palette (OSC from ``current/colors.yaml``).
+    """
+    from runtime.adapters.ags_reloader import AgsReloader
+    from runtime.adapters.hyprland_reloader import HyprlandReloader
+    from runtime.adapters.hyprpaper_reloader import HyprpaperReloader
+    from runtime.adapters.terminal_color_applier import TerminalColorApplier
+
+    return [
+        HyprlandReloader(),
+        AgsReloader(),
+        HyprpaperReloader(state_root=state_root),
+        TerminalColorApplier(state_root=state_root),
+    ]
+
+
+def _run_wallpaper_set(image_path: Path) -> _WallpaperSetResult:
+    """Compose and run ApplyWallpaperUseCase → ReconcileDesktopStateUseCase.
+
+    The full ``wallpaper set`` pipeline (AD-12): apply derives the three
+    layers, ensures cache entries, and persists ``current.json``; the
+    chained reconcile then performs the swap sequence (cache-ensure →
+    parent-first symlink repoint → ``current.json`` → ``history.jsonl``
+    with trigger ``"set"``) and reloads all four desktop consumers.
+    Composition-root-only orchestration: no application-layer
+    orchestrator merges the two use cases. Both passes are wired with
+    the SAME adapters and mutex as ``_run_seed_if_needed`` /
+    ``_run_reconcile`` — the mutex is the same flock file the seeder
+    uses, held sequentially by apply (load→save) then reconcile
+    (load→repoint→save), matching the AD-12 pipeline.
     """
     state_root = _resolve_state_root()
     install_spine = _resolve_install_spine()
@@ -193,8 +234,9 @@ def _run_wallpaper_set(image_path: Path) -> ApplyWallpaperResult:
     from runtime.adapters.seeder import CacheSeeder
     from runtime.adapters.weg_adapter import WegAdapter
     from runtime.application.apply_wallpaper import ApplyWallpaperUseCase
+    from runtime.application.reconcile import ReconcileDesktopStateUseCase
 
-    use_case = ApplyWallpaperUseCase(
+    apply_result = ApplyWallpaperUseCase(
         state_repo=JsonStateRepository(state_root=state_root),
         csg=CsgAdapter(),
         weg=WegAdapter(),
@@ -203,8 +245,21 @@ def _run_wallpaper_set(image_path: Path) -> ApplyWallpaperResult:
         state_root=state_root,
         seeder=CacheSeeder(state_root),
         mutex=FlockSeedMutex(state_root / ".seed.lock"),
-    )
-    return use_case.run(image_path)
+    ).run(image_path)
+
+    reconcile_result = ReconcileDesktopStateUseCase(
+        state_repo=JsonStateRepository(state_root=state_root),
+        csg=CsgAdapter(),
+        weg=WegAdapter(),
+        itr=ItrAdapter(),
+        install_spine=install_spine,
+        state_root=state_root,
+        seeder=CacheSeeder(state_root),
+        mutex=FlockSeedMutex(state_root / ".seed.lock"),
+        reloaders=_build_reloaders(state_root),
+    ).run(trigger="set")
+
+    return _WallpaperSetResult(apply=apply_result, reconcile=reconcile_result)
 
 
 @app.command(help="Show the installed package version")
@@ -235,12 +290,16 @@ def wallpaper_set(
     image_path: Path = _IMAGE_PATH_ARG,
     output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
 ) -> None:
-    """Derive, cache, and persist the desktop state for a wallpaper.
+    """Derive, cache, swap, reload, and persist state for a wallpaper.
 
-    The root callback has already run first-run seeding; the apply
-    ensures cache entries for the derived layers (zero tool invocations
-    on cache hits) and writes current.json. Symlink repoint, history,
-    and desktop reload are Epic 2 scope (ReconcileDesktopStateUseCase).
+    The full end-to-end pipeline in one synchronous command (AD-12):
+    apply derives the palette/effects/icons layers, ensures cache
+    entries (zero tool invocations on cache hits), and writes
+    ``current.json``; the chained reconcile then repoints the
+    ``current/`` symlinks atomically, appends a ``history.jsonl`` line
+    (trigger ``"set"``), and reloads all four desktop consumers
+    (Hyprland, AGS, Hyprpaper, terminal palette). Reload failures are
+    surfaced per consumer and exit non-zero (R5).
     """
     renderer = create_renderer(output_format)
     try:
@@ -259,33 +318,55 @@ def wallpaper_set(
         )
         raise typer.Exit(code=1) from None
 
-    state = result.state
-    palette_desc = "cache hit" if result.cache_hit_palette else "generated"
+    # Reload result (contract step 5): the wired reloaders populate
+    # ReconcileResult.reload_failures; a non-empty list is surfaced and
+    # exits non-zero per R5 (no daemon retry) — the exact pattern the
+    # reconcile command uses.
+    if result.reconcile.reload_failures:
+        failed = ", ".join(result.reconcile.reload_failures)
+        logger.error("wallpaper set: reload failed for %s", failed)
+        renderer.error(
+            ErrorView(
+                kind="ReloadError",
+                message=f"reload failed for: {failed}",
+            )
+        )
+        raise typer.Exit(code=1) from None
+
+    state = result.apply.state
+    palette_desc = "cache hit" if result.apply.cache_hit_palette else "generated"
     effects_desc = (
         "cache hit"
-        if result.cache_hit_effects
-        else ("generated" if result.effects else "unavailable")
+        if result.apply.cache_hit_effects
+        else ("generated" if result.apply.effects else "unavailable")
     )
     icons_desc = (
-        "cache hit" if result.cache_hit_icons else ("generated" if result.icons else "unavailable")
+        "cache hit"
+        if result.apply.cache_hit_icons
+        else ("generated" if result.apply.icons else "unavailable")
     )
     summary = (
-        f"wallpaper applied: {result.wallpaper_hash[:12]}"
+        f"wallpaper applied: {result.apply.wallpaper_hash[:12]}"
         f" (palette {palette_desc}, effects {effects_desc}, icons {icons_desc})"
+        f", {len(result.reconcile.repointed)} symlink(s) repointed"
     )
     renderer.custom(
         CustomView(
             plain=summary,
             object={
-                "wallpaper": result.wallpaper_hash,
+                "wallpaper": result.apply.wallpaper_hash,
                 "palette": state.palette.entry_hash if state.palette else None,
                 "effects": state.effects.entry_hash if state.effects else None,
                 "icons": state.icons.entry_hash if state.icons else None,
                 "cache_hits": {
-                    "palette": result.cache_hit_palette,
-                    "effects": result.cache_hit_effects,
-                    "icons": result.cache_hit_icons,
+                    "palette": result.apply.cache_hit_palette,
+                    "effects": result.apply.cache_hit_effects,
+                    "icons": result.apply.cache_hit_icons,
                 },
+                "repointed": [str(p) for p in result.reconcile.repointed],
+                "skipped": list(result.reconcile.skipped),
+                "cache_regenerated": list(result.reconcile.cache_regenerated),
+                "reload_failures": list(result.reconcile.reload_failures),
             },
             rich=summary,
         )
@@ -306,15 +387,11 @@ def _run_reconcile() -> ReconcileResult:
     state_root = _resolve_state_root()
     install_spine = _resolve_install_spine()
 
-    from runtime.adapters.ags_reloader import AgsReloader
     from runtime.adapters.csg_adapter import CsgAdapter
     from runtime.adapters.flock_seed_mutex import FlockSeedMutex
-    from runtime.adapters.hyprland_reloader import HyprlandReloader
-    from runtime.adapters.hyprpaper_reloader import HyprpaperReloader
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
-    from runtime.adapters.terminal_color_applier import TerminalColorApplier
     from runtime.adapters.weg_adapter import WegAdapter
     from runtime.application.reconcile import ReconcileDesktopStateUseCase
 
@@ -327,12 +404,7 @@ def _run_reconcile() -> ReconcileResult:
         state_root=state_root,
         seeder=CacheSeeder(state_root),
         mutex=FlockSeedMutex(state_root / ".seed.lock"),
-        reloaders=[
-            HyprlandReloader(),
-            AgsReloader(),
-            HyprpaperReloader(state_root=state_root),
-            TerminalColorApplier(state_root=state_root),
-        ],
+        reloaders=_build_reloaders(state_root),
     )
     return use_case.run()
 

@@ -686,6 +686,43 @@ class TestReconcileHistory:
         assert line["ts"].endswith("Z")
 
 
+class TestReconcileHistoryTriggerParam:
+    """Story 2.7: run(trigger=...) threads the history trigger; the
+    default stays "reconcile"; the pinned enum is enforced fail-loud
+    INSIDE run() only (CacheSeeder.append_history stays trigger-agnostic)."""
+
+    @pytest.mark.parametrize("trigger", ["seed", "set", "reconcile", "force"])
+    def test_run_valid_trigger_appends_history_line(self, tmp_path: Path, trigger: str) -> None:
+        applied = _apply_state(tmp_path)
+        use_case = _make_reconcile(applied)
+
+        use_case.run(trigger=trigger)
+
+        lines = (applied.state_root / "history.jsonl").read_text().splitlines()
+        assert len(lines) == 1
+        assert json.loads(lines[0])["trigger"] == trigger
+
+    def test_run_default_trigger_is_reconcile(self, tmp_path: Path) -> None:
+        applied = _apply_state(tmp_path)
+        use_case = _make_reconcile(applied)
+
+        use_case.run()
+
+        lines = (applied.state_root / "history.jsonl").read_text().splitlines()
+        assert json.loads(lines[0])["trigger"] == "reconcile"
+
+    @pytest.mark.parametrize("trigger", ["apply", "Apply", "SET", "", "set ", "restart"])
+    def test_run_invalid_trigger_raises_value_error(
+        self, tmp_path: Path, trigger: str
+    ) -> None:
+        applied = _apply_state(tmp_path)
+        use_case = _make_reconcile(applied)
+
+        with pytest.raises(ValueError, match="invalid history trigger"):
+            use_case.run(trigger=trigger)
+        assert not (applied.state_root / "history.jsonl").exists()
+
+
 class TestReconcileStructuralScopeLock:
     """AC: the reload channel is constructor-injected only — the accepted
     parameter set is pinned exactly (tripwire against unexpected reloader/

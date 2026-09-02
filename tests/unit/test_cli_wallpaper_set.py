@@ -92,6 +92,55 @@ def _result(**overrides: Any) -> Any:
     return ApplyWallpaperResult(**kwargs)
 
 
+def _reconcile_result(
+    *, repointed: list[Path] | None = None, reload_failures: list[str] | None = None
+) -> Any:
+    from runtime.application.reconcile import ReconcileResult
+
+    wh = "f" * 64
+    now = _now_z()
+    state = DesktopState(
+        schema_version=2,
+        wallpaper=WallpaperEntry(
+            hash_algorithm="sha256",
+            kind="wallpaper",
+            content_hash=wh,
+            source_path="/img/wall.png",
+            imported_at=now,
+        ),
+        monitors={
+            "DP-1": MonitorWallpaperConfig(
+                backend=BackendType.hyprpaper,
+                source_hash=wh,
+                fit_mode=FitMode.cover,
+                mpv_options=None,
+                ipc_socket=None,
+            )
+        },
+        palette=_palette(),
+        effects=None,
+        icons=None,
+        applied_at=now,
+    )
+    return ReconcileResult(
+        repointed=repointed if repointed is not None else [Path("/state/current/wallpaper-DP-1.png")],
+        skipped=[],
+        state=state,
+        cache_regenerated=[],
+        reload_failures=reload_failures or [],
+    )
+
+
+def _set_result(
+    *,
+    reconcile: Any | None = None,
+    **overrides: Any,
+) -> Any:
+    from runtime.cli.main import _WallpaperSetResult
+
+    return _WallpaperSetResult(apply=_result(**overrides), reconcile=reconcile or _reconcile_result())
+
+
 @pytest.fixture(autouse=True)
 def _quiet_seed_hook(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -112,7 +161,7 @@ class TestWallpaperSetCliSuccess:
     def test_success_exits_zero_and_renders_summary(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _fake_composition(monkeypatch, lambda img: _result())
+        _fake_composition(monkeypatch, lambda img: _set_result())
         result = runner.invoke(app, ["wallpaper", "set", "/img/wall.png"])
 
         assert result.exit_code == 0
@@ -123,7 +172,7 @@ class TestWallpaperSetCliSuccess:
     def test_cache_hits_reflected_in_summary(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        res = _result(
+        res = _set_result(
             cache_hit_palette=True, cache_hit_effects=True, cache_hit_icons=True
         )
         _fake_composition(monkeypatch, lambda img: res)
@@ -135,7 +184,7 @@ class TestWallpaperSetCliSuccess:
     def test_json_format_renders_structured_object(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _fake_composition(monkeypatch, lambda img: _result())
+        _fake_composition(monkeypatch, lambda img: _set_result())
         result = runner.invoke(
             app, ["wallpaper", "set", "/img/wall.png", "--format", "json"]
         )
@@ -143,6 +192,96 @@ class TestWallpaperSetCliSuccess:
         assert result.exit_code == 0
         assert '"palette"' in result.output
         assert '"cache_hits"' in result.output
+        assert '"repointed"' in result.output
+        assert '"skipped"' in result.output
+        assert '"cache_regenerated"' in result.output
+        assert '"reload_failures"' in result.output
+
+    def test_reload_success_renders_repointed_summary(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        res = _set_result(
+            reconcile=_reconcile_result(
+                repointed=[
+                    Path("/state/current/wallpaper-DP-1.png"),
+                    Path("/state/current/colors.conf"),
+                ]
+            )
+        )
+        _fake_composition(monkeypatch, lambda img: res)
+        result = runner.invoke(app, ["wallpaper", "set", "/img/wall.png"])
+
+        assert result.exit_code == 0
+        assert "2 symlink(s) repointed" in result.output
+
+
+class TestWallpaperSetReloadFailureExit:
+    def test_reload_failures_maps_to_exit_1(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        res = _set_result(
+            reconcile=_reconcile_result(reload_failures=["HyprpaperReloader"])
+        )
+        _fake_composition(monkeypatch, lambda img: res)
+        result = runner.invoke(app, ["wallpaper", "set", "/img/wall.png"])
+
+        assert result.exit_code == 1
+        assert "reload failed for: HyprpaperReloader" in result.output
+
+
+class TestWallpaperSetCompositionRootWiring:
+    def test_composition_root_wires_apply_then_reconcile(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ``wallpaper set`` composition root constructs
+        ``ReconcileDesktopStateUseCase`` with the four reloaders and the
+        same ``state_root``, and runs it with trigger ``"set"`` (mirrors
+        TestReconcileCompositionRootWiring in test_cli_reconcile.py)."""
+        captured: dict[str, Any] = {}
+
+        class _FakeApplyUseCase:
+            def __init__(self, **kwargs: Any) -> None:
+                pass
+
+            def run(self, image_path: Path) -> Any:
+                return _result()
+
+        class _FakeReconcileUseCase:
+            def __init__(self, **kwargs: Any) -> None:
+                captured["reloaders"] = kwargs.get("reloaders")
+                captured["state_root"] = kwargs.get("state_root")
+
+            def run(self, trigger: str = "reconcile") -> Any:
+                captured["trigger"] = trigger
+                return _reconcile_result()
+
+        monkeypatch.setattr(
+            "runtime.application.apply_wallpaper.ApplyWallpaperUseCase", _FakeApplyUseCase
+        )
+        monkeypatch.setattr(
+            "runtime.application.reconcile.ReconcileDesktopStateUseCase",
+            _FakeReconcileUseCase,
+        )
+        import runtime.cli.main as cli_main
+
+        cli_main._run_wallpaper_set(Path("/img/wall.png"))
+
+        from runtime.adapters.ags_reloader import AgsReloader
+        from runtime.adapters.hyprland_reloader import HyprlandReloader
+        from runtime.adapters.hyprpaper_reloader import HyprpaperReloader
+        from runtime.adapters.terminal_color_applier import TerminalColorApplier
+
+        assert captured["trigger"] == "set"
+        reloaders = captured["reloaders"]
+        assert reloaders is not None
+        assert [type(r) for r in reloaders] == [
+            HyprlandReloader,
+            AgsReloader,
+            HyprpaperReloader,
+            TerminalColorApplier,
+        ]
+        assert reloaders[2]._state_root == captured["state_root"]  # type: ignore[attr-defined]
+        assert reloaders[3]._state_root == captured["state_root"]  # type: ignore[attr-defined]
 
 
 class TestWallpaperSetCliErrorMapping:

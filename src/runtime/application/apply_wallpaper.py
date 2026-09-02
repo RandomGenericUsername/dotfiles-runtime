@@ -11,8 +11,11 @@ Scope boundary (Story 1.13 — the Epic-1-to-Epic-2 seam):
   hit), and persists ``current.json`` (schema_version 2, atomic).
 - Does NOT repoint ``current/`` symlinks, does NOT append
   ``history.jsonl``, and does NOT invoke any desktop reload — the swap
-  sequence is owned by ``ReconcileDesktopStateUseCase`` (Epic 2).
-  ``current.json`` is the only persisted artifact of this story.
+  sequence is owned by ``ReconcileDesktopStateUseCase``. The
+  ``wallpaper set`` capstone (Story 2.7, shipped) chains this use case
+  into reconcile in the CLI composition root; the apply use case's own
+  contract is unchanged: it updates desired state and delegates the
+  actual swap to reconcile.
 
 Architecture:
 - Lives in ``application/`` (use-case layer) per AD-1, AD-13
@@ -167,7 +170,8 @@ class ApplyWallpaperUseCase:
 
         # Persist ONLY current.json — no symlink repoint, no history
         # append, no reload (AC 6; ReconcileDesktopStateUseCase owns the
-        # swap sequence in Epic 2). The read-modify-write of the state is
+        # swap sequence; the CLI capstone chains reconcile after apply).
+        # The read-modify-write of the state is
         # serialized against a concurrent first-run seed (and other
         # applies) via the blocking state mutex: the authoritative
         # load_current() happens inside the critical section so a seed
