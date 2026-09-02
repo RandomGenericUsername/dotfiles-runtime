@@ -722,6 +722,17 @@ class TestReconcileHistoryTriggerParam:
             use_case.run(trigger=trigger)
         assert not (applied.state_root / "history.jsonl").exists()
 
+    def test_run_unhashable_trigger_raises_value_error(self, tmp_path: Path) -> None:
+        """A non-str trigger must fail loud as ValueError (not TypeError) —
+        the fail-loud contract is the documented surface even for a
+        non-conforming caller."""
+        applied = _apply_state(tmp_path)
+        use_case = _make_reconcile(applied)
+
+        with pytest.raises(ValueError, match="invalid history trigger"):
+            use_case.run(trigger=["set"])  # type: ignore[arg-type]
+        assert not (applied.state_root / "history.jsonl").exists()
+
 
 class TestReconcileStructuralScopeLock:
     """AC: the reload channel is constructor-injected only — the accepted

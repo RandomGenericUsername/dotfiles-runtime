@@ -51,6 +51,7 @@ from runtime.domain.models import (
 from runtime.ports.color_scheme_generator import IColorSchemeGenerator
 from runtime.ports.effects_generator import IEffectsGenerator
 from runtime.ports.icon_renderer import IIconRenderer
+from runtime.ports.monitor_source import IMonitorSource
 from runtime.ports.seed_mutex import ISeedMutex
 from runtime.ports.state_repository import IStateRepository
 
@@ -105,12 +106,14 @@ class ApplyWallpaperUseCase:
         state_root: Path,
         seeder: CacheSeeder,
         mutex: ISeedMutex,
+        monitor_source: IMonitorSource | None = None,
     ) -> None:
         self._state_repo = state_repo
         self._install_spine = install_spine
         self._state_root = state_root
         self._seeder = seeder
         self._mutex = mutex
+        self._monitor_source = monitor_source
         self._pipeline = DerivationPipeline(
             state_root=state_root,
             seeder=seeder,
@@ -224,17 +227,19 @@ class ApplyWallpaperUseCase:
             raise ValueError(f"wallpaper image must be a regular file, got: {img}")
         return img
 
-    @staticmethod
     def _build_monitors(
-        existing: DesktopState | None, wallpaper_hash: str
+        self, existing: DesktopState | None, wallpaper_hash: str
     ) -> dict[str, MonitorWallpaperConfig]:
         """Preserve existing monitor configs, updating only source_hash.
 
         When ``existing`` is None (seed skipped — no provisioning spine)
-        or its ``monitors`` dict is empty, default to the seeder's
-        convention: single ``DEFAULT_MONITOR`` monitor, ``hyprpaper``
+        or its ``monitors`` dict is empty, default to the monitor set
+        returned by the injected ``IMonitorSource`` when available (real
+        outputs via ``HyprlandMonitorSource``), each ``hyprpaper``
         backend, ``cover`` fit (AD-18: a wallpaper change must never
-        silently reset a user's per-monitor backend).
+        silently reset a user's per-monitor backend). When no source is
+        injected or detection is unavailable, fall back to the legacy
+        single ``DEFAULT_MONITOR`` default.
         """
         if existing is not None and existing.monitors:
             return {
@@ -247,12 +252,17 @@ class ApplyWallpaperUseCase:
                 )
                 for name, cfg in existing.monitors.items()
             }
+        detected = (
+            self._monitor_source.detect_monitors() if self._monitor_source is not None else []
+        )
+        names = detected or [DEFAULT_MONITOR]
         return {
-            DEFAULT_MONITOR: MonitorWallpaperConfig(
+            name: MonitorWallpaperConfig(
                 backend=BackendType.hyprpaper,
                 source_hash=wallpaper_hash,
                 fit_mode=FitMode.cover,
                 mpv_options=None,
                 ipc_socket=None,
             )
+            for name in names
         }

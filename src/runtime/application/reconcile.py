@@ -145,7 +145,7 @@ class ReconcileDesktopStateUseCase:
                 fires (AC 6b).
             OSError: on filesystem failures.
         """
-        if trigger not in _VALID_TRIGGERS:
+        if not isinstance(trigger, str) or trigger not in _VALID_TRIGGERS:
             valid = ", ".join(sorted(_VALID_TRIGGERS))
             raise ValueError(f"invalid history trigger: {trigger!r} (expected one of {valid})")
         # Fail-fast corrupt/absent guard (mirrors apply):

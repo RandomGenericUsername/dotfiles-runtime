@@ -188,9 +188,7 @@ def _setup_spine(install_spine: Path) -> None:
     itr_templates = install_spine / "config" / "icon-templates-renderer" / "templates"
     itr_templates.mkdir(parents=True)
     (itr_templates / "terminal.svg").write_text("<svg/>")
-    (install_spine / "config" / "icon-templates-renderer" / "icons.yaml").write_text(
-        "icons: {}\n"
-    )
+    (install_spine / "config" / "icon-templates-renderer" / "icons.yaml").write_text("icons: {}\n")
 
 
 def _make_use_case(
@@ -202,6 +200,7 @@ def _make_use_case(
     itr: _FakeItr | None = None,
     install_spine: Path | None = None,
     mutex: Any | None = None,
+    monitor_source: Any | None = None,
 ) -> Any:
     from runtime.application.apply_wallpaper import ApplyWallpaperUseCase
 
@@ -216,6 +215,7 @@ def _make_use_case(
         state_root=state_root,
         seeder=CacheSeeder(state_root),
         mutex=mutex if mutex is not None else _FakeMutex(),
+        monitor_source=monitor_source,
     )
 
 
@@ -306,9 +306,7 @@ class TestApplyWallpaperHappyPath:
         assert state.icons.source_palette_hash == peh
         assert result.wallpaper_hash == wh
 
-    def test_cache_entry_dirs_named_by_computed_entry_hashes(
-        self, tmp_path: Path
-    ) -> None:
+    def test_cache_entry_dirs_named_by_computed_entry_hashes(self, tmp_path: Path) -> None:
         _setup_spine(tmp_path / "install")
         repo = _FakeStateRepo()
         use_case = _make_use_case(tmp_path, repo)
@@ -321,17 +319,11 @@ class TestApplyWallpaperHappyPath:
         assert state.effects is not None
         assert state.icons is not None
         assert (tmp_path / "state" / "cache" / "wallpapers" / wh).is_dir()
-        assert (
-            tmp_path / "state" / "cache" / "palettes" / state.palette.entry_hash
-        ).is_dir()
-        assert (
-            tmp_path / "state" / "cache" / "effects" / state.effects.entry_hash
-        ).is_dir()
+        assert (tmp_path / "state" / "cache" / "palettes" / state.palette.entry_hash).is_dir()
+        assert (tmp_path / "state" / "cache" / "effects" / state.effects.entry_hash).is_dir()
         assert (tmp_path / "state" / "cache" / "icons" / state.icons.entry_hash).is_dir()
 
-    def test_meta_json_matches_shared_data_contract_schemas(
-        self, tmp_path: Path
-    ) -> None:
+    def test_meta_json_matches_shared_data_contract_schemas(self, tmp_path: Path) -> None:
         """The staging-written meta.json (renamed to target) matches schemas."""
         _setup_spine(tmp_path / "install")
         repo = _FakeStateRepo()
@@ -432,9 +424,7 @@ class TestApplyWallpaperCacheHits:
 class TestApplyWallpaperFailurePolicy:
     """AC 4: palette hard, effects/icons graceful."""
 
-    def test_palette_failure_aborts_and_leaves_state_unchanged(
-        self, tmp_path: Path
-    ) -> None:
+    def test_palette_failure_aborts_and_leaves_state_unchanged(self, tmp_path: Path) -> None:
         _setup_spine(tmp_path / "install")
         existing = _existing_state("a" * 64)
         repo = _FakeStateRepo(existing)
@@ -448,9 +438,7 @@ class TestApplyWallpaperFailurePolicy:
         assert repo.saved == []  # no save reached
         assert repo.load_current() is existing  # current.json unchanged
 
-    def test_palette_failure_when_spine_missing_wraps_loudly(
-        self, tmp_path: Path
-    ) -> None:
+    def test_palette_failure_when_spine_missing_wraps_loudly(self, tmp_path: Path) -> None:
         """Missing spine inputs surface as ``palette apply failed:`` (hard dep)."""
         repo = _FakeStateRepo()  # no spine setup at all
         use_case = _make_use_case(tmp_path, repo)
@@ -467,9 +455,7 @@ class TestApplyWallpaperFailurePolicy:
     ) -> None:
         _setup_spine(tmp_path / "install")
         repo = _FakeStateRepo()
-        use_case = _make_use_case(
-            tmp_path, repo, weg=_FakeWeg(fail=True)
-        )
+        use_case = _make_use_case(tmp_path, repo, weg=_FakeWeg(fail=True))
         img = _img_in(tmp_path, "wall.png", b"no effects bytes")
 
         with caplog.at_level(logging.WARNING, logger="runtime.application.apply_wallpaper"):
@@ -537,7 +523,9 @@ class TestApplyWallpaperInputValidation:
 class TestApplyWallpaperMonitors:
     """AC 5: preserve-or-default monitor configs."""
 
-    def _state_with_monitors(self, monitors: dict[str, MonitorWallpaperConfig], wh: str) -> DesktopState:
+    def _state_with_monitors(
+        self, monitors: dict[str, MonitorWallpaperConfig], wh: str
+    ) -> DesktopState:
         now = _now_z()
         return DesktopState(
             schema_version=2,
@@ -644,6 +632,72 @@ class TestApplyWallpaperMonitors:
         assert set(state.monitors) == {"DP-1"}
         assert state.monitors["DP-1"].backend == BackendType.hyprpaper
 
+    def test_absent_state_uses_injected_monitor_source(self, tmp_path: Path) -> None:
+        """With no existing state, the injected source's outputs are used."""
+        _setup_spine(tmp_path / "install")
+
+        class _FakeMonitorSource:
+            def detect_monitors(self) -> list[str]:
+                return ["eDP-1", "HDMI-A-1"]
+
+        repo = _FakeStateRepo()
+        use_case = _make_use_case(tmp_path, repo, monitor_source=_FakeMonitorSource())
+        img = _img_in(tmp_path, "wall.png", b"detected monitors bytes")
+        use_case.run(img)
+
+        state = repo.saved[0]
+        assert set(state.monitors) == {"eDP-1", "HDMI-A-1"}
+        for cfg in state.monitors.values():
+            assert cfg.backend == BackendType.hyprpaper
+            assert cfg.fit_mode == FitMode.cover
+            assert cfg.source_hash == hash_file(img)
+
+    def test_empty_source_detection_falls_back_to_dp1(self, tmp_path: Path) -> None:
+        """An injected source that cannot detect falls back to DEFAULT_MONITOR."""
+        _setup_spine(tmp_path / "install")
+
+        class _EmptyMonitorSource:
+            def detect_monitors(self) -> list[str]:
+                return []
+
+        repo = _FakeStateRepo()
+        use_case = _make_use_case(tmp_path, repo, monitor_source=_EmptyMonitorSource())
+        img = _img_in(tmp_path, "wall.png", b"fallback monitors bytes")
+        use_case.run(img)
+
+        state = repo.saved[0]
+        assert set(state.monitors) == {"DP-1"}
+
+    def test_existing_monitors_win_over_injected_source(self, tmp_path: Path) -> None:
+        """Preserved per-monitor configs are never overridden by detection."""
+        _setup_spine(tmp_path / "install")
+
+        class _FakeMonitorSource:
+            def detect_monitors(self) -> list[str]:
+                return ["eDP-1"]
+
+        repo = _FakeStateRepo(
+            self._state_with_monitors(
+                {
+                    "DP-2": MonitorWallpaperConfig(
+                        backend=BackendType.swww,
+                        source_hash="a" * 64,
+                        fit_mode=FitMode.contain,
+                        mpv_options=None,
+                        ipc_socket=None,
+                    ),
+                },
+                "a" * 64,
+            )
+        )
+        use_case = _make_use_case(tmp_path, repo, monitor_source=_FakeMonitorSource())
+        img = _img_in(tmp_path, "wall.png", b"preserved beats detection bytes")
+        use_case.run(img)
+
+        state = repo.saved[0]
+        assert set(state.monitors) == {"DP-2"}
+        assert state.monitors["DP-2"].backend == BackendType.swww
+
 
 class TestApplyWallpaperScopeBoundary:
     """AC 6: apply does NOT repoint symlinks, append history, or reload.
@@ -671,9 +725,7 @@ class TestApplyWallpaperScopeBoundary:
 class TestApplyWallpaperMutex:
     """D1 review decision: state read-modify-write is serialized."""
 
-    def test_save_happens_inside_the_mutex_critical_section(
-        self, tmp_path: Path
-    ) -> None:
+    def test_save_happens_inside_the_mutex_critical_section(self, tmp_path: Path) -> None:
         _setup_spine(tmp_path / "install")
         events: list[str] = []
         repo = _FakeStateRepo(events=events)
@@ -713,9 +765,7 @@ class TestApplyWallpaperMutex:
 class TestApplyWallpaperLostRenameRace:
     """Review P7: lost populate_via_staging race rebuilds from meta.json."""
 
-    def test_lost_palette_race_returns_winner_entry_from_meta(
-        self, tmp_path: Path
-    ) -> None:
+    def test_lost_palette_race_returns_winner_entry_from_meta(self, tmp_path: Path) -> None:
         _setup_spine(tmp_path / "install")
         state_root = tmp_path / "state"
         repo = _FakeStateRepo()
@@ -812,9 +862,7 @@ class TestSeederImportWallpaper:
         with pytest.raises(RuntimeError, match="does not match its hash address"):
             seeder.import_wallpaper(img, wh, source_mutable=True)
 
-    def test_source_mutated_between_hash_and_import_is_never_cached(
-        self, tmp_path: Path
-    ) -> None:
+    def test_source_mutated_between_hash_and_import_is_never_cached(self, tmp_path: Path) -> None:
         """TOCTOU guard: post-place verification removes the poisoned entry."""
         seeder = self._seeder(tmp_path)
         img = _img_in(tmp_path, "wall.png", b"original bytes")

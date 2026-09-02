@@ -192,6 +192,7 @@ def _make_use_case(
     csg: _FakeCsg | None = None,
     weg: _FakeWeg | None = None,
     itr: _FakeItr | None = None,
+    monitor_source: Any | None = None,
 ) -> Any:
     """Construct SeedCacheUseCase with real seeder + flock mutex."""
     from runtime.application.seed_cache import SeedCacheUseCase
@@ -207,6 +208,7 @@ def _make_use_case(
         state_root=state_root,
         seeder=CacheSeeder(state_root),
         mutex=FlockSeedMutex(state_root / ".seed.lock"),
+        monitor_source=monitor_source,
     )
 
 
@@ -432,9 +434,7 @@ class TestSeedCacheUseCaseSkipsOnExisting:
     def test_seeding_skipped_when_current_exists(self, tmp_path: Path) -> None:
         state = _make_state()
         repo = _FakeStateRepo(state)
-        use_case = _make_use_case(
-            tmp_path, repo, install_spine=tmp_path / "install"
-        )
+        use_case = _make_use_case(tmp_path, repo, install_spine=tmp_path / "install")
         use_case.run()
         # No cache writes, no history append
         assert not (tmp_path / "history.jsonl").exists()
@@ -535,9 +535,12 @@ class TestSeedCacheUseCaseRunsOnFirstRun:
 
         wp_link = current_dir / "wallpaper-DP-1.png"
         assert wp_link.is_symlink()
-        assert wp_link.resolve() == (
-            tmp_path / "cache" / "wallpapers" / _make_wallpaper_hash() / "wallpaper.png"
-        ).resolve()
+        assert (
+            wp_link.resolve()
+            == (
+                tmp_path / "cache" / "wallpapers" / _make_wallpaper_hash() / "wallpaper.png"
+            ).resolve()
+        )
 
         palette_dir = tmp_path / "cache" / "palettes" / state.palette.entry_hash
         for name in ("colors.conf", "colors.gtk.css", "colors.yaml"):
@@ -553,9 +556,7 @@ class TestSeedCacheUseCaseRunsOnFirstRun:
 
     def test_seeding_raises_when_provisioning_output_missing(self, tmp_path: Path) -> None:
         repo = _FakeStateRepo()
-        use_case = _make_use_case(
-            tmp_path, repo, install_spine=tmp_path / "nonexistent"
-        )
+        use_case = _make_use_case(tmp_path, repo, install_spine=tmp_path / "nonexistent")
         with pytest.raises(RuntimeError, match="provisioning output not found"):
             use_case.run()
 
@@ -566,6 +567,55 @@ class TestSeedCacheUseCaseRunsOnFirstRun:
         use_case = _make_use_case(tmp_path, repo, install_spine)
         with pytest.raises(RuntimeError, match="default wallpaper not found"):
             use_case.run()
+
+
+class TestSeedMonitorDetection:
+    """Monitor names come from the injected IMonitorSource (real detection);
+    the legacy DEFAULT_MONITOR is the fallback when unavailable."""
+
+    def test_seeding_uses_injected_monitor_source(self, tmp_path: Path) -> None:
+        install_spine = tmp_path / "install"
+        _setup_install_spine(install_spine)
+        repo = _FakeStateRepo()
+
+        class _FakeMonitorSource:
+            def detect_monitors(self) -> list[str]:
+                return ["eDP-1", "HDMI-A-1"]
+
+        use_case = _make_use_case(
+            tmp_path, repo, install_spine, monitor_source=_FakeMonitorSource()
+        )
+        use_case.run()
+
+        saved_state = repo.saved[0]
+        assert set(saved_state.monitors) == {"eDP-1", "HDMI-A-1"}
+        current_dir = tmp_path / "current"
+        for name in ("wallpaper-eDP-1.png", "wallpaper-HDMI-A-1.png"):
+            link = current_dir / name
+            assert link.is_symlink(), f"missing symlink {name}"
+            assert (
+                link.resolve()
+                == (
+                    tmp_path / "cache" / "wallpapers" / _make_wallpaper_hash() / "wallpaper.png"
+                ).resolve()
+            )
+
+    def test_seeding_falls_back_to_dp1_when_source_empty(self, tmp_path: Path) -> None:
+        install_spine = tmp_path / "install"
+        _setup_install_spine(install_spine)
+        repo = _FakeStateRepo()
+
+        class _EmptyMonitorSource:
+            def detect_monitors(self) -> list[str]:
+                return []
+
+        use_case = _make_use_case(
+            tmp_path, repo, install_spine, monitor_source=_EmptyMonitorSource()
+        )
+        use_case.run()
+
+        saved_state = repo.saved[0]
+        assert set(saved_state.monitors) == {"DP-1"}
 
 
 class TestSeedFailurePolicy:
@@ -586,9 +636,7 @@ class TestSeedFailurePolicy:
         install_spine = tmp_path / "install"
         _setup_install_spine(install_spine)
         repo = _FakeStateRepo()
-        use_case = _make_use_case(
-            tmp_path, repo, install_spine, csg=_FakeCsg(fail=True)
-        )
+        use_case = _make_use_case(tmp_path, repo, install_spine, csg=_FakeCsg(fail=True))
         with pytest.raises(RuntimeError, match="palette seeding failed"):
             use_case.run()
         assert repo.saved == []
@@ -599,9 +647,7 @@ class TestSeedFailurePolicy:
         install_spine = tmp_path / "install"
         _setup_install_spine(install_spine)
         repo = _FakeStateRepo()
-        use_case = _make_use_case(
-            tmp_path, repo, install_spine, weg=_FakeWeg(fail=True)
-        )
+        use_case = _make_use_case(tmp_path, repo, install_spine, weg=_FakeWeg(fail=True))
         with caplog.at_level(logging.WARNING, logger="runtime.application.seed_cache"):
             use_case.run()
         state = repo.saved[0]
@@ -615,9 +661,7 @@ class TestSeedFailurePolicy:
         install_spine = tmp_path / "install"
         _setup_install_spine(install_spine)
         repo = _FakeStateRepo()
-        use_case = _make_use_case(
-            tmp_path, repo, install_spine, itr=_FakeItr(fail=True)
-        )
+        use_case = _make_use_case(tmp_path, repo, install_spine, itr=_FakeItr(fail=True))
         with caplog.at_level(logging.WARNING, logger="runtime.application.seed_cache"):
             use_case.run()
         state = repo.saved[0]

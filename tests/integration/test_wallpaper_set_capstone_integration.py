@@ -141,15 +141,14 @@ class _FakeItr:
 
 
 class _RecordingReloader:
-    """Passing reloader that counts invocations (per-class-name)."""
+    """Passing reloader that records its name into a caller-owned list."""
 
-    invoked: list[str] = []
-
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, invoked: list[str]) -> None:
         self._name = name
+        self._invoked = invoked
 
     def reload(self) -> bool:
-        _RecordingReloader.invoked.append(self._name)
+        self._invoked.append(self._name)
         return True
 
 
@@ -158,6 +157,14 @@ class _FailingReloader:
 
     def reload(self) -> bool:
         return False
+
+
+class _RaisingReloader:
+    """Reloader that RAISES from reload() — the exception→reload_failures
+    mapping in reconcile's loop (distinct from the return-False branch)."""
+
+    def reload(self) -> bool:
+        raise OSError("reload exploded")
 
 
 def _setup_spine(install_spine: Path) -> None:
@@ -208,10 +215,11 @@ def _setup(tmp_path: Path, *, img_bytes: bytes | None = None, fixture_img: bool 
     )
 
 
-def _full_set(applied: _Capstone, reloaders: list[Any] | None = None) -> Any:
+def _full_set(applied: _Capstone, reloaders: list[Any] | None = None, img: Path | None = None) -> Any:
     """One full ``wallpaper set``: apply → reconcile(trigger="set")."""
     from runtime.application.apply_wallpaper import ApplyWallpaperUseCase
 
+    image = img if img is not None else applied.img
     ApplyWallpaperUseCase(
         state_repo=applied.repo,
         csg=applied.csg,
@@ -221,7 +229,7 @@ def _full_set(applied: _Capstone, reloaders: list[Any] | None = None) -> Any:
         state_root=applied.state_root,
         seeder=CacheSeeder(applied.state_root),
         mutex=_FakeMutex(),
-    ).run(applied.img)
+    ).run(image)
     return ReconcileDesktopStateUseCase(
         state_repo=applied.repo,
         csg=applied.csg,
@@ -246,10 +254,8 @@ class TestCapstoneE2E:
 
     def test_full_pipeline_swaps_reloads_and_persists(self, tmp_path: Path) -> None:
         applied = _setup(tmp_path)
-        reloaders = [
-            _RecordingReloader(f"Reloader{i}") for i in range(4)
-        ]
-        _RecordingReloader.invoked = []
+        invoked: list[str] = []
+        reloaders = [_RecordingReloader(f"Reloader{i}", invoked) for i in range(4)]
 
         result = _full_set(applied, reloaders=reloaders)
 
@@ -277,7 +283,7 @@ class TestCapstoneE2E:
         assert len(lines) == 1
         assert json.loads(lines[0])["trigger"] == "set"
         # every reloader invoked exactly once
-        assert sorted(_RecordingReloader.invoked) == [
+        assert sorted(invoked) == [
             "Reloader0",
             "Reloader1",
             "Reloader2",
@@ -293,11 +299,12 @@ class TestCapstoneCacheHit:
         self, tmp_path: Path
     ) -> None:
         applied = _setup(tmp_path)
-        reloaders = [_RecordingReloader(f"Reloader{i}") for i in range(4)]
-        _RecordingReloader.invoked = []
+        invoked: list[str] = []
+        reloaders = [_RecordingReloader(f"Reloader{i}", invoked) for i in range(4)]
 
         _full_set(applied, reloaders=reloaders)
         links_after_first = _symlink_map(applied.state_root / "current")
+        first_history_line = (applied.state_root / "history.jsonl").read_text().splitlines()[0]
         applied.csg.calls = applied.weg.calls = applied.itr.calls = 0
 
         result = _full_set(applied, reloaders=reloaders)
@@ -310,7 +317,10 @@ class TestCapstoneCacheHit:
         lines = (applied.state_root / "history.jsonl").read_text().splitlines()
         assert len(lines) == 2
         assert all(json.loads(line)["trigger"] == "set" for line in lines)
-        assert sorted(_RecordingReloader.invoked) == [
+        # AR-3 immutable history: the first line is byte-for-byte untouched
+        # (a rewrite/truncation keeping count==2 would fail here).
+        assert lines[0] == first_history_line
+        assert sorted(invoked) == [
             "Reloader0",
             "Reloader0",
             "Reloader1",
@@ -376,12 +386,12 @@ class TestCapstoneReloadFailure:
     def test_failing_reloader_surfaced_others_still_run(self, tmp_path: Path) -> None:
         applied = _setup(tmp_path)
         failing = _FailingReloader()
+        invoked: list[str] = []
         reloaders: list[Any] = [
-            _RecordingReloader("Reloader0"),
+            _RecordingReloader("Reloader0", invoked),
             failing,
-            _RecordingReloader("Reloader2"),
+            _RecordingReloader("Reloader2", invoked),
         ]
-        _RecordingReloader.invoked = []
 
         result = _full_set(applied, reloaders=reloaders)
 
@@ -390,7 +400,28 @@ class TestCapstoneReloadFailure:
         assert result.repointed
         lines = (applied.state_root / "history.jsonl").read_text().splitlines()
         assert len(lines) == 1
-        assert sorted(_RecordingReloader.invoked) == ["Reloader0", "Reloader2"]
+        assert sorted(invoked) == ["Reloader0", "Reloader2"]
+
+    def test_raising_reloader_surfaced_others_still_run(self, tmp_path: Path) -> None:
+        """An exception from reload() lands in reload_failures too (the
+        distinct exception→collect branch in reconcile's loop), and the
+        combined flow still completes non-fatally."""
+        applied = _setup(tmp_path)
+        raising = _RaisingReloader()
+        invoked: list[str] = []
+        reloaders: list[Any] = [
+            _RecordingReloader("Reloader0", invoked),
+            raising,
+            _RecordingReloader("Reloader2", invoked),
+        ]
+
+        result = _full_set(applied, reloaders=reloaders)
+
+        assert result.reload_failures == [_RaisingReloader.__name__]
+        assert result.repointed
+        lines = (applied.state_root / "history.jsonl").read_text().splitlines()
+        assert len(lines) == 1
+        assert sorted(invoked) == ["Reloader0", "Reloader2"]
 
 
 class TestCapstoneMonitorsPreserved:
@@ -435,9 +466,17 @@ class TestCapstoneMonitorsPreserved:
             )
         )
 
-        result = _full_set(applied, reloaders=reloaders)
+        # Run a SECOND full set on a DIFFERENT image so source_hash must
+        # actually move — the "only source_hash updated" claim is
+        # unobservable if both runs share one image (new_hash == wh would
+        # pass even with the refresh broken).
+        other_img = tmp_path / "other.png"
+        other_img.write_bytes(b"different wallpaper bytes")
+
+        result = _full_set(applied, reloaders=reloaders, img=other_img)
 
         new_hash = result.state.wallpaper.content_hash
+        assert new_hash != wh
         saved = applied.repo.load_current()
         assert saved is not None
         assert set(saved.monitors) == {"DP-1", "HDMI-1"}
@@ -448,7 +487,7 @@ class TestCapstoneMonitorsPreserved:
             assert cfg.mpv_options == original.mpv_options, f"{name}: mpv_options reset"
             assert cfg.ipc_socket == original.ipc_socket, f"{name}: ipc_socket reset"
             assert cfg.source_hash == new_hash, f"{name}: source_hash not updated"
-            assert cfg.source_hash != wh or new_hash == wh
+            assert cfg.source_hash != wh
         # monitor symlinks follow the preserved monitor set
         links = _symlink_map(applied.state_root / "current")
         assert "wallpaper-DP-1.png" in links
@@ -557,7 +596,7 @@ class TestCapstoneCliExitCode:
     test_cli_crash_recovery.py isolation pattern), otherwise the command
     would fire the live host's ``hyprctl``, ``ags``, and ``/dev/tty``."""
 
-    def test_wallpaper_set_cli_exits_1_on_reloader_failure(
+    def test_wallpaper_set_cli_success_then_reload_failure_exit_codes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from typer.testing import CliRunner
@@ -596,11 +635,25 @@ class TestCapstoneCliExitCode:
         )
         monkeypatch.setattr(
             "runtime.adapters.terminal_color_applier.TerminalColorApplier",
+            _PassingStatefulReloader,
+        )
+
+        # Happy path through the REAL composition root: all four reloaders
+        # pass → exit 0 with the combined success render.
+        ok = CliRunner().invoke(app, ["wallpaper", "set", str(img)])
+        assert ok.exit_code == 0, ok.output
+        assert "wallpaper applied:" in ok.output
+        assert "symlink(s) repointed" in ok.output
+        assert "ReloadError" not in ok.output
+
+        # Now force a reload failure on the terminal consumer → R5 exit 1.
+        monkeypatch.setattr(
+            "runtime.adapters.terminal_color_applier.TerminalColorApplier",
             _FailingTerminalColorApplier,
         )
 
-        result = CliRunner().invoke(app, ["wallpaper", "set", str(img)])
+        failed = CliRunner().invoke(app, ["wallpaper", "set", str(img)])
 
-        assert result.exit_code == 1
-        assert "ReloadError" in result.output
-        assert "reload failed for: _FailingTerminalColorApplier" in result.output
+        assert failed.exit_code == 1
+        assert "ReloadError" in failed.output
+        assert "reload failed for: _FailingTerminalColorApplier" in failed.output

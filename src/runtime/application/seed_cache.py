@@ -8,8 +8,10 @@ Scope boundary (Story 1.11):
 - One-time bootstrap when ``current.json`` is absent and provisioning's
   ``generated/`` output exists.
 - Does NOT implement ApplyWallpaperUseCase (1.13), ReconcileDesktopState
-  (Epic 2), InspectState (Epic 3), full monitor detection, or desktop
-  reload adapters.
+  (Epic 2), InspectState (Epic 3), or desktop reload adapters. Monitor
+  names come from the injected ``IMonitorSource`` (real detection via
+  ``HyprlandMonitorSource``); when no source is injected or detection is
+  unavailable, the legacy single ``DEFAULT_MONITOR`` default is used.
 
 Architecture:
 - Lives in ``application/`` (use-case layer) per AD-1, AD-13
@@ -49,6 +51,7 @@ from runtime.domain.models import (
 from runtime.ports.color_scheme_generator import IColorSchemeGenerator
 from runtime.ports.effects_generator import IEffectsGenerator
 from runtime.ports.icon_renderer import IIconRenderer
+from runtime.ports.monitor_source import IMonitorSource
 from runtime.ports.seed_mutex import ISeedMutex
 from runtime.ports.state_repository import IStateRepository
 from runtime.ports.wallpaper_backend_factory import IWallpaperBackendFactory
@@ -67,8 +70,11 @@ class SeedCacheUseCase:
     The seeder performs the identical swap sequence as
     ``ReconcileDesktopStateUseCase`` (AD-6) but exactly once at first boot.
 
-    Constructor receives ports and the ``CacheSeeder`` adapter (dependency
-    inversion): the use case wires no concrete adapters itself.
+    Constructor receives ports, the ``CacheSeeder`` adapter and an
+    injected ``IMonitorSource`` (dependency inversion): the use case
+    wires no concrete adapters itself. When no monitor source is
+    injected, seeding falls back to the legacy single ``DEFAULT_MONITOR``
+    (the historical Phase-2 default).
     """
 
     def __init__(
@@ -82,6 +88,7 @@ class SeedCacheUseCase:
         state_root: Path,
         seeder: CacheSeeder,
         mutex: ISeedMutex,
+        monitor_source: IMonitorSource | None = None,
     ) -> None:
         self._state_repo = state_repo
         self._factory = factory
@@ -89,6 +96,7 @@ class SeedCacheUseCase:
         self._state_root = state_root
         self._seeder = seeder
         self._mutex = mutex
+        self._monitor_source = monitor_source
         # Shared derivation plumbing (Story 1.13): spine discovery + per-layer
         # ensure-entry pattern live in application/derive.py; seed and apply
         # compose the same pipeline so behavior stays identical.
@@ -151,8 +159,13 @@ class SeedCacheUseCase:
         """Perform the seeding swap sequence. Caller holds the seed mutex."""
         wallpaper_hash = hash_file(default_png)
 
-        # Detect monitors (stub: single DP-1 for Phase 2)
-        monitor_names = [DEFAULT_MONITOR]
+        # Monitor names from the injected source when available (real
+        # outputs via HyprlandMonitorSource); fall back to the legacy
+        # single DEFAULT_MONITOR when detection is unavailable.
+        detected = (
+            self._monitor_source.detect_monitors() if self._monitor_source is not None else []
+        )
+        monitor_names = detected or [DEFAULT_MONITOR]
 
         # Populate cache entries
         # 5a. Wallpaper: hardlink into cache (idempotent after a crashed run)

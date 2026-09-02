@@ -64,14 +64,14 @@ naming the monitor; the reconcile use case collects the class name into
 ``AgsReloader``. Missing ``hyprctl`` in PATH is a surfaced failure, not a
 skip (spec-literal R5, carried decision).
 
-Wiring note (rt-2.5 review, deferred-work 2026-09-02): the composition
-root currently drives the Phase-2 monitor-detection stub — every
-``current/wallpaper-*.png`` is named for ``DEFAULT_MONITOR = "DP-1"``
-(``seed_cache.py``), and the live desktop's outputs usually don't include
-``DP-1``, so hyprpaper rejects the monitor (``Invalid monitor``) and the
-reload surfaces ``HyprpaperReloader`` as a failure. Accepted R5-literal
-behavior until real monitor detection lands (future story); this adapter
-also probes only ``hyprctl`` presence, never hyprpaper liveness.
+Wiring note: the composition root drives monitor names through
+``HyprlandMonitorSource`` (``hyprctl monitors -j``, real outputs), so
+``current/wallpaper-*.png`` is named for actual outputs (e.g.
+``eDP-1``). ``DEFAULT_MONITOR = "DP-1"`` remains only as the fallback
+when detection is unavailable (headless/CI); on such hosts hyprpaper
+rejects the monitor (``Invalid monitor``) and the reload surfaces
+``HyprpaperReloader`` as a failure — accepted R5-literal behavior. This
+adapter also probes only ``hyprctl`` presence, never hyprpaper liveness.
 
 Binary resolution imports ``_resolve_via_which`` from ``hyprland_reloader``
 (adapters→adapters import — layering-green); the

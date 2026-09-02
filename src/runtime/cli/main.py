@@ -91,6 +91,7 @@ def _run_seed_if_needed() -> None:
     try:
         from runtime.adapters.csg_adapter import CsgAdapter
         from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+        from runtime.adapters.hyprland_monitor_source import HyprlandMonitorSource
         from runtime.adapters.itr_adapter import ItrAdapter
         from runtime.adapters.json_state_repository import JsonStateRepository
         from runtime.adapters.seeder import CacheSeeder
@@ -142,6 +143,7 @@ def _run_seed_if_needed() -> None:
             state_root=state_root,
             seeder=seeder,
             mutex=mutex,
+            monitor_source=HyprlandMonitorSource(),
         )
         use_case.run()
     except SeedLockedError as exc:
@@ -229,6 +231,7 @@ def _run_wallpaper_set(image_path: Path) -> _WallpaperSetResult:
 
     from runtime.adapters.csg_adapter import CsgAdapter
     from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+    from runtime.adapters.hyprland_monitor_source import HyprlandMonitorSource
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
@@ -245,6 +248,7 @@ def _run_wallpaper_set(image_path: Path) -> _WallpaperSetResult:
         state_root=state_root,
         seeder=CacheSeeder(state_root),
         mutex=FlockSeedMutex(state_root / ".seed.lock"),
+        monitor_source=HyprlandMonitorSource(),
     ).run(image_path)
 
     reconcile_result = ReconcileDesktopStateUseCase(
@@ -333,7 +337,11 @@ def wallpaper_set(
         )
         raise typer.Exit(code=1) from None
 
-    state = result.apply.state
+    # Render the AUTHORITATIVE post-swap state (what reconcile actually
+    # repointed/persisted), not apply's pre-swap snapshot: reconcile can
+    # regenerate/degrade layers or converge a concurrent write, so
+    # apply-pass descriptors are kept only for the cache-hit flags.
+    state = result.reconcile.state
     palette_desc = "cache hit" if result.apply.cache_hit_palette else "generated"
     effects_desc = (
         "cache hit"
@@ -346,7 +354,7 @@ def wallpaper_set(
         else ("generated" if result.apply.icons else "unavailable")
     )
     summary = (
-        f"wallpaper applied: {result.apply.wallpaper_hash[:12]}"
+        f"wallpaper applied: {state.wallpaper.content_hash[:12]}"
         f" (palette {palette_desc}, effects {effects_desc}, icons {icons_desc})"
         f", {len(result.reconcile.repointed)} symlink(s) repointed"
     )
@@ -354,7 +362,7 @@ def wallpaper_set(
         CustomView(
             plain=summary,
             object={
-                "wallpaper": result.apply.wallpaper_hash,
+                "wallpaper": state.wallpaper.content_hash,
                 "palette": state.palette.entry_hash if state.palette else None,
                 "effects": state.effects.entry_hash if state.effects else None,
                 "icons": state.icons.entry_hash if state.icons else None,

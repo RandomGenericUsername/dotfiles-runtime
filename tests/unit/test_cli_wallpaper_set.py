@@ -9,6 +9,7 @@ empty spine so the root callback skips quietly.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -190,12 +191,21 @@ class TestWallpaperSetCliSuccess:
         )
 
         assert result.exit_code == 0
-        assert '"palette"' in result.output
-        assert '"cache_hits"' in result.output
-        assert '"repointed"' in result.output
-        assert '"skipped"' in result.output
-        assert '"cache_regenerated"' in result.output
-        assert '"reload_failures"' in result.output
+        obj = json.loads(result.output)
+        # apply-pass descriptors
+        assert obj["palette"] == "e" * 64
+        assert obj["cache_hits"] == {
+            "palette": False,
+            "effects": False,
+            "icons": False,
+        }
+        # authoritative post-swap reconcile state + swap/reload data — with
+        # VALUES, not key-presence (a mis-shaped/mis-keyed render fails here)
+        assert obj["wallpaper"] == "f" * 64
+        assert obj["repointed"] == ["/state/current/wallpaper-DP-1.png"]
+        assert obj["skipped"] == []
+        assert obj["cache_regenerated"] == []
+        assert obj["reload_failures"] == []
 
     def test_reload_success_renders_repointed_summary(
         self, monkeypatch: pytest.MonkeyPatch
@@ -241,15 +251,14 @@ class TestWallpaperSetCompositionRootWiring:
 
         class _FakeApplyUseCase:
             def __init__(self, **kwargs: Any) -> None:
-                pass
+                captured["apply_kwargs"] = kwargs
 
             def run(self, image_path: Path) -> Any:
                 return _result()
 
         class _FakeReconcileUseCase:
             def __init__(self, **kwargs: Any) -> None:
-                captured["reloaders"] = kwargs.get("reloaders")
-                captured["state_root"] = kwargs.get("state_root")
+                captured["reconcile_kwargs"] = kwargs
 
             def run(self, trigger: str = "reconcile") -> Any:
                 captured["trigger"] = trigger
@@ -267,12 +276,29 @@ class TestWallpaperSetCompositionRootWiring:
         cli_main._run_wallpaper_set(Path("/img/wall.png"))
 
         from runtime.adapters.ags_reloader import AgsReloader
+        from runtime.adapters.csg_adapter import CsgAdapter
+        from runtime.adapters.flock_seed_mutex import FlockSeedMutex
         from runtime.adapters.hyprland_reloader import HyprlandReloader
         from runtime.adapters.hyprpaper_reloader import HyprpaperReloader
+        from runtime.adapters.itr_adapter import ItrAdapter
+        from runtime.adapters.json_state_repository import JsonStateRepository
+        from runtime.adapters.seeder import CacheSeeder
         from runtime.adapters.terminal_color_applier import TerminalColorApplier
+        from runtime.adapters.weg_adapter import WegAdapter
 
         assert captured["trigger"] == "set"
-        reloaders = captured["reloaders"]
+        # The SAME real adapter family is wired into BOTH use cases — a
+        # swapped/missing/forgotten adapter (e.g. weg=CsgAdapter()) fails here.
+        for side in ("apply_kwargs", "reconcile_kwargs"):
+            kwargs = captured[side]
+            assert isinstance(kwargs["csg"], CsgAdapter)
+            assert isinstance(kwargs["weg"], WegAdapter)
+            assert isinstance(kwargs["itr"], ItrAdapter)
+            assert isinstance(kwargs["state_repo"], JsonStateRepository)
+            assert isinstance(kwargs["seeder"], CacheSeeder)
+            assert isinstance(kwargs["mutex"], FlockSeedMutex)
+        assert captured["apply_kwargs"]["state_root"] == captured["reconcile_kwargs"]["state_root"]
+        reloaders = captured["reconcile_kwargs"]["reloaders"]
         assert reloaders is not None
         assert [type(r) for r in reloaders] == [
             HyprlandReloader,
@@ -280,8 +306,8 @@ class TestWallpaperSetCompositionRootWiring:
             HyprpaperReloader,
             TerminalColorApplier,
         ]
-        assert reloaders[2]._state_root == captured["state_root"]  # type: ignore[attr-defined]
-        assert reloaders[3]._state_root == captured["state_root"]  # type: ignore[attr-defined]
+        assert reloaders[2]._state_root == captured["reconcile_kwargs"]["state_root"]  # type: ignore[attr-defined]
+        assert reloaders[3]._state_root == captured["reconcile_kwargs"]["state_root"]  # type: ignore[attr-defined]
 
 
 class TestWallpaperSetCliErrorMapping:
