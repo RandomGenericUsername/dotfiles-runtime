@@ -7,9 +7,7 @@ from runtime.domain.models import BackendType
 from runtime.ports.wallpaper_backend import IStaticWallpaperBackend, IVideoWallpaperBackend
 
 # ── runtime guards for factory (Literal is static-only) ──
-_VALID_STATIC_BACKENDS = frozenset(
-    {BackendType.hyprpaper, BackendType.swaybg, BackendType.swww}
-)
+_VALID_STATIC_BACKENDS = frozenset({BackendType.hyprpaper, BackendType.swaybg, BackendType.swww})
 _VALID_VIDEO_BACKENDS = frozenset({BackendType.mpvpaper})
 
 

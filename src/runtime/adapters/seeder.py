@@ -448,9 +448,7 @@ class CacheSeeder:
     def load_icons_entry(self, entry_dir: Path) -> IconsEntry:
         """Rebuild an IconsEntry from a cache entry's meta.json (real hashes)."""
         meta = self.read_entry_meta(entry_dir)
-        artifact_hashes: IconsArtifacts = cast(
-            "IconsArtifacts", meta.get("artifact_hashes", {})
-        )
+        artifact_hashes: IconsArtifacts = cast("IconsArtifacts", meta.get("artifact_hashes", {}))
         return IconsEntry(
             hash_algorithm="sha256",
             kind="icons",

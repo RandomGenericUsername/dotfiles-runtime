@@ -60,7 +60,7 @@ def _staging_dir_is_live(name: str) -> bool:
     Staging names are ``.staging-<pid>-<uuid>``. Malformed names (no numeric
     PID) are treated as not live and reaped by mtime grace instead.
     """
-    pid_part = name[len(CACHE_STAGING_PREFIX):].split("-", 1)[0]
+    pid_part = name[len(CACHE_STAGING_PREFIX) :].split("-", 1)[0]
     if not pid_part.isdigit():
         return False
     pid = int(pid_part)

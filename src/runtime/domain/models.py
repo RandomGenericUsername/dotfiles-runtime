@@ -121,9 +121,7 @@ class MonitorWallpaperConfig:
     def __post_init__(self) -> None:
         if self.backend != BackendType.mpvpaper:
             if self.mpv_options is not None or self.ipc_socket is not None:
-                raise ValueError(
-                    "mpv_options and ipc_socket are only valid for mpvpaper backend"
-                )
+                raise ValueError("mpv_options and ipc_socket are only valid for mpvpaper backend")
 
 
 # Default monitor name for Phase 2 (full monitor detection is Epic 2).

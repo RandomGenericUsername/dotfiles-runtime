@@ -16,6 +16,7 @@ from cli_output.domain.views import CustomView, ErrorView
 
 if TYPE_CHECKING:
     from runtime.application.apply_wallpaper import ApplyWallpaperResult
+    from runtime.application.reconcile import ReconcileResult
 
 app = typer.Typer(
     name="dotfiles-runtime",
@@ -281,6 +282,92 @@ def wallpaper_set(
                     "effects": result.cache_hit_effects,
                     "icons": result.cache_hit_icons,
                 },
+            },
+            rich=summary,
+        )
+    )
+
+
+def _run_reconcile() -> ReconcileResult:
+    """Compose and run ReconcileDesktopStateUseCase (reconcile command).
+
+    Mirrors ``_run_wallpaper_set``'s wiring: resolve state_root /
+    install_spine (both absolute), construct the JSON state repository,
+    the CSG/WEG/ITR adapters, the ``CacheSeeder``, and the state mutex,
+    then inject all of them into ``ReconcileDesktopStateUseCase``. The
+    mutex is the same flock file the seeder and apply use: reconcile
+    serializes against concurrent ``wallpaper set`` (Story 1.13 review,
+    D1 decision).
+    """
+    state_root = _resolve_state_root()
+    install_spine = _resolve_install_spine()
+
+    from runtime.adapters.csg_adapter import CsgAdapter
+    from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+    from runtime.adapters.itr_adapter import ItrAdapter
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.adapters.seeder import CacheSeeder
+    from runtime.adapters.weg_adapter import WegAdapter
+    from runtime.application.reconcile import ReconcileDesktopStateUseCase
+
+    use_case = ReconcileDesktopStateUseCase(
+        state_repo=JsonStateRepository(state_root=state_root),
+        csg=CsgAdapter(),
+        weg=WegAdapter(),
+        itr=ItrAdapter(),
+        install_spine=install_spine,
+        state_root=state_root,
+        seeder=CacheSeeder(state_root),
+        mutex=FlockSeedMutex(state_root / ".seed.lock"),
+    )
+    return use_case.run()
+
+
+@app.command(help="Repoint current/ symlinks to converge the desktop with current.json")
+def reconcile(
+    output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
+) -> None:
+    """Repoint current/ symlinks to match current.json (swap sequence steps 1-4).
+
+    Ensures every cache entry referenced by current.json exists (regenerating
+    on miss), repoints current/ symlinks atomically, saves refreshed
+    current.json, and appends a history.jsonl line with trigger "reconcile".
+
+    Desktop reload (contract step 5) is Stories 2.3-2.6.
+    """
+    renderer = create_renderer(output_format)
+    try:
+        result = _run_reconcile()
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.error("reconcile failed: %s", exc)
+        renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
+        raise typer.Exit(code=1) from None
+    except Exception:
+        logger.exception("reconcile failed unexpectedly")
+        renderer.error(
+            ErrorView(
+                kind="UnexpectedError",
+                message="reconcile failed unexpectedly; see logs",
+            )
+        )
+        raise typer.Exit(code=1) from None
+
+    summary = (
+        f"desktop reconciled: {len(result.repointed)} symlink(s) repointed"
+        + (f", {len(result.skipped)} skipped" if result.skipped else "")
+        + (
+            f", regenerated: {', '.join(result.cache_regenerated)}"
+            if result.cache_regenerated
+            else ""
+        )
+    )
+    renderer.custom(
+        CustomView(
+            plain=summary,
+            object={
+                "repointed": [str(p) for p in result.repointed],
+                "skipped": list(result.skipped),
+                "cache_regenerated": list(result.cache_regenerated),
             },
             rich=summary,
         )

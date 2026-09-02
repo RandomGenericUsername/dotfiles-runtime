@@ -237,9 +237,7 @@ class SeedCacheUseCase:
         except Exception as exc:
             raise RuntimeError(f"palette seeding failed: {exc}") from exc
 
-    def _populate_effects(
-        self, wallpaper_path: Path, wallpaper_hash: str
-    ) -> EffectsEntry | None:
+    def _populate_effects(self, wallpaper_path: Path, wallpaper_hash: str) -> EffectsEntry | None:
         """Populate effects cache via the shared pipeline. None (with warning) on failure."""
         try:
             entry, _cache_hit = self._pipeline.ensure_effects(wallpaper_path, wallpaper_hash)
