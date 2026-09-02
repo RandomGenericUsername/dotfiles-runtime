@@ -340,7 +340,8 @@ def reconcile(
     on miss), repoints current/ symlinks atomically, saves refreshed
     current.json, and appends a history.jsonl line with trigger "reconcile".
 
-    Desktop reload (contract step 5) is Stories 2.3-2.6.
+    Desktop reload (contract step 5) restarts Hyprland and AGS via the
+    reloaders wired in the composition root.
     """
     renderer = create_renderer(output_format)
     try:
@@ -359,9 +360,9 @@ def reconcile(
         )
         raise typer.Exit(code=1) from None
 
-    # Forward-looking placeholder for reload adapters (Stories 2.3-2.6):
-    # ReconcileResult.reload_failures is [] until adapters land; when populated
-    # we surface the failure and exit non-zero per AC 4 (no daemon retry).
+    # Reload result (contract step 5): the wired reloaders populate
+    # ReconcileResult.reload_failures; a non-empty list is surfaced and
+    # exits non-zero per AC 4 (no daemon retry).
     if result.reload_failures:
         failed = ", ".join(result.reload_failures)
         logger.error("reconcile: reload failed for %s", failed)
@@ -372,8 +373,8 @@ def reconcile(
             )
         )
         raise typer.Exit(code=1) from None
-    # Structural placeholder: reload adapters will populate skipped with
-    # entries containing "reload" or "consumer" — CLI already renders skipped.
+    # Skipped entries: the reconcile use case populates skipped with entries
+    # containing "reload" or "consumer" — CLI already renders skipped.
 
     summary = (
         f"desktop reconciled: {len(result.repointed)} symlink(s) repointed"

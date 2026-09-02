@@ -7,19 +7,31 @@ restarts the AGS process. AGS has NO native hot-reload (verified in the
 AGS source, ``cli/cmd/run.go:145`` ``// TODO: watch and restart``
 [ARCHITECTURE-SPINE.md:236]), so a restart is the only reload channel.
 
-Restart = three steps: ``ags quit`` (tolerated failure — a fresh instance
-is the goal, not the death of the old one), a detached ``ags run``
-(``Popen`` + ``start_new_session=True`` — the bar is a long-running
-foreground process and must never block ``reconcile``), then a liveness
-poll within a ≤ 2s grace window. Any failure after quit is reported as
-``False`` with a warning log; the reconcile use case collects the class
-name into ``ReconcileResult.reload_failures`` via the port — mirroring
-``HyprlandReloader``. Missing ``ags`` in PATH is a surfaced failure, not a
-skip (spec-literal R5; same decision as the Hyprland adapter).
+Restart = three steps: ``ags quit`` (tolerated failure — verified in the
+AGS source: a non-zero exit deterministically means no live instance,
+because the AGS CLI exits on the dbus ``ServiceUnknown`` error), a
+detached ``ags run`` (``Popen`` + ``start_new_session=True`` — the bar is
+a long-running foreground process and must never block ``reconcile``),
+then a liveness poll within a ≤ 2s grace window. A process still alive at
+the end of the window is reported as ``True``; death after the window is
+NOT detected (Phase-2 limitation: liveness is the strongest verification
+available without a daemon). Errors detected within the window are
+reported as ``False`` with a warning log; the reconcile use case collects
+the class name into ``ReconcileResult.reload_failures`` via the port —
+mirroring ``HyprlandReloader``. Missing ``ags`` in PATH is a surfaced
+failure, not a skip (spec-literal R5; same decision as the Hyprland
+adapter).
 
-Binary resolution reuses ``_resolve_via_which`` from ``hyprland_reloader``
-(adapters→adapters import — layering-green) so the separator/which/access
-branch logic is not forked a second time.
+Quit tolerance cannot produce a duplicate bar (verified in AGS/Astal
+source): if the old instance still owns the ``io.Astal.ags`` bus name when
+the new one spawns, the new instance exits immediately with
+``NAME_OCCUPIED`` (Astal ``application.vala``), which the liveness poll
+reports as a failure — never two bars.
+
+Binary resolution imports ``_resolve_via_which`` from ``hyprland_reloader``
+(adapters→adapters import — layering-green) for the bare-name ``PATH``
+lookup; the separator/executable-file branch structure mirrors
+``hyprland_reloader._resolve_hyprctl``.
 """
 
 from __future__ import annotations
@@ -93,11 +105,13 @@ class AgsReloader(IDesktopReloader):
             logger.warning("ags not found in PATH; AGS reload skipped")
             return False
 
-        # Step A — quit the running instance. Tolerate failure: non-zero
-        # exit or an exception only means no live instance (or the quit
-        # channel failed); continuing toward a fresh instance is correct.
+        # Step A — quit the running instance. Tolerate failure: a non-zero
+        # exit deterministically means no live instance (the AGS CLI exits
+        # on the dbus ServiceUnknown error), so continuing cannot collide
+        # with a live bar; a zero exit means Quit was delivered and the old
+        # instance tears down asynchronously.
         try:
-            subprocess.run(
+            quit_result = subprocess.run(
                 [str(self._ags_path), "quit"],
                 capture_output=True,
                 text=True,
@@ -111,6 +125,14 @@ class AgsReloader(IDesktopReloader):
             ValueError,
         ) as exc:
             logger.debug("ags quit failed; continuing with restart: %s", exc)
+        else:
+            if quit_result.returncode != 0:
+                logger.debug(
+                    "ags quit reports no live instance (exit %s); continuing",
+                    quit_result.returncode,
+                )
+            else:
+                logger.debug("ags quit delivered; old instance teardown is asynchronous")
 
         # Step B — spawn a DETACHED `ags run` (never a blocking run():
         # `ags run` IS the bar; it would hang reconcile forever).
@@ -118,18 +140,20 @@ class AgsReloader(IDesktopReloader):
         try:
             proc = subprocess.Popen(
                 [str(self._ags_path), "run"],
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
-            for _ in range(_LIVENESS_POLLS):
+            for poll_index in range(_LIVENESS_POLLS):
                 if proc.poll() is not None:
                     logger.warning(
                         "AGS restart failed: process exited with code %s",
                         proc.returncode,
                     )
                     return False
-                time.sleep(_LIVENESS_POLL_INTERVAL)
+                if poll_index < _LIVENESS_POLLS - 1:
+                    time.sleep(_LIVENESS_POLL_INTERVAL)
             return True
         except (
             FileNotFoundError,

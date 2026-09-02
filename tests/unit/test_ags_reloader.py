@@ -34,6 +34,17 @@ class _FakeProcess:
         return self._poll_result
 
 
+class _SequenceProcess:
+    """Fake ``Popen`` result whose ``poll()`` yields codes in sequence."""
+
+    def __init__(self, codes: list[int | None]) -> None:
+        self._codes = list(codes)
+        self.returncode = next((code for code in self._codes if code is not None), 0)
+
+    def poll(self) -> int | None:
+        return self._codes.pop(0) if self._codes else self.returncode
+
+
 class TestAgsReloaderSuccess:
     def test_reload_success_returns_true(self, ags_bin: Path) -> None:
         reloader = AgsReloader(ags_path=ags_bin)
@@ -72,6 +83,7 @@ class TestAgsReloaderSuccess:
             reloader.reload()
         mock_popen.assert_called_once_with(
             [str(ags_bin), "run"],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -137,6 +149,42 @@ class TestAgsReloaderFailure:
         with (
             patch("runtime.adapters.ags_reloader.subprocess.run"),
             patch("runtime.adapters.ags_reloader.subprocess.Popen", side_effect=exc),
+        ):
+            assert reloader.reload() is False
+
+
+class TestAgsReloaderLiveness:
+    def test_liveness_window_contract_is_pinned(self, ags_bin: Path) -> None:
+        reloader = AgsReloader(ags_path=ags_bin)
+        fake = MagicMock()
+        fake.poll.return_value = None
+        with (
+            patch("runtime.adapters.ags_reloader.subprocess.run"),
+            patch("runtime.adapters.ags_reloader.subprocess.Popen", return_value=fake),
+            patch("runtime.adapters.ags_reloader.time.sleep") as mock_sleep,
+        ):
+            assert reloader.reload() is True
+        assert mock_sleep.call_count == 7
+        mock_sleep.assert_called_with(0.25)
+        assert fake.poll.call_count == 8
+
+    def test_death_mid_window_returns_false(self, ags_bin: Path) -> None:
+        reloader = AgsReloader(ags_path=ags_bin)
+        fake = _SequenceProcess([None, None, None, None, 1])
+        with (
+            patch("runtime.adapters.ags_reloader.subprocess.run"),
+            patch("runtime.adapters.ags_reloader.subprocess.Popen", return_value=fake),
+            patch("runtime.adapters.ags_reloader.time.sleep"),
+        ):
+            assert reloader.reload() is False
+
+    def test_death_on_final_poll_returns_false(self, ags_bin: Path) -> None:
+        reloader = AgsReloader(ags_path=ags_bin)
+        fake = _SequenceProcess([None] * 7 + [1])
+        with (
+            patch("runtime.adapters.ags_reloader.subprocess.run"),
+            patch("runtime.adapters.ags_reloader.subprocess.Popen", return_value=fake),
+            patch("runtime.adapters.ags_reloader.time.sleep"),
         ):
             assert reloader.reload() is False
 
