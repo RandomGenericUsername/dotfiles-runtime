@@ -10,7 +10,8 @@ Binary resolution mirrors ``csg_adapter.py:135-163`` (path-separator
 check → ``shutil.which`` → ``os.access`` executable verification).
 Subprocess handling mirrors ``csg_adapter.py:297-319`` (``text=True``,
 ``capture_output=True``, ``timeout=10``, exception set
-``FileNotFoundError, PermissionError, TimeoutExpired, OSError``).
+``FileNotFoundError, PermissionError, TimeoutExpired, OSError`` plus
+``ValueError`` so text-mode decode/argument errors still yield ``False``).
 """
 
 from __future__ import annotations
@@ -26,25 +27,42 @@ from runtime.ports.desktop_reloader import IDesktopReloader
 logger = logging.getLogger(__name__)
 
 
+def _resolve_via_which(name: str) -> Path | None:
+    """Resolve a command ``name`` on ``PATH`` and verify it is executable."""
+    resolved = shutil.which(name)
+    if resolved is None:
+        return None
+    try:
+        return Path(resolved) if os.access(resolved, os.X_OK) else None
+    except OSError:
+        return None
+
+
 def _resolve_hyprctl(hyprctl_path: Path | None) -> Path | None:
     """Resolve ``hyprctl`` binary path.
 
     When ``hyprctl_path`` is ``None``, search ``PATH`` via
     ``shutil.which`` and verify executable access. When a path is
-    explicitly provided, return it as-is (caller controls existence).
+    explicitly provided, mirror ``csg_adapter.py:135-163``: a path
+    containing separators is verified as an executable file, while a
+    bare name is resolved via ``shutil.which``. Any unresolvable input
+    yields ``None`` for fail-later behaviour.
     """
     if hyprctl_path is not None:
-        return hyprctl_path
-    which_result = shutil.which("hyprctl")
-    if which_result is None:
-        return None
-    # Mirror csg_adapter pattern: verify executable bit where possible.
-    try:
-        if not os.access(which_result, os.X_OK):
+        candidate = str(hyprctl_path)
+        if (
+            os.path.sep in candidate
+            or (os.path.altsep and os.path.altsep in candidate)
+            or "\\" in candidate
+        ):
+            if hyprctl_path.is_file():
+                try:
+                    return hyprctl_path if os.access(candidate, os.X_OK) else None
+                except OSError:
+                    return None
             return None
-    except OSError:
-        return None
-    return Path(which_result)
+        return _resolve_via_which(candidate)
+    return _resolve_via_which("hyprctl")
 
 
 class HyprlandReloader(IDesktopReloader):
@@ -78,7 +96,13 @@ class HyprlandReloader(IDesktopReloader):
                 text=True,
                 timeout=10,
             )
-        except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired, OSError) as exc:
+        except (
+            FileNotFoundError,
+            PermissionError,
+            subprocess.TimeoutExpired,
+            OSError,
+            ValueError,
+        ) as exc:
             logger.warning("Hyprland reload failed: %s", exc)
             return False
         if result.returncode == 0:

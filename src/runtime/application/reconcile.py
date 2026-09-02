@@ -1,16 +1,17 @@
-"""Reconcile-desktop-state use case — the swap sequence (steps 1–4).
+"""Reconcile-desktop-state use case — the swap sequence (steps 1–5).
 
 Implements AD-1 (hexagonal), AD-2 (input changes invalidate), AD-5
 (state_root), AD-6 (swap symlinks lead), AD-14 (domain purity), AD-17
 (consumer wiring), AD-18 (preserve monitor configs), AD-20 (CLI
 rendering).
 
-Scope boundary (Story 2.1):
+Scope boundary (Stories 2.1–2.3):
 - Repoints ``current/`` symlinks to converge the desktop with
   ``current.json``, appends ``history.jsonl``, persists refreshed
-  ``current.json``.
-- Does NOT invoke any desktop reload (Hyprland/AGS/Hyprpaper — Stories
-  2.3–2.6); does NOT rewire ``wallpaper set`` (Story 2.7 capstone).
+  ``current.json``, and triggers one reload per injected
+  ``IDesktopReloader`` (Hyprland is Story 2.3; AGS/Hyprpaper/terminal
+  follow in 2.4–2.6).
+- Does NOT rewire ``wallpaper set`` (Story 2.7 capstone).
 
 Swap sequence order (shared-data-contract, non-negotiable):
 1. Ensure cache entries (wallpaper re-import on miss; palette/icons/effects
@@ -18,6 +19,7 @@ Swap sequence order (shared-data-contract, non-negotiable):
 2. Repoint ONLY ``current/`` symlinks via ``CacheSeeder``.
 3. ``current.json`` follows (refreshed ``applied_at``).
 4. History: append one ``history.jsonl`` line (trigger ``"reconcile"``).
+5. Reload desktop consumers (fire-and-report, per injected reloader).
 
 Derivation (step 1) runs OUTSIDE the lock (staging is race-safe;
 tool invocations stay parallel — same split ``ApplyWallpaperUseCase``
@@ -81,11 +83,13 @@ class ReconcileDesktopStateUseCase:
     4. Repoint symlinks via ``CacheSeeder.repoint_current_symlinks``
     5. Re-save ``current.json`` with refreshed ``applied_at``
     6. Append ``history.jsonl`` (trigger ``"reconcile"``)
+    7. Reload desktop consumers (fire-and-report, per injected reloader)
 
-    Constructor receives ports, the injected ``CacheSeeder`` adapter and
-    the state mutex (dependency inversion): the use case wires no concrete
-    adapters itself. No reload channel, no backend factory — the reload
-    contract (step 5 of the shared-data-contract) is Stories 2.3–2.6.
+    Constructor receives ports, the injected ``CacheSeeder`` adapter, the
+    state mutex, and ``IDesktopReloader`` instances (dependency inversion —
+    the use case wires no concrete adapters itself). Reload runs once per
+    injected reloader after history append (step 5 of the shared-data
+    contract), outside the lock.
     """
 
     def __init__(
@@ -115,7 +119,7 @@ class ReconcileDesktopStateUseCase:
         )
 
     def run(self) -> ReconcileResult:
-        """Reconcile: entries → symlinks → current.json → history.
+        """Reconcile: entries → symlinks → current.json → history → reload.
 
         Raises:
             RuntimeError: if ``current.json`` is absent (nothing to

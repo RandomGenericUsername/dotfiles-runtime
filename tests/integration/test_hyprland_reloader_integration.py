@@ -106,22 +106,27 @@ def _setup_spine(install_spine: Path) -> None:
     (install_spine / "config" / "icon-templates-renderer" / "icons.yaml").write_text("icons: {}\n")
 
 
-def test_hyprland_reloader_integration_with_real_binary(
+def test_hyprland_reloader_integration_with_hyprctl_shim(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """E2E: seed → apply → reconcile with real HyprlandReloader.
+    """E2E: seed → apply → reconcile with a HyprlandReloader using a shim.
 
-    If ``hyprctl`` is not naturally present, inject a fake shim that
-    exits 0 so the adapter's success path is exercised. When a real
-    ``hyprctl`` exists but Hyprland is not running, the adapter would
-    return False — the fake shim guarantees determinism.
+    A fake ``hyprctl`` shim (exits 0 on ``reload`` and records a marker
+    file) is injected into ``PATH`` so the success path is exercised
+    deterministically without touching a live compositor. The marker
+    proves the adapter actually invoked ``hyprctl reload``.
     """
-    # Create a fake hyprctl shim that exits 0 and logs calls
     bin_dir = tmp_path / "fakebin"
     bin_dir.mkdir()
     shim = bin_dir / "hyprctl"
-    shim.write_text('#!/bin/sh\nif [ "$1" = "reload" ]; then exit 0; fi\nexit 1\n')
+    marker = tmp_path / "hyprctl-called"
+    shim.write_text(
+        '#!/bin/sh\n'
+        f'[ -n "$HYPRCTL_MARKER" ] && touch "$HYPRCTL_MARKER"\n'
+        'if [ "$1" = "reload" ]; then exit 0; fi\nexit 1\n'
+    )
     shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("HYPRCTL_MARKER", str(marker))
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
     # Verify shim is discoverable
     assert shutil.which("hyprctl") is not None, "fake hyprctl not in PATH"
@@ -160,12 +165,13 @@ def test_hyprland_reloader_integration_with_real_binary(
     )
     result = use_case.run()
     assert result.reload_failures == []
+    assert marker.is_file(), "hyprctl shim was never invoked"
 
 
-def test_hyprland_reloader_integration_skip_when_no_binary(tmp_path: Path) -> None:
-    """If no hyprctl and no shim, the adapter returns False without crashing."""
-    # Ensure PATH does not contain hyprctl for this isolated check
-    # Use an explicit None path reloader which always returns False
+def test_hyprland_reloader_integration_missing_hyprctl_returns_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No discoverable ``hyprctl`` → adapter resolves None and returns False."""
+    monkeypatch.setattr("runtime.adapters.hyprland_reloader.shutil.which", lambda *_a, **_k: None)
     reloader = HyprlandReloader(hyprctl_path=None)
-    reloader._hyprctl_path = None  # type: ignore[attr-defined]
     assert reloader.reload() is False

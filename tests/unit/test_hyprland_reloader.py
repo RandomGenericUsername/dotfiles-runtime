@@ -2,26 +2,38 @@
 
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from runtime.adapters.hyprland_reloader import HyprlandReloader
 from runtime.ports.desktop_reloader import IDesktopReloader
 
 
+@pytest.fixture
+def hyprctl_bin(tmp_path: Path) -> Path:
+    """An executable ``hyprctl`` probe the adapter can resolve explicitly."""
+    probe = tmp_path / "hyprctl"
+    probe.write_text("#!/bin/sh\nexit 0\n")
+    probe.chmod(probe.stat().st_mode | stat.S_IEXEC)
+    return probe
+
+
 class TestHyprlandReloaderSuccess:
-    def test_reload_success_returns_true(self) -> None:
-        reloader = HyprlandReloader(hyprctl_path=Path("/usr/bin/hyprctl"))
+    def test_reload_success_returns_true(self, hyprctl_bin: Path) -> None:
+        reloader = HyprlandReloader(hyprctl_path=hyprctl_bin)
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stderr = ""
         with patch("runtime.adapters.hyprland_reloader.subprocess.run", return_value=mock_result):
             assert reloader.reload() is True
 
-    def test_reload_invokes_hyprctl_reload(self) -> None:
-        hyprctl = Path("/usr/bin/hyprctl")
-        reloader = HyprlandReloader(hyprctl_path=hyprctl)
+    def test_reload_invokes_hyprctl_reload(self, hyprctl_bin: Path) -> None:
+        reloader = HyprlandReloader(hyprctl_path=hyprctl_bin)
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stderr = ""
@@ -30,7 +42,7 @@ class TestHyprlandReloaderSuccess:
         ) as mock_run:
             reloader.reload()
             mock_run.assert_called_once_with(
-                [str(hyprctl), "reload"],
+                [str(hyprctl_bin), "reload"],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -38,68 +50,96 @@ class TestHyprlandReloaderSuccess:
 
 
 class TestHyprlandReloaderFailure:
-    def test_reload_nonzero_exit_returns_false(self) -> None:
-        reloader = HyprlandReloader(hyprctl_path=Path("/usr/bin/hyprctl"))
+    def test_reload_nonzero_exit_returns_false(self, hyprctl_bin: Path) -> None:
+        reloader = HyprlandReloader(hyprctl_path=hyprctl_bin)
         mock_result = MagicMock()
         mock_result.returncode = 1
         mock_result.stderr = "error output"
         with patch("runtime.adapters.hyprland_reloader.subprocess.run", return_value=mock_result):
             assert reloader.reload() is False
 
-    def test_reload_timeout_returns_false(self) -> None:
-        reloader = HyprlandReloader(hyprctl_path=Path("/usr/bin/hyprctl"))
+    def test_reload_timeout_returns_false(self, hyprctl_bin: Path) -> None:
+        reloader = HyprlandReloader(hyprctl_path=hyprctl_bin)
         with patch(
             "runtime.adapters.hyprland_reloader.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="hyprctl reload", timeout=10),
         ):
             assert reloader.reload() is False
 
-    def test_reload_command_not_found_returns_false(self) -> None:
-        reloader = HyprlandReloader(hyprctl_path=Path("/usr/bin/hyprctl"))
+    def test_reload_command_not_found_returns_false(self, hyprctl_bin: Path) -> None:
+        reloader = HyprlandReloader(hyprctl_path=hyprctl_bin)
         with patch(
             "runtime.adapters.hyprland_reloader.subprocess.run",
             side_effect=FileNotFoundError("hyprctl not found"),
         ):
             assert reloader.reload() is False
 
-    def test_reload_permission_denied_returns_false(self) -> None:
-        reloader = HyprlandReloader(hyprctl_path=Path("/usr/bin/hyprctl"))
+    def test_reload_permission_denied_returns_false(self, hyprctl_bin: Path) -> None:
+        reloader = HyprlandReloader(hyprctl_path=hyprctl_bin)
         with patch(
             "runtime.adapters.hyprland_reloader.subprocess.run",
             side_effect=PermissionError("permission denied"),
         ):
             assert reloader.reload() is False
 
-    def test_reload_oserror_returns_false(self) -> None:
-        reloader = HyprlandReloader(hyprctl_path=Path("/usr/bin/hyprctl"))
+    def test_reload_oserror_returns_false(self, hyprctl_bin: Path) -> None:
+        reloader = HyprlandReloader(hyprctl_path=hyprctl_bin)
         with patch(
             "runtime.adapters.hyprland_reloader.subprocess.run",
             side_effect=OSError("generic os error"),
         ):
             assert reloader.reload() is False
 
+    def test_reload_decode_error_returns_false(self, hyprctl_bin: Path) -> None:
+        reloader = HyprlandReloader(hyprctl_path=hyprctl_bin)
+        with patch(
+            "runtime.adapters.hyprland_reloader.subprocess.run",
+            side_effect=ValueError("embedded null byte"),
+        ):
+            assert reloader.reload() is False
+
 
 class TestHyprlandReloaderMissing:
-    def test_reload_no_hyprctl_returns_false(self) -> None:
-        reloader = HyprlandReloader(hyprctl_path=None)
-        # Force None even if hyprctl is on PATH in CI
-        reloader._hyprctl_path = None  # type: ignore[attr-defined]
+    def test_reload_missing_hyprctl_returns_false(self) -> None:
+        with patch(
+            "runtime.adapters.hyprland_reloader.shutil.which", return_value=None
+        ) as mock_which:
+            reloader = HyprlandReloader(hyprctl_path=None)
+        mock_which.assert_called_once_with("hyprctl")
         with patch("runtime.adapters.hyprland_reloader.subprocess.run") as mock_run:
             assert reloader.reload() is False
             mock_run.assert_not_called()
 
     def test_reload_none_path_does_not_invoke_subprocess(self) -> None:
-        reloader = HyprlandReloader(hyprctl_path=None)
-        reloader._hyprctl_path = None  # type: ignore[attr-defined]
+        with patch("runtime.adapters.hyprland_reloader.shutil.which", return_value=None):
+            reloader = HyprlandReloader(hyprctl_path=None)
         with patch("runtime.adapters.hyprland_reloader.subprocess.run") as mock_run:
             result = reloader.reload()
             assert result is False
             assert mock_run.call_count == 0
 
+    def test_reload_non_executable_hyprctl_returns_false(self, tmp_path: Path) -> None:
+        non_exec = tmp_path / "hyprctl"
+        non_exec.write_text("#!/bin/sh\nexit 0\n")
+        non_exec.chmod(0o644)
+        with patch(
+            "runtime.adapters.hyprland_reloader.shutil.which", return_value=str(non_exec)
+        ):
+            reloader = HyprlandReloader(hyprctl_path=None)
+        with patch("runtime.adapters.hyprland_reloader.subprocess.run") as mock_run:
+            assert reloader.reload() is False
+            mock_run.assert_not_called()
+
+    def test_resolve_explicit_missing_path_fails_later(self, tmp_path: Path) -> None:
+        reloader = HyprlandReloader(hyprctl_path=tmp_path / "does-not-exist")
+        with patch("runtime.adapters.hyprland_reloader.subprocess.run") as mock_run:
+            assert reloader.reload() is False
+            mock_run.assert_not_called()
+
 
 class TestHyprlandReloaderInterface:
-    def test_implements_port(self) -> None:
-        reloader = HyprlandReloader(hyprctl_path=Path("/usr/bin/hyprctl"))
+    def test_implements_port(self, hyprctl_bin: Path) -> None:
+        reloader = HyprlandReloader(hyprctl_path=hyprctl_bin)
         assert isinstance(reloader, IDesktopReloader)
 
 

@@ -687,11 +687,11 @@ class TestReconcileHistory:
 
 
 class TestReconcileStructuralScopeLock:
-    """AC 3: the reload channel is structurally absent — no reloader/backend/
-    factory parameter exists on the constructor, and nothing outside
-    state_root is written."""
+    """AC: the reload channel is constructor-injected only — the accepted
+    parameter set is pinned exactly (tripwire against unexpected reloader/
+    backend/factory parameters), and nothing outside state_root is written."""
 
-    def test_constructor_accepts_no_reload_channel(self) -> None:
+    def test_constructor_reload_channel_is_injected_only(self) -> None:
         from runtime.application.reconcile import ReconcileDesktopStateUseCase
 
         params = set(inspect.signature(ReconcileDesktopStateUseCase.__init__).parameters)
