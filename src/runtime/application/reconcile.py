@@ -126,7 +126,7 @@ class ReconcileDesktopStateUseCase:
         # Fail-fast corrupt/absent guard (mirrors apply):
         state = self._state_repo.load_current()
         if state is None:
-            raise RuntimeError("nothing to reconcile: no current state (never seeded)")
+                raise RuntimeError("nothing to reconcile")
         # ValueError from a corrupt store propagates loudly here — never
         # swallowed into a reseed or fallback.
 
@@ -152,7 +152,7 @@ class ReconcileDesktopStateUseCase:
         with self._mutex.hold(blocking=True):
             state = self._state_repo.load_current()
             if state is None:
-                raise RuntimeError("nothing to reconcile: no current state (never seeded)")
+                raise RuntimeError("nothing to reconcile")
 
             # Decision D1: re-derive if state changed while we were outside.
             if state.wallpaper.content_hash != pre_lock_wallpaper_hash:
