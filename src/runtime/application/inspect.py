@@ -25,7 +25,9 @@ Symlink statuses (AC 2): each expected consumer symlink
 
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -45,6 +47,53 @@ _ABSENT_STATE_MESSAGE = (
 )
 
 LinkStatusKind = Literal["ok", "missing", "diverged", "dangling"]
+
+HistoryTrigger = Literal["seed", "set", "reconcile", "force"]
+
+_VALID_HISTORY_TRIGGERS = frozenset({"seed", "set", "reconcile", "force"})
+
+_HISTORY_FIELDS = (
+    "ts",
+    "trigger",
+    "wallpaper",
+    "palette",
+    "effects",
+    "icons",
+    "source_path",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryRecord:
+    """One parsed ``history.jsonl`` line (AC 1, AR-9).
+
+    The pinned 7-field line schema — ``ts``, ``trigger``, ``wallpaper``,
+    ``palette``, ``effects``, ``icons``, ``source_path`` — surfaced
+    verbatim (never hex-validated, never reformatted). The three layer
+    hashes are ``str | None`` (a ``None`` layer degraded at write time).
+    There is deliberately NO ``schema_version`` field (version lives only
+    in ``current.json``).
+    """
+
+    ts: str
+    trigger: str
+    wallpaper: str
+    palette: str | None
+    effects: str | None
+    icons: str | None
+    source_path: str
+
+    def to_dict(self) -> dict[str, str | None]:
+        """Return the full 7-field dict in pinned schema order."""
+        return {
+            "ts": self.ts,
+            "trigger": self.trigger,
+            "wallpaper": self.wallpaper,
+            "palette": self.palette,
+            "effects": self.effects,
+            "icons": self.icons,
+            "source_path": self.source_path,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,3 +273,141 @@ class InspectStateUseCase:
                 state.icons.entry_hash,
             )
         return targets
+
+
+class InspectHistoryUseCase:
+    """Read-only newest-first reader of the append-only history log (FR-7, CAP-7).
+
+    Projects ``history.jsonl`` (oldest-first on disk, append-only via
+    ``CacheSeeder.append_history``) into newest-first :class:`HistoryRecord`
+    entries. Read-only invariant (AC 4): the use case performs only
+    ``Path`` reads (``is_symlink``/``exists``/``open``) — never
+    ``os.open(..., O_APPEND)``, never ``save()``, never seeder/mutex
+    construction. Constructor takes ONLY ``state_root`` (history is a flat
+    file, not the ``current.json`` index); ``current.json`` is never read
+    and never required.
+
+    Corrupt-line policy (AC 5): a non-trailing corrupt line (non-JSON or
+    schema-violating) raises ``ValueError`` loudly with the 1-based line
+    number; a trailing partial line (the torn-write crash artifact) is
+    tolerated — skipped with a ``logger.warning``, parseable prefix still
+    returned newest-first. A symlinked ``history.jsonl`` raises
+    ``ValueError`` (mirror the writer's O_NOFOLLOW hardening) — never
+    followed.
+    """
+
+    def __init__(self, state_root: Path) -> None:
+        self._state_root = state_root
+
+    def run(self, limit: int = 20) -> list[HistoryRecord]:
+        """Read history newest-first, bounded by ``limit`` (read-only).
+
+        Args:
+            limit: maximum entries returned (newest N); ``0`` means all
+                entries, still newest-first.
+
+        Returns:
+            Parsed records newest-first (reverse of file order); ``[]``
+            when ``history.jsonl`` is absent (AC 3 — never seeded is not
+            an error), empty, or blank-lines-only.
+
+        Raises:
+            ValueError: negative ``limit``; symlinked history file; a
+                non-trailing corrupt line (with line number); a trailing
+                schema-violating line; an unknown ``trigger`` value.
+            OSError: on filesystem read failures.
+        """
+        if limit < 0:
+            raise ValueError(f"history limit must be >= 0, got {limit}")
+        history_path = self._state_root / "history.jsonl"
+        if history_path.is_symlink():
+            raise ValueError(
+                f"history.jsonl is a symlink (refusing to follow): {history_path}",
+            )
+        if not history_path.exists():
+            return []
+
+        oldest_first: list[HistoryRecord] = []
+        try:
+            with history_path.open("r", encoding="utf-8") as handle:
+                for lineno, line in enumerate(handle, start=1):
+                    if not line.strip():
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        if self._has_nonblank_tail(handle):
+                            raise ValueError(
+                                f"history.jsonl line {lineno}: not valid JSON ({exc.msg})",
+                            ) from exc
+                        logger.warning("history: skipping torn trailing line %d", lineno)
+                        break
+                    oldest_first.append(self._parse_record(obj, lineno))
+        except UnicodeDecodeError as exc:
+            # A torn multi-byte tail can surface at the iterator itself
+            # rather than inside json.loads — same tolerance: the crash
+            # artifact lives at the tail, never in the middle.
+            logger.warning("history: skipping torn trailing line (%s)", exc)
+        newest_first = oldest_first[::-1]
+        if limit == 0:
+            return newest_first
+        return newest_first[:limit]
+
+    @staticmethod
+    def _has_nonblank_tail(handle: Iterator[str]) -> bool:
+        """Return True if any non-blank line remains in the open handle."""
+        for remaining in handle:
+            if remaining.strip():
+                return True
+        return False
+
+    @staticmethod
+    def _parse_record(obj: object, lineno: int) -> HistoryRecord:
+        """Validate one decoded line against the pinned 7-field schema."""
+        if not isinstance(obj, dict):
+            raise ValueError(
+                f"history.jsonl line {lineno}: expected a JSON object, got {type(obj).__name__}",
+            )
+        keys = set(obj.keys())
+        expected = set(_HISTORY_FIELDS)
+        if keys != expected:
+            raise ValueError(
+                f"history.jsonl line {lineno}: expected exactly keys "
+                f"{sorted(expected)}, got {sorted(keys)}",
+            )
+        trigger = obj["trigger"]
+        if trigger not in _VALID_HISTORY_TRIGGERS:
+            raise ValueError(
+                f"history.jsonl line {lineno}: unknown trigger {trigger!r} "
+                f"(expected one of seed|set|reconcile|force)",
+            )
+        ts = obj["ts"]
+        wallpaper = obj["wallpaper"]
+        source_path = obj["source_path"]
+        palette = obj["palette"]
+        effects = obj["effects"]
+        icons = obj["icons"]
+        if not isinstance(ts, str):
+            raise ValueError(f"history.jsonl line {lineno}: 'ts' must be a string")
+        if not isinstance(wallpaper, str):
+            raise ValueError(f"history.jsonl line {lineno}: 'wallpaper' must be a string")
+        if not isinstance(source_path, str):
+            raise ValueError(f"history.jsonl line {lineno}: 'source_path' must be a string")
+        for field_name, value in (
+            ("palette", palette),
+            ("effects", effects),
+            ("icons", icons),
+        ):
+            if value is not None and not isinstance(value, str):
+                raise ValueError(
+                    f"history.jsonl line {lineno}: {field_name!r} must be a string or null",
+                )
+        return HistoryRecord(
+            ts=ts,
+            trigger=trigger,
+            wallpaper=wallpaper,
+            palette=palette,
+            effects=effects,
+            icons=icons,
+            source_path=source_path,
+        )

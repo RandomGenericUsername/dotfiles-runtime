@@ -18,7 +18,7 @@ from cli_output.domain.views import CustomView, ErrorView
 
 if TYPE_CHECKING:
     from runtime.application.apply_wallpaper import ApplyWallpaperResult
-    from runtime.application.inspect import InspectStatusResult
+    from runtime.application.inspect import HistoryRecord, InspectStatusResult
     from runtime.application.reconcile import ReconcileResult
     from runtime.ports.desktop_reloader import IDesktopReloader
 
@@ -294,6 +294,9 @@ def version(
 
 _IMAGE_PATH_ARG = typer.Argument(help="Path to the wallpaper image file")
 _OUTPUT_FORMAT_OPTION = typer.Option(OutputFormat.PLAIN, "--format", "-f")
+_HISTORY_LIMIT_OPTION = typer.Option(
+    20, "--limit", "-n", help="Maximum history entries to show (newest first, 0 = all)"
+)
 
 
 @wallpaper_app.command("set")
@@ -571,6 +574,93 @@ def inspect_status(
                 },
             },
             rich=summary,
+        )
+    )
+
+
+def _run_inspect_history(limit: int) -> tuple[list[HistoryRecord], int]:
+    """Compose and run InspectHistoryUseCase (inspect history command).
+
+    Mirrors ``_run_inspect_status``'s wiring: resolve state_root (absolute)
+    and inject it into the read-only use case. No seeder, mutex, derivation
+    adapters, reloaders, or state_repo — inspection mutates nothing (AC 4).
+
+    Returns:
+        A ``(entries, total)`` pair: ``entries`` newest-first bounded by
+        ``limit`` (``0`` = all), ``total`` the parseable on-disk line count
+        (torn trailing line excluded).
+    """
+    state_root = _resolve_state_root()
+
+    from runtime.application.inspect import InspectHistoryUseCase
+
+    use_case = InspectHistoryUseCase(state_root=state_root)
+    entries = use_case.run(limit=limit)
+    if limit == 0 or len(entries) < limit:
+        total = len(entries)
+    else:
+        total = len(use_case.run(limit=0))
+    return entries, total
+
+
+@inspect_app.command("history")
+def inspect_history(
+    limit: int = _HISTORY_LIMIT_OPTION,
+    output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
+) -> None:
+    """Show the append-only desktop history, newest first (FR-7, CAP-7).
+
+    Read-only inspection: reads ``history.jsonl`` (oldest-first on disk)
+    and prints the transition log newest-first. Mutates nothing — no
+    history append, no current.json write, no current/ repoint, no seed
+    side-effects. An absent or empty history is clean (exit 0 with
+    "no history recorded yet"), NOT an error.
+    """
+    renderer = create_renderer(output_format)
+    try:
+        entries, total = _run_inspect_history(limit)
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.error("inspect history failed: %s", exc)
+        renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
+        raise typer.Exit(code=1) from None
+    except Exception:
+        logger.exception("inspect history failed unexpectedly")
+        renderer.error(
+            ErrorView(
+                kind="UnexpectedError",
+                message="inspect history failed unexpectedly; see logs",
+            )
+        )
+        raise typer.Exit(code=1) from None
+
+    count = len(entries)
+    truncated = total > count
+    if count == 0:
+        plain = "no history recorded yet"
+    else:
+        lines: list[str] = []
+        for record in entries:
+            palette_desc = record.palette[:12] if record.palette is not None else "absent"
+            effects_desc = record.effects[:12] if record.effects is not None else "absent"
+            icons_desc = record.icons[:12] if record.icons is not None else "absent"
+            source_suffix = f" {record.source_path}" if record.source_path else ""
+            lines.append(
+                f"{record.ts} {record.trigger} {record.wallpaper[:12]}"
+                f" palette {palette_desc} effects {effects_desc} icons {icons_desc}"
+                f"{source_suffix}"
+            )
+        plain = "\n".join(lines)
+    renderer.custom(
+        CustomView(
+            plain=plain,
+            object={
+                "entries": [record.to_dict() for record in entries],
+                "count": count,
+                "total": total,
+                "truncated": truncated,
+                "limit": limit,
+            },
+            rich=plain,
         )
     )
 
