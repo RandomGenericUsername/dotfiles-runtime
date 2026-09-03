@@ -127,6 +127,33 @@ class TestInspectCacheEmpty:
         result = InspectCacheUseCase(tmp_path).run()
         assert result.total == 0
 
+    def test_inaccessible_cache_propagates_oserror(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / "cache").mkdir()
+
+        def fail_stat(*args: object, **kwargs: object) -> object:
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(Path, "stat", fail_stat)
+        with pytest.raises(OSError, match="permission denied"):
+            InspectCacheUseCase(tmp_path).run()
+
+    def test_inaccessible_layer_propagates_oserror(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _make_entry(tmp_path, "wallpapers", "a" * 64)
+        original_open = os.open
+
+        def fail_layer_open(path: object, *args: object, **kwargs: object) -> int:
+            if Path(path) == tmp_path / "cache" / "wallpapers":
+                raise OSError("permission denied")
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", fail_layer_open)
+        with pytest.raises(OSError, match="permission denied"):
+            InspectCacheUseCase(tmp_path).run()
+
 
 class TestInspectCacheNoise:
     """AC 5 — staging/files/non-hex/symlinks tolerated, never loud."""
@@ -193,6 +220,20 @@ class TestInspectCacheNoise:
         os.symlink(target, tmp_path / "cache" / "wallpapers" / ("b" * 64))
         result = InspectCacheUseCase(tmp_path).run()
         assert result.layers["wallpapers"] == ("a" * 64,)
+
+    def test_layer_replacement_with_symlink_cannot_escape_cache(self, tmp_path: Path) -> None:
+        outside = tmp_path / "outside"
+        (outside / ("f" * 64)).mkdir(parents=True)
+        _make_entry(tmp_path, "wallpapers", "a" * 64)
+        layer = tmp_path / "cache" / "icons"
+        layer.mkdir()
+        layer.rmdir()
+        layer.symlink_to(outside, target_is_directory=True)
+
+        result = InspectCacheUseCase(tmp_path).run()
+
+        assert result.layers["icons"] == ()
+        assert ("f" * 64) not in result.layers["icons"]
 
     def test_meta_json_never_required(self, tmp_path: Path) -> None:
         entry = _make_entry(tmp_path, "effects", "e" * 64)

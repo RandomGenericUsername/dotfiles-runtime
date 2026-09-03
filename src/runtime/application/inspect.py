@@ -25,9 +25,11 @@ Symlink statuses (AC 2): each expected consumer symlink
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
+import stat
 from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -515,10 +517,10 @@ class InspectCacheUseCase:
     ``IStateRepository``. Constructor takes ONLY ``state_root`` (same
     precedent as ``InspectHistoryUseCase``).
 
-    Read-only invariant (AC 4): only ``Path`` reads
-    (``is_symlink``/``exists``/``is_dir``/``iterdir``/``scandir``) — never
-    ``mkdir``, never ``os.rename``, never ``save()``, never seeder/mutex/
-    populator construction, never staging reap.
+    Read-only invariant (AC 4): only filesystem reads
+    (``Path`` checks, ``os.open``/``os.scandir``) — never ``mkdir``, never
+    ``os.rename``, never ``save()``, never seeder/mutex/populator construction,
+    never staging reap.
 
     Noise policy (AC 5 — diagnostic, not a validator): staging dirs,
     plain files, and symlinks are skipped silently; non-64-hex dir names
@@ -553,9 +555,9 @@ class InspectCacheUseCase:
                 f"cache dir is a symlink (refusing to follow): {cache_root}",
             )
         try:
-            is_dir = cache_root.is_dir(follow_symlinks=False)
-        except OSError:
-            raise
+            is_dir = stat.S_ISDIR(cache_root.stat(follow_symlinks=False).st_mode)
+        except FileNotFoundError:
+            return self._empty_result()
         if not is_dir:
             # Absent cache dir (or a squatting regular file) → all empty
             # (AC 3 — missing cache is not an error; never create dirs).
@@ -580,16 +582,25 @@ class InspectCacheUseCase:
         if layer_dir.is_symlink():
             # Symlinked layer — never follow (O_NOFOLLOW mirror).
             return ()
-        try:
-            is_dir = layer_dir.is_dir(follow_symlinks=False)
-        except OSError:
-            raise
-        if not is_dir:
-            # Absent layer (or squatting file) → empty (never create dirs).
-            return ()
         entries: list[str] = []
         try:
-            with os.scandir(layer_dir) as it:
+            layer_fd = os.open(
+                layer_dir,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            )
+        except FileNotFoundError:
+            # Absent layer → empty (never create dirs).
+            return ()
+        except NotADirectoryError:
+            # Squatting file → empty (never create dirs).
+            return ()
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                # Symlinked layer — never follow (O_NOFOLLOW mirror).
+                return ()
+            raise
+        try:
+            with os.scandir(layer_fd) as it:
                 for entry in it:
                     # Symlink-first: never follow entry symlinks.
                     try:
@@ -614,7 +625,9 @@ class InspectCacheUseCase:
                         continue
                     entries.append(name.lower())
         except FileNotFoundError:
-            # Layer deleted between is_dir and scandir — same as absent.
+            # Retained for filesystems that report deletion while scanning.
             return ()
+        finally:
+            os.close(layer_fd)
         entries.sort()
         return tuple(entries)
