@@ -18,7 +18,11 @@ from cli_output.domain.views import CustomView, ErrorView
 
 if TYPE_CHECKING:
     from runtime.application.apply_wallpaper import ApplyWallpaperResult
-    from runtime.application.inspect import HistoryRecord, InspectStatusResult
+    from runtime.application.inspect import (
+        HistoryRecord,
+        InspectCacheResult,
+        InspectStatusResult,
+    )
     from runtime.application.reconcile import ReconcileResult
     from runtime.ports.desktop_reloader import IDesktopReloader
 
@@ -38,6 +42,9 @@ app.add_typer(wallpaper_app, name="wallpaper")
 
 inspect_app = typer.Typer(help="Inspect commands")
 app.add_typer(inspect_app, name="inspect")
+
+cache_app = typer.Typer(help="Cache commands")
+inspect_app.add_typer(cache_app, name="cache")
 
 logger = logging.getLogger(__name__)
 
@@ -659,6 +666,79 @@ def inspect_history(
                 "total": total,
                 "truncated": truncated,
                 "limit": limit,
+            },
+            rich=plain,
+        )
+    )
+
+
+def _run_inspect_cache_list() -> InspectCacheResult:
+    """Compose and run InspectCacheUseCase (inspect cache list command).
+
+    Mirrors ``_run_inspect_status``'s wiring: resolve state_root (absolute)
+    and inject it into the read-only use case. No seeder, mutex, derivation
+    adapters, reloaders, or state_repo — inspection mutates nothing (AC 4).
+
+    Returns:
+        The single-scan ``InspectCacheResult`` (layers/counts/total from
+        one directory walk, so ``total`` never needs a second read).
+    """
+    state_root = _resolve_state_root()
+
+    from runtime.application.inspect import InspectCacheUseCase
+
+    use_case = InspectCacheUseCase(state_root=state_root)
+    return use_case.run()
+
+
+@cache_app.command("list")
+def inspect_cache_list(
+    output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
+) -> None:
+    """List cached derived artifacts per layer, by hash (FR-7, CAP-7).
+
+    Read-only inspection: reads ``cache/<layer>/<hash>/`` dir names and
+    prints each layer's entries in canonical pipeline order
+    (wallpapers → palettes → effects → icons) with hashes sorted per
+    layer. Mutates nothing — no cache population, no current.json write,
+    no current/ repoint, no history append, no seed side-effects. An
+    absent or empty cache is clean (exit 0 with
+    "no cache entries recorded yet"), NOT an error. List-only: no
+    eviction surface (AC 2).
+    """
+    renderer = create_renderer(output_format)
+    try:
+        result = _run_inspect_cache_list()
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.error("inspect cache list failed: %s", exc)
+        renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
+        raise typer.Exit(code=1) from None
+    except Exception:
+        logger.exception("inspect cache list failed unexpectedly")
+        renderer.error(
+            ErrorView(
+                kind="UnexpectedError",
+                message="inspect cache list failed unexpectedly; see logs",
+            )
+        )
+        raise typer.Exit(code=1) from None
+
+    if result.total == 0:
+        plain = "no cache entries recorded yet"
+    else:
+        sections: list[str] = []
+        for layer, entries in result.layers.items():
+            lines = [f"{layer} ({len(entries)}):"]
+            lines.extend(f"  {entry_hash[:12]}" for entry_hash in entries)
+            sections.append("\n".join(lines))
+        plain = "\n".join(sections)
+    renderer.custom(
+        CustomView(
+            plain=plain,
+            object={
+                "layers": {layer: list(entries) for layer, entries in result.layers.items()},
+                "counts": dict(result.counts),
+                "total": result.total,
             },
             rich=plain,
         )

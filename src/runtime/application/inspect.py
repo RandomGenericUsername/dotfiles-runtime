@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from runtime.adapters.cache import cache_entry_path
+from runtime.adapters.cache import CACHE_LAYERS, cache_entry_path
 from runtime.domain.models import (
     DEFAULT_MONITOR,
     DesktopState,
@@ -454,3 +454,167 @@ class InspectHistoryUseCase:
             icons=icons,
             source_path=source_path,
         )
+
+
+# ----------------------------------------------------------------------
+# AC 1/3/5 — cache listing (Story 3.4, list-only, read-only)
+# ----------------------------------------------------------------------
+
+# Canonical pipeline order (NOT alphabetical): wallpapers → palettes →
+# effects → icons. Validated against CACHE_LAYERS (adapters) — never
+# sorted(CACHE_LAYERS), which would yield effects/icons/palettes/wallpapers.
+_CACHE_LAYER_ORDER: tuple[str, str, str, str] = (
+    "wallpapers",
+    "palettes",
+    "effects",
+    "icons",
+)
+
+_CACHE_STAGING_PREFIX = ".staging-"
+
+_HEX_DIGITS = frozenset("0123456789abcdef")
+
+
+def _is_cache_entry_name(name: str) -> bool:
+    """Return True if ``name`` is a 64-char lowercase-hex entry dir name."""
+    return len(name) == 64 and all(c in _HEX_DIGITS for c in name.lower())
+
+
+@dataclass(frozen=True, slots=True)
+class CacheLayerListing:
+    """One cache layer's sorted entry hashes (AC 1).
+
+    ``entries`` are FULL 64-char lowercase-hex dir names, sorted
+    lexicographically.
+    """
+
+    layer: str
+    entries: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class InspectCacheResult:
+    """Outcome of one ``InspectCacheUseCase.run`` invocation (AC 1, AC 3).
+
+    ``layers`` maps each canonical layer to its sorted entry-hash tuple
+    (insertion order is canonical pipeline order); ``counts`` maps each
+    layer to ``len(entries)``; ``total`` is the single-scan sum (no
+    second read).
+    """
+
+    layers: dict[str, tuple[str, ...]]
+    counts: dict[str, int]
+    total: int
+
+
+class InspectCacheUseCase:
+    """Read-only lister of the layered content-addressed cache (FR-7, CAP-7).
+
+    Reads ONLY ``state_root / "cache"`` dir names (``cache/<layer>/<64hex>``,
+    AD-2/AD-8) — never ``meta.json``, never ``current.json``, never the
+    ``IStateRepository``. Constructor takes ONLY ``state_root`` (same
+    precedent as ``InspectHistoryUseCase``).
+
+    Read-only invariant (AC 4): only ``Path`` reads
+    (``is_symlink``/``exists``/``is_dir``/``iterdir``/``scandir``) — never
+    ``mkdir``, never ``os.rename``, never ``save()``, never seeder/mutex/
+    populator construction, never staging reap.
+
+    Noise policy (AC 5 — diagnostic, not a validator): staging dirs,
+    plain files, and symlinks are skipped silently; non-64-hex dir names
+    are skipped with ``logger.warning`` (never ``ValueError``). Only a
+    symlinked ``cache/`` root raises ``ValueError`` (O_NOFOLLOW mirror),
+    and genuine I/O failures (``OSError``) propagate.
+    """
+
+    def __init__(self, state_root: Path) -> None:
+        self._state_root = state_root
+
+    def run(self) -> InspectCacheResult:
+        """List cache entries per layer in canonical order (read-only).
+
+        Returns:
+            ``InspectCacheResult`` with all four layers present (``()``
+            when the cache or a layer dir is absent — AC 3).
+
+        Raises:
+            ValueError: if ``state_root / "cache"`` itself is a symlink
+                (refusing to follow, mirror rt-3.3 O_NOFOLLOW).
+            OSError: on filesystem read failures.
+        """
+        if set(_CACHE_LAYER_ORDER) != set(CACHE_LAYERS):
+            raise AssertionError(
+                f"canonical cache layer order diverged from adapters: "
+                f"{_CACHE_LAYER_ORDER!r} vs {sorted(CACHE_LAYERS)!r}",
+            )
+        cache_root = self._state_root / "cache"
+        if cache_root.is_symlink():
+            raise ValueError(
+                f"cache dir is a symlink (refusing to follow): {cache_root}",
+            )
+        try:
+            is_dir = cache_root.is_dir(follow_symlinks=False)
+        except OSError:
+            raise
+        if not is_dir:
+            # Absent cache dir (or a squatting regular file) → all empty
+            # (AC 3 — missing cache is not an error; never create dirs).
+            return self._empty_result()
+        layers: dict[str, tuple[str, ...]] = {}
+        for layer in _CACHE_LAYER_ORDER:
+            layers[layer] = self._list_layer(cache_root / layer, layer)
+        counts = {layer: len(entries) for layer, entries in layers.items()}
+        total = sum(counts.values())
+        return InspectCacheResult(layers=layers, counts=counts, total=total)
+
+    @staticmethod
+    def _empty_result() -> InspectCacheResult:
+        """All four layers empty in canonical order (AC 3)."""
+        layers: dict[str, tuple[str, ...]] = {layer: () for layer in _CACHE_LAYER_ORDER}
+        counts: dict[str, int] = {layer: 0 for layer in _CACHE_LAYER_ORDER}
+        return InspectCacheResult(layers=layers, counts=counts, total=0)
+
+    @staticmethod
+    def _list_layer(layer_dir: Path, layer: str) -> tuple[str, ...]:
+        """List one layer's valid entry hashes, sorted (read-only)."""
+        if layer_dir.is_symlink():
+            # Symlinked layer — never follow (O_NOFOLLOW mirror).
+            return ()
+        try:
+            is_dir = layer_dir.is_dir(follow_symlinks=False)
+        except OSError:
+            raise
+        if not is_dir:
+            # Absent layer (or squatting file) → empty (never create dirs).
+            return ()
+        entries: list[str] = []
+        try:
+            with os.scandir(layer_dir) as it:
+                for entry in it:
+                    # Symlink-first: never follow entry symlinks.
+                    try:
+                        if entry.is_symlink():
+                            continue
+                    except OSError:
+                        raise
+                    name = entry.name
+                    if name.startswith(_CACHE_STAGING_PREFIX):
+                        # AD-9 transient (silently ignored even inside
+                        # a layer — defensive; stagings live at cache/).
+                        continue
+                    try:
+                        is_entry_dir = entry.is_dir(follow_symlinks=False)
+                    except OSError:
+                        raise
+                    if not is_entry_dir:
+                        # Plain squatting files — silently ignored.
+                        continue
+                    if not _is_cache_entry_name(name):
+                        logger.warning("cache: skipping non-entry dir %s/%s", layer, name)
+                        continue
+                    entries.append(name.lower())
+        except FileNotFoundError:
+            # Layer deleted between is_dir and scandir — same as absent.
+            return ()
+        entries.sort()
+        return tuple(entries)
