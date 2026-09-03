@@ -595,11 +595,11 @@ def _run_inspect_history(limit: int) -> tuple[list[HistoryRecord], int]:
     from runtime.application.inspect import InspectHistoryUseCase
 
     use_case = InspectHistoryUseCase(state_root=state_root)
-    entries = use_case.run(limit=limit)
-    if limit == 0 or len(entries) < limit:
-        total = len(entries)
-    else:
-        total = len(use_case.run(limit=0))
+    # Single full scan: avoids 2x I/O and the inter-read TOCTOU where a
+    # concurrent append makes entries/total inconsistent.
+    all_entries = use_case.run(limit=0)
+    total = len(all_entries)
+    entries = all_entries if limit == 0 else all_entries[:limit]
     return entries, total
 
 

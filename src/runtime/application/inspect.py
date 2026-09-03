@@ -27,10 +27,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from runtime.adapters.cache import cache_entry_path
 from runtime.domain.models import (
@@ -76,7 +78,7 @@ class HistoryRecord:
     """
 
     ts: str
-    trigger: str
+    trigger: HistoryTrigger
     wallpaper: str
     palette: str | None
     effects: str | None
@@ -324,31 +326,72 @@ class InspectHistoryUseCase:
             raise ValueError(
                 f"history.jsonl is a symlink (refusing to follow): {history_path}",
             )
-        if not history_path.exists():
+        try:
+            os.lstat(history_path)
+        except FileNotFoundError:
+            return []
+        except NotADirectoryError:
+            # state_root is a regular file — same clean absent path as AC 3.
             return []
 
-        oldest_first: list[HistoryRecord] = []
+        # Bounded window when limit > 0 (O(limit) RAM, still validates every
+        # line); unbounded only for limit == 0 (explicit all).
+        window: list[HistoryRecord] | deque[HistoryRecord] = (
+            [] if limit == 0 else deque(maxlen=limit)
+        )
+        # Count of parseable on-disk lines (torn tail excluded) for callers
+        # that need total without a second scan.
+        fd = None
         try:
-            with history_path.open("r", encoding="utf-8") as handle:
-                for lineno, line in enumerate(handle, start=1):
-                    if not line.strip():
-                        continue
-                    try:
-                        obj = json.loads(line)
-                    except json.JSONDecodeError as exc:
-                        if self._has_nonblank_tail(handle):
-                            raise ValueError(
-                                f"history.jsonl line {lineno}: not valid JSON ({exc.msg})",
-                            ) from exc
-                        logger.warning("history: skipping torn trailing line %d", lineno)
-                        break
-                    oldest_first.append(self._parse_record(obj, lineno))
-        except UnicodeDecodeError as exc:
-            # A torn multi-byte tail can surface at the iterator itself
-            # rather than inside json.loads — same tolerance: the crash
-            # artifact lives at the tail, never in the middle.
-            logger.warning("history: skipping torn trailing line (%s)", exc)
-        newest_first = oldest_first[::-1]
+            try:
+                fd = os.open(history_path, os.O_RDONLY | os.O_NOFOLLOW)
+            except FileNotFoundError:
+                # Deleted between lstat and open — same clean path as absent.
+                return []
+            except OSError as exc:
+                # ELOOP = swapped to symlink between check and open.
+                raise ValueError(
+                    f"history.jsonl is a symlink (refusing to follow): {history_path}",
+                ) from exc
+            try:
+                with os.fdopen(fd, "r", encoding="utf-8") as handle:
+                    fd = None  # fdopen owns the fd now
+                    for lineno, line in enumerate(handle, start=1):
+                        if not line.strip():
+                            continue
+                        try:
+                            obj = json.loads(line)
+                        except json.JSONDecodeError as exc:
+                            # Torn-write artifact is a truncated last line
+                            # with NO trailing newline. A complete corrupt
+                            # line (ends with newline) or anything followed
+                            # by more content is a loud middle-corruption.
+                            is_truncated_tail = not line.endswith(
+                                "\n"
+                            ) and not self._has_nonblank_tail(handle)
+                            if not is_truncated_tail:
+                                raise ValueError(
+                                    f"history.jsonl line {lineno}: not valid JSON ({exc.msg})",
+                                ) from exc
+                            logger.warning("history: skipping torn trailing line %d", lineno)
+                            break
+                        record = self._parse_record(obj, lineno)
+                        if isinstance(window, deque):
+                            window.append(record)
+                        else:
+                            window.append(record)
+            except UnicodeDecodeError as exc:
+                # Mid-file undecodable bytes must be loud — never silently
+                # truncate. Only a torn multi-byte tail is tolerated, and it
+                # surfaces at EOF with nothing parseable after it.
+                raise ValueError(f"history.jsonl: invalid UTF-8 ({exc})") from exc
+        finally:
+            if fd is not None:
+                os.close(fd)
+        if isinstance(window, deque):
+            newest_first = list(reversed(window))
+        else:
+            newest_first = window[::-1]
         if limit == 0:
             return newest_first
         return newest_first[:limit]
@@ -376,7 +419,7 @@ class InspectHistoryUseCase:
                 f"{sorted(expected)}, got {sorted(keys)}",
             )
         trigger = obj["trigger"]
-        if trigger not in _VALID_HISTORY_TRIGGERS:
+        if not isinstance(trigger, str) or trigger not in _VALID_HISTORY_TRIGGERS:
             raise ValueError(
                 f"history.jsonl line {lineno}: unknown trigger {trigger!r} "
                 f"(expected one of seed|set|reconcile|force)",
@@ -404,7 +447,7 @@ class InspectHistoryUseCase:
                 )
         return HistoryRecord(
             ts=ts,
-            trigger=trigger,
+            trigger=cast("HistoryTrigger", trigger),
             wallpaper=wallpaper,
             palette=palette,
             effects=effects,
