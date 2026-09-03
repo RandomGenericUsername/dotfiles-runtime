@@ -256,7 +256,8 @@ class TestCrashRecoveryIntegration:
         from runtime.application.reconcile import ReconcileDesktopStateUseCase
 
         # First "process": seed + apply establish current.json + history.
-        first_history = (state_root / "history.jsonl").read_text().splitlines()
+        first_raw = (state_root / "history.jsonl").read_text()
+        first_history = first_raw.splitlines()
         assert len(first_history) >= 1
 
         # Second "process": brand-new adapter pair on the SAME state_root.
@@ -274,9 +275,10 @@ class TestCrashRecoveryIntegration:
             mutex=FlockSeedMutex(state_root / ".seed.lock"),
         ).run()
 
-        after = (state_root / "history.jsonl").read_text().splitlines()
+        after_raw = (state_root / "history.jsonl").read_text()
+        after = after_raw.splitlines()
         assert len(after) == len(first_history) + 1  # accumulation across restart
-        assert after[: len(first_history)] == first_history  # prior lines byte-identical
+        assert after_raw.startswith(first_raw)  # prior lines BYTE-identical (raw prefix, not splitlines)
         assert json.loads(after[-1])["trigger"] == "reconcile"
 
     def test_crash_window_reconcile_save_append_lost_line_not_backfilled(self, tmp_path: Path) -> None:
@@ -299,7 +301,6 @@ class TestCrashRecoveryIntegration:
             seeder=CacheSeeder(state_root),
             mutex=FlockSeedMutex(state_root / ".seed.lock"),
         ).run()
-        csg.calls = weg.calls = itr.calls = 0
         before = (state_root / "history.jsonl").read_text().splitlines()
         assert before
 
@@ -322,6 +323,8 @@ class TestCrashRecoveryIntegration:
         after = (state_root / "history.jsonl").read_text().splitlines()
         # self-heal: exactly ONE new line appended for the new reconcile...
         assert len(after) == len(before)
+        # ...and it IS the new reconcile line (not a malformed/wrong-trigger line)...
+        assert json.loads(after[-1])["trigger"] == "reconcile"
         # ...and the previously-lost line is NOT resurrected (append-only;
         # current.json history can never be reconstructed).
         assert all(after[i] == before[i] for i in range(len(simulate_lost_append)))
@@ -345,17 +348,22 @@ class TestCrashRecoveryIntegration:
 
         # Re-run seed in a "fresh process": current.json present → no-op →
         # no seed line ever appears for the re-run.
+        fresh_csg, fresh_weg, fresh_itr = _FakeCsg(), _FakeWeg(), _FakeItr()
         SeedCacheUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
-            csg=_FakeCsg(),
-            weg=_FakeWeg(),
-            itr=_FakeItr(),
+            csg=fresh_csg,
+            weg=fresh_weg,
+            itr=fresh_itr,
             factory=_FakeFactory(),
             install_spine=install_spine,
             state_root=state_root,
             seeder=CacheSeeder(state_root),
             mutex=FlockSeedMutex(state_root / ".seed.lock"),
         ).run()
+        # No-op pinned behaviorally: zero tool invocations on the re-run
+        # (not just "no seed line in the file", which would be vacuous over
+        # an empty history).
+        assert fresh_csg.calls == fresh_weg.calls == fresh_itr.calls == 0
 
         after_seed = (state_root / "history.jsonl").read_text().splitlines()
         # Permanent loss: no trigger:"seed" line anywhere — the seed line can
