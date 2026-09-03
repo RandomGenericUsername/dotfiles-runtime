@@ -18,6 +18,7 @@ from cli_output.domain.views import CustomView, ErrorView
 
 if TYPE_CHECKING:
     from runtime.application.apply_wallpaper import ApplyWallpaperResult
+    from runtime.application.inspect import InspectStatusResult
     from runtime.application.reconcile import ReconcileResult
     from runtime.ports.desktop_reloader import IDesktopReloader
 
@@ -34,6 +35,9 @@ app = typer.Typer(
 
 wallpaper_app = typer.Typer(help="Wallpaper commands")
 app.add_typer(wallpaper_app, name="wallpaper")
+
+inspect_app = typer.Typer(help="Inspect commands")
+app.add_typer(inspect_app, name="inspect")
 
 logger = logging.getLogger(__name__)
 
@@ -170,8 +174,11 @@ def main_callback(
         help="Output format",
     ),
 ) -> None:
-    # P3 — do not auto-seed before reconcile (reconcile must fail loud on absent state)
-    if "reconcile" in sys.argv:
+    # P3 — do not auto-seed before reconcile (reconcile must fail loud on
+    # absent state). Same for the read-only inspect commands (Story 3.2,
+    # AC 3): auto-seeding would mask the absent-state error on provisioned
+    # machines and invoke csg/weg/itr for free behind a read command.
+    if "reconcile" in sys.argv or "inspect" in sys.argv:
         return
     _run_seed_if_needed()
 
@@ -482,6 +489,86 @@ def reconcile(
                 "skipped": list(result.skipped),
                 "cache_regenerated": list(result.cache_regenerated),
                 "reload_failures": list(result.reload_failures),
+            },
+            rich=summary,
+        )
+    )
+
+
+def _run_inspect_status() -> InspectStatusResult:
+    """Compose and run InspectStateUseCase (inspect status command).
+
+    Mirrors ``_run_reconcile``'s wiring: resolve state_root (absolute),
+    construct the JSON state repository, and inject both into the
+    read-only use case. No seeder, mutex, derivation adapters, or
+    reloaders — inspection mutates nothing (AC 4) and consumes no tools.
+    """
+    state_root = _resolve_state_root()
+
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.application.inspect import InspectStateUseCase
+
+    use_case = InspectStateUseCase(
+        state_repo=JsonStateRepository(state_root=state_root),
+        state_root=state_root,
+    )
+    return use_case.run()
+
+
+@inspect_app.command("status")
+def inspect_status(
+    output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
+) -> None:
+    """Show the current desktop state (wallpaper/palette/effects/icons).
+
+    Read-only inspection (FR-7, CAP-7, NFR-3): projects ``current.json``
+    and reflects the live ``current/`` consumer symlinks, flagging each
+    as ok/missing/diverged/dangling (filesystem is the authority).
+    Mutates nothing — no cache population, no symlink repoint, no
+    history append, no seed side-effects. Exits non-zero when no state
+    has been recorded yet (run ``dotfiles-provision apply`` or
+    ``dotfiles-runtime wallpaper set <img>`` to seed).
+    """
+    renderer = create_renderer(output_format)
+    try:
+        result = _run_inspect_status()
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.error("inspect status failed: %s", exc)
+        renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
+        raise typer.Exit(code=1) from None
+    except Exception:
+        logger.exception("inspect status failed unexpectedly")
+        renderer.error(
+            ErrorView(
+                kind="UnexpectedError",
+                message="inspect status failed unexpectedly; see logs",
+            )
+        )
+        raise typer.Exit(code=1) from None
+
+    palette_desc = result.palette[:12] if result.palette else "absent"
+    effects_desc = result.effects[:12] if result.effects else "absent"
+    icons_desc = result.icons[:12] if result.icons else "absent"
+    summary = (
+        f"desktop state: wallpaper {result.wallpaper[:12]}"
+        f" (palette {palette_desc}, effects {effects_desc}, icons {icons_desc})"
+        f", {len(result.current_symlinks)} symlink(s) checked"
+    )
+    renderer.custom(
+        CustomView(
+            plain=summary,
+            object={
+                "wallpaper": result.wallpaper,
+                "wallpaper_source_path": result.wallpaper_source_path,
+                "monitors": result.monitors,
+                "palette": result.palette,
+                "effects": result.effects,
+                "icons": result.icons,
+                "applied_at": result.applied_at,
+                "current_symlinks": {
+                    name: {"status": status.status, "target": status.target}
+                    for name, status in result.current_symlinks.items()
+                },
             },
             rich=summary,
         )
