@@ -126,10 +126,11 @@ class TestApplyWallpaperIntegration:
         weg_config = install_spine / "config" / "weg"
         weg_config.mkdir(parents=True)
         (weg_config / "effects.yaml").write_text("effects: []\n")
-        itr_templates = install_spine / "config" / "icon-templates-renderer" / "templates"
+        itr_templates = install_spine / "icon-templates"
         itr_templates.mkdir(parents=True)
         (itr_templates / "terminal.svg").write_text("<svg/>")
-        (install_spine / "config" / "icon-templates-renderer" / "icons.yaml").write_text(
+        (install_spine / "icon-mappings").mkdir(parents=True, exist_ok=True)
+        (install_spine / "icon-mappings" / "icons.yaml").write_text(
             "icons: {}\n"
         )
 

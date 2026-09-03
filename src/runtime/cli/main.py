@@ -723,11 +723,14 @@ def inspect_cache_list(
         )
         raise typer.Exit(code=1) from None
 
+    from runtime.application.inspect import CACHE_LAYER_ORDER
+
     if result.total == 0:
         plain = "no cache entries recorded yet"
     else:
         sections: list[str] = []
-        for layer, entries in result.layers.items():
+        for layer in CACHE_LAYER_ORDER:
+            entries = result.layers[layer]
             lines = [f"{layer} ({len(entries)}):"]
             lines.extend(f"  {entry_hash[:12]}" for entry_hash in entries)
             sections.append("\n".join(lines))
@@ -736,8 +739,8 @@ def inspect_cache_list(
         CustomView(
             plain=plain,
             object={
-                "layers": {layer: list(entries) for layer, entries in result.layers.items()},
-                "counts": dict(result.counts),
+                "layers": {layer: list(result.layers[layer]) for layer in CACHE_LAYER_ORDER},
+                "counts": {layer: result.counts[layer] for layer in CACHE_LAYER_ORDER},
                 "total": result.total,
             },
             rich=plain,

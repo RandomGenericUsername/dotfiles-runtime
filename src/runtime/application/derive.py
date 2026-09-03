@@ -114,7 +114,26 @@ def find_effects_catalog(install_spine: Path) -> Path | None:
 
 
 def find_icon_templates(install_spine: Path) -> Path | None:
-    """Discover ITR icon templates directory (spine first, then repo ancestors)."""
+    """Discover ITR icon templates directory (spine first, then repo ancestors).
+
+    Search order:
+    1. ``install_spine / "icon-templates"`` (where provisioning's assets role
+       actually deploys them per
+       ``AssetKind.ICON_TEMPLATE.spine_segment()`` —
+       ``<install>/icon-templates/``, pinned by
+       ``shared-data-contract.md` Derivation-input hashing, the docs
+       architecture §1.1 / §7, and Story 2.6 AC 3).
+    2. ``install_spine / "config" / "icon-templates-renderer" / "templates"``
+       (legacy/alternate path; reserved for compatibility).
+    3. Repo ancestors: ``parent / "src" / "cli-tools" / "icon-templates-renderer" / ...``
+    """
+    asset_templates = install_spine / "icon-templates"
+    try:
+        if asset_templates.is_dir():
+            return asset_templates
+    except OSError:
+        pass
+
     spine_templates = install_spine / "config" / "icon-templates-renderer" / "templates"
     try:
         if spine_templates.is_dir():
@@ -144,7 +163,34 @@ def find_icon_templates(install_spine: Path) -> Path | None:
 
 
 def find_icon_mappings(install_spine: Path) -> Path | None:
-    """Discover ITR icon mappings (spine first, then repo ancestors)."""
+    """Discover ITR icon mappings (spine first, then repo ancestors).
+
+    Search order:
+    1. ``install_spine / "icon-mappings" / "icons.yaml"`` (where provisioning's
+       assets role actually deploys them per
+       ``AssetKind.ICON_MAPPING.spine_segment()`` —
+       ``<install>/icon-mappings/``, pinned by
+       ``shared-data-contract.md` Derivation-input hashing, the docs
+       architecture §1.1 / §7, and Story 2.6 AC 4).
+    2. ``install_spine / "icon-mappings"`` (if it's a directory of YAML files).
+    3. ``install_spine / "config" / "icon-templates-renderer" / "icons.yaml"``
+       (legacy/alternate path; reserved for compatibility).
+    4. Repo ancestors: ``parent / "src" / "cli-tools" / "icon-templates-renderer" / ...``
+    """
+    asset_mappings_file = install_spine / "icon-mappings" / "icons.yaml"
+    try:
+        if asset_mappings_file.is_file():
+            return asset_mappings_file
+    except OSError:
+        pass
+
+    asset_mappings_dir = install_spine / "icon-mappings"
+    try:
+        if asset_mappings_dir.is_dir():
+            return asset_mappings_dir
+    except OSError:
+        pass
+
     spine_mappings = install_spine / "config" / "icon-templates-renderer" / "icons.yaml"
     try:
         if spine_mappings.is_file():

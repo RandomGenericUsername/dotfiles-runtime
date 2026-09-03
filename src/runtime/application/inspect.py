@@ -465,7 +465,7 @@ class InspectHistoryUseCase:
 # Canonical pipeline order (NOT alphabetical): wallpapers → palettes →
 # effects → icons. Validated against CACHE_LAYERS (adapters) — never
 # sorted(CACHE_LAYERS), which would yield effects/icons/palettes/wallpapers.
-_CACHE_LAYER_ORDER: tuple[str, str, str, str] = (
+CACHE_LAYER_ORDER: tuple[str, str, str, str] = (
     "wallpapers",
     "palettes",
     "effects",
@@ -479,19 +479,7 @@ _HEX_DIGITS = frozenset("0123456789abcdef")
 
 def _is_cache_entry_name(name: str) -> bool:
     """Return True if ``name`` is a 64-char lowercase-hex entry dir name."""
-    return len(name) == 64 and all(c in _HEX_DIGITS for c in name.lower())
-
-
-@dataclass(frozen=True, slots=True)
-class CacheLayerListing:
-    """One cache layer's sorted entry hashes (AC 1).
-
-    ``entries`` are FULL 64-char lowercase-hex dir names, sorted
-    lexicographically.
-    """
-
-    layer: str
-    entries: tuple[str, ...]
+    return len(name) == 64 and all(c in _HEX_DIGITS for c in name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -544,10 +532,10 @@ class InspectCacheUseCase:
                 (refusing to follow, mirror rt-3.3 O_NOFOLLOW).
             OSError: on filesystem read failures.
         """
-        if set(_CACHE_LAYER_ORDER) != set(CACHE_LAYERS):
-            raise AssertionError(
+        if set(CACHE_LAYER_ORDER) != set(CACHE_LAYERS):
+            raise ValueError(
                 f"canonical cache layer order diverged from adapters: "
-                f"{_CACHE_LAYER_ORDER!r} vs {sorted(CACHE_LAYERS)!r}",
+                f"{CACHE_LAYER_ORDER!r} vs {sorted(CACHE_LAYERS)!r}",
             )
         cache_root = self._state_root / "cache"
         if cache_root.is_symlink():
@@ -563,7 +551,7 @@ class InspectCacheUseCase:
             # (AC 3 — missing cache is not an error; never create dirs).
             return self._empty_result()
         layers: dict[str, tuple[str, ...]] = {}
-        for layer in _CACHE_LAYER_ORDER:
+        for layer in CACHE_LAYER_ORDER:
             layers[layer] = self._list_layer(cache_root / layer, layer)
         counts = {layer: len(entries) for layer, entries in layers.items()}
         total = sum(counts.values())
@@ -572,8 +560,8 @@ class InspectCacheUseCase:
     @staticmethod
     def _empty_result() -> InspectCacheResult:
         """All four layers empty in canonical order (AC 3)."""
-        layers: dict[str, tuple[str, ...]] = {layer: () for layer in _CACHE_LAYER_ORDER}
-        counts: dict[str, int] = {layer: 0 for layer in _CACHE_LAYER_ORDER}
+        layers: dict[str, tuple[str, ...]] = {layer: () for layer in CACHE_LAYER_ORDER}
+        counts: dict[str, int] = {layer: 0 for layer in CACHE_LAYER_ORDER}
         return InspectCacheResult(layers=layers, counts=counts, total=0)
 
     @staticmethod

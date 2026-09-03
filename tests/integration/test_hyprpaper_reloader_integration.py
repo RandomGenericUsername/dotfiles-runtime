@@ -108,10 +108,11 @@ def _setup_spine(install_spine: Path) -> None:
     weg_cfg = install_spine / "config" / "weg"
     weg_cfg.mkdir(parents=True)
     (weg_cfg / "effects.yaml").write_text("effects: []\n")
-    itr_templates = install_spine / "config" / "icon-templates-renderer" / "templates"
+    itr_templates = install_spine / "icon-templates"
     itr_templates.mkdir(parents=True)
     (itr_templates / "terminal.svg").write_text("<svg/>")
-    (install_spine / "config" / "icon-templates-renderer" / "icons.yaml").write_text("icons: {}\n")
+    (install_spine / "icon-mappings").mkdir(parents=True, exist_ok=True)
+    (install_spine / "icon-mappings" / "icons.yaml").write_text("icons: {}\n")
 
 
 def _make_hyprpaper_shim(bin_dir: Path, marker: Path, exit_code: int) -> None:
