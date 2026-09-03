@@ -167,6 +167,22 @@ class _RaisingReloader:
         raise OSError("reload exploded")
 
 
+class _HistoryProbeReloader:
+    """Reloader that records the history.jsonl line count it observed at
+    reload() time — pins AC1's "history BEFORE reload is considered complete"
+    ordering (AR-3/AD-4)."""
+
+    def __init__(self, state_root: Path, observed: list[int]) -> None:
+        self._state_root = state_root
+        self._observed = observed
+
+    def reload(self) -> bool:
+        history = self._state_root / "history.jsonl"
+        lines = history.read_text().splitlines() if history.is_file() else []
+        self._observed.append(len(lines))
+        return True
+
+
 def _setup_spine(install_spine: Path) -> None:
     csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
     csg_templates.mkdir(parents=True)
@@ -290,6 +306,25 @@ class TestCapstoneE2E:
             "Reloader3",
         ]
         assert result.reload_failures == []
+
+
+class TestCapstoneHistoryOrdering:
+    """AC 1 / AD-6 step 4: the history line is appended BEFORE any desktop
+    reload is considered complete — every reloader must observe the new line
+    already on disk (pinned via a reloader-side probe, not just final state)."""
+
+    def test_every_reloader_observes_appended_history_line(self, tmp_path: Path) -> None:
+        applied = _setup(tmp_path)
+        observed: list[int] = []
+        reloaders = [_HistoryProbeReloader(applied.state_root, observed) for _ in range(4)]
+
+        _full_set(applied, reloaders=reloaders)
+
+        # At the moment each reloader ran, history.jsonl already contained the
+        # single "set" line for this run — reload must never precede the append.
+        assert observed == [1, 1, 1, 1]
+        result_sanity = (applied.state_root / "history.jsonl").read_text().splitlines()
+        assert len(result_sanity) == 1
 
 
 class TestCapstoneCacheHit:

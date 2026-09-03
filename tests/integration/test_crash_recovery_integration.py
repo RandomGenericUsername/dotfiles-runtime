@@ -247,6 +247,135 @@ class TestCrashRecoveryIntegration:
         assert len(history_after) == len(history_before) + 1
         assert json.loads(history_after[-1])["trigger"] == "reconcile"
 
+    def test_restart_survival_fresh_instances_accumulate_byte_identical(self, tmp_path: Path) -> None:
+        """AC 3 / FR-4: the store survives process restart — a FRESH
+        CacheSeeder appended against a FRESH JsonStateRepository on the same
+        state_root (simulated new process) accumulates history while prior
+        lines stay byte-identical."""
+        repo, state_root, install_spine, csg, weg, itr = _setup(tmp_path)
+        from runtime.application.reconcile import ReconcileDesktopStateUseCase
+
+        # First "process": seed + apply establish current.json + history.
+        first_history = (state_root / "history.jsonl").read_text().splitlines()
+        assert len(first_history) >= 1
+
+        # Second "process": brand-new adapter pair on the SAME state_root.
+        fresh_repo = JsonStateRepository(state_root=state_root)
+        assert fresh_repo.load_current() is not None  # restart sees persisted state
+        fresh_seeder = CacheSeeder(state_root)
+        ReconcileDesktopStateUseCase(
+            state_repo=fresh_repo,
+            csg=csg,
+            weg=weg,
+            itr=itr,
+            install_spine=install_spine,
+            state_root=state_root,
+            seeder=fresh_seeder,
+            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+        ).run()
+
+        after = (state_root / "history.jsonl").read_text().splitlines()
+        assert len(after) == len(first_history) + 1  # accumulation across restart
+        assert after[: len(first_history)] == first_history  # prior lines byte-identical
+        assert json.loads(after[-1])["trigger"] == "reconcile"
+
+    def test_crash_window_reconcile_save_append_lost_line_not_backfilled(self, tmp_path: Path) -> None:
+        """AC 5 reconcile window (reconcile.py save→append): rt-2-2 divergence
+        recovery CANNOT detect a crash here (symlinks and current.json MATCH
+        post-save), so the transition's history line is lost forever. Reconcile
+        self-heals lazily — the NEXT reconcile appends unconditionally — but the
+        crashed line is NOT backfilled. Pin: deleting a prior line leaves exactly
+        that line missing after the next reconcile (no resurrection)."""
+        repo, state_root, install_spine, csg, weg, itr = _setup(tmp_path)
+        from runtime.application.reconcile import ReconcileDesktopStateUseCase
+
+        ReconcileDesktopStateUseCase(
+            state_repo=repo,
+            csg=csg,
+            weg=weg,
+            itr=itr,
+            install_spine=install_spine,
+            state_root=state_root,
+            seeder=CacheSeeder(state_root),
+            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+        ).run()
+        csg.calls = weg.calls = itr.calls = 0
+        before = (state_root / "history.jsonl").read_text().splitlines()
+        assert before
+
+        # Simulate a crash AFTER current.json matched symlinks but BEFORE the
+        # line landed: drop the last line (the lost transition).
+        simulate_lost_append = before[:-1]
+        (state_root / "history.jsonl").write_text("\n".join(simulate_lost_append) + "\n")
+
+        ReconcileDesktopStateUseCase(
+            state_repo=repo,
+            csg=csg,
+            weg=weg,
+            itr=itr,
+            install_spine=install_spine,
+            state_root=state_root,
+            seeder=CacheSeeder(state_root),
+            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+        ).run()
+
+        after = (state_root / "history.jsonl").read_text().splitlines()
+        # self-heal: exactly ONE new line appended for the new reconcile...
+        assert len(after) == len(before)
+        # ...and the previously-lost line is NOT resurrected (append-only;
+        # current.json history can never be reconstructed).
+        assert all(after[i] == before[i] for i in range(len(simulate_lost_append)))
+
+    def test_crash_window_seed_save_append_seed_line_permanently_lost(self, tmp_path: Path) -> None:
+        """AC 5 seed window (seed_cache.py save→append): permanent loss. After a
+        crash between save and append, load_current() returns non-None → the
+        next seed run is a NO-OP, so the ``trigger: "seed"`` line is never
+        written (a later reconcile appends a "reconcile" line, or nothing)."""
+        repo, state_root, install_spine, csg, weg, itr = _setup(tmp_path)
+        from runtime.application.reconcile import ReconcileDesktopStateUseCase
+        from runtime.application.seed_cache import SeedCacheUseCase
+
+        # Crash AFTER seed's save + repoint, BEFORE its append: current.json
+        # exists but the seed line never landed.
+        seed_lines = (state_root / "history.jsonl").read_text().splitlines()
+        assert any(json.loads(l)["trigger"] == "seed" for l in seed_lines)
+
+        # Drop ALL seed lines (the crashed append never wrote them).
+        (state_root / "history.jsonl").write_text("")
+
+        # Re-run seed in a "fresh process": current.json present → no-op →
+        # no seed line ever appears for the re-run.
+        SeedCacheUseCase(
+            state_repo=JsonStateRepository(state_root=state_root),
+            csg=_FakeCsg(),
+            weg=_FakeWeg(),
+            itr=_FakeItr(),
+            factory=_FakeFactory(),
+            install_spine=install_spine,
+            state_root=state_root,
+            seeder=CacheSeeder(state_root),
+            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+        ).run()
+
+        after_seed = (state_root / "history.jsonl").read_text().splitlines()
+        # Permanent loss: no trigger:"seed" line anywhere — the seed line can
+        # never be written once the store observes current.json.
+        assert not any(json.loads(l)["trigger"] == "seed" for l in after_seed)
+
+        # A subsequent reconcile appends a "reconcile" line — never the lost seed line.
+        ReconcileDesktopStateUseCase(
+            state_repo=JsonStateRepository(state_root=state_root),
+            csg=csg,
+            weg=weg,
+            itr=itr,
+            install_spine=install_spine,
+            state_root=state_root,
+            seeder=CacheSeeder(state_root),
+            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+        ).run()
+        final = (state_root / "history.jsonl").read_text().splitlines()
+        assert json.loads(final[-1])["trigger"] == "reconcile"
+
     def test_concurrent_recovery_safety(self, tmp_path: Path) -> None:
         repo, state_root, install_spine, csg, weg, itr = _setup(tmp_path)
         from runtime.application.reconcile import ReconcileDesktopStateUseCase

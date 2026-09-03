@@ -578,8 +578,17 @@ class CacheSeeder:
         Uses O_APPEND + os.fsync for atomic persistence guarantee.
         Never truncates or rewrites — append only.
 
+        Design decision (Story rt-3.1): history stays on this CacheSeeder
+        adapter, NOT promoted to ``IStateRepository`` — rt-1-10 pinned the
+        port minimal (``load_current``/``save`` only); Epic 3 inspection use
+        cases consume history through the adapter seam. This is the ONLY
+        history writer; call it through Reconcile/Seed, never from the CLI
+        (rt-2-7 invariant).
+
         Args:
-            trigger: event trigger (e.g., "seed", "apply")
+            trigger: event trigger — the pinned enum is
+                ``seed|set|reconcile|force`` ("apply" is NOT valid); this
+                adapter stays trigger-agnostic and does not validate.
             wallpaper_hash: SHA-256 hex of wallpaper content
             palette_hash: SHA-256 hex of palette entry or None
             effects_hash: SHA-256 hex of effects entry or None

@@ -422,6 +422,30 @@ class TestCacheSeederAppendHistory:
         with pytest.raises(OSError):
             seeder.append_history(trigger="seed", wallpaper_hash="a" * 64)
 
+    def test_append_line_has_exactly_seven_fields_no_schema_version(self, tmp_path: Path) -> None:
+        """AR-9 pinned schema: exactly 7 fields, NO ``schema_version`` — the
+        version field exists only in ``current.json`` (shared-data-contract)."""
+        seeder = CacheSeeder(state_root=tmp_path)
+        seeder.append_history(
+            trigger="reconcile",
+            wallpaper_hash="a" * 64,
+            palette_hash="b" * 64,
+            effects_hash="c" * 64,
+            icons_hash="d" * 64,
+            source_path="/tmp/wall.png",
+        )
+        data = json.loads((tmp_path / "history.jsonl").read_text().strip())
+        assert set(data) == {
+            "ts",
+            "trigger",
+            "wallpaper",
+            "palette",
+            "effects",
+            "icons",
+            "source_path",
+        }
+        assert "schema_version" not in data
+
 
 # ═══════════════════════════════════════════════════════════════════
 # SeedCacheUseCase tests
