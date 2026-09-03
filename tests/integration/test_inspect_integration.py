@@ -106,8 +106,8 @@ def _build_live_tree(state_root: Path, state: DesktopState) -> dict[str, Path]:
         )
         for m in state.monitors
     }
-    pal_dir = cache_entry_path(state_root, "palettes", state.palette.entry_hash)
     assert state.palette is not None
+    pal_dir = cache_entry_path(state_root, "palettes", state.palette.entry_hash)
     for artifact in ("colors.conf", "colors.gtk.css", "colors.yaml"):
         targets[artifact] = pal_dir / artifact
     assert state.effects is not None

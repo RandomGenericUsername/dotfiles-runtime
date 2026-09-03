@@ -546,9 +546,9 @@ def inspect_status(
         )
         raise typer.Exit(code=1) from None
 
-    palette_desc = result.palette[:12] if result.palette else "absent"
-    effects_desc = result.effects[:12] if result.effects else "absent"
-    icons_desc = result.icons[:12] if result.icons else "absent"
+    palette_desc = result.palette[:12] if result.palette is not None else "absent"
+    effects_desc = result.effects[:12] if result.effects is not None else "absent"
+    icons_desc = result.icons[:12] if result.icons is not None else "absent"
     summary = (
         f"desktop state: wallpaper {result.wallpaper[:12]}"
         f" (palette {palette_desc}, effects {effects_desc}, icons {icons_desc})"

@@ -31,7 +31,10 @@ from pathlib import Path
 from typing import Literal
 
 from runtime.adapters.cache import cache_entry_path
-from runtime.domain.models import DesktopState
+from runtime.domain.models import (
+    DEFAULT_MONITOR,
+    DesktopState,
+)
 from runtime.ports.state_repository import IStateRepository
 
 logger = logging.getLogger(__name__)
@@ -179,11 +182,14 @@ class InspectStateUseCase:
         """Map symlink names to expected cache-entry targets from the state.
 
         Mirrors ``ReconcileDesktopStateUseCase._build_expected_targets``
-        exactly (name set + traversal guard) but performs NO filesystem
+        exactly (name set + traversal guard + empty-monitors
+        ``DEFAULT_MONITOR`` fallback) but performs NO filesystem
         writes — this is the read-only counterpart used for inspection.
         """
         targets: dict[str, Path] = {}
-        for monitor_name in state.monitors:
+        # Mirror reconcile's run-layer fallback so an empty-monitors state
+        # still reflects the default-monitor link reconcile manages.
+        for monitor_name in list(state.monitors) or [DEFAULT_MONITOR]:
             if (
                 "/" in monitor_name
                 or "\\" in monitor_name
