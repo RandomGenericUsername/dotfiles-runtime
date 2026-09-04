@@ -420,29 +420,35 @@ class WegAdapter(IEffectsGenerator):
                 f"weg batch all failed (exit {result.returncode}): {stderr} stdout:{stdout}"
             )
 
-        # 9. Verify PNG artifacts exist (recursive, weg nests as output_dir/<stem>/effect/*.png)
-        # Case-insensitive: collect *.png and *.PNG and filter case-insensitively
+        # 9. Verify image artifacts exist (recursive, weg nests as
+        # output_dir/<stem>/effect/<artifact>.<ext>). WEG matches the source
+        # wallpaper's image extension — PNG wallpapers produce PNG effects,
+        # JPG wallpapers produce JPG effects, etc. — so accept any
+        # common image extension rather than hardcoding .png.
         try:
             all_files = [p for p in output_dir.rglob("*") if p.is_file()]
         except OSError as exc:
             raise RuntimeError(f"cannot list weg output_dir {output_dir}: {exc}") from exc
-        png_files = [p for p in all_files if p.suffix.lower() == ".png"]
-        if not png_files:
+        image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".gif"}
+        image_files = [
+            p for p in all_files if p.suffix.lower() in image_exts
+        ]
+        if not image_files:
             raise RuntimeError(
-                f"weg did not write expected PNG artifacts: {output_dir} "
-                f"(found {len(all_files)} files, 0 png)"
+                f"weg did not write expected image artifacts: {output_dir} "
+                f"(found {len(all_files)} files, 0 image files)"
             )
 
         # 10. Compute artifact hashes via binary chunked hash_file — wrap TOCTOU
         # Use basename as key when unique, else relative posix to preserve uniqueness
         # First check for duplicate basenames
         basename_counts: dict[str, int] = {}
-        for p in png_files:
+        for p in image_files:
             basename_counts[p.name] = basename_counts.get(p.name, 0) + 1
 
         artifact_hashes: dict[str, str] = {}
         try:
-            for p in png_files:
+            for p in image_files:
                 h = hash_file(p)
                 # Key: basename if unique, else relative path (handle symlink escape)
                 if basename_counts[p.name] == 1:
