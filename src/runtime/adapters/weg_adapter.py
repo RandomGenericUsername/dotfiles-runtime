@@ -49,53 +49,62 @@ if HASH_ALGORITHM != "sha256":  # pragma: no cover
 
 
 def _find_default_effects_catalog() -> Path | None:
-    """Search for ``effects.yaml`` — install spine first, repo fallback.
+    """Search for ``effects.yaml`` — mirrors WEG's config-assembler XDG strategy.
 
-    Priority per AC1 (shared-data-contract):
-    1. ``<install>/config/weg/effects.yaml`` (legacy) and
-       ``<install>/config/wallpaper/effects.yaml`` — XDG-based install spine
-       where ``<install>`` is ``$XDG_DATA_HOME/wallpaper`` or
-       ``~/.local/share/wallpaper`` etc. Resolved via ``XDG_DATA_HOME``,
-       ``XDG_CONFIG_HOME`` and ``HOME`` env.
-    2. Repo fallback ``wallpaper_effects_generator/defaults/effects.yaml``
-       (parent walk).
+    WEG itself discovers its effects catalog via the config-assembler-engine's
+    ``CompositePathResolver`` with four strategies in this priority order
+    (see ``yaml_effect_loader.py`` in wallpaper-effects-generator):
+
+    1. ``CliPathStrategy`` — ``--config`` flag (handled by the CLI, not here)
+    2. ``EnvPathStrategy`` — ``WALLPAPER_EFFECTS_CONFIG_FILE_PATH`` env var
+    3. ``DirectoryTraversalStrategy`` — ``effects.yaml`` in CWD or up to
+       2 parent levels (``EFFECTS_TRAVERSAL_DEPTH=2``)
+    4. ``XdgStrategy`` — ``$XDG_CONFIG_HOME/weg/effects.yaml``
+       (``EFFECTS_XDG_SUBDIR="weg"``, ``EFFECTS_FILENAME="effects.yaml"``)
+
+    The provisioning (``config_links`` role, Story 3.4) creates the symlink
+    ``~/.config/weg → <install>/config/weg``, so WEG's XDG strategy finds
+    the project's catalog through the link. This function mirrors that
+    same XDG path so the runtime's pre-computed ``eeh`` matches WEG's.
+
+    A repo-ancestor fallback is included for dev checkouts where neither
+    the symlink nor a nearby CWD parent has the catalog.
     """
-    # 1) install-spine candidates (XDG)
-    xdg_data = os.environ.get("XDG_DATA_HOME")
-    xdg_config = os.environ.get("XDG_CONFIG_HOME")
-    home = os.environ.get("HOME") or str(Path.home())
-    install_candidates: list[Path] = []
-    if xdg_data:
-        install_candidates.extend(
-            [
-                Path(xdg_data) / "wallpaper" / "config" / "weg" / "effects.yaml",
-                Path(xdg_data) / "wallpaper" / "config" / "wallpaper" / "effects.yaml",
-            ]
-        )
-    if xdg_config:
-        install_candidates.extend(
-            [
-                Path(xdg_config) / "wallpaper" / "config" / "weg" / "effects.yaml",
-                Path(xdg_config) / "wallpaper" / "config" / "wallpaper" / "effects.yaml",
-            ]
-        )
-    # HOME fallback
-    install_candidates.extend(
-        [
-            Path(home) / ".local" / "share" / "wallpaper" / "config" / "weg" / "effects.yaml",
-            Path(home) / ".local" / "share" / "wallpaper" / "config" / "wallpaper" / "effects.yaml",
-            Path(home) / ".config" / "wallpaper" / "config" / "weg" / "effects.yaml",
-            Path(home) / ".config" / "wallpaper" / "config" / "wallpaper" / "effects.yaml",
-            Path(home) / ".config" / "wallpaper-effects-generator" / "effects.yaml",
-        ]
-    )
-    for candidate in install_candidates:
+    # 1) env override (WEG's EnvPathStrategy)
+    env_path = os.environ.get("WALLPAPER_EFFECTS_CONFIG_FILE_PATH")
+    if env_path:
+        candidate = Path(env_path)
         try:
             if candidate.is_file():
                 return candidate
         except OSError:
-            continue
+            pass
 
+    # 2) XDG default (WEG's XdgStrategy with EFFECTS_XDG_SUBDIR="weg",
+    # EFFECTS_FILENAME="effects.yaml") — symlink-resolved on provisioned hosts
+    xdg_config = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    xdg_candidate = Path(xdg_config) / "weg" / "effects.yaml"
+    try:
+        if xdg_candidate.is_file():
+            return xdg_candidate
+    except OSError:
+        pass
+
+    # 3) directory traversal (WEG's DirectoryTraversalStrategy, max 2 levels)
+    try:
+        cwd = Path.cwd()
+    except OSError:
+        cwd = None
+    if cwd is not None:
+        for ancestor in [cwd, *cwd.parents][:3]:  # cwd + 2 parents
+            candidate = ancestor / "effects.yaml"
+            try:
+                if candidate.is_file():
+                    return candidate
+            except OSError:
+                continue
+
+    # 4) repo ancestor fallback (dev checkouts)
     for parent in Path(__file__).resolve().parents:
         candidates = [
             parent

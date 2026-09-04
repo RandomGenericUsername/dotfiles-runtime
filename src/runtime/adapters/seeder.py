@@ -468,6 +468,14 @@ class CacheSeeder:
         ``staging_dir / <entry_hash>``. After generation, the artifacts are
         drained (structure-preserving) into the staging dir root where
         ``populate_via_staging`` expects them plus ``meta.json``.
+
+        WEG's ``OutputPathService.batch_output_dir`` creates a nested
+        ``<wallpaper_stem>/`` subdir under the work dir (e.g.
+        ``<work>/<stem>/effect/*.png``). The move loop preserves that
+        structure into ``staging_dir``; the cleanup at the end removes
+        the work dir AND its now-empty nested subdirs (the previous
+        ``work_dir.rmdir()`` failed with ENOTEMPTY when WEG's nested
+        structure left intermediate dirs behind).
         """
         for item in sorted(work_dir.rglob("*")):
             dest = staging_dir / item.relative_to(work_dir)
@@ -476,7 +484,7 @@ class CacheSeeder:
             else:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 os.rename(item, dest)
-        work_dir.rmdir()
+        shutil.rmtree(work_dir, ignore_errors=True)
 
     def ensure_current_dir(self) -> Path:
         """Ensure current/ directory exists under state_root.
