@@ -230,6 +230,14 @@ class SeedCacheUseCase:
             icons_entry_hash=icons_entry.entry_hash if icons_entry else None,
         )
 
+        # 7a2. R2 consumer-path symlinks (Epic 4): point the spine consumer
+        # path at current/ so desktop consumers read the active palette.
+        # Runs after the current/ repoint (the target must exist first).
+        self._seeder.repoint_consumer_symlinks(
+            self._install_spine,
+            palette_entry.entry_hash,
+        )
+
         # 7b. Write current.json via state_repo (atomic tmp + os.replace)
         self._state_repo.save(state)
 

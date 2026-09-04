@@ -222,17 +222,28 @@ class TestSeedCacheIntegration:
             if symlink.is_symlink():
                 assert symlink.exists(), f"dangling symlink: {symlink}"
 
-    def test_install_spine_not_modified(self, tmp_path: Path) -> None:
-        """AC 5: Nothing written under install_spine."""
+    def test_install_spine_unmodified_except_r2_symlink(self, tmp_path: Path) -> None:
+        """AD-11 + Epic 4 R2 exception: nothing written under install_spine
+        EXCEPT the single R2 consumer symlink."""
         install_spine, _, _, use_case = self._setup(tmp_path)
 
         # Record before
         before = set(install_spine.rglob("*"))
         use_case.run()
 
-        # Install spine unchanged
+        # Only the R2 consumer symlink (plus created parents) may appear
         after = set(install_spine.rglob("*"))
-        assert before == after
+        new_files = after - before
+        allowed = {
+            install_spine / "config" / "ags" / "colors.css",
+            install_spine / "config" / "ags",
+            install_spine / "config",
+        }
+        assert new_files <= allowed and (
+            install_spine / "config" / "ags" / "colors.css"
+        ) in new_files, (
+            f"only the R2 consumer symlink may be written under install_spine; got {new_files}"
+        )
 
     def test_corrupt_current_json_fails_loudly(self, tmp_path: Path) -> None:
         """Corrupt state must surface as a loud error, not a silent reseed."""

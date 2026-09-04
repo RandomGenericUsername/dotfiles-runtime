@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -757,9 +758,10 @@ class TestSeedCacheIdempotent:
 
 
 class TestNothingWrittenToInstallSpine:
-    """AC 5: Nothing written under install_spine."""
+    """AD-11 + Epic 4 R2 exception: nothing written under install_spine
+    EXCEPT the single R2 consumer symlink."""
 
-    def test_install_spine_unmodified(self, tmp_path: Path) -> None:
+    def test_install_spine_unmodified_except_r2_symlink(self, tmp_path: Path) -> None:
         install_spine = tmp_path / "install"
         _setup_install_spine(install_spine)
 
@@ -770,6 +772,49 @@ class TestNothingWrittenToInstallSpine:
         use_case = _make_use_case(tmp_path, repo, install_spine)
         use_case.run()
 
-        # Install spine unchanged
+        # Only the R2 consumer symlink (plus any parent dirs the atomic
+        # repoint creates) may appear under install_spine
         after_files = set(install_spine.rglob("*"))
-        assert before_files == after_files
+        new_files = after_files - before_files
+        allowed = {
+            install_spine / "config" / "ags" / "colors.css",
+            install_spine / "config" / "ags",
+            install_spine / "config",
+        }
+        assert new_files <= allowed and (
+            install_spine / "config" / "ags" / "colors.css"
+        ) in new_files, (
+            f"only the R2 consumer symlink may be written under install_spine; got {new_files}"
+        )
+
+
+class TestR2ConsumerSymlink:
+    """Epic 4 R2: the seeder points the spine consumer path at current/."""
+
+    def test_seed_creates_r2_symlink_to_current(self, tmp_path: Path) -> None:
+        install_spine = tmp_path / "install"
+        _setup_install_spine(install_spine)
+        repo = _FakeStateRepo()
+        use_case = _make_use_case(tmp_path, repo, install_spine)
+        use_case.run()
+
+        link = install_spine / "config" / "ags" / "colors.css"
+        assert link.is_symlink(), "R2 consumer symlink must be created by seed"
+        assert os.readlink(link) == str(tmp_path / "current" / "colors.gtk.css"), (
+            "R2 symlink must target current/colors.gtk.css"
+        )
+
+    def test_seed_replaces_stale_copy_with_r2_symlink(self, tmp_path: Path) -> None:
+        """Upgraded machines (pre-Epic-4 provisioning copies) migrate on
+        the next seed: the stale copy is REPLACED, not kept."""
+        install_spine = tmp_path / "install"
+        _setup_install_spine(install_spine)
+        stale = install_spine / "config" / "ags" / "colors.css"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_text("@define-color stale #000000;\n")
+        repo = _FakeStateRepo()
+        use_case = _make_use_case(tmp_path, repo, install_spine)
+        use_case.run()
+
+        assert stale.is_symlink(), "stale copy must be replaced with the R2 symlink"
+        assert os.readlink(stale) == str(tmp_path / "current" / "colors.gtk.css")

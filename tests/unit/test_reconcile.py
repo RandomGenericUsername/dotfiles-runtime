@@ -347,6 +347,11 @@ class TestReconcileHappyPath:
         # every target resolves into cache/
         for target in links.values():
             assert target.startswith(str(applied.state_root / "cache"))
+        # R2 consumer symlink (Epic 4): spine path points at current/
+        r2_link = applied.install_spine / "config" / "ags" / "colors.css"
+        assert r2_link.is_symlink(), "R2 consumer symlink must be created by reconcile"
+        assert os_readlink(r2_link) == str(applied.state_root / "current" / "colors.gtk.css")
+        assert result.consumer_symlinks == [r2_link]
 
     def test_no_copy_every_current_entry_is_a_symlink(self, tmp_path: Path) -> None:
         applied = _apply_state(tmp_path)
@@ -472,6 +477,35 @@ class TestReconcileFailurePolicy:
         assert "icons" not in links
         assert "effects" in links
         assert any("icons" in s for s in result.skipped)
+
+    def test_null_palette_removes_r2_consumer_symlink(self, tmp_path: Path) -> None:
+        """Epic 4 R2: a null palette removes the consumer symlink (never
+        stale) — e.g. after a CSG failure degraded a previous good run."""
+        applied = _apply_state(tmp_path)
+        r2 = applied.install_spine / "config" / "ags" / "colors.css"
+        r2.parent.mkdir(parents=True, exist_ok=True)
+        r2.symlink_to(applied.state_root / "current" / "colors.gtk.css")
+        loaded = applied.repo.load_current()
+        assert loaded is not None
+        applied.repo.save(
+            type(loaded)(
+                schema_version=2,
+                wallpaper=loaded.wallpaper,
+                monitors=loaded.monitors,
+                palette=None,
+                effects=None,
+                icons=None,
+                applied_at=loaded.applied_at,
+            )
+        )
+        use_case = _make_reconcile(applied)
+
+        result = use_case.run()
+
+        assert not r2.exists() and not r2.is_symlink(), (
+            "null palette must remove the R2 consumer symlink (never stale)"
+        )
+        assert result.consumer_symlinks == []
 
     def test_missing_palette_artifact_skipped_never_dangling(self, tmp_path: Path) -> None:
         applied = _apply_state(tmp_path)

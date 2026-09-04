@@ -430,9 +430,7 @@ class WegAdapter(IEffectsGenerator):
         except OSError as exc:
             raise RuntimeError(f"cannot list weg output_dir {output_dir}: {exc}") from exc
         image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".gif"}
-        image_files = [
-            p for p in all_files if p.suffix.lower() in image_exts
-        ]
+        image_files = [p for p in all_files if p.suffix.lower() in image_exts]
         if not image_files:
             raise RuntimeError(
                 f"weg did not write expected image artifacts: {output_dir} "

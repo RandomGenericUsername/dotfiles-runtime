@@ -377,6 +377,11 @@ def wallpaper_set(
         f"wallpaper applied: {state.wallpaper.content_hash[:12]}"
         f" (palette {palette_desc}, effects {effects_desc}, icons {icons_desc})"
         f", {len(result.reconcile.repointed)} symlink(s) repointed"
+        + (
+            f", {len(result.reconcile.consumer_symlinks)} consumer link(s)"
+            if result.reconcile.consumer_symlinks
+            else ""
+        )
     )
     renderer.custom(
         CustomView(
@@ -392,6 +397,7 @@ def wallpaper_set(
                     "icons": result.apply.cache_hit_icons,
                 },
                 "repointed": [str(p) for p in result.reconcile.repointed],
+                "consumer_symlinks": [str(p) for p in result.reconcile.consumer_symlinks],
                 "skipped": list(result.reconcile.skipped),
                 "cache_regenerated": list(result.reconcile.cache_regenerated),
                 "reload_failures": list(result.reconcile.reload_failures),
@@ -493,12 +499,18 @@ def reconcile(
             if result.cache_regenerated
             else ""
         )
+        + (
+            f", {len(result.consumer_symlinks)} consumer link(s)"
+            if result.consumer_symlinks
+            else ""
+        )
     )
     renderer.custom(
         CustomView(
             plain=summary,
             object={
                 "repointed": [str(p) for p in result.repointed],
+                "consumer_symlinks": [str(p) for p in result.consumer_symlinks],
                 "skipped": list(result.skipped),
                 "cache_regenerated": list(result.cache_regenerated),
                 "reload_failures": list(result.reload_failures),

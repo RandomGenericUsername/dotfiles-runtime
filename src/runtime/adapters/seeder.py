@@ -572,6 +572,66 @@ class CacheSeeder:
 
         return created
 
+    def repoint_consumer_symlinks(
+        self,
+        install_spine: Path,
+        palette_entry_hash: str | None,
+    ) -> list[Path]:
+        """Repoint spine consumer paths at ``current/`` (R2, Epic 4).
+
+        AD-11 exception (recorded in ARCHITECTURE-SPINE.md): the seeder
+        may replace these two spine *files* with symlinks to ``current/``,
+        and writes nothing else under the install spine. The content lives
+        in ``cache/`` (runtime-owned); these paths are consumer pointers.
+
+        - ``<install>/config/ags/colors.css`` → ``current/colors.gtk.css``
+          (note the rename: cache artifact is ``colors.gtk.css``).
+
+        Deliberately NOT covered: ``<install>/config/hypr/colors.conf``
+        (nothing sources it — verified: no reference under
+        ``dotfiles/config/hypr/*.lua``) and hyprpaper.conf / ITR
+        ``color_scheme.path`` rewrites (dissolved: hyprpaper uses IPC
+        with the resolved ``current/`` path; the ITR settings template
+        points at ``current/colors.yaml`` as a static string).
+
+        Args:
+            install_spine: provisioning install spine root (read for
+                validation, written ONLY for the R2 symlink below).
+            palette_entry_hash: palette entry hash, or ``None`` when the
+                palette layer is null.
+
+        Returns:
+            List of created/updated symlink paths (empty when skipped).
+
+        Behavior:
+        - ``None`` palette: any existing R2 symlink is REMOVED
+          (``missing_ok``) so consumers never serve a stale palette as
+          if current; AGS falls back to its bundled default.
+        - A regular FILE at the destination (pre-Epic-4 provisioning
+          copy on upgraded machines) is REPLACED with the symlink —
+          one ``wallpaper set`` migrates.
+        - A missing ``current/colors.gtk.css`` (palette artifact absent)
+          skips with a warning — never a dangling consumer symlink.
+        """
+        dest = install_spine / "config" / "ags" / "colors.css"
+        if palette_entry_hash is None:
+            try:
+                if dest.is_symlink() or dest.exists():
+                    dest.unlink()
+                    logger.warning(
+                        "seeding: palette layer is null; R2 consumer symlink removed: %s",
+                        dest,
+                    )
+            except OSError as exc:
+                logger.warning("seeding: cannot remove R2 consumer symlink %s: %s", dest, exc)
+            return []
+        target = self._state_root / "current" / "colors.gtk.css"
+        if not target.exists() and not target.is_symlink():
+            logger.warning("seeding: current/colors.gtk.css missing, R2 consumer symlink skipped")
+            return []
+        _repoint_symlink(dest, target)
+        return [dest]
+
     def append_history(
         self,
         trigger: str,

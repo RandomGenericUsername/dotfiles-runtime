@@ -77,6 +77,11 @@ class ReconcileResult:
     state: DesktopState
     cache_regenerated: list[str]
     reload_failures: list[str] = field(default_factory=list)
+    consumer_symlinks: list[Path] = field(default_factory=list)
+    """R2 spine consumer symlinks (Epic 4) — e.g.
+    ``<install>/config/ags/colors.css`` → ``current/colors.gtk.css``.
+    Kept separate from ``repointed`` (which is ``current/``-only) so CLI
+    counts and existing consumers keep their contract."""
 
 
 class ReconcileDesktopStateUseCase:
@@ -114,6 +119,7 @@ class ReconcileDesktopStateUseCase:
     ) -> None:
         self._state_repo = state_repo
         self._state_root = state_root
+        self._install_spine = install_spine
         self._seeder = seeder
         self._mutex = mutex
         self._reloaders: list[IDesktopReloader] = list(reloaders) if reloaders is not None else []
@@ -232,6 +238,16 @@ class ReconcileDesktopStateUseCase:
                 effects_entry_hash=state.effects.entry_hash if state.effects else None,
                 icons_entry_hash=state.icons.entry_hash if state.icons else None,
             )
+            # R2 consumer-path symlinks (Epic 4): point the spine consumer
+            # path at current/ so desktop consumers read the active palette.
+            # Runs after the current/ repoint (the target must exist first);
+            # a null palette removes the consumer symlink (never stale).
+            # Kept out of `repointed` (current/-only contract) — reported
+            # separately as `consumer_symlinks`.
+            consumer_repointed = self._seeder.repoint_consumer_symlinks(
+                self._install_spine,
+                state.palette.entry_hash if state.palette else None,
+            )
             # D2 — cleanup stale symlinks
             stale_removed = self._cleanup_stale_symlinks(state, monitor_names, repointed)
             # P8 — derive skipped outside logging inside lock: collect without logging
@@ -289,6 +305,7 @@ class ReconcileDesktopStateUseCase:
             state=saved,
             cache_regenerated=regenerated,
             reload_failures=reload_failures,
+            consumer_symlinks=consumer_repointed,
         )
 
     # ------------------------------------------------------------------
