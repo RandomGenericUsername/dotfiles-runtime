@@ -120,9 +120,9 @@ class TestReconcileIntegration:
         self, tmp_path: Path
     ) -> tuple[JsonStateRepository, Path, Path, _FakeCsg, _FakeWeg, _FakeItr]:
         install_spine = tmp_path / "install"
-        generated = install_spine / "generated"
-        generated.mkdir(parents=True)
-        (generated / "default.png").write_bytes(WALLPAPER_PNG.read_bytes())
+        wallpapers = install_spine / "wallpapers"
+        wallpapers.mkdir(parents=True)
+        (wallpapers / "default.png").write_bytes(WALLPAPER_PNG.read_bytes())
         csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
         csg_templates.mkdir(parents=True)
         (csg_templates / "default.yaml").write_text("window: {}\n")

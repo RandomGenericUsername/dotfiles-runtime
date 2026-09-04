@@ -134,18 +134,23 @@ class SeedCacheUseCase:
         if existing is not None:
             return
 
-        # 2. Verify provisioning output exists
-        generated_dir = self._install_spine / "generated"
-        if not generated_dir.is_dir():
-            raise RuntimeError(
-                f"provisioning output not found: {generated_dir} "
-                f"(install_spine={self._install_spine})"
-            )
-
-        default_png = generated_dir / "default.png"
+        # 2. Verify provisioning output exists. The wallpaper itself lives
+        # in the assets role's output (Story 2-6 AC 2): the
+        # ``wallpapers.tar.gz`` tarball unpacks to ``<install>/wallpapers/``
+        # including ``default.png``. The cached-model spec pins this
+        # location: ``Hash <install>/wallpapers/default.png → wh``.
+        # Palette/effects/icons are re-derived here via the shared
+        # DerivationPipeline (CSG/WEG/ITR subprocess calls), NOT imported
+        # from ``<install>/generated/`` — the seed re-runs the
+        # derivations so the cache entry hashes match the inputs WEG/ITR
+        # will use at runtime (same hash formula).
+        wallpapers_dir = self._install_spine / "wallpapers"
+        default_png = wallpapers_dir / "default.png"
         if not default_png.is_file():
             raise RuntimeError(
-                f"default wallpaper not found: {default_png} (install_spine={self._install_spine})"
+                f"default wallpaper not found: {default_png} "
+                f"(install_spine={self._install_spine}); the assets role "
+                f"(Story 2-6) must run before the runtime's first seed"
             )
 
         # 3. Single-flight: double-checked locking around load_current()

@@ -116,9 +116,12 @@ class TestApplyWallpaperIntegration:
 
     def _setup(self, tmp_path: Path) -> tuple[JsonStateRepository, Path, Any, _FakeCsg, _FakeWeg, _FakeItr]:
         install_spine = tmp_path / "install"
-        generated = install_spine / "generated"
-        generated.mkdir(parents=True)
-        (generated / "default.png").write_bytes(WALLPAPER_PNG.read_bytes())
+        # The assets role (Story 2-6 AC 2) deploys wallpapers to
+        # <install>/wallpapers/ including default.png. The runtime's
+        # seed looks for the wallpaper there.
+        wallpapers = install_spine / "wallpapers"
+        wallpapers.mkdir(parents=True)
+        (wallpapers / "default.png").write_bytes(WALLPAPER_PNG.read_bytes())
         # Templates/catalog/icon assets so palette/effects/icons derive fully
         csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
         csg_templates.mkdir(parents=True)

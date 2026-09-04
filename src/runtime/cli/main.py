@@ -90,7 +90,10 @@ def _run_seed_if_needed() -> None:
     # Pre-validate before constructing anything (Task 3 contract): a missing
     # provisioning spine is expected on machines provisioned without a default
     # desktop — skip quietly; anything else fails loudly below.
-    default_png = install_spine / "generated" / "default.png"
+    # The wallpaper itself lives in the assets role's output (Story 2-6
+    # AC 2): the ``wallpapers.tar.gz`` tarball unpacks to
+    # ``<install>/wallpapers/`` including ``default.png``.
+    default_png = install_spine / "wallpapers" / "default.png"
     if not default_png.is_file():
         logger.warning(
             "seed skipped: provisioning output not found (%s); "

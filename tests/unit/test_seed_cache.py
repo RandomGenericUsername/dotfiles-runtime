@@ -218,9 +218,12 @@ def _setup_install_spine(
     with_templates: bool = True,
 ) -> None:
     """Create provisioning output incl. templates/catalog/icon assets."""
-    generated = install_spine / "generated"
-    generated.mkdir(parents=True)
-    (generated / "default.png").write_bytes(WALLPAPER_PNG.read_bytes())
+    # The assets role (Story 2-6 AC 2) unpacks wallpapers.tar.gz to
+    # <install>/wallpapers/ including default.png. The runtime's seed
+    # looks for the wallpaper there (not under generated/).
+    wallpapers = install_spine / "wallpapers"
+    wallpapers.mkdir(parents=True)
+    (wallpapers / "default.png").write_bytes(WALLPAPER_PNG.read_bytes())
     if with_templates:
         csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
         csg_templates.mkdir(parents=True)
@@ -582,12 +585,12 @@ class TestSeedCacheUseCaseRunsOnFirstRun:
     def test_seeding_raises_when_provisioning_output_missing(self, tmp_path: Path) -> None:
         repo = _FakeStateRepo()
         use_case = _make_use_case(tmp_path, repo, install_spine=tmp_path / "nonexistent")
-        with pytest.raises(RuntimeError, match="provisioning output not found"):
+        with pytest.raises(RuntimeError, match="default wallpaper not found"):
             use_case.run()
 
     def test_seeding_raises_when_default_png_missing(self, tmp_path: Path) -> None:
         install_spine = tmp_path / "install"
-        (install_spine / "generated").mkdir(parents=True)
+        (install_spine / "wallpapers").mkdir(parents=True)
         repo = _FakeStateRepo()
         use_case = _make_use_case(tmp_path, repo, install_spine)
         with pytest.raises(RuntimeError, match="default wallpaper not found"):
