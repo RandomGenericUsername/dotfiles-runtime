@@ -6,7 +6,9 @@ cache entries under ``state_root/cache/<layer>/<hash>/``.
 Cache layout (shared-data-contract, cache-model.md)::
 
     state_root/cache/wallpapers/<wh>/wallpaper.png + meta.json
-    state_root/cache/palettes/<ph>/colors.yaml + colors.conf + colors.gtk.css + meta.json
+    state_root/cache/palettes/<ph>/
+        colors.yaml + colors.conf + colors.gtk.css
+        + colors.adw.css + colors.sequences + meta.json
     state_root/cache/effects/<eh>/*.png + meta.json
     state_root/cache/icons/<ih>/*.svg + meta.json
 
@@ -121,7 +123,9 @@ def cache_entry_path(state_root: Path, layer: str, entry_hash: str) -> Path:
 
         {hash_algorithm: "sha256", kind: "palette", entry_hash: "<ph>",
          source_wallpaper_hash: "<wh>", input_template_hash: "<th>",
-         artifact_hashes: {colors.yaml: "<h>", colors.conf: "<h>", colors.gtk.css: "<h>"},
+         artifact_hashes: {colors.yaml: "<h>", colors.conf: "<h>",
+                           colors.gtk.css: "<h>", colors.adw.css: "<h>",
+                           colors.sequences: "<h>"},
          generated_at: "2026-08-29T00:00:00Z"}
 
     ``hash_algorithm`` MUST be ``HASH_ALGORITHM`` literal ``"sha256"``.

@@ -106,6 +106,8 @@ class _FakeCsg:
         (output_dir / "colors.yaml").write_text("colors: []")
         (output_dir / "colors.conf").write_text("colors {}")
         (output_dir / "colors.gtk.css").write_text("colors {}")
+        (output_dir / "colors.adw.css").write_text("colors {}")
+        (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -116,6 +118,8 @@ class _FakeCsg:
                 colors_yaml=hash_file(output_dir / "colors.yaml"),
                 colors_conf=hash_file(output_dir / "colors.conf"),
                 colors_gtk_css=hash_file(output_dir / "colors.gtk.css"),
+                colors_adw_css=hash_file(output_dir / "colors.adw.css"),
+                colors_sequences=hash_file(output_dir / "colors.sequences"),
             ),
             generated_at=_now_z(),
         )
@@ -359,7 +363,13 @@ class TestApplyWallpaperHappyPath:
         assert pmeta["kind"] == "palette"
         assert pmeta["entry_hash"] == state.palette.entry_hash
         assert pmeta["source_wallpaper_hash"] == wh
-        assert set(pmeta["artifact_hashes"]) == {"colors.yaml", "colors.conf", "colors.gtk.css"}
+        assert set(pmeta["artifact_hashes"]) == {
+            "colors.yaml",
+            "colors.conf",
+            "colors.gtk.css",
+            "colors.adw.css",
+            "colors.sequences",
+        }
         for name, h in pmeta["artifact_hashes"].items():
             assert h == hash_file(
                 tmp_path / "state" / "cache" / "palettes" / state.palette.entry_hash / name
@@ -787,7 +797,13 @@ class TestApplyWallpaperLostRenameRace:
             def generate(self, wallpaper_path: Path, output_dir: Path) -> Any:
                 entry = super().generate(wallpaper_path, output_dir)
                 target.mkdir(parents=True, exist_ok=True)
-                for name in ("colors.yaml", "colors.conf", "colors.gtk.css"):
+                for name in (
+                    "colors.yaml",
+                    "colors.conf",
+                    "colors.gtk.css",
+                    "colors.adw.css",
+                    "colors.sequences",
+                ):
                     (target / name).write_text("winner")
                 (target / "meta.json").write_text(
                     json.dumps(
@@ -803,6 +819,8 @@ class TestApplyWallpaperLostRenameRace:
                                     "colors.yaml",
                                     "colors.conf",
                                     "colors.gtk.css",
+                                    "colors.adw.css",
+                                    "colors.sequences",
                                 )
                             },
                             "generated_at": _now_z(),

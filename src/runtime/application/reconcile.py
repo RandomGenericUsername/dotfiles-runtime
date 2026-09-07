@@ -48,7 +48,7 @@ from pathlib import Path
 from runtime.adapters.cache import cache_entry_path
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder, _repoint_symlink
-from runtime.application.derive import DerivationPipeline
+from runtime.application.derive import DerivationPipeline, ensure_palette_entry_complete
 from runtime.domain.models import (
     DEFAULT_MONITOR,
     DesktopState,
@@ -321,6 +321,10 @@ class ReconcileDesktopStateUseCase:
 
         Returns the (possibly-rebuilt) palette/effects/icons entries and
         appends layer names to ``regenerated`` for actual cache misses.
+        The palette check uses the SHARED completeness guard
+        (``ensure_palette_entry_complete``) so a pre-growth partial
+        palette entry is evicted and regenerated — ONE migration rule
+        for seed/apply/reconcile (Story gt-2-1, AC 8).
         """
         self._ensure_wallpaper_entry(state, regenerated)
         cached_wallpaper_img = (
@@ -329,9 +333,8 @@ class ReconcileDesktopStateUseCase:
         )
 
         palette = state.palette
-        if (
-            palette is not None
-            and not cache_entry_path(self._state_root, "palettes", palette.entry_hash).exists()
+        if palette is not None and not ensure_palette_entry_complete(
+            cache_entry_path(self._state_root, "palettes", palette.entry_hash), self._seeder
         ):
             try:
                 entry, _cache_hit = self._pipeline.ensure_palette(
@@ -443,7 +446,13 @@ class ReconcileDesktopStateUseCase:
         for name in monitor_names:
             expected[f"wallpaper-{name}.png"] = "wallpaper symlink not created"
         if state.palette is not None:
-            for artifact in ("colors.conf", "colors.gtk.css", "colors.yaml"):
+            for artifact in (
+                "colors.conf",
+                "colors.gtk.css",
+                "colors.yaml",
+                "colors.adw.css",
+                "colors.sequences",
+            ):
                 expected[artifact] = "palette artifact missing from cache entry"
         if state.effects is not None:
             expected["effects"] = "effects cache entry missing"
@@ -477,7 +486,15 @@ class ReconcileDesktopStateUseCase:
             return []
         expected_names = {f"wallpaper-{n}.png" for n in monitor_names}
         if state.palette is not None:
-            expected_names.update({"colors.conf", "colors.gtk.css", "colors.yaml"})
+            expected_names.update(
+                {
+                    "colors.conf",
+                    "colors.gtk.css",
+                    "colors.yaml",
+                    "colors.adw.css",
+                    "colors.sequences",
+                }
+            )
         if state.effects is not None:
             expected_names.add("effects")
         if state.icons is not None:
@@ -529,7 +546,13 @@ class ReconcileDesktopStateUseCase:
             )
         if state.palette is not None:
             pal_dir = cache_entry_path(self._state_root, "palettes", state.palette.entry_hash)
-            for artifact in ("colors.conf", "colors.gtk.css", "colors.yaml"):
+            for artifact in (
+                "colors.conf",
+                "colors.gtk.css",
+                "colors.yaml",
+                "colors.adw.css",
+                "colors.sequences",
+            ):
                 targets[artifact] = pal_dir / artifact
         if state.effects is not None:
             targets["effects"] = cache_entry_path(

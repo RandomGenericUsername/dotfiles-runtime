@@ -105,6 +105,8 @@ class _FakeCsg:
         (output_dir / "colors.yaml").write_text("colors: []")
         (output_dir / "colors.conf").write_text("colors {}")
         (output_dir / "colors.gtk.css").write_text("colors {}")
+        (output_dir / "colors.adw.css").write_text("colors {}")
+        (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -115,6 +117,8 @@ class _FakeCsg:
                 colors_yaml=hash_file(output_dir / "colors.yaml"),
                 colors_conf=hash_file(output_dir / "colors.conf"),
                 colors_gtk_css=hash_file(output_dir / "colors.gtk.css"),
+                colors_adw_css=hash_file(output_dir / "colors.adw.css"),
+                colors_sequences=hash_file(output_dir / "colors.sequences"),
             ),
             generated_at=_now_z(),
         )
@@ -327,6 +331,8 @@ class TestCacheSeederWriteMeta:
                 "colors.yaml": "d" * 64,
                 "colors.conf": "e" * 64,
                 "colors.gtk.css": "f" * 64,
+                "colors.adw.css": "a" * 64,
+                "colors.sequences": "b" * 64,
             },
             generated_at="2026-01-01T00:00:00Z",
         )
@@ -336,6 +342,27 @@ class TestCacheSeederWriteMeta:
         assert entry.artifact_hashes["colors_yaml"] == "d" * 64
         assert entry.artifact_hashes["colors_conf"] == "e" * 64
         assert entry.artifact_hashes["colors_gtk_css"] == "f" * 64
+        assert entry.artifact_hashes["colors_adw_css"] == "a" * 64
+        assert entry.artifact_hashes["colors_sequences"] == "b" * 64
+
+    def test_load_palette_entry_raises_on_pre_growth_meta(self, tmp_path: Path) -> None:
+        """Defense-in-depth: a pre-growth 3-key meta must NEVER load through
+        this path — the missing-key KeyError is loud (the derive hit-validation
+        of AC 8 guarantees old entries never reach it)."""
+        seeder = CacheSeeder(state_root=tmp_path)
+        seeder.write_palette_meta(
+            entry_hash="b" * 64,
+            source_wallpaper_hash="a" * 64,
+            input_template_hash="c" * 64,
+            artifact_hashes={
+                "colors.yaml": "d" * 64,
+                "colors.conf": "e" * 64,
+                "colors.gtk.css": "f" * 64,
+            },
+            generated_at="2026-01-01T00:00:00Z",
+        )
+        with pytest.raises(KeyError):
+            seeder.load_palette_entry(tmp_path / "cache" / "palettes" / ("b" * 64))
 
 
 class TestCacheSeederSymlinkRepoint:
@@ -497,7 +524,7 @@ class TestSeedCacheUseCaseRunsOnFirstRun:
         assert data["wallpaper"] == _make_wallpaper_hash()
 
     def test_seeding_populates_palette_cache(self, tmp_path: Path) -> None:
-        """Spec Task 4: cache/palettes/<ph>/ has all 3 artifacts + real-hash meta."""
+        """Spec Task 4: cache/palettes/<ph>/ has all 5 artifacts + real-hash meta."""
         install_spine = tmp_path / "install"
         _setup_install_spine(install_spine)
         repo = _FakeStateRepo()
@@ -509,7 +536,13 @@ class TestSeedCacheUseCaseRunsOnFirstRun:
         assert state.palette is not None
         peh = state.palette.entry_hash
         palette_dir = tmp_path / "cache" / "palettes" / peh
-        for name in ("colors.yaml", "colors.conf", "colors.gtk.css"):
+        for name in (
+            "colors.yaml",
+            "colors.conf",
+            "colors.gtk.css",
+            "colors.adw.css",
+            "colors.sequences",
+        ):
             assert (palette_dir / name).is_file(), f"missing {name}"
         meta = json.loads((palette_dir / "meta.json").read_text())
         assert meta["hash_algorithm"] == "sha256"
@@ -520,7 +553,13 @@ class TestSeedCacheUseCaseRunsOnFirstRun:
         assert state.palette.input_template_hash == meta["input_template_hash"]
         assert not set(state.palette.input_template_hash) == {"0"}
         # meta hashes match on-disk content
-        for name in ("colors.yaml", "colors.conf", "colors.gtk.css"):
+        for name in (
+            "colors.yaml",
+            "colors.conf",
+            "colors.gtk.css",
+            "colors.adw.css",
+            "colors.sequences",
+        ):
             assert meta["artifact_hashes"][name] == hash_file(palette_dir / name)
         # effects/icons likewise carry real hashes
         assert state.effects is not None
@@ -572,7 +611,13 @@ class TestSeedCacheUseCaseRunsOnFirstRun:
         )
 
         palette_dir = tmp_path / "cache" / "palettes" / state.palette.entry_hash
-        for name in ("colors.conf", "colors.gtk.css", "colors.yaml"):
+        for name in (
+            "colors.conf",
+            "colors.gtk.css",
+            "colors.yaml",
+            "colors.adw.css",
+            "colors.sequences",
+        ):
             link = current_dir / name
             assert link.is_symlink(), f"missing symlink {name}"
             assert link.resolve() == (palette_dir / name).resolve()
@@ -818,3 +863,209 @@ class TestR2ConsumerSymlink:
 
         assert stale.is_symlink(), "stale copy must be replaced with the R2 symlink"
         assert os.readlink(stale) == str(tmp_path / "current" / "colors.gtk.css")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# AC 8 — pre-growth palette entry migration (incomplete-entry eviction)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestPreGrowthPaletteEntryMigration:
+    """Story gt-2-1 AC 8: an on-disk cache entry holding only the 3 legacy
+    artifacts + old-shape meta.json is a cache MISS — evicted (logged) and
+    regenerated in full (5 artifacts + 5-key meta) through the normal
+    staging pipeline at the SAME <ph> (cache keys unchanged, NFR-4).
+    Idempotent: the second pass is a clean hit — no re-eviction."""
+
+    @staticmethod
+    def _populate_pre_growth_entry(state_root: Path, install_spine: Path) -> Path:
+        """Create a pre-growth partial palette entry at the correct <ph>."""
+        from runtime.adapters.hashing import canonical_hash_dir, palette_entry_hash
+
+        templates = install_spine / "config" / "color-scheme-generator" / "templates"
+        wh = _make_wallpaper_hash()
+        template_hash = canonical_hash_dir(templates)
+        ph = palette_entry_hash(wh, template_hash)
+        entry = state_root / "cache" / "palettes" / ph
+        entry.mkdir(parents=True)
+        (entry / "colors.yaml").write_text("colors: []")
+        (entry / "colors.conf").write_text("colors {}")
+        (entry / "colors.gtk.css").write_text("colors {}")
+        CacheSeeder(state_root).write_palette_meta_in(
+            entry,
+            entry_hash=ph,
+            source_wallpaper_hash=wh,
+            input_template_hash=template_hash,
+            artifact_hashes={  # old shape: 3 keys only (pre-growth)
+                "colors.yaml": "d" * 64,
+                "colors.conf": "e" * 64,
+                "colors.gtk.css": "f" * 64,
+            },
+            generated_at="2026-01-01T00:00:00Z",
+        )
+        return entry
+
+    def test_seed_migrates_pre_growth_entry(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """First post-upgrade run: incomplete entry evicted + regenerated;
+        current/ gains the two new symlinks on that same run."""
+        install_spine = tmp_path / "install"
+        _setup_install_spine(install_spine)
+        entry = self._populate_pre_growth_entry(tmp_path, install_spine)
+        repo = _FakeStateRepo()  # no current.json → seed runs
+
+        use_case = _make_use_case(tmp_path, repo, install_spine)
+        with caplog.at_level(logging.INFO, logger="runtime.application.derive"):
+            use_case.run()
+
+        assert any("evicting" in r.message for r in caplog.records), (
+            "incomplete pre-growth entry eviction must be logged"
+        )
+        state = repo.saved[0]
+        assert state.palette is not None
+        peh = state.palette.entry_hash
+        assert entry.name == peh  # SAME <ph> — cache keys unchanged (NFR-4)
+        palette_dir = tmp_path / "cache" / "palettes" / peh
+        meta = json.loads((palette_dir / "meta.json").read_text())
+        assert set(meta["artifact_hashes"]) == {
+            "colors.yaml",
+            "colors.conf",
+            "colors.gtk.css",
+            "colors.adw.css",
+            "colors.sequences",
+        }
+        for name in meta["artifact_hashes"]:
+            assert (palette_dir / name).is_file(), f"missing regenerated artifact {name}"
+        # current/ carries the two new symlinks
+        current_dir = tmp_path / "current"
+        palette_dir_resolved = palette_dir.resolve()
+        for name in ("colors.adw.css", "colors.sequences"):
+            link = current_dir / name
+            assert link.is_symlink(), f"missing symlink {name}"
+            assert link.resolve() == (palette_dir_resolved / name)
+
+    def test_pipeline_migration_is_idempotent(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """DerivationPipeline.ensure_palette: incomplete → miss+evict+regen;
+        second pass on the regenerated entry → clean hit, no re-eviction."""
+        from runtime.application.derive import DerivationPipeline
+
+        install_spine = tmp_path / "install"
+        _setup_install_spine(install_spine)
+        entry = self._populate_pre_growth_entry(tmp_path, install_spine)
+        pipeline = DerivationPipeline(
+            state_root=tmp_path,
+            seeder=CacheSeeder(tmp_path),
+            csg=_FakeCsg(),
+            weg=_FakeWeg(),
+            itr=_FakeItr(),
+            install_spine=install_spine,
+        )
+        with caplog.at_level(logging.INFO, logger="runtime.application.derive"):
+            entry1, hit1 = pipeline.ensure_palette(WALLPAPER_PNG, _make_wallpaper_hash())
+        assert hit1 is False
+        assert entry1.entry_hash == entry.name
+        meta1 = json.loads((entry / "meta.json").read_text())
+        assert set(meta1["artifact_hashes"]) == {
+            "colors.yaml",
+            "colors.conf",
+            "colors.gtk.css",
+            "colors.adw.css",
+            "colors.sequences",
+        }
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="runtime.application.derive"):
+            entry2, hit2 = pipeline.ensure_palette(WALLPAPER_PNG, _make_wallpaper_hash())
+        assert hit2 is True
+        assert not any("evicting" in r.message for r in caplog.records)
+        assert json.loads((entry / "meta.json").read_text()) == meta1  # untouched
+        assert entry2.entry_hash == entry1.entry_hash
+
+    def test_incomplete_entry_eviction_never_leaves_half_evicted_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """rmtree with ignore_errors=False: an OSError during eviction
+        propagates (caller failure policy applies) — never a silent partial."""
+        from runtime.application.derive import DerivationPipeline, ensure_palette_entry_complete
+
+        install_spine = tmp_path / "install"
+        _setup_install_spine(install_spine)
+        entry = self._populate_pre_growth_entry(tmp_path, install_spine)
+        pipeline = DerivationPipeline(
+            state_root=tmp_path,
+            seeder=CacheSeeder(tmp_path),
+            csg=_FakeCsg(),
+            weg=_FakeWeg(),
+            itr=_FakeItr(),
+            install_spine=install_spine,
+        )
+
+        def _boom(target: object, **kwargs: object) -> None:
+            raise OSError("eviction failed")
+
+        monkeypatch.setattr(
+            "runtime.application.derive.shutil.rmtree",
+            _boom,
+        )
+        with pytest.raises(OSError, match="eviction failed"):
+            pipeline.ensure_palette(WALLPAPER_PNG, _make_wallpaper_hash())
+        # The incomplete entry dir still exists (half-evicted state prevented)
+        assert entry.exists()
+        # And the guard itself surfaces the same failure loudly
+        with pytest.raises(OSError, match="eviction failed"):
+            ensure_palette_entry_complete(entry, CacheSeeder(tmp_path))
+
+
+class TestRepointCurrentSymlinksPaletteArtifactSkip:
+    """Seeder-level defense-in-depth (gt-2-1): per-artifact exists-or-symlink
+    check with skip+warn per missing artifact — now over the 5-name set."""
+
+    def test_missing_palette_artifacts_skip_with_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        seeder = CacheSeeder(tmp_path)
+        ph = "b" * 64
+        entry = tmp_path / "cache" / "palettes" / ph
+        entry.mkdir(parents=True)
+        (entry / "colors.conf").write_text("conf only")
+        with caplog.at_level(logging.WARNING, logger="runtime.adapters.seeder"):
+            created = seeder.repoint_current_symlinks(
+                wallpaper_target=tmp_path / "wall.png",
+                monitor_names=["DP-1"],
+                palette_entry_hash=ph,
+            )
+        names = [p.name for p in created]
+        assert "colors.conf" in names
+        for missing in ("colors.gtk.css", "colors.yaml", "colors.adw.css", "colors.sequences"):
+            assert missing not in names, f"{missing} must be skipped, never dangling"
+        assert sum("palette artifact missing" in r.message for r in caplog.records) == 4
+
+    def test_all_five_artifacts_repointed(self, tmp_path: Path) -> None:
+        seeder = CacheSeeder(tmp_path)
+        ph = "b" * 64
+        entry = tmp_path / "cache" / "palettes" / ph
+        entry.mkdir(parents=True)
+        for name in (
+            "colors.conf",
+            "colors.gtk.css",
+            "colors.yaml",
+            "colors.adw.css",
+            "colors.sequences",
+        ):
+            (entry / name).write_text(name)
+        created = seeder.repoint_current_symlinks(
+            wallpaper_target=tmp_path / "wall.png",
+            monitor_names=["DP-1"],
+            palette_entry_hash=ph,
+        )
+        names = {p.name for p in created}
+        assert names == {
+            "wallpaper-DP-1.png",
+            "colors.conf",
+            "colors.gtk.css",
+            "colors.yaml",
+            "colors.adw.css",
+            "colors.sequences",
+        }

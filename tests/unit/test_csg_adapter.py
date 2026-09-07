@@ -45,7 +45,7 @@ def _copy_wallpaper_fixture(tmp_path: Path) -> Path:
 
 
 def _fake_success_factory() -> MagicMock:
-    """Return a fake subprocess.run that writes three artifacts into env out dir."""
+    """Return a fake subprocess.run that writes five artifacts into env out dir."""
 
     def fake_run(
         args: list[str],
@@ -60,6 +60,8 @@ def _fake_success_factory() -> MagicMock:
         (out / "colors.yaml").write_text('{"background":"#000"}\n')
         (out / "colors.conf").write_text("$color0 = #000\n")
         (out / "colors.gtk.css").write_text("@define-color bg #000;\n")
+        (out / "colors.adw.css").write_text("@define-color window_bg_bg #000;\n")
+        (out / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         return subprocess.CompletedProcess(args, 0, "", "")
 
     return MagicMock(side_effect=fake_run)
@@ -96,10 +98,14 @@ def test_csg_generate_env_override_writes_to_output_dir(
     assert entry.artifact_hashes["colors_yaml"] == hash_file(output_dir / "colors.yaml")
     assert entry.artifact_hashes["colors_conf"] == hash_file(output_dir / "colors.conf")
     assert entry.artifact_hashes["colors_gtk_css"] == hash_file(output_dir / "colors.gtk.css")
+    assert entry.artifact_hashes["colors_adw_css"] == hash_file(output_dir / "colors.adw.css")
+    assert entry.artifact_hashes["colors_sequences"] == hash_file(output_dir / "colors.sequences")
     # Files exist
     assert (output_dir / "colors.yaml").is_file()
     assert (output_dir / "colors.conf").is_file()
     assert (output_dir / "colors.gtk.css").is_file()
+    assert (output_dir / "colors.adw.css").is_file()
+    assert (output_dir / "colors.sequences").is_file()
     # Env keys literal, no -o flag
     assert fake.call_count == 1
     # Extract args and env from mock call
@@ -116,8 +122,13 @@ def test_csg_generate_env_override_writes_to_output_dir(
     assert "-o" not in args_passed
     assert "--output" not in args_passed
     assert "--format" in args_passed
-    # Ensure yaml/conf/gtk.css present
-    assert args_passed.count("--format") == 3
+    # Ensure all five formats present
+    assert args_passed.count("--format") == 5
+    assert args_passed[args_passed.index("--format") + 1] == "yaml"
+    assert args_passed[args_passed.index("--format") + 3] == "conf"
+    assert args_passed[args_passed.index("--format") + 5] == "gtk.css"
+    assert args_passed[args_passed.index("--format") + 7] == "adw.css"
+    assert args_passed[args_passed.index("--format") + 9] == "sequences"
     # Verify no staging leak
     cache_root = tmp_path / "state" / "cache"
     assert list(cache_root.glob(".staging-*")) == []
@@ -211,6 +222,8 @@ def test_csg_adapter_container_env_passthrough(
         (out / "colors.yaml").write_text("yaml")
         (out / "colors.conf").write_text("conf")
         (out / "colors.gtk.css").write_text("css")
+        (out / "colors.adw.css").write_text("adw")
+        (out / "colors.sequences").write_text("seq")
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake_run)
@@ -350,7 +363,13 @@ def test_csg_adapter_artifact_hashes_are_hex64(
     assert entry.hash_algorithm == "sha256"
     assert entry.hash_algorithm == HASH_ALGORITHM
     assert entry.kind == "palette"
-    for key in ("colors_yaml", "colors_conf", "colors_gtk_css"):
+    for key in (
+        "colors_yaml",
+        "colors_conf",
+        "colors_gtk_css",
+        "colors_adw_css",
+        "colors_sequences",
+    ):
         h = entry.artifact_hashes[key]  # type: ignore[literal-required]
         assert len(h) == 64
         assert h == h.lower()
@@ -436,6 +455,8 @@ def test_csg_adapter_no_settings_toml_rewrite_even_on_container(
         (out / "colors.yaml").write_text("yaml")
         (out / "colors.conf").write_text("conf")
         (out / "colors.gtk.css").write_text("gtk")
+        (out / "colors.adw.css").write_text("adw")
+        (out / "colors.sequences").write_text("seq")
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake_container_run)

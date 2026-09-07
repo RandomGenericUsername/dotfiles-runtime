@@ -14,8 +14,9 @@ identical palette content.
 - ``colors.yaml`` contains ``generated_at`` (wall-clock timestamp) which
   intentionally differs between runs; palette determinism is proven by
   comparing normalized content (``background``/``foreground``/``colors``/
-  ``cursor``/``backend``) or the other two artifacts (``colors.conf``,
-  ``colors.gtk.css``) which are expected to be bit-identical. The artifact
+  ``cursor``/``backend``) or the other artifacts (``colors.conf``,
+  ``colors.gtk.css``, ``colors.adw.css``, ``colors.sequences``) which are
+  expected to be bit-identical. The artifact
   file records both raw and normalized hashes and documents this nuance.
 
 **Container mode (AD-7 last sentence):** ``COLORSCHEME__OUTPUT__DIRECTORY``
@@ -225,9 +226,9 @@ def _run_csg_generate(
 
     Uses literal env-override keys per shared-data-contract Env-override protocol:
     ``COLORSCHEME__OUTPUT__DIRECTORY`` and ``COLORSCHEME__OUTPUT__OVERWRITE``.
-    Also passes explicit ``--format`` flags for the three palette artifacts that
+    Also passes explicit ``--format`` flags for the five palette artifacts that
     define ``PaletteEntry.artifact_hashes`` (``colors.yaml``, ``colors.conf``,
-    ``colors.gtk.css``).
+    ``colors.gtk.css``, ``colors.adw.css``, ``colors.sequences``).
 
     Output dir is set **only** via env override (no ``-o`` flag) to exercise
     the container-mode forwarding contract (AD-7). The test asserts the host
@@ -245,6 +246,10 @@ def _run_csg_generate(
         "conf",
         "--format",
         "gtk.css",
+        "--format",
+        "adw.css",
+        "--format",
+        "sequences",
     ]
     # Intentionally **no** ``-o`` flag — output dir comes solely from env override
     # to prove COLORSCHEME__OUTPUT__DIRECTORY is forwarded into the container.
@@ -286,12 +291,44 @@ def _find_csg_templates_dir() -> Path | None:
     return None
 
 
+def _csg_supports_artifact_set(csg_bin: str) -> bool:
+    """True when the on-PATH csg bundles ``colors.adw.css.j2`` (gt-1-1 format).
+
+    A stale install (9 templates) predates ``ColorFormat.ADW_CSS`` and cannot
+    produce the 5-artifact set (gt-2-1). Probed via ``dump-templates``.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / "tpl"
+        try:
+            result = subprocess.run(
+                [csg_bin, "dump-templates", "-o", str(out)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        if result.returncode != 0:
+            return False
+        return (out / "templates" / "colors.adw.css.j2").is_file()
+
+
 @pytest.fixture()
 def csg_available() -> str:
-    """Skip loudly if csg not on PATH (determinism not proven, downstream blocked)."""
+    """Skip loudly if csg not on PATH or predates the 5-artifact set
+    (determinism not proven, downstream blocked)."""
     csg = shutil.which("csg")
     if csg is None:
         pytest.skip("csg not on PATH — determinism verification requires csg binary")
+    if not _csg_supports_artifact_set(csg):
+        pytest.skip(
+            "host csg binary predates ColorFormat.ADW_CSS (dump-templates lacks "
+            "colors.adw.css.j2) — refresh the install from "
+            "src/cli-tools/color-scheme-generator; adw.css/sequences determinism "
+            "is not provable against this binary (environment staleness)"
+        )
     return csg  # type: ignore[return-value]
 
 
@@ -357,7 +394,13 @@ class TestCsgDeterminism:
         # Helper to collect per-file hashes (raw + normalized for yaml) — handles is_dir
         def collect_hashes(output_dir: Path) -> dict[str, str]:
             h: dict[str, str] = {}
-            for name in ("colors.yaml", "colors.conf", "colors.gtk.css"):
+            for name in (
+                "colors.yaml",
+                "colors.conf",
+                "colors.gtk.css",
+                "colors.adw.css",
+                "colors.sequences",
+            ):
                 p = output_dir / name
                 if p.is_file():
                     try:
@@ -420,7 +463,13 @@ class TestCsgDeterminism:
         # Also proves COLORSCHEME__OUTPUT__DIRECTORY was forwarded INTO container
         # because we used NO -o flag — container must have written to host tmp via mount.
         for out_dir in (out1, out2):
-            for name in ("colors.yaml", "colors.conf", "colors.gtk.css"):
+            for name in (
+                "colors.yaml",
+                "colors.conf",
+                "colors.gtk.css",
+                "colors.adw.css",
+                "colors.sequences",
+            ):
                 p = out_dir / name
                 assert p.is_file(), (
                     f"COLORSCHEME__OUTPUT__DIRECTORY override not honored — "
@@ -453,6 +502,24 @@ class TestCsgDeterminism:
         if p1.read_bytes() != p2.read_bytes():
             mismatches.append(
                 f"colors.gtk.css differs: run1 sha={run1_hashes['colors.gtk.css']} run2 sha={run2_hashes['colors.gtk.css']}"
+            )
+
+        # colors.adw.css
+        p1 = out1 / "colors.adw.css"
+        p2 = out2 / "colors.adw.css"
+        if p1.read_bytes() != p2.read_bytes():
+            mismatches.append(
+                f"colors.adw.css differs: run1 sha={run1_hashes['colors.adw.css']} "
+                f"run2 sha={run2_hashes['colors.adw.css']}"
+            )
+
+        # colors.sequences (binary OSC escape payload)
+        p1 = out1 / "colors.sequences"
+        p2 = out2 / "colors.sequences"
+        if p1.read_bytes() != p2.read_bytes():
+            mismatches.append(
+                f"colors.sequences differs: run1 sha={run1_hashes['colors.sequences']} "
+                f"run2 sha={run2_hashes['colors.sequences']}"
             )
 
         # colors.yaml (normalized)

@@ -75,6 +75,8 @@ class _FakeCsg:
         (output_dir / "colors.yaml").write_text(_pinned_colors_yaml())
         (output_dir / "colors.conf").write_text("background: #1a1b26\nforeground: #c0caf5\n")
         (output_dir / "colors.gtk.css").write_text("/* palette */")
+        (output_dir / "colors.adw.css").write_text("/* palette */")
+        (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#1a1b26\x1b\\")
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -85,6 +87,8 @@ class _FakeCsg:
                 colors_yaml=hash_file(output_dir / "colors.yaml"),
                 colors_conf=hash_file(output_dir / "colors.conf"),
                 colors_gtk_css=hash_file(output_dir / "colors.gtk.css"),
+                colors_adw_css=hash_file(output_dir / "colors.adw.css"),
+                colors_sequences=hash_file(output_dir / "colors.sequences"),
             ),
             generated_at=_now_z(),
         )

@@ -51,6 +51,8 @@ def _make_state(
                 colors_yaml="d" * 64,
                 colors_conf="e" * 64,
                 colors_gtk_css="f" * 64,
+                colors_adw_css="1" * 64,
+                colors_sequences="2" * 64,
             ),
             generated_at=now,
         )
@@ -132,7 +134,13 @@ def _expected_targets(state_root: Path, state: DesktopState) -> dict[str, Path]:
         )
     if state.palette is not None:
         pal_dir = cache_entry_path(state_root, "palettes", state.palette.entry_hash)
-        for artifact in ("colors.conf", "colors.gtk.css", "colors.yaml"):
+        for artifact in (
+            "colors.conf",
+            "colors.gtk.css",
+            "colors.yaml",
+            "colors.adw.css",
+            "colors.sequences",
+        ):
             targets[artifact] = pal_dir / artifact
     if state.effects is not None:
         targets["effects"] = cache_entry_path(state_root, "effects", state.effects.entry_hash)
@@ -240,6 +248,8 @@ class TestInspectSymlinkReflection:
             "colors.yaml",
             "colors.conf",
             "colors.gtk.css",
+            "colors.adw.css",
+            "colors.sequences",
             "effects",
             "icons",
         }

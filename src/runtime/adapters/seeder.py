@@ -425,6 +425,8 @@ class CacheSeeder:
                 colors_yaml=artifact_hashes["colors.yaml"],
                 colors_conf=artifact_hashes["colors.conf"],
                 colors_gtk_css=artifact_hashes["colors.gtk.css"],
+                colors_adw_css=artifact_hashes["colors.adw.css"],
+                colors_sequences=artifact_hashes["colors.sequences"],
             ),
             generated_at=meta["generated_at"],
         )
@@ -526,6 +528,8 @@ class CacheSeeder:
         - current/colors.conf → cache/palettes/<ph>/colors.conf
         - current/colors.gtk.css → cache/palettes/<ph>/colors.gtk.css
         - current/colors.yaml → cache/palettes/<ph>/colors.yaml
+        - current/colors.adw.css → cache/palettes/<ph>/colors.adw.css
+        - current/colors.sequences → cache/palettes/<ph>/colors.sequences
         - current/effects/ → cache/effects/<eh>/
         - current/icons/ → cache/icons/<ih>/
 
@@ -542,7 +546,13 @@ class CacheSeeder:
         # Palette symlinks
         if palette_entry_hash is not None:
             palette_dir = self._state_root / "cache" / "palettes" / palette_entry_hash
-            for artifact_name in ("colors.conf", "colors.gtk.css", "colors.yaml"):
+            for artifact_name in (
+                "colors.conf",
+                "colors.gtk.css",
+                "colors.yaml",
+                "colors.adw.css",
+                "colors.sequences",
+            ):
                 target = palette_dir / artifact_name
                 # exists() follows symlinks — a dangling symlink at the target
                 # path is still repointed so it never lingers half-broken.

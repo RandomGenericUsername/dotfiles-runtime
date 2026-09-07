@@ -52,6 +52,8 @@ class PaletteArtifacts(TypedDict):
     colors_yaml: str  # key: "colors.yaml"
     colors_conf: str  # key: "colors.conf"
     colors_gtk_css: str  # key: "colors.gtk.css"
+    colors_adw_css: str  # key: "colors.adw.css"
+    colors_sequences: str  # key: "colors.sequences"
 
 
 @dataclass(frozen=True, slots=True)

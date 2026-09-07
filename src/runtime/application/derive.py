@@ -23,13 +23,26 @@ staging + load-on-race). Behavior contract locked by the seed test suite:
   the seeder wraps palette failures as ``palette seeding failed:`` and
   apply wraps as ``palette apply failed:`` (palette hard dependency);
   effects/icons degrade gracefully per use case.
+- Migration (Story gt-2-1, AC 8): a palette entry is a valid cache hit
+  ONLY if its ``meta.json`` ``artifact_hashes`` carries all five artifact
+  names AND the five artifact files exist. An incomplete entry
+  (pre-growth partial: 3 legacy artifacts + old meta) is evicted
+  (``shutil.rmtree``, logged once) and regenerated through the normal
+  staging path at the SAME ``<ph>`` — cache keys are unchanged, so
+  eviction is what makes the write-once invariant yield exactly once,
+  for pre-growth partial entries only. The guard lives in
+  ``ensure_palette_entry_complete`` (this module) and is shared by
+  ``DerivationPipeline.ensure_palette`` (seed/apply) and
+  ``ReconcileDesktopStateUseCase._ensure_entries`` — ONE migration rule,
+  three callers. ``inspect`` never calls it (read-only projection).
 """
 
 from __future__ import annotations
 
 import logging
+import shutil
 from pathlib import Path
-from typing import cast
+from typing import Final, cast
 
 from runtime.adapters.cache import cache_entry_path, populate_via_staging
 from runtime.adapters.hashing import (
@@ -231,6 +244,61 @@ def _hash_path_input(path: Path, what: str) -> str:
     raise RuntimeError(f"{what} path missing: {path}")
 
 
+PALETTE_ARTIFACT_NAMES: Final[tuple[str, ...]] = (
+    "colors.yaml",
+    "colors.conf",
+    "colors.gtk.css",
+    "colors.adw.css",
+    "colors.sequences",
+)
+
+
+def ensure_palette_entry_complete(target: Path, seeder: CacheSeeder) -> bool:
+    """Validate a palette cache hit's completeness; evict incomplete entries.
+
+    The migration mechanism (Story gt-2-1, AC 8): a palette entry dir
+    existing at ``cache/palettes/<ph>/`` is a valid cache hit ONLY if its
+    co-located ``meta.json`` ``artifact_hashes`` carries ALL FIVE artifact
+    names and the five artifact files exist (AD-3: meta.json is the
+    completeness oracle — never trust dir existence alone).
+
+    An incomplete entry (a pre-growth partial: 3 legacy artifacts +
+    old-shape meta.json, or any future partial) is treated as a cache
+    MISS: it is evicted (``shutil.rmtree``, ``ignore_errors=False`` — an
+    OSError propagates to the caller's failure policy) so the SAME
+    ``<ph>`` is regenerated through the normal staging path by the
+    caller. Eviction is logged once (``logger.info``).
+
+    Returns:
+        True  — ``target`` does not exist (plain miss, nothing to evict)
+                or is a complete, valid hit.
+        False — ``target`` existed but was incomplete: it has been
+                evicted and the caller must regenerate.
+
+    Raises:
+        OSError: if eviction fails (never leave a half-evicted dir).
+    """
+    if not target.exists():
+        return False
+    complete = True
+    try:
+        meta = seeder.read_entry_meta(target)
+        artifact_hashes = meta["artifact_hashes"]
+        for name in PALETTE_ARTIFACT_NAMES:
+            if name not in artifact_hashes or not (target / name).is_file():
+                complete = False
+                break
+    except OSError, ValueError, TypeError, KeyError:
+        # Corrupt/absent meta.json or malformed artifact_hashes — an
+        # entry whose completeness cannot be proven is not a hit.
+        complete = False
+    if complete:
+        return True
+    logger.info("palette entry incomplete (pre-growth artifact set); evicting: %s", target)
+    shutil.rmtree(target, ignore_errors=False)
+    return False
+
+
 class DerivationPipeline:
     """Per-layer ensure-entry orchestrator shared by seed and apply.
 
@@ -274,7 +342,12 @@ class DerivationPipeline:
     def ensure_palette(
         self, wallpaper_path: Path, wallpaper_hash: str
     ) -> tuple[PaletteEntry, bool]:
-        """Ensure the palette cache entry. Cache hit is entry-dir existence."""
+        """Ensure the palette cache entry.
+
+        Cache hit requires completeness (migration, AC 8): dir existence
+        alone is NOT enough — ``ensure_palette_entry_complete`` evicts a
+        pre-growth partial entry so the same ``<ph>`` regenerates below.
+        """
         templates_dir = find_templates_dir(self._install_spine)
         if templates_dir is None:
             raise RuntimeError(f"CSG templates dir not found (install_spine={self._install_spine})")
@@ -282,7 +355,7 @@ class DerivationPipeline:
         template_set_hash = canonical_hash_dir(templates_dir)
         peh = palette_entry_hash(wallpaper_hash, template_set_hash)
         target = cache_entry_path(self._state_root, "palettes", peh)
-        if target.exists():
+        if ensure_palette_entry_complete(target, self._seeder):
             return self._seeder.load_palette_entry(target), True
 
         entry_holder: list[PaletteEntry] = []
@@ -305,6 +378,8 @@ class DerivationPipeline:
                     "colors.yaml": generated.artifact_hashes["colors_yaml"],
                     "colors.conf": generated.artifact_hashes["colors_conf"],
                     "colors.gtk.css": generated.artifact_hashes["colors_gtk_css"],
+                    "colors.adw.css": generated.artifact_hashes["colors_adw_css"],
+                    "colors.sequences": generated.artifact_hashes["colors_sequences"],
                 },
                 generated_at=generated.generated_at,
             )

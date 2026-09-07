@@ -1,13 +1,21 @@
 """Integration test for CsgAdapter with real csg binary (Story 1.7, AC 1-2).
 
-Skipped loudly if csg not on PATH — proves env override writes three artifacts
+Skipped loudly if csg not on PATH — proves env override writes five artifacts
+(colors.yaml, colors.conf, colors.gtk.css, colors.adw.css, colors.sequences)
 to output_dir and PaletteEntry artifact_hashes match hash_file, even when
 csg config says runtime.mode==container (container forwarding).
+
+Environment note (gt-2-1): a host csg install that predates
+``ColorFormat.ADW_CSS`` (gt-1-1) cannot produce the 5-artifact set; such a
+stale binary is skipped with a refresh instruction (same policy as the
+"container image not built" skip in test_csg_determinism).
 """
 
 from __future__ import annotations
 
 import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -16,6 +24,28 @@ from runtime.adapters.csg_adapter import CsgAdapter
 from runtime.adapters.hashing import canonical_hash_dir, hash_file, palette_entry_hash
 
 pytestmark = pytest.mark.integration
+
+
+def _csg_supports_artifact_set(csg_bin: str) -> bool:
+    """True when the on-PATH csg bundles ``colors.adw.css.j2`` (gt-1-1 format).
+
+    A stale install (9 templates) predates ``ColorFormat.ADW_CSS`` and cannot
+    produce the 5-artifact set. Probed via ``dump-templates`` into a temp dir.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / "tpl"
+        try:
+            result = subprocess.run(
+                [csg_bin, "dump-templates", "-o", str(out)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except OSError, subprocess.TimeoutExpired:
+            return False
+        if result.returncode != 0:
+            return False
+        return (out / "templates" / "colors.adw.css.j2").is_file()
 
 
 def _find_templates_dir() -> Path | None:
@@ -55,8 +85,16 @@ def _find_templates_dir() -> Path | None:
 
 
 def test_csg_adapter_integration_real_binary(tmp_path: Path) -> None:
-    if shutil.which("csg") is None:
+    csg_bin = shutil.which("csg")
+    if csg_bin is None:
         pytest.skip("csg not on PATH — integration requires csg binary")
+    if not _csg_supports_artifact_set(csg_bin):
+        pytest.skip(
+            "host csg binary predates ColorFormat.ADW_CSS (dump-templates lacks "
+            "colors.adw.css.j2) — refresh the install from "
+            "src/cli-tools/color-scheme-generator; the 5-artifact set cannot be "
+            "produced by this binary (environment staleness, not a code defect)"
+        )
 
     # Reuse fixture wallpaper.png or create minimal one
     fixture = Path(__file__).parent.parent / "fixtures" / "wallpaper.png"
@@ -101,8 +139,14 @@ def test_csg_adapter_integration_real_binary(tmp_path: Path) -> None:
 
     entry = adapter.generate(wallpaper, output_dir)
 
-    # Verify three files exist and hashes match
-    for name in ("colors.yaml", "colors.conf", "colors.gtk.css"):
+    # Verify five files exist and hashes match
+    for name in (
+        "colors.yaml",
+        "colors.conf",
+        "colors.gtk.css",
+        "colors.adw.css",
+        "colors.sequences",
+    ):
         p = output_dir / name
         assert p.is_file(), f"expected {name} in {output_dir}"
         assert not p.is_dir()
@@ -115,5 +159,7 @@ def test_csg_adapter_integration_real_binary(tmp_path: Path) -> None:
     assert entry.artifact_hashes["colors_yaml"] == hash_file(output_dir / "colors.yaml")
     assert entry.artifact_hashes["colors_conf"] == hash_file(output_dir / "colors.conf")
     assert entry.artifact_hashes["colors_gtk_css"] == hash_file(output_dir / "colors.gtk.css")
+    assert entry.artifact_hashes["colors_adw_css"] == hash_file(output_dir / "colors.adw.css")
+    assert entry.artifact_hashes["colors_sequences"] == hash_file(output_dir / "colors.sequences")
     # Output dir under state_root/cache/palettes
     assert output_dir.is_dir()

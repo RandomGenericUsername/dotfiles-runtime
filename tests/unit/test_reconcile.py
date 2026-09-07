@@ -84,6 +84,8 @@ class _FakeCsg:
         (output_dir / "colors.yaml").write_text("colors: []")
         (output_dir / "colors.conf").write_text("colors {}")
         (output_dir / "colors.gtk.css").write_text("colors {}")
+        (output_dir / "colors.adw.css").write_text("colors {}")
+        (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -94,6 +96,8 @@ class _FakeCsg:
                 colors_yaml=hash_file(output_dir / "colors.yaml"),
                 colors_conf=hash_file(output_dir / "colors.conf"),
                 colors_gtk_css=hash_file(output_dir / "colors.gtk.css"),
+                colors_adw_css=hash_file(output_dir / "colors.adw.css"),
+                colors_sequences=hash_file(output_dir / "colors.sequences"),
             ),
             generated_at=_now_z(),
         )
@@ -330,6 +334,8 @@ class TestReconcileHappyPath:
             "colors.conf",
             "colors.gtk.css",
             "colors.yaml",
+            "colors.adw.css",
+            "colors.sequences",
             "effects",
             "icons",
         }
@@ -339,6 +345,8 @@ class TestReconcileHappyPath:
         assert links["colors.conf"] == str(palette_dir / "colors.conf")
         assert links["colors.gtk.css"] == str(palette_dir / "colors.gtk.css")
         assert links["colors.yaml"] == str(palette_dir / "colors.yaml")
+        assert links["colors.adw.css"] == str(palette_dir / "colors.adw.css")
+        assert links["colors.sequences"] == str(palette_dir / "colors.sequences")
         assert links["effects"] == str(applied.state_root / "cache" / "effects" / loaded.effects.entry_hash)
         assert links["icons"] == str(applied.state_root / "cache" / "icons" / loaded.icons.entry_hash)
         assert sorted(p.name for p in result.repointed) == sorted(links)
@@ -507,7 +515,10 @@ class TestReconcileFailurePolicy:
         )
         assert result.consumer_symlinks == []
 
-    def test_missing_palette_artifact_skipped_never_dangling(self, tmp_path: Path) -> None:
+    def test_missing_palette_artifact_triggers_regeneration(self, tmp_path: Path) -> None:
+        """AC 8 migration: an entry missing an artifact FILE is incomplete →
+        the shared completeness guard evicts + regenerates it (never a
+        dangling current/ link, never a false hit)."""
         applied = _apply_state(tmp_path)
         loaded = applied.repo.load_current()
         assert loaded is not None
@@ -519,10 +530,10 @@ class TestReconcileFailurePolicy:
         result = use_case.run()
 
         links = _symlink_map(applied.state_root / "current")
-        assert "colors.gtk.css" not in links  # not created — never dangling
-        assert "colors.conf" in links
-        assert "colors.yaml" in links
-        assert any("colors.gtk.css" in s for s in result.skipped)
+        assert (palette_dir / "colors.gtk.css").is_file()  # regenerated
+        assert links["colors.gtk.css"] == str(palette_dir / "colors.gtk.css")
+        assert result.cache_regenerated == ["palette"]
+        assert result.skipped == []
 
     def test_empty_monitors_default_to_dp1(self, tmp_path: Path) -> None:
         applied = _apply_state(tmp_path)

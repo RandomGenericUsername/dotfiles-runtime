@@ -56,6 +56,8 @@ class _FakeCsg:
         (output_dir / "colors.yaml").write_text("colors: []")
         (output_dir / "colors.conf").write_text("colors {}")
         (output_dir / "colors.gtk.css").write_text("colors {}")
+        (output_dir / "colors.adw.css").write_text("colors {}")
+        (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -66,6 +68,8 @@ class _FakeCsg:
                 colors_yaml=hash_file(output_dir / "colors.yaml"),
                 colors_conf=hash_file(output_dir / "colors.conf"),
                 colors_gtk_css=hash_file(output_dir / "colors.gtk.css"),
+                colors_adw_css=hash_file(output_dir / "colors.adw.css"),
+                colors_sequences=hash_file(output_dir / "colors.sequences"),
             ),
             generated_at=_now_z(),
         )
@@ -209,7 +213,7 @@ def _make_stale_wallpaper_entry(state_root: Path, stale_hash: str) -> Path:
 def _make_stale_palette_entry(state_root: Path, stale_hash: str) -> Path:
     entry = state_root / "cache" / "palettes" / stale_hash
     entry.mkdir(parents=True, exist_ok=True)
-    for n in ("colors.conf", "colors.gtk.css", "colors.yaml"):
+    for n in ("colors.conf", "colors.gtk.css", "colors.yaml", "colors.adw.css", "colors.sequences"):
         (entry / n).write_text("stale")
     (entry / "meta.json").write_text(json.dumps({"hash_algorithm": "sha256"}))
     return entry

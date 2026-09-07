@@ -36,6 +36,8 @@ class _FakeCsg:
         (output_dir / "colors.yaml").write_text("colors: []")
         (output_dir / "colors.conf").write_text("colors {}")
         (output_dir / "colors.gtk.css").write_text("colors {}")
+        (output_dir / "colors.adw.css").write_text("colors {}")
+        (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -46,6 +48,8 @@ class _FakeCsg:
                 colors_yaml=hash_file(output_dir / "colors.yaml"),
                 colors_conf=hash_file(output_dir / "colors.conf"),
                 colors_gtk_css=hash_file(output_dir / "colors.gtk.css"),
+                colors_adw_css=hash_file(output_dir / "colors.adw.css"),
+                colors_sequences=hash_file(output_dir / "colors.sequences"),
             ),
             generated_at="2026-01-01T00:00:00Z",
         )
@@ -193,7 +197,13 @@ class TestSeedCacheIntegration:
         wp_link = current_dir / "wallpaper-DP-1.png"
         assert wp_link.is_symlink()
         assert wp_link.exists()  # symlink resolves
-        for name in ("colors.conf", "colors.gtk.css", "colors.yaml"):
+        for name in (
+            "colors.conf",
+            "colors.gtk.css",
+            "colors.yaml",
+            "colors.adw.css",
+            "colors.sequences",
+        ):
             assert (current_dir / name).is_symlink()
             assert (current_dir / name).exists()
         assert (current_dir / "effects").is_symlink()

@@ -15,7 +15,8 @@ class IColorSchemeGenerator(ABC):
     ) -> PaletteEntry:
         """Generate palette from wallpaper file via CSG templates.
 
-        Writes color scheme artifacts (colors.yaml, colors.conf, colors.gtk.css)
+        Writes color scheme artifacts (colors.yaml, colors.conf, colors.gtk.css,
+        colors.adw.css, colors.sequences)
         into output_dir via env override. Returns the PaletteEntry with
         artifact_hashes computed.
         """
