@@ -78,7 +78,7 @@ class ReconcileResult:
     cache_regenerated: list[str]
     reload_failures: list[str] = field(default_factory=list)
     consumer_symlinks: list[Path] = field(default_factory=list)
-    """R2 spine consumer symlinks (Epic 4) — e.g.
+    """Spine consumer pointers (Epic 4, gt-2-2 spec table) — e.g.
     ``<install>/config/ags/colors.css`` → ``current/colors.gtk.css``.
     Kept separate from ``repointed`` (which is ``current/``-only) so CLI
     counts and existing consumers keep their contract."""
