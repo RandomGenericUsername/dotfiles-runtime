@@ -184,6 +184,33 @@ class _PassingTerminalColorApplier:
         return True
 
 
+class _PassingHyprlandReloader:
+    """Isolates the CLI from the real ``hyprctl reload`` on this host."""
+
+    def __init__(self, **_kwargs: object) -> None:
+        pass
+
+    def reload(self) -> bool:
+        return True
+
+
+class _PassingAgsReloader:
+    """Isolates the CLI from the real ``ags quit && ags run`` on this host.
+
+    Incident 2026-09-07: without this stub the real ``AgsReloader`` spawned a
+    live bar under the test's monkeypatched ``XDG_STATE_HOME`` (pytest tmp
+    dir); the process outlived pytest, replaced the developer's bar, and
+    rendered broken icons from the deleted dir. See ``tests/unit/conftest.py``
+    for the belt-and-braces autouse guard.
+    """
+
+    def __init__(self, **_kwargs: object) -> None:
+        pass
+
+    def reload(self) -> bool:
+        return True
+
+
 class TestCliCrashRecoveryLogging:
     def test_reconcile_recovery_logs_stray_reverts(self, tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch) -> None:
         state_root = tmp_path / "dotfiles"
@@ -209,6 +236,14 @@ class TestCliCrashRecoveryLogging:
             "runtime.adapters.terminal_color_applier.TerminalColorApplier",
             _PassingTerminalColorApplier,
         )
+        monkeypatch.setattr(
+            "runtime.adapters.hyprland_reloader.HyprlandReloader",
+            _PassingHyprlandReloader,
+        )
+        monkeypatch.setattr(
+            "runtime.adapters.ags_reloader.AgsReloader",
+            _PassingAgsReloader,
+        )
 
         with caplog.at_level(logging.INFO, logger="runtime.application.reconcile"):
             result = runner.invoke(app, ["reconcile"])
@@ -230,6 +265,14 @@ class TestCliCrashRecoveryLogging:
         monkeypatch.setattr(
             "runtime.adapters.terminal_color_applier.TerminalColorApplier",
             _PassingTerminalColorApplier,
+        )
+        monkeypatch.setattr(
+            "runtime.adapters.hyprland_reloader.HyprlandReloader",
+            _PassingHyprlandReloader,
+        )
+        monkeypatch.setattr(
+            "runtime.adapters.ags_reloader.AgsReloader",
+            _PassingAgsReloader,
         )
 
         with caplog.at_level(logging.DEBUG, logger="runtime.application.reconcile"):
