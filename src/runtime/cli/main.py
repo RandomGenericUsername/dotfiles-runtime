@@ -103,6 +103,7 @@ def _run_seed_if_needed() -> None:
         return
 
     try:
+        from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
         from runtime.adapters.csg_adapter import CsgAdapter
         from runtime.adapters.flock_seed_mutex import FlockSeedMutex
         from runtime.adapters.hyprland_monitor_source import HyprlandMonitorSource
@@ -123,7 +124,7 @@ def _run_seed_if_needed() -> None:
         csg = CsgAdapter()
         weg = WegAdapter()
         itr = ItrAdapter()
-        seeder = CacheSeeder(state_root)
+        seeder = CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec())
         mutex = FlockSeedMutex(state_root / ".seed.lock")
 
         # Factory is not used by SeedCacheUseCase (wallpaper backend deferred to Epic 2).
@@ -246,6 +247,7 @@ def _run_wallpaper_set(image_path: Path) -> _WallpaperSetResult:
     state_root = _resolve_state_root()
     install_spine = _resolve_install_spine()
 
+    from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
     from runtime.adapters.csg_adapter import CsgAdapter
     from runtime.adapters.flock_seed_mutex import FlockSeedMutex
     from runtime.adapters.hyprland_monitor_source import HyprlandMonitorSource
@@ -263,7 +265,7 @@ def _run_wallpaper_set(image_path: Path) -> _WallpaperSetResult:
         itr=ItrAdapter(),
         install_spine=install_spine,
         state_root=state_root,
-        seeder=CacheSeeder(state_root),
+        seeder=CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec()),
         mutex=FlockSeedMutex(state_root / ".seed.lock"),
         monitor_source=HyprlandMonitorSource(),
     ).run(image_path)
@@ -275,7 +277,7 @@ def _run_wallpaper_set(image_path: Path) -> _WallpaperSetResult:
         itr=ItrAdapter(),
         install_spine=install_spine,
         state_root=state_root,
-        seeder=CacheSeeder(state_root),
+        seeder=CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec()),
         mutex=FlockSeedMutex(state_root / ".seed.lock"),
         reloaders=_build_reloaders(state_root),
     ).run(trigger="set")
@@ -421,6 +423,7 @@ def _run_reconcile() -> ReconcileResult:
     state_root = _resolve_state_root()
     install_spine = _resolve_install_spine()
 
+    from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
     from runtime.adapters.csg_adapter import CsgAdapter
     from runtime.adapters.flock_seed_mutex import FlockSeedMutex
     from runtime.adapters.itr_adapter import ItrAdapter
@@ -436,7 +439,7 @@ def _run_reconcile() -> ReconcileResult:
         itr=ItrAdapter(),
         install_spine=install_spine,
         state_root=state_root,
-        seeder=CacheSeeder(state_root),
+        seeder=CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec()),
         mutex=FlockSeedMutex(state_root / ".seed.lock"),
         reloaders=_build_reloaders(state_root),
     )
@@ -530,12 +533,15 @@ def _run_inspect_status() -> InspectStatusResult:
     """
     state_root = _resolve_state_root()
 
+    from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.application.inspect import InspectStateUseCase
 
     use_case = InspectStateUseCase(
         state_repo=JsonStateRepository(state_root=state_root),
         state_root=state_root,
+        install_spine=_resolve_install_spine(),
+        consumer_spec=StaticConsumerPathSpec(),
     )
     return use_case.run()
 
@@ -593,6 +599,10 @@ def inspect_status(
                 "current_symlinks": {
                     name: {"status": status.status, "target": status.target}
                     for name, status in result.current_symlinks.items()
+                },
+                "consumer_pointers": {
+                    path: {"status": status.status, "target": status.target}
+                    for path, status in result.consumer_pointers.items()
                 },
             },
             rich=summary,

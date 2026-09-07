@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Final, cast
 
 from runtime.adapters.cache import hardlink_or_copy
+from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
 from runtime.adapters.hashing import HASH_ALGORITHM, hash_file
 from runtime.domain.models import (
     EffectsArtifacts,
@@ -36,6 +37,7 @@ from runtime.domain.models import (
     PaletteArtifacts,
     PaletteEntry,
 )
+from runtime.ports.consumer_path_spec import IConsumerPathSpec
 
 logger = logging.getLogger(__name__)
 
@@ -105,8 +107,9 @@ class CacheSeeder:
     - Ensure current/ directory structure exists
     """
 
-    def __init__(self, state_root: Path) -> None:
+    def __init__(self, state_root: Path, consumer_spec: IConsumerPathSpec | None = None) -> None:
         self._state_root = state_root
+        self._consumer_spec: IConsumerPathSpec = consumer_spec or StaticConsumerPathSpec()
 
     def hardlink_wallpaper(self, src: Path, wallpaper_hash: str) -> Path:
         """Hardlink wallpaper from provisioning into cache (AD-16).
@@ -587,15 +590,22 @@ class CacheSeeder:
         install_spine: Path,
         palette_entry_hash: str | None,
     ) -> list[Path]:
-        """Repoint spine consumer paths at ``current/`` (R2, Epic 4).
+        """Repoint spine consumer pointers at ``current/`` (R2, Epic 4).
 
         AD-11 exception (recorded in ARCHITECTURE-SPINE.md): the seeder
-        may replace these two spine *files* with symlinks to ``current/``,
-        and writes nothing else under the install spine. The content lives
-        in ``cache/`` (runtime-owned); these paths are consumer pointers.
+        may write under the install spine ONLY the pointer symlinks
+        returned by the injected :class:`IConsumerPathSpec` (the pinned
+        ``StaticConsumerPathSpec`` table: ``config/ags/colors.css``,
+        ``config/gtk-3.0/colors.css``, ``config/gtk-4.0/colors.css``) —
+        nothing else. The content lives in ``cache/`` (runtime-owned);
+        these paths are consumer pointers.
 
         - ``<install>/config/ags/colors.css`` → ``current/colors.gtk.css``
           (note the rename: cache artifact is ``colors.gtk.css``).
+        - ``<install>/config/gtk-3.0/colors.css`` →
+          ``current/colors.gtk.css``.
+        - ``<install>/config/gtk-4.0/colors.css`` →
+          ``current/colors.adw.css``.
 
         Deliberately NOT covered: ``<install>/config/hypr/colors.conf``
         (nothing sources it — verified: no reference under
@@ -606,41 +616,63 @@ class CacheSeeder:
 
         Args:
             install_spine: provisioning install spine root (read for
-                validation, written ONLY for the R2 symlink below).
+                validation, written ONLY for the spec'd pointer symlinks).
             palette_entry_hash: palette entry hash, or ``None`` when the
                 palette layer is null.
 
         Returns:
             List of created/updated symlink paths (empty when skipped).
 
-        Behavior:
-        - ``None`` palette: any existing R2 symlink is REMOVED
-          (``missing_ok``) so consumers never serve a stale palette as
-          if current; AGS falls back to its bundled default.
+        Behavior (rules read ONCE from the spec, semantics implemented
+        exactly once here — investigation §3):
+        - ``None`` palette: every existing pointer dest is REMOVED
+          (``missing_ok`` semantics) so consumers never serve a stale
+          palette as if current; AGS falls back to its bundled default.
         - A regular FILE at the destination (pre-Epic-4 provisioning
           copy on upgraded machines) is REPLACED with the symlink —
-          one ``wallpaper set`` migrates.
-        - A missing ``current/colors.gtk.css`` (palette artifact absent)
-          skips with a warning — never a dangling consumer symlink.
+          one ``wallpaper set`` migrates (``_repoint_symlink``'s tmp +
+          ``os.replace`` is atomic; never delete-then-create).
+        - A missing ``current/<target>`` artifact skips that pointer
+          with a warning — never a dangling consumer symlink.
+        - A missing destination PARENT dir skips that pointer with a
+          warning — never ``mkdir`` under the install spine (the spine
+          dirs are provisioning's: ``config/gtk-{3,4}.0/`` arrive in
+          Story gt-3-1).
         """
-        dest = install_spine / "config" / "ags" / "colors.css"
+        pointers = self._consumer_spec.consumer_pointers()
+        rules = self._consumer_spec.rules()
+        dests = [install_spine / pointer.path for pointer in pointers]
         if palette_entry_hash is None:
-            try:
-                if dest.is_symlink() or dest.exists():
-                    dest.unlink()
-                    logger.warning(
-                        "seeding: palette layer is null; R2 consumer symlink removed: %s",
-                        dest,
-                    )
-            except OSError as exc:
-                logger.warning("seeding: cannot remove R2 consumer symlink %s: %s", dest, exc)
+            if rules.remove_on_null_palette:
+                for dest in dests:
+                    try:
+                        if dest.is_symlink() or dest.exists():
+                            dest.unlink()
+                            logger.warning(
+                                "seeding: palette layer is null; consumer symlink removed: %s",
+                                dest,
+                            )
+                    except OSError as exc:
+                        logger.warning("seeding: cannot remove consumer symlink %s: %s", dest, exc)
             return []
-        target = self._state_root / "current" / "colors.gtk.css"
-        if not target.exists() and not target.is_symlink():
-            logger.warning("seeding: current/colors.gtk.css missing, R2 consumer symlink skipped")
-            return []
-        _repoint_symlink(dest, target)
-        return [dest]
+        created: list[Path] = []
+        for pointer, dest in zip(pointers, dests, strict=True):
+            target = self._state_root / "current" / pointer.target
+            if rules.skip_on_missing_target and not target.exists() and not target.is_symlink():
+                logger.warning(
+                    "seeding: current/%s missing, consumer symlink skipped",
+                    pointer.target,
+                )
+                continue
+            if rules.skip_on_missing_parent and not dest.parent.is_dir():
+                logger.warning(
+                    "seeding: consumer symlink skipped, destination parent missing: %s",
+                    dest,
+                )
+                continue
+            _repoint_symlink(dest, target)
+            created.append(dest)
+        return created
 
     def append_history(
         self,

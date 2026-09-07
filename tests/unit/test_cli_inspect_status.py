@@ -135,6 +135,48 @@ class TestInspectStatusCliSuccess:
         assert ("a" * 64) in result.output
         assert ("b" * 64) in result.output
 
+    def test_json_consumer_pointers_serialized_additively(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gt-2-2: consumer_pointers ride the JSON object additively —
+        status + target per spine-relative pointer path."""
+        res = _inspect_result()
+        res = type(res)(
+            wallpaper=res.wallpaper,
+            wallpaper_source_path=res.wallpaper_source_path,
+            monitors=res.monitors,
+            palette=res.palette,
+            effects=res.effects,
+            icons=res.icons,
+            applied_at=res.applied_at,
+            current_symlinks=res.current_symlinks,
+            consumer_pointers={
+                "config/ags/colors.css": LinkStatus(
+                    status="ok", target="/state/current/colors.gtk.css"
+                ),
+                "config/gtk-4.0/colors.css": LinkStatus(status="missing", target=None),
+            },
+        )
+        _fake_composition(monkeypatch, lambda: res)
+        result = runner.invoke(app, ["inspect", "status", "--format", "json"])
+
+        assert result.exit_code == 0
+        assert '"consumer_pointers"' in result.output
+        assert '"config/ags/colors.css"' in result.output
+        assert '"/state/current/colors.gtk.css"' in result.output
+        assert '"config/gtk-4.0/colors.css"' in result.output
+
+    def test_json_renders_empty_consumer_pointers_when_omitted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Absent-spec / null-palette path renders an empty dict (never a
+        missing key — additive JSON stability)."""
+        _fake_composition(monkeypatch, lambda: _inspect_result())
+        result = runner.invoke(app, ["inspect", "status", "--format", "json"])
+
+        assert result.exit_code == 0
+        assert '"consumer_pointers": {}' in result.output
+
 
 class TestInspectStatusCliErrorMapping:
     def test_absent_state_maps_to_exit_1_with_seed_hint(

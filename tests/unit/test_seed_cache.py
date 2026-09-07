@@ -229,6 +229,9 @@ def _setup_install_spine(
     wallpapers = install_spine / "wallpapers"
     wallpapers.mkdir(parents=True)
     (wallpapers / "default.png").write_bytes(WALLPAPER_PNG.read_bytes())
+    # Provisioned-machine reality (Story gt-2-2): the AGS consumer-pointer
+    # parent exists; the no-mkdir parent guard requires it.
+    (install_spine / "config" / "ags").mkdir(parents=True, exist_ok=True)
     if with_templates:
         csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
         csg_templates.mkdir(parents=True)
@@ -804,7 +807,8 @@ class TestSeedCacheIdempotent:
 
 class TestNothingWrittenToInstallSpine:
     """AD-11 + Epic 4 R2 exception: nothing written under install_spine
-    EXCEPT the single R2 consumer symlink."""
+    EXCEPT the spec'd consumer pointer paths (gt-2-2: the pointer class
+    replaces the single-symlink prose — parents are NEVER created)."""
 
     def test_install_spine_unmodified_except_r2_symlink(self, tmp_path: Path) -> None:
         install_spine = tmp_path / "install"
@@ -817,19 +821,17 @@ class TestNothingWrittenToInstallSpine:
         use_case = _make_use_case(tmp_path, repo, install_spine)
         use_case.run()
 
-        # Only the R2 consumer symlink (plus any parent dirs the atomic
-        # repoint creates) may appear under install_spine
+        # Only the ags pointer symlink may appear under install_spine —
+        # no created parent dirs; the gtk pointers' parents are absent
+        # (pre-gt-3-1) so those pointers must not be created either.
         after_files = set(install_spine.rglob("*"))
         new_files = after_files - before_files
         allowed = {
             install_spine / "config" / "ags" / "colors.css",
-            install_spine / "config" / "ags",
-            install_spine / "config",
         }
-        assert new_files <= allowed and (
-            install_spine / "config" / "ags" / "colors.css"
-        ) in new_files, (
-            f"only the R2 consumer symlink may be written under install_spine; got {new_files}"
+        assert new_files == allowed, (
+            f"only the spec'd consumer pointer symlink may be written under "
+            f"install_spine; got {new_files}"
         )
 
 
@@ -863,6 +865,164 @@ class TestR2ConsumerSymlink:
 
         assert stale.is_symlink(), "stale copy must be replaced with the R2 symlink"
         assert os.readlink(stale) == str(tmp_path / "current" / "colors.gtk.css")
+
+
+class TestConsumerPointerSpec:
+    """gt-2-2: the generic spec-driven loop (StaticConsumerPathSpec table)
+    implements each investigation §3 rule exactly once."""
+
+    AGS = "config/ags/colors.css"
+    GTK3 = "config/gtk-3.0/colors.css"
+    GTK4 = "config/gtk-4.0/colors.css"
+
+    @staticmethod
+    def _provision_current(
+        state_root: Path, artifacts: tuple[str, ...] = ("colors.gtk.css", "colors.adw.css")
+    ) -> None:
+        current = state_root / "current"
+        current.mkdir(parents=True, exist_ok=True)
+        for name in artifacts:
+            (current / name).write_text(f"/* {name} */\n")
+
+    def test_all_three_pointers_created_when_parents_exist(self, tmp_path: Path) -> None:
+        install_spine = tmp_path / "install"
+        for d in ("config/ags", "config/gtk-3.0", "config/gtk-4.0"):
+            (install_spine / d).mkdir(parents=True)
+        self._provision_current(tmp_path)
+        seeder = CacheSeeder(tmp_path)
+
+        created = seeder.repoint_consumer_symlinks(install_spine, "p" * 64)
+
+        current = tmp_path / "current"
+        assert [p.name for p in created] == ["colors.css"] * 3
+        assert os.readlink(install_spine / self.AGS) == str(current / "colors.gtk.css")
+        assert os.readlink(install_spine / self.GTK3) == str(current / "colors.gtk.css")
+        assert os.readlink(install_spine / self.GTK4) == str(current / "colors.adw.css")
+
+    def test_gtk_pointers_skip_with_warning_when_parents_absent(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Pre-gt-3-1: gtk spine dirs don't exist — skip + warn, ags still
+        created, no crash, no dirs created (never mkdir into the spine)."""
+        install_spine = tmp_path / "install"
+        (install_spine / "config" / "ags").mkdir(parents=True)
+        self._provision_current(tmp_path)
+        seeder = CacheSeeder(tmp_path)
+
+        with caplog.at_level(logging.WARNING, logger="runtime.adapters.seeder"):
+            created = seeder.repoint_consumer_symlinks(install_spine, "p" * 64)
+
+        assert created == [install_spine / self.AGS]
+        assert os.readlink(install_spine / self.AGS) == str(
+            tmp_path / "current" / "colors.gtk.css"
+        )
+        assert not (install_spine / "config" / "gtk-3.0").exists()
+        assert not (install_spine / "config" / "gtk-4.0").exists()
+        gtk_warnings = [r for r in caplog.records if "destination parent missing" in r.message]
+        assert len(gtk_warnings) == 2
+
+    def test_regular_file_at_dest_replaced_with_symlink(self, tmp_path: Path) -> None:
+        install_spine = tmp_path / "install"
+        (install_spine / "config" / "gtk-3.0").mkdir(parents=True)
+        self._provision_current(tmp_path)
+        stale = install_spine / self.GTK3
+        stale.write_text("@define-color stale #000000;\n")
+        seeder = CacheSeeder(tmp_path)
+
+        created = seeder.repoint_consumer_symlinks(install_spine, "p" * 64)
+
+        assert created == [stale]
+        assert stale.is_symlink()
+        assert os.readlink(stale) == str(tmp_path / "current" / "colors.gtk.css")
+
+    def test_missing_target_skips_only_that_pointer(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Per-pointer guard (not all-or-nothing): missing colors.adw.css
+        skips only the gtk-4.0 pointer — ags + gtk-3.0 still created."""
+        install_spine = tmp_path / "install"
+        for d in ("config/ags", "config/gtk-3.0", "config/gtk-4.0"):
+            (install_spine / d).mkdir(parents=True)
+        self._provision_current(tmp_path, artifacts=("colors.gtk.css",))
+        seeder = CacheSeeder(tmp_path)
+
+        with caplog.at_level(logging.WARNING, logger="runtime.adapters.seeder"):
+            created = seeder.repoint_consumer_symlinks(install_spine, "p" * 64)
+
+        assert created == [install_spine / self.AGS, install_spine / self.GTK3]
+        gtk4 = install_spine / self.GTK4
+        assert not gtk4.exists() and not gtk4.is_symlink()
+        assert any("colors.adw.css missing" in r.message for r in caplog.records)
+
+    def test_null_palette_removes_all_existing_pointers(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        install_spine = tmp_path / "install"
+        for d in ("config/ags", "config/gtk-3.0", "config/gtk-4.0"):
+            (install_spine / d).mkdir(parents=True)
+        self._provision_current(tmp_path)
+        seeder = CacheSeeder(tmp_path)
+        seeder.repoint_consumer_symlinks(install_spine, "p" * 64)
+
+        with caplog.at_level(logging.WARNING, logger="runtime.adapters.seeder"):
+            created = seeder.repoint_consumer_symlinks(install_spine, None)
+
+        assert created == []
+        for rel in (self.AGS, self.GTK3, self.GTK4):
+            dest = install_spine / rel
+            assert not dest.exists() and not dest.is_symlink()
+        removals = [r for r in caplog.records if "palette layer is null" in r.message]
+        assert len(removals) == 3
+
+    def test_null_palette_missing_ok_no_crash(self, tmp_path: Path) -> None:
+        """missing_ok: a null palette with NO existing pointers is clean."""
+        install_spine = tmp_path / "install"
+        (install_spine / "config" / "ags").mkdir(parents=True)
+        seeder = CacheSeeder(tmp_path)
+
+        created = seeder.repoint_consumer_symlinks(install_spine, None)
+
+        assert created == []
+
+    def test_rerun_idempotent_no_divergence(self, tmp_path: Path) -> None:
+        install_spine = tmp_path / "install"
+        for d in ("config/ags", "config/gtk-3.0", "config/gtk-4.0"):
+            (install_spine / d).mkdir(parents=True)
+        self._provision_current(tmp_path)
+        seeder = CacheSeeder(tmp_path)
+        first = seeder.repoint_consumer_symlinks(install_spine, "p" * 64)
+
+        second = seeder.repoint_consumer_symlinks(install_spine, "p" * 64)
+
+        assert second == first
+        for rel, target in (
+            (self.AGS, "colors.gtk.css"),
+            (self.GTK3, "colors.gtk.css"),
+            (self.GTK4, "colors.adw.css"),
+        ):
+            assert os.readlink(install_spine / rel) == str(tmp_path / "current" / target)
+
+    def test_custom_spec_is_consumed_generically(self, tmp_path: Path) -> None:
+        """Adding a consumer = one spec line — the loop consumes ANY spec."""
+        from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
+        from runtime.domain.models import ConsumerPointer
+
+        class _ExtendedSpec(StaticConsumerPathSpec):
+            def consumer_pointers(self) -> tuple[ConsumerPointer, ...]:
+                return (
+                    ConsumerPointer(path="config/rofi/colors.rasi", target="colors.gtk.css"),
+                )
+
+        install_spine = tmp_path / "install"
+        (install_spine / "config" / "rofi").mkdir(parents=True)
+        self._provision_current(tmp_path)
+
+        created = CacheSeeder(tmp_path, consumer_spec=_ExtendedSpec()).repoint_consumer_symlinks(
+            install_spine, "p" * 64
+        )
+
+        assert created == [install_spine / "config" / "rofi" / "colors.rasi"]
+        assert os.readlink(created[0]) == str(tmp_path / "current" / "colors.gtk.css")
 
 
 # ═══════════════════════════════════════════════════════════════════

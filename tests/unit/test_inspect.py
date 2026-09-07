@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -303,6 +304,121 @@ class TestInspectSymlinkReflection:
         result = InspectStateUseCase(_FakeStateRepo(state), tmp_path).run()
 
         assert result.current_symlinks["icons"].status == "missing"
+
+
+class TestInspectConsumerPointerProjection:
+    """gt-2-2 — spec-driven spine-pointer projection (additive, read-only)."""
+
+    AGS = "config/ags/colors.css"
+    GTK3 = "config/gtk-3.0/colors.css"
+    GTK4 = "config/gtk-4.0/colors.css"
+
+    @staticmethod
+    def _make_use_case(tmp_path: Path, state: DesktopState, *, with_spec: bool = True) -> Any:
+        from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
+        from runtime.application.inspect import InspectStateUseCase
+
+        install_spine = tmp_path / "install"
+        (install_spine / "config" / "ags").mkdir(parents=True)
+        return (
+            InspectStateUseCase(
+                _FakeStateRepo(state),
+                tmp_path,
+                install_spine=install_spine,
+                consumer_spec=StaticConsumerPathSpec() if with_spec else None,
+            ),
+            install_spine,
+        )
+
+    def test_ok_when_pointer_resolves_to_expected_target(self, tmp_path: Path) -> None:
+        state = _make_state()
+        _make_current_tree(tmp_path, state)
+        use_case, install_spine = self._make_use_case(tmp_path, state)
+        (install_spine / "config" / "gtk-3.0").mkdir()
+        (install_spine / "config" / "gtk-4.0").mkdir()
+        (install_spine / self.AGS).symlink_to(tmp_path / "current" / "colors.gtk.css")
+        (install_spine / self.GTK3).symlink_to(tmp_path / "current" / "colors.gtk.css")
+        (install_spine / self.GTK4).symlink_to(tmp_path / "current" / "colors.adw.css")
+
+        result = use_case.run()
+
+        assert set(result.consumer_pointers) == {self.AGS, self.GTK3, self.GTK4}
+        expected_targets = {
+            self.AGS: "colors.gtk.css",
+            self.GTK3: "colors.gtk.css",
+            self.GTK4: "colors.adw.css",
+        }
+        for path, status in result.consumer_pointers.items():
+            assert status.status == "ok"
+            assert status.target == str((tmp_path / "current" / expected_targets[path]).resolve())
+
+    def test_missing_when_dest_or_parent_absent(self, tmp_path: Path) -> None:
+        """Absent dest AND absent parent both report missing (pre-gt-3-1
+        spine) — expected state, never a crash."""
+        state = _make_state()
+        _make_current_tree(tmp_path, state)
+        use_case, _spine = self._make_use_case(tmp_path, state)
+
+        result = use_case.run()
+
+        assert result.consumer_pointers[self.AGS].status == "missing"
+        assert result.consumer_pointers[self.GTK3].status == "missing"
+        assert result.consumer_pointers[self.GTK4].status == "missing"
+        assert all(s.target is None for s in result.consumer_pointers.values())
+
+    def test_diverged_flagged_with_actual_target(self, tmp_path: Path) -> None:
+        state = _make_state()
+        _make_current_tree(tmp_path, state)
+        use_case, install_spine = self._make_use_case(tmp_path, state)
+        wrong = tmp_path / "elsewhere.css"
+        wrong.write_text("/* wrong */")
+        (install_spine / self.AGS).symlink_to(wrong)
+
+        result = use_case.run()
+
+        status = result.consumer_pointers[self.AGS]
+        assert status.status == "diverged"
+        assert status.target == str(wrong.resolve())
+
+    def test_dangling_flagged_never_crashes(self, tmp_path: Path) -> None:
+        state = _make_state()
+        _make_current_tree(tmp_path, state)
+        use_case, install_spine = self._make_use_case(tmp_path, state)
+        (install_spine / self.AGS).symlink_to(tmp_path / "current" / "colors.gtk.css")
+        (tmp_path / "current" / "colors.gtk.css").unlink()
+
+        result = use_case.run()
+
+        status = result.consumer_pointers[self.AGS]
+        assert status.status == "dangling"
+        assert status.target == str(tmp_path / "current" / "colors.gtk.css")
+
+    def test_null_palette_omits_pointers_entirely(self, tmp_path: Path) -> None:
+        state = _make_state(with_palette=False)
+        use_case, _spine = self._make_use_case(tmp_path, state)
+
+        result = use_case.run()
+
+        assert result.consumer_pointers == {}
+
+    def test_none_spec_leaves_field_empty_backward_compat(self, tmp_path: Path) -> None:
+        state = _make_state()
+        _make_current_tree(tmp_path, state)
+        use_case, _spine = self._make_use_case(tmp_path, state, with_spec=False)
+
+        result = use_case.run()
+
+        assert result.consumer_pointers == {}
+
+    def test_projection_is_read_only(self, tmp_path: Path) -> None:
+        state = _make_state()
+        _make_current_tree(tmp_path, state)
+        use_case, install_spine = self._make_use_case(tmp_path, state)
+        before = _snapshot(install_spine)
+
+        use_case.run()
+
+        assert _snapshot(install_spine) == before
 
 
 class TestInspectReadOnlyInvariant:

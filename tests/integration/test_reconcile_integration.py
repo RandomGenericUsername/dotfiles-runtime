@@ -133,6 +133,9 @@ class TestReconcileIntegration:
         weg_config = install_spine / "config" / "weg"
         weg_config.mkdir(parents=True)
         (weg_config / "effects.yaml").write_text("effects: []\n")
+        # Provisioned-machine reality (Story gt-2-2): the AGS consumer-pointer
+        # parent exists; the no-mkdir parent guard requires it.
+        (install_spine / "config" / "ags").mkdir(parents=True, exist_ok=True)
         itr_templates = install_spine / "icon-templates"
         itr_templates.mkdir(parents=True)
         (itr_templates / "terminal.svg").write_text("<svg/>")

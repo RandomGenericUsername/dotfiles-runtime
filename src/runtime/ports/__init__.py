@@ -1,4 +1,5 @@
 from runtime.ports.color_scheme_generator import IColorSchemeGenerator
+from runtime.ports.consumer_path_spec import IConsumerPathSpec
 from runtime.ports.desktop_config_writer import IDesktopConfigWriter
 from runtime.ports.desktop_reloader import IDesktopReloader
 from runtime.ports.effects_generator import IEffectsGenerator
@@ -9,6 +10,7 @@ from runtime.ports.wallpaper_backend_factory import IWallpaperBackendFactory
 
 __all__ = [
     "IColorSchemeGenerator",
+    "IConsumerPathSpec",
     "IDesktopConfigWriter",
     "IDesktopReloader",
     "IEffectsGenerator",

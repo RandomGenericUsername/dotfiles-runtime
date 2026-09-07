@@ -22,6 +22,18 @@ Symlink statuses (AC 2): each expected consumer symlink
   filesystem, not the index, wins)
 - ``dangling`` — symlink whose target no longer exists (tolerated, never
   crashed — mirrors the reconcile resolve() OSError tolerance)
+
+Consumer-pointer projection (Story gt-2-2): when constructed with an
+install spine + a consumer spec (both optional — ``None`` = projection
+omitted) and the state carries a palette, the spec'd spine pointers are
+classified ADDITIVELY into ``consumer_pointers`` using the same
+ok/missing/diverged/dangling vocabulary — spec-driven (no bespoke
+per-consumer code), read-only, and reusable by a future doctor command
+(no doctor exists today; ``inspect status`` is the health surface).
+A null palette omits the pointers entirely (mirrors
+``_build_expected_targets``' palette branch). An absent-parent pointer
+(e.g. ``config/gtk-{3,4}.0/`` before Story gt-3-1 provisions them)
+reports ``missing`` — expected state, never a crash.
 """
 
 from __future__ import annotations
@@ -33,7 +45,7 @@ import os
 import stat
 from collections import deque
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
 
@@ -42,6 +54,7 @@ from runtime.domain.models import (
     DEFAULT_MONITOR,
     DesktopState,
 )
+from runtime.ports.consumer_path_spec import IConsumerPathSpec
 from runtime.ports.state_repository import IStateRepository
 
 logger = logging.getLogger(__name__)
@@ -126,6 +139,7 @@ class InspectStatusResult:
     icons: str | None
     applied_at: str
     current_symlinks: dict[str, LinkStatus]
+    consumer_pointers: dict[str, LinkStatus] = field(default_factory=dict)
 
 
 class InspectStateUseCase:
@@ -149,9 +163,13 @@ class InspectStateUseCase:
         self,
         state_repo: IStateRepository,
         state_root: Path,
+        install_spine: Path | None = None,
+        consumer_spec: IConsumerPathSpec | None = None,
     ) -> None:
         self._state_repo = state_repo
         self._state_root = state_root
+        self._install_spine = install_spine
+        self._consumer_spec = consumer_spec
 
     def run(self) -> InspectStatusResult:
         """Project current.json + live current/ symlinks (read-only).
@@ -179,6 +197,16 @@ class InspectStateUseCase:
 
         current_symlinks = self._inspect_current_symlinks(state)
 
+        consumer_pointers: dict[str, LinkStatus] = {}
+        if (
+            state.palette is not None
+            and self._install_spine is not None
+            and (self._consumer_spec is not None)
+        ):
+            consumer_pointers = self._inspect_consumer_pointers(
+                self._install_spine, self._consumer_spec
+            )
+
         return InspectStatusResult(
             wallpaper=state.wallpaper.content_hash,
             wallpaper_source_path=state.wallpaper.source_path,
@@ -188,6 +216,7 @@ class InspectStateUseCase:
             icons=state.icons.entry_hash if state.icons else None,
             applied_at=state.applied_at,
             current_symlinks=current_symlinks,
+            consumer_pointers=consumer_pointers,
         )
 
     # ------------------------------------------------------------------
@@ -201,6 +230,30 @@ class InspectStateUseCase:
         result: dict[str, LinkStatus] = {}
         for name, expected_target in expected.items():
             result[name] = self._link_status(current_dir / name, expected_target)
+        return result
+
+    def _inspect_consumer_pointers(
+        self,
+        install_spine: Path,
+        consumer_spec: IConsumerPathSpec,
+    ) -> dict[str, LinkStatus]:
+        """Classify the spec'd spine consumer pointers (read-only, gt-2-2).
+
+        Spec-driven — zero bespoke per-consumer code. For each spec
+        pointer: ``dest = install_spine / pointer.path`` and
+        ``expected = state_root / "current" / pointer.target``, classified
+        with the SAME semantics as :meth:`_link_status`. An absent parent
+        dir (pre-gt-3-1 spine) reports ``missing`` — never a crash, never
+        a write. Read-only invariant: Path reads only.
+
+        Requires a non-null palette (checked by ``run`` — a null palette
+        omits the pointers entirely).
+        """
+        result: dict[str, LinkStatus] = {}
+        for pointer in consumer_spec.consumer_pointers():
+            dest = install_spine / pointer.path
+            expected = self._state_root / "current" / pointer.target
+            result[pointer.path] = self._link_status(dest, expected)
         return result
 
     def _link_status(self, link: Path, expected_target: Path) -> LinkStatus:

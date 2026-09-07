@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -248,3 +249,69 @@ class TestInspectStatusIntegration:
         assert not (tmp_path / ".seed.lock").exists()
         assert not list(tmp_path.glob(".staging-*"))
         assert os.readlink(link) == str(decoy)
+
+
+class TestInspectConsumerPointersIntegration:
+    """gt-2-2 — spec-driven spine-pointer statuses end-to-end with a real
+    spine layout (real JsonStateRepository, real filesystem)."""
+
+    AGS = "config/ags/colors.css"
+    GTK3 = "config/gtk-3.0/colors.css"
+    GTK4 = "config/gtk-4.0/colors.css"
+
+    def _make_use_case(
+        self, tmp_path: Path, *, with_spec: bool = True
+    ) -> tuple[Any, Path]:
+        from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
+        from runtime.application.inspect import InspectStateUseCase
+
+        install_spine = tmp_path / "install"
+        (install_spine / "config" / "ags").mkdir(parents=True)
+        return (
+            InspectStateUseCase(
+                state_repo=JsonStateRepository(state_root=tmp_path),
+                state_root=tmp_path,
+                install_spine=install_spine,
+                consumer_spec=StaticConsumerPathSpec() if with_spec else None,
+            ),
+            install_spine,
+        )
+
+    def test_pointer_statuses_end_to_end(self, tmp_path: Path) -> None:
+        """Real spine layout: ok (ags), missing (absent gtk parents), and a
+        diverged gtk-3.0 pointer are all classified through the spec."""
+        state = _make_state()
+        _build_live_tree(tmp_path, state)
+        use_case, install_spine = self._make_use_case(tmp_path)
+        gtk3_dir = install_spine / "config" / "gtk-3.0"
+        gtk3_dir.mkdir()
+        os.symlink(tmp_path / "current" / "colors.gtk.css", install_spine / self.AGS)
+        decoy = tmp_path / "decoy-gtk3.css"
+        decoy.write_text("/* decoy */\n")
+        os.symlink(decoy, gtk3_dir / "colors.css")
+
+        result = use_case.run()
+
+        assert result.consumer_pointers[self.AGS].status == "ok"
+        assert result.consumer_pointers[self.GTK3].status == "diverged"
+        assert result.consumer_pointers[self.GTK3].target == str(decoy)
+        assert result.consumer_pointers[self.GTK4].status == "missing"
+
+    def test_pointer_projection_omitted_without_spec(self, tmp_path: Path) -> None:
+        state = _make_state()
+        _build_live_tree(tmp_path, state)
+        use_case, _spine = self._make_use_case(tmp_path, with_spec=False)
+
+        result = use_case.run()
+
+        assert result.consumer_pointers == {}
+
+    def test_pointer_projection_is_read_only(self, tmp_path: Path) -> None:
+        state = _make_state()
+        _build_live_tree(tmp_path, state)
+        use_case, install_spine = self._make_use_case(tmp_path)
+        before = _snapshot(install_spine)
+
+        use_case.run()
+
+        assert _snapshot(install_spine) == before
