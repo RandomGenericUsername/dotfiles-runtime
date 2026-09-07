@@ -1,4 +1,4 @@
-"""Unit tests for the terminal palette applier (Story 2.6).
+"""Unit tests for the terminal palette applier (Story 2.6, artifact switch in gt-2-3).
 
 All TTY-adjacent tests inject the constructor's ``tty_path`` seam — a tmp
 file as the apply target — so the real ``/dev/tty`` is never opened. The
@@ -9,7 +9,9 @@ the I/O boundary.
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable
@@ -39,6 +41,8 @@ def _canonical() -> str:
 
 
 def _expected_payload() -> bytes:
+    """The OLD re-derived payload (pre-gt-2-3): OSC sequences WITHOUT the
+    per-line trailing LF — kept ONLY to pin Decision C's parity relation."""
     parts = [f"\x1b]4;{index};{color}\x1b\\" for index, color in enumerate(_COLORS)]
     parts.append("\x1b]10;#c0caf5\x1b\\")
     parts.append("\x1b]11;#1a1b26\x1b\\")
@@ -46,15 +50,26 @@ def _expected_payload() -> bytes:
     return "".join(parts).encode("ascii")
 
 
-def _make_colors_yaml(tmp_path: Path, text: str | None = None) -> Path:
-    """Seed ``current/colors.yaml`` as a real symlink to a real file."""
+def _canonical_sequences() -> bytes:
+    """The full 19-sequence ``colors.sequences`` artifact bytes — the exact
+    pinned ``colors.sequences.j2`` shape (each OSC + ST + trailing LF, file
+    ends with LF), from the same palette constants as ``_canonical()``."""
+    parts = [f"\x1b]4;{index};{color}\x1b\\\n" for index, color in enumerate(_COLORS)]
+    parts.append("\x1b]10;#c0caf5\x1b\\\n")
+    parts.append("\x1b]11;#1a1b26\x1b\\\n")
+    parts.append("\x1b]12;#c0caf5\x1b\\\n")
+    return "".join(parts).encode("ascii")
+
+
+def _make_sequences(tmp_path: Path, data: bytes | None = None) -> Path:
+    """Seed ``current/colors.sequences`` as a real symlink to a real file."""
     state_root = tmp_path / "state"
     current = state_root / "current"
     current.mkdir(parents=True)
-    target = state_root / "palette" / "colors.yaml"
+    target = state_root / "palette" / "colors.sequences"
     target.parent.mkdir(parents=True)
-    target.write_text(text if text is not None else _canonical())
-    (current / "colors.yaml").symlink_to(target)
+    target.write_bytes(data if data is not None else _canonical_sequences())
+    (current / "colors.sequences").symlink_to(target)
     return state_root
 
 
@@ -62,7 +77,7 @@ def _make_dangling(tmp_path: Path) -> Path:
     state_root = tmp_path / "state"
     current = state_root / "current"
     current.mkdir(parents=True)
-    (current / "colors.yaml").symlink_to(state_root / "missing" / "colors.yaml")
+    (current / "colors.sequences").symlink_to(state_root / "missing" / "colors.sequences")
     return state_root
 
 
@@ -83,84 +98,53 @@ def _target_no_permission(tmp_path: Path) -> Path:
     return target
 
 
-def _drop_cursor(text: str) -> str:
-    return "\n".join(line for line in text.splitlines() if not line.startswith("cursor:")) + "\n"
-
-
-def _fifteen_colors(text: str) -> str:
-    lines = text.splitlines()
-    colors = lines[lines.index("colors:") + 1 : lines.index("colors:") + 1 + 15]
-    head = lines[: lines.index("colors:") + 1]
-    tail = lines[lines.index("colors:") + 1 + 16 :]
-    return "\n".join([*head, *colors, *tail]) + "\n"
-
-
-def _seventeen_colors(text: str) -> str:
-    lines = [*text.splitlines()]
-    index = lines.index("colors:")
-    lines.insert(index + 16, '  - "#abcdef"')
-    return "\n".join(lines) + "\n"
-
-
-def _non_hex_color(text: str) -> str:
-    lines = [*text.splitlines()]
-    index = lines.index("colors:")
-    lines[index + 1] = '  - "not-a-hex"'
-    return "\n".join(lines) + "\n"
-
-
-def _truncated(text: str) -> str:
-    return "\n".join(text.splitlines()[:6]) + "\n"
-
-
-def _junk_line(text: str) -> str:
-    return text.replace('background: "#1a1b26"', 'background: "#1a1b26"\njunk: "line"')
-
-
-def _duplicate_scalar(text: str) -> str:
-    lines = [*text.splitlines()]
-    lines.insert(1, 'foreground: "#ffffff"')
-    return "\n".join(lines) + "\n"
-
-
-def _split_colors_list(text: str) -> str:
-    lines = [*text.splitlines()]
-    start = lines.index("colors:")
-    lines.insert(start + 9, "colors:")
-    return "\n".join(lines) + "\n"
-
-
-class TestTerminalColorApplierParseAndSequence:
-    def test_builds_osc_sequences_from_pinned_schema(self, tmp_path: Path) -> None:
-        state_root = _make_colors_yaml(tmp_path)
+class TestTerminalColorApplierReadsArtifact:
+    def test_writes_artifact_bytes_verbatim(self, tmp_path: Path) -> None:
+        state_root = _make_sequences(tmp_path)
         sink = tmp_path / "tty"
         applier = TerminalColorApplier(state_root=state_root, tty_path=sink)
         assert applier.reload() is True
-        assert sink.read_bytes() == _expected_payload()
+        # LF-inclusive: the artifact bytes are written UNMODIFIED (no decode,
+        # no re-derivation, per-line trailing LFs included).
+        assert sink.read_bytes() == _canonical_sequences()
 
     def test_hex_values_pass_through_verbatim(self, tmp_path: Path) -> None:
         colors = [f"#{i:02X}{i:02X}{i:02X}" for i in range(16)]
-        lines = [
-            'background: "#1A1B26"',
-            'foreground: "#C0CAF5"',
-            'cursor: "#c0cAf5"',
-            "colors:",
-            *(f'  - "{color}"' for color in colors),
-            'source_image: "/img/wall.png"',
-        ]
-        state_root = _make_colors_yaml(tmp_path, "\n".join(lines) + "\n")
+        artifact = b"".join(
+            f"\x1b]4;{index};{color}\x1b\\\n".encode("ascii") for index, color in enumerate(colors)
+        )
+        artifact += b"\x1b]10;#C0CAF5\x1b\\\n\x1b]11;#1A1B26\x1b\\\n\x1b]12;#c0cAf5\x1b\\\n"
+        state_root = _make_sequences(tmp_path, artifact)
         sink = tmp_path / "tty"
         applier = TerminalColorApplier(state_root=state_root, tty_path=sink)
         assert applier.reload() is True
-        expected = b"".join(
-            f"\x1b]4;{index};{color}\x1b\\".encode("ascii") for index, color in enumerate(colors)
-        )
-        expected += b"\x1b]10;#C0CAF5\x1b\\\x1b]11;#1A1B26\x1b\\\x1b]12;#c0cAf5\x1b\\"
-        assert sink.read_bytes() == expected
+        assert sink.read_bytes() == artifact
+
+    def test_parity_lf_augmented_identity_with_old_payload(self, tmp_path: Path) -> None:
+        """Decision C: artifact bytes are LF-augmented-identical to the old
+        re-derived payload.
+
+        Deliberately NOT asserting raw byte equality with the old payload:
+        the artifact carries the pinned template's 19 per-line trailing LFs
+        (the old ``_build_payload`` omitted them). The pinned relation is
+        ``artifact.replace(ST+LF, ST) == old_payload`` — safe because the
+        OSC payloads (slot indices + ``#rrggbb`` hex) contain no ESC or
+        backslash bytes, so every ST+LF occurrence is a sequence boundary.
+        """
+        state_root = _make_sequences(tmp_path)
+        sink = tmp_path / "tty"
+        applier = TerminalColorApplier(state_root=state_root, tty_path=sink)
+        assert applier.reload() is True
+        artifact = _canonical_sequences()
+        assert sink.read_bytes() == artifact
+        assert artifact.replace(b"\x1b\\\n", b"\x1b\\") == _expected_payload()
+        # both derivations carry the SAME palette constants pinned in the
+        # canonical colors.yaml text fixture (the old parser's happy-path source)
+        assert re.findall(r'^  - "([^"]+)"', _canonical(), re.M) == _COLORS
 
 
 class TestTerminalColorApplierVacuous:
-    def test_missing_colors_yaml_returns_true(self, tmp_path: Path) -> None:
+    def test_missing_colors_sequences_returns_true(self, tmp_path: Path) -> None:
         state_root = tmp_path / "state"
         state_root.mkdir(parents=True)
         sink = tmp_path / "sink"
@@ -168,7 +152,7 @@ class TestTerminalColorApplierVacuous:
         assert applier.reload() is True
         assert not sink.exists()
 
-    def test_current_dir_exists_no_colors_yaml_returns_true(self, tmp_path: Path) -> None:
+    def test_current_dir_exists_no_colors_sequences_returns_true(self, tmp_path: Path) -> None:
         state_root = tmp_path / "state"
         (state_root / "current").mkdir(parents=True)
         sink = tmp_path / "sink"
@@ -195,74 +179,59 @@ class TestTerminalColorApplierVacuous:
 
 
 class TestTerminalColorApplierFailure:
-    def test_dangling_symlink_is_failure(self, tmp_path: Path) -> None:
+    def test_dangling_symlink_is_failure(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
         state_root = _make_dangling(tmp_path)
         sink = tmp_path / "sink"
         applier = TerminalColorApplier(state_root=state_root, tty_path=sink)
-        assert applier.reload() is False
+        with caplog.at_level(logging.WARNING):
+            assert applier.reload() is False
         assert not sink.exists()
+        assert "dangling symlink" in caplog.text
 
     @pytest.mark.parametrize(
-        "mutate",
+        "corrupt",
         [
-            _drop_cursor,
-            _fifteen_colors,
-            _seventeen_colors,
-            _non_hex_color,
-            _truncated,
-            _junk_line,
-            _duplicate_scalar,
-            _split_colors_list,
+            b"",
+            b"junk\n",
+            b"\xff\xfe\x00garbage",
         ],
     )
-    def test_malformed_yaml_is_failure(self, tmp_path: Path, mutate: Callable[[str], str]) -> None:
-        state_root = _make_colors_yaml(tmp_path, mutate(_canonical()))
+    def test_corrupt_sequences_bytes_are_failure(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, corrupt: bytes
+    ) -> None:
+        """R5: a corrupt cache artifact is surfaced, never written to the TTY."""
+        state_root = _make_sequences(tmp_path, corrupt)
         sink = tmp_path / "sink"
         applier = TerminalColorApplier(state_root=state_root, tty_path=sink)
-        assert applier.reload() is False
+        with caplog.at_level(logging.WARNING):
+            assert applier.reload() is False
         assert not sink.exists()
+        assert "corrupt (not OSC sequences)" in caplog.text
 
     def test_regular_file_entry_is_traversed(self, tmp_path: Path) -> None:
         """An existing-but-not-symlink entry is not dangling — it is read and applied."""
         state_root = tmp_path / "state"
         current = state_root / "current"
         current.mkdir(parents=True)
-        (current / "colors.yaml").write_text(_canonical())
+        (current / "colors.sequences").write_bytes(_canonical_sequences())
         sink = tmp_path / "tty"
         applier = TerminalColorApplier(state_root=state_root, tty_path=sink)
         assert applier.reload() is True
-        assert sink.read_bytes() == _expected_payload()
+        assert sink.read_bytes() == _canonical_sequences()
 
-    def test_unreadable_colors_yaml_is_failure(self, tmp_path: Path) -> None:
-        state_root = _make_colors_yaml(tmp_path)
-        (state_root / "palette" / "colors.yaml").chmod(0)
+    def test_unreadable_sequences_file_is_failure(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        state_root = _make_sequences(tmp_path)
+        (state_root / "palette" / "colors.sequences").chmod(0)
         sink = tmp_path / "sink"
         applier = TerminalColorApplier(state_root=state_root, tty_path=sink)
-        assert applier.reload() is False
+        with caplog.at_level(logging.WARNING):
+            assert applier.reload() is False
         assert not sink.exists()
-
-    def test_non_utf8_colors_yaml_is_failure(self, tmp_path: Path) -> None:
-        state_root = _make_colors_yaml(tmp_path)
-        (state_root / "palette" / "colors.yaml").write_bytes(b"\xff\xfe\x00binary-garbage")
-        sink = tmp_path / "sink"
-        applier = TerminalColorApplier(state_root=state_root, tty_path=sink)
-        assert applier.reload() is False
-        assert not sink.exists()
-
-    def test_bom_prefixed_yaml_is_failure(self, tmp_path: Path) -> None:
-        state_root = _make_colors_yaml(tmp_path, "\ufeff" + _canonical())
-        sink = tmp_path / "sink"
-        applier = TerminalColorApplier(state_root=state_root, tty_path=sink)
-        assert applier.reload() is False
-        assert not sink.exists()
-
-    def test_crlf_yaml_is_accepted(self, tmp_path: Path) -> None:
-        """``read_text`` universal-newline translation normalizes CRLF before parsing."""
-        state_root = _make_colors_yaml(tmp_path, _canonical().replace("\n", "\r\n"))
-        sink = tmp_path / "tty"
-        applier = TerminalColorApplier(state_root=state_root, tty_path=sink)
-        assert applier.reload() is True
-        assert sink.read_bytes() == _expected_payload()
+        assert "cannot read" in caplog.text
 
     @pytest.mark.parametrize(
         "make_target", [_target_is_dir, _target_missing_dir, _target_no_permission]
@@ -270,7 +239,7 @@ class TestTerminalColorApplierFailure:
     def test_tty_open_failure_returns_false(
         self, tmp_path: Path, make_target: Callable[[Path], Path]
     ) -> None:
-        state_root = _make_colors_yaml(tmp_path)
+        state_root = _make_sequences(tmp_path)
         applier = TerminalColorApplier(state_root=state_root, tty_path=make_target(tmp_path))
         assert applier.reload() is False
 
@@ -279,7 +248,7 @@ class TestTerminalColorApplierFailure:
     ) -> None:
         # The ONE sanctioned patch in this file: the adapter has no subprocess
         # seam like its siblings, so the open() call IS the I/O boundary.
-        state_root = _make_colors_yaml(tmp_path)
+        state_root = _make_sequences(tmp_path)
         applier = TerminalColorApplier(state_root=state_root, tty_path=tmp_path / "tty")
 
         def _fail_open(*_args: object, **_kwargs: object) -> object:

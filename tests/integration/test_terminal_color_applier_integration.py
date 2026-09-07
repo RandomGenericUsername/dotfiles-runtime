@@ -1,4 +1,4 @@
-"""Integration test for the terminal palette applier (Story 2.6).
+"""Integration test for the terminal palette applier (Story 2.6, artifact switch in gt-2-3).
 
 Honest contract: no real terminal exists in the dev/test host to recolor,
 and the use case is composed DIRECTLY (``_make_reconcile``-style helper —
@@ -6,14 +6,16 @@ real ``JsonStateRepository`` + fake csg/weg/itr + fake mutex, mirroring
 ``test_hyprpaper_reloader_integration.py:145-155``), not through the CLI
 composition root. The adapter writes to an injected tmp-file ``tty_path``
 sink; the production default (``tty_path=None`` → ``/dev/tty``) is what
-keeps the adapter honest, and the test injects the sink. The expected
-payload is computed INDEPENDENTLY by re-parsing the seeded palette's
-``colors.yaml`` from the cache entry (never by calling the adapter).
+keeps the adapter honest, and the test injects the sink. The fake csg
+seeds a REALISTIC full 19-sequence ``colors.sequences`` artifact (the
+pinned ``colors.sequences.j2`` shape), and the expected payload is
+computed INDEPENDENTLY from the palette constants (template semantics
+re-stated in the helper — never by calling the adapter or re-reading the
+seeded artifact).
 """
 
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -24,6 +26,11 @@ from runtime.adapters.terminal_color_applier import TerminalColorApplier
 from runtime.application.reconcile import ReconcileDesktopStateUseCase
 from runtime.domain.models import PaletteArtifacts, PaletteEntry
 
+_PALETTE_BG = "#1a1b26"
+_PALETTE_FG = "#c0caf5"
+_PALETTE_CURSOR = "#c0caf5"
+_PALETTE_COLORS16 = [f"#{i:02x}{i:02x}{i:02x}" for i in range(16)]
+
 
 def _now_z() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
@@ -32,11 +39,11 @@ def _now_z() -> str:
 def _pinned_colors_yaml() -> str:
     """The pinned ``colors.yaml.j2`` schema, as the runtime's CSG renders it."""
     lines = [
-        'background: "#1a1b26"',
-        'foreground: "#c0caf5"',
-        'cursor: "#c0caf5"',
+        f'background: "{_PALETTE_BG}"',
+        f'foreground: "{_PALETTE_FG}"',
+        f'cursor: "{_PALETTE_CURSOR}"',
         "colors:",
-        *(f'  - "#{i:02x}{i:02x}{i:02x}"' for i in range(16)),
+        *(f'  - "{color}"' for color in _PALETTE_COLORS16),
         'source_image: "seeded"',
         'backend: "fast"',
         'generated_at: "2026-09-02T00:00:00Z"',
@@ -44,16 +51,14 @@ def _pinned_colors_yaml() -> str:
     return "\n".join(lines) + "\n"
 
 
-def _expected_payload_from_colors_yaml(path: Path) -> bytes:
-    """Re-derive the OSC payload from a colors.yaml INDEPENDENT of the adapter."""
-    text = path.read_text(encoding="utf-8")
-    scalars = dict(re.findall(r'^(background|foreground|cursor):\s*"([^"]+)"', text, re.M))
-    colors = re.findall(r'^  - "([^"]+)"', text, re.M)
-    assert len(colors) == 16, "seeded palette must contain 16 colors"
-    parts = [f"\x1b]4;{index};{color}\x1b\\" for index, color in enumerate(colors)]
-    parts.append(f"\x1b]10;{scalars['foreground']}\x1b\\")
-    parts.append(f"\x1b]11;{scalars['background']}\x1b\\")
-    parts.append(f"\x1b]12;{scalars['cursor']}\x1b\\")
+def _pinned_sequences_bytes() -> bytes:
+    """The full 19-sequence ``colors.sequences`` artifact bytes — the exact
+    pinned ``colors.sequences.j2`` shape (each OSC + ST + trailing LF, file
+    ends with LF) — computed INDEPENDENTLY of the adapter."""
+    parts = [f"\x1b]4;{index};{color}\x1b\\\n" for index, color in enumerate(_PALETTE_COLORS16)]
+    parts.append(f"\x1b]10;{_PALETTE_FG}\x1b\\\n")
+    parts.append(f"\x1b]11;{_PALETTE_BG}\x1b\\\n")
+    parts.append(f"\x1b]12;{_PALETTE_CURSOR}\x1b\\\n")
     return "".join(parts).encode("ascii")
 
 
@@ -73,10 +78,14 @@ class _FakeCsg:
     def generate(self, wallpaper_path: Path, output_dir: Path) -> object:
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "colors.yaml").write_text(_pinned_colors_yaml())
-        (output_dir / "colors.conf").write_text("background: #1a1b26\nforeground: #c0caf5\n")
+        (output_dir / "colors.conf").write_text(
+            f"background: {_PALETTE_BG}\nforeground: {_PALETTE_FG}\n"
+        )
         (output_dir / "colors.gtk.css").write_text("/* palette */")
         (output_dir / "colors.adw.css").write_text("/* palette */")
-        (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#1a1b26\x1b\\")
+        # REALISTIC artifact: the full 19-sequence LF-terminated payload the
+        # pinned colors.sequences.j2 template + Jinja post-processing produce.
+        (output_dir / "colors.sequences").write_bytes(_pinned_sequences_bytes())
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -178,12 +187,6 @@ def _apply_wallpaper(tmp_path: Path, install_spine: Path, state_root: Path) -> N
     ).run(img)
 
 
-def _seeded_palette_yaml(state_root: Path) -> Path:
-    yamls = sorted((state_root / "cache" / "palettes").glob("*/colors.yaml"))
-    assert yamls, "seeded palette colors.yaml must exist in the cache entry"
-    return yamls[0]
-
-
 def test_terminal_palette_applier_integration_applies_seeded_palette(
     tmp_path: Path,
 ) -> None:
@@ -193,8 +196,7 @@ def test_terminal_palette_applier_integration_applies_seeded_palette(
     state_root = tmp_path / "state"
     _apply_wallpaper(tmp_path, install_spine, state_root)
 
-    palette_yaml = _seeded_palette_yaml(state_root)
-    expected = _expected_payload_from_colors_yaml(palette_yaml)
+    expected = _pinned_sequences_bytes()
 
     sink = tmp_path / "tty-sink"
     reloader = TerminalColorApplier(state_root=state_root, tty_path=sink)
@@ -230,7 +232,7 @@ def test_terminal_palette_applier_integration_unwritable_sink_is_surfaced(
 
 
 def test_terminal_palette_applier_integration_vacuous_state(tmp_path: Path) -> None:
-    """No ``current/colors.yaml`` to apply → vacuous True, sink untouched.
+    """No ``current/colors.sequences`` to apply → vacuous True, sink untouched.
 
     Exercised against a real apply-seeded ``state_root`` whose ``current/``
     directory never materialized (``ApplyWallpaperUseCase`` does not repoint
@@ -247,3 +249,44 @@ def test_terminal_palette_applier_integration_vacuous_state(tmp_path: Path) -> N
     reloader = TerminalColorApplier(state_root=state_root, tty_path=sink)
     assert reloader.reload() is True
     assert not sink.exists()
+
+
+def test_terminal_palette_applier_integration_dangling_sequences_is_surfaced(
+    tmp_path: Path,
+) -> None:
+    """A dangling ``current/colors.sequences`` surfaces the applier (R5).
+
+    The reconcile repairs ``current/`` symlinks (unconditional atomic
+    repoint) BEFORE reloaders run, so the dangling state must exist AT
+    reload time: an injected first reloader breaks the consumer entry
+    into a dangling symlink, then the applier reloads — its surfaced
+    ``False`` must land in ``ReconcileResult.reload_failures`` through
+    the use-case boundary.
+    """
+    install_spine = tmp_path / "install"
+    _setup_spine(install_spine)
+    state_root = tmp_path / "state"
+    _apply_wallpaper(tmp_path, install_spine, state_root)
+
+    sequences_link = state_root / "current" / "colors.sequences"
+    assert not sequences_link.exists(), "apply must not repoint current/ (vacuous contract)"
+    repo = JsonStateRepository(state_root=state_root)
+
+    class _LinkBreaker:
+        def reload(self) -> bool:
+            # The reconcile's repoint has created a healthy consumer entry by
+            # now (it runs before the reloaders); corrupt it into a dangling
+            # symlink so the applier observes the failure class at reload time.
+            assert sequences_link.exists(), "reconcile must have repointed colors.sequences"
+            sequences_link.unlink()
+            sequences_link.symlink_to(
+                state_root / "cache" / "palettes" / "missing" / "colors.sequences"
+            )
+            return True
+
+    sink = tmp_path / "tty-sink"
+    reloader = TerminalColorApplier(state_root=state_root, tty_path=sink)
+    use_case = _make_reconcile(repo, state_root, install_spine, [_LinkBreaker(), reloader])
+    result = use_case.run()  # type: ignore[attr-defined]
+    assert "TerminalColorApplier" in result.reload_failures
+    assert "_LinkBreaker" not in result.reload_failures

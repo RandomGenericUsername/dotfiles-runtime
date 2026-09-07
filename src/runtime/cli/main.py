@@ -214,7 +214,7 @@ def _build_reloaders(state_root: Path) -> list[IDesktopReloader]:
     Shared by ``reconcile`` and ``wallpaper set`` so both commands reload
     the IDENTICAL consumers in the same order: Hyprland (``hyprctl
     reload``), AGS (restart), Hyprpaper (per-monitor IPC from
-    ``current.json``), terminal palette (OSC from ``current/colors.yaml``).
+    ``current.json``), terminal palette (OSC from ``current/colors.sequences``).
     """
     from runtime.adapters.ags_reloader import AgsReloader
     from runtime.adapters.hyprland_reloader import HyprlandReloader
