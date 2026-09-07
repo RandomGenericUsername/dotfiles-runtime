@@ -305,7 +305,14 @@ class TestCrashPartialSwap:
         stale_wh = _stale_hash(wh)
         _make_stale_wallpaper_entry(state_root, stale_wh)
         # repoint every symlink to stale
-        for name in ["wallpaper-DP-1.png", "colors.conf", "colors.gtk.css", "colors.yaml"]:
+        for name in [
+            "wallpaper-DP-1.png",
+            "colors.conf",
+            "colors.gtk.css",
+            "colors.yaml",
+            "colors.adw.css",
+            "colors.sequences",
+        ]:
             if (state_root / "current" / name).is_symlink():
                 stale_hash_val = stale_wh if "wallpaper" in name else _stale_hash(peh) if peh else stale_wh  # type: ignore[arg-type]
                 # for palette files use palette stale
@@ -334,6 +341,8 @@ class TestCrashPartialSwap:
         assert wh in _symlink_target(state_root / "current" / "wallpaper-DP-1.png")
         if peh:
             assert peh in _symlink_target(state_root / "current" / "colors.conf")
+            for name in ("colors.gtk.css", "colors.yaml", "colors.adw.css", "colors.sequences"):
+                assert peh in _symlink_target(state_root / "current" / name)
         if eeh:
             assert eeh in _symlink_target(state_root / "current" / "effects")
         if ieh:
