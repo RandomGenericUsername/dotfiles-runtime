@@ -53,7 +53,7 @@ runtime adapter's contract is a SURFACED failure (spec-literal R5: the
 terminal cannot be re-themed → ``False`` with ``TerminalColorApplier``
 in ``ReconcileResult.reload_failures``). Attempting the write
 unconditionally, wrapped in the mandated exception tuple
- ``(FileNotFoundError, PermissionError, OSError, ValueError)``, is what
+``(FileNotFoundError, PermissionError, OSError, ValueError)``, is what
 makes a missing/headless TTY observable. The only vacuous success is "no
 colors.sequences consumer entry at all".
 
