@@ -430,6 +430,7 @@ class CacheSeeder:
                 colors_gtk_css=artifact_hashes["colors.gtk.css"],
                 colors_adw_css=artifact_hashes["colors.adw.css"],
                 colors_sequences=artifact_hashes["colors.sequences"],
+                colors_rasi=artifact_hashes["colors.rasi"],
             ),
             generated_at=meta["generated_at"],
         )
@@ -533,6 +534,7 @@ class CacheSeeder:
         - current/colors.yaml → cache/palettes/<ph>/colors.yaml
         - current/colors.adw.css → cache/palettes/<ph>/colors.adw.css
         - current/colors.sequences → cache/palettes/<ph>/colors.sequences
+        - current/colors.rasi → cache/palettes/<ph>/colors.rasi
         - current/effects/ → cache/effects/<eh>/
         - current/icons/ → cache/icons/<ih>/
 
@@ -560,6 +562,7 @@ class CacheSeeder:
                 "colors.yaml",
                 "colors.adw.css",
                 "colors.sequences",
+                "colors.rasi",
             ):
                 target = palette_dir / artifact_name
                 # exists() follows symlinks — a dangling symlink at the target
@@ -601,9 +604,9 @@ class CacheSeeder:
         may write under the install spine ONLY the pointer symlinks
         returned by the injected :class:`IConsumerPathSpec` (the pinned
         ``StaticConsumerPathSpec`` table: ``config/ags/colors.css``,
-        ``config/gtk-3.0/colors.css``, ``config/gtk-4.0/colors.css``) —
-        nothing else. The content lives in ``cache/`` (runtime-owned);
-        these paths are consumer pointers.
+        ``config/gtk-3.0/colors.css``, ``config/gtk-4.0/colors.css``,
+        ``config/rofi/colors.rasi``) — nothing else. The content lives in
+        ``cache/`` (runtime-owned); these paths are consumer pointers.
 
         - ``<install>/config/ags/colors.css`` → ``current/colors.gtk.css``
           (note the rename: cache artifact is ``colors.gtk.css``).
@@ -611,6 +614,8 @@ class CacheSeeder:
           ``current/colors.gtk.css``.
         - ``<install>/config/gtk-4.0/colors.css`` →
           ``current/colors.adw.css``.
+        - ``<install>/config/rofi/colors.rasi`` →
+          ``current/colors.rasi``.
 
         Deliberately NOT covered: ``<install>/config/hypr/colors.conf``
         (nothing sources it — verified: no reference under

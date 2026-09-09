@@ -39,6 +39,7 @@ class _FakeCsg:
         (output_dir / "colors.gtk.css").write_text("colors {}")
         (output_dir / "colors.adw.css").write_text("colors {}")
         (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
+        (output_dir / "colors.rasi").write_text("* { background: #000; }")
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -51,6 +52,7 @@ class _FakeCsg:
                 colors_gtk_css=hash_file(output_dir / "colors.gtk.css"),
                 colors_adw_css=hash_file(output_dir / "colors.adw.css"),
                 colors_sequences=hash_file(output_dir / "colors.sequences"),
+                colors_rasi=hash_file(output_dir / "colors.rasi"),
             ),
             generated_at="2026-01-01T00:00:00Z",
         )
@@ -314,3 +316,4 @@ class TestSeedCacheIntegration:
         lines = (state_root / "history.jsonl").read_text().strip().split("\n")
         assert len(lines) == 1
         assert json.loads(lines[0])["trigger"] == "seed"
+

@@ -86,6 +86,7 @@ class _FakeCsg:
         (output_dir / "colors.gtk.css").write_text("colors {}")
         (output_dir / "colors.adw.css").write_text("colors {}")
         (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
+        (output_dir / "colors.rasi").write_text("* { background: #000; }")
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -98,6 +99,7 @@ class _FakeCsg:
                 colors_gtk_css=hash_file(output_dir / "colors.gtk.css"),
                 colors_adw_css=hash_file(output_dir / "colors.adw.css"),
                 colors_sequences=hash_file(output_dir / "colors.sequences"),
+                colors_rasi=hash_file(output_dir / "colors.rasi"),
             ),
             generated_at=_now_z(),
         )
@@ -224,8 +226,9 @@ class _Applied:
 def _setup_spine(install_spine: Path) -> None:
     """Create spine config inputs (templates/catalog/icon assets).
 
-    ``config/ags/`` reflects provisioned-machine reality (Story gt-2-2:
-    the no-mkdir parent guard requires the pointer's parent to exist).
+    ``config/ags/`` and ``config/rofi/`` reflect provisioned-machine
+    reality (Story gt-2-2 / add-rofi-app-launcher: the no-mkdir parent
+    guard requires each pointer's parent to exist).
     """
     csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
     csg_templates.mkdir(parents=True)
@@ -234,6 +237,7 @@ def _setup_spine(install_spine: Path) -> None:
     weg_config.mkdir(parents=True)
     (weg_config / "effects.yaml").write_text("effects: []\n")
     (install_spine / "config" / "ags").mkdir(parents=True, exist_ok=True)
+    (install_spine / "config" / "rofi").mkdir(parents=True, exist_ok=True)
     itr_templates = install_spine / "icon-templates"
     itr_templates.mkdir(parents=True)
     (itr_templates / "terminal.svg").write_text("<svg/>")
@@ -342,6 +346,7 @@ class TestReconcileHappyPath:
             "colors.yaml",
             "colors.adw.css",
             "colors.sequences",
+            "colors.rasi",
             "effects",
             "icons",
         }
@@ -353,6 +358,7 @@ class TestReconcileHappyPath:
         assert links["colors.yaml"] == str(palette_dir / "colors.yaml")
         assert links["colors.adw.css"] == str(palette_dir / "colors.adw.css")
         assert links["colors.sequences"] == str(palette_dir / "colors.sequences")
+        assert links["colors.rasi"] == str(palette_dir / "colors.rasi")
         assert links["effects"] == str(applied.state_root / "cache" / "effects" / loaded.effects.entry_hash)
         assert links["icons"] == str(applied.state_root / "cache" / "icons" / loaded.icons.entry_hash)
         assert sorted(p.name for p in result.repointed) == sorted(links)
@@ -365,18 +371,21 @@ class TestReconcileHappyPath:
         r2_link = applied.install_spine / "config" / "ags" / "colors.css"
         assert r2_link.is_symlink(), "R2 consumer symlink must be created by reconcile"
         assert os_readlink(r2_link) == str(applied.state_root / "current" / "colors.gtk.css")
-        assert result.consumer_symlinks == [r2_link]
+        rofi_link = applied.install_spine / "config" / "rofi" / "colors.rasi"
+        assert rofi_link.is_symlink(), "rofi consumer symlink must be created by reconcile"
+        assert os_readlink(rofi_link) == str(applied.state_root / "current" / "colors.rasi")
+        assert result.consumer_symlinks == [r2_link, rofi_link]
         # gt-2-2: gtk pointer parents are NOT provisioned here — skipped
-        # with a warning (never mkdir into the spine), ags-only coverage.
+        # with a warning (never mkdir into the spine), ags+rofi coverage.
         assert not (applied.install_spine / "config" / "gtk-3.0").exists()
         assert not (applied.install_spine / "config" / "gtk-4.0").exists()
 
-    def test_repoints_all_three_consumer_pointers_when_parents_exist(
+    def test_repoints_all_four_consumer_pointers_when_parents_exist(
         self, tmp_path: Path
     ) -> None:
-        """gt-2-2 spec loop: with provisioned gtk spine dirs all three
-        pointers are created (ags + gtk-3.0 → colors.gtk.css; gtk-4.0 →
-        colors.adw.css), in table order."""
+        """gt-2-2 spec loop: with provisioned spine dirs all four pointers
+        are created (ags + gtk-3.0 → colors.gtk.css; gtk-4.0 →
+        colors.adw.css; rofi → colors.rasi), in table order."""
         applied = _apply_state(tmp_path)
         gtk3 = applied.install_spine / "config" / "gtk-3.0"
         gtk4 = applied.install_spine / "config" / "gtk-4.0"
@@ -391,14 +400,17 @@ class TestReconcileHappyPath:
 
         current = applied.state_root / "current"
         ags = applied.install_spine / "config" / "ags" / "colors.css"
+        rofi = applied.install_spine / "config" / "rofi" / "colors.rasi"
         assert result.consumer_symlinks == [
             ags,
             gtk3 / "colors.css",
             gtk4 / "colors.css",
+            rofi,
         ]
         assert os_readlink(ags) == str(current / "colors.gtk.css")
         assert os_readlink(gtk3 / "colors.css") == str(current / "colors.gtk.css")
         assert os_readlink(gtk4 / "colors.css") == str(current / "colors.adw.css")
+        assert os_readlink(rofi) == str(current / "colors.rasi")
 
     def test_no_copy_every_current_entry_is_a_symlink(self, tmp_path: Path) -> None:
         applied = _apply_state(tmp_path)
@@ -528,13 +540,15 @@ class TestReconcileFailurePolicy:
     def test_null_palette_removes_r2_consumer_symlink(self, tmp_path: Path) -> None:
         """Epic 4 R2: a null palette removes the consumer symlink (never
         stale) — e.g. after a CSG failure degraded a previous good run.
-        gt-2-2: ALL spec'd pointers are removed (ags + gtk), missing_ok."""
+        gt-2-2: ALL spec'd pointers are removed (ags + gtk + rofi),
+        missing_ok."""
         applied = _apply_state(tmp_path)
         current = applied.state_root / "current"
         pointers = [
             applied.install_spine / "config" / "ags" / "colors.css",
             applied.install_spine / "config" / "gtk-3.0" / "colors.css",
             applied.install_spine / "config" / "gtk-4.0" / "colors.css",
+            applied.install_spine / "config" / "rofi" / "colors.rasi",
         ]
         for p in pointers:
             p.parent.mkdir(parents=True, exist_ok=True)

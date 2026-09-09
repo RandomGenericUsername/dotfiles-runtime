@@ -86,6 +86,7 @@ class _FakeCsg:
         # REALISTIC artifact: the full 19-sequence LF-terminated payload the
         # pinned colors.sequences.j2 template + Jinja post-processing produce.
         (output_dir / "colors.sequences").write_bytes(_pinned_sequences_bytes())
+        (output_dir / "colors.rasi").write_text("* { background: #000; }")
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -98,6 +99,7 @@ class _FakeCsg:
                 colors_gtk_css=hash_file(output_dir / "colors.gtk.css"),
                 colors_adw_css=hash_file(output_dir / "colors.adw.css"),
                 colors_sequences=hash_file(output_dir / "colors.sequences"),
+                colors_rasi=hash_file(output_dir / "colors.rasi"),
             ),
             generated_at=_now_z(),
         )
@@ -290,3 +292,4 @@ def test_terminal_palette_applier_integration_dangling_sequences_is_surfaced(
     result = use_case.run()  # type: ignore[attr-defined]
     assert "TerminalColorApplier" in result.reload_failures
     assert "_LinkBreaker" not in result.reload_failures
+

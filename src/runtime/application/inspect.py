@@ -13,7 +13,7 @@ no seed side-effects. Safe to run anytime, including mid-swap.
 Symlink statuses (AC 2): each expected consumer symlink
 (``wallpaper-<monitor>.png``, ``colors.yaml``, ``colors.conf``,
 ``colors.gtk.css``, ``colors.adw.css``, ``colors.sequences``,
-``effects/``, ``icons/`` — the name set mirrors
+``colors.rasi``, ``effects/``, ``icons/`` — the name set mirrors
 ``ReconcileDesktopStateUseCase._build_expected_targets``) is flagged:
 
 - ``ok``       — live symlink resolves to the expected cache-entry path
@@ -327,6 +327,7 @@ class InspectStateUseCase:
                 "colors.yaml",
                 "colors.adw.css",
                 "colors.sequences",
+                "colors.rasi",
             ):
                 targets[artifact] = pal_dir / artifact
         if state.effects is not None:

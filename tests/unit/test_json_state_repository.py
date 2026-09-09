@@ -92,6 +92,7 @@ def _make_palette(wallpaper_hash: str) -> PaletteEntry:
             "colors_gtk_css": "f" * 64,
             "colors_adw_css": "1" * 64,
             "colors_sequences": "2" * 64,
+            "colors_rasi": "3" * 64,
         },
         generated_at=_now_z(),
     )
@@ -177,6 +178,7 @@ class TestSaveAndLoadProjectionRoundtrip:
             "colors_gtk_css": SENTINEL_HASH,
             "colors_adw_css": SENTINEL_HASH,
             "colors_sequences": SENTINEL_HASH,
+            "colors_rasi": SENTINEL_HASH,
         }
 
     def test_roundtrip_with_mpvpaper_monitor(self, tmp_path: Path) -> None:

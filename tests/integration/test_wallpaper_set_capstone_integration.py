@@ -81,6 +81,7 @@ class _FakeCsg:
         (output_dir / "colors.gtk.css").write_text("colors {}")
         (output_dir / "colors.adw.css").write_text("colors {}")
         (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
+        (output_dir / "colors.rasi").write_text("* { background: #000; }")
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -93,6 +94,7 @@ class _FakeCsg:
                 colors_gtk_css=hash_file(output_dir / "colors.gtk.css"),
                 colors_adw_css=hash_file(output_dir / "colors.adw.css"),
                 colors_sequences=hash_file(output_dir / "colors.sequences"),
+                colors_rasi=hash_file(output_dir / "colors.rasi"),
             ),
             generated_at=_now_z(),
         )
@@ -284,11 +286,13 @@ class TestCapstoneE2E:
         links = _symlink_map(applied.state_root / "current")
         assert set(links) == {
             "wallpaper-DP-1.png",
+            "wallpaper.png",
             "colors.conf",
             "colors.gtk.css",
             "colors.yaml",
             "colors.adw.css",
             "colors.sequences",
+            "colors.rasi",
             "effects",
             "icons",
         }
@@ -699,3 +703,4 @@ class TestCapstoneCliExitCode:
         assert failed.exit_code == 1
         assert "ReloadError" in failed.output
         assert "reload failed for: _FailingTerminalColorApplier" in failed.output
+

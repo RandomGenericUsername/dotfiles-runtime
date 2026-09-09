@@ -291,6 +291,8 @@ class CsgAdapter(IColorSchemeGenerator):
             "adw.css",
             "--format",
             "sequences",
+            "--format",
+            "rasi",
         ]
 
         # 8. Run subprocess with timeout, preserve stderr, handle missing binary
@@ -350,6 +352,7 @@ class CsgAdapter(IColorSchemeGenerator):
             "colors.gtk.css",
             "colors.adw.css",
             "colors.sequences",
+            "colors.rasi",
         ):
             p = output_dir / name
             if not p.is_file():
@@ -365,6 +368,7 @@ class CsgAdapter(IColorSchemeGenerator):
                 colors_gtk_css=hash_file(output_dir / "colors.gtk.css"),
                 colors_adw_css=hash_file(output_dir / "colors.adw.css"),
                 colors_sequences=hash_file(output_dir / "colors.sequences"),
+                colors_rasi=hash_file(output_dir / "colors.rasi"),
             )
         except (FileNotFoundError, PermissionError, IsADirectoryError, OSError) as exc:
             raise RuntimeError(f"cannot hash csg artifacts in {output_dir}: {exc}") from exc

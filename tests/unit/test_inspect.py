@@ -55,6 +55,7 @@ def _make_state(
                 colors_gtk_css="f" * 64,
                 colors_adw_css="1" * 64,
                 colors_sequences="2" * 64,
+                colors_rasi="3" * 64,
             ),
             generated_at=now,
         )
@@ -145,6 +146,7 @@ def _expected_targets(state_root: Path, state: DesktopState) -> dict[str, Path]:
             "colors.yaml",
             "colors.adw.css",
             "colors.sequences",
+            "colors.rasi",
         ):
             targets[artifact] = pal_dir / artifact
     if state.effects is not None:
@@ -257,6 +259,7 @@ class TestInspectSymlinkReflection:
             "colors.gtk.css",
             "colors.adw.css",
             "colors.sequences",
+            "colors.rasi",
             "effects",
             "icons",
         }
@@ -318,6 +321,7 @@ class TestInspectConsumerPointerProjection:
     AGS = "config/ags/colors.css"
     GTK3 = "config/gtk-3.0/colors.css"
     GTK4 = "config/gtk-4.0/colors.css"
+    ROFI = "config/rofi/colors.rasi"
 
     @staticmethod
     def _make_use_case(tmp_path: Path, state: DesktopState, *, with_spec: bool = True) -> Any:
@@ -326,6 +330,7 @@ class TestInspectConsumerPointerProjection:
 
         install_spine = tmp_path / "install"
         (install_spine / "config" / "ags").mkdir(parents=True)
+        (install_spine / "config" / "rofi").mkdir(parents=True)
         return (
             InspectStateUseCase(
                 _FakeStateRepo(state),
@@ -345,14 +350,16 @@ class TestInspectConsumerPointerProjection:
         (install_spine / self.AGS).symlink_to(tmp_path / "current" / "colors.gtk.css")
         (install_spine / self.GTK3).symlink_to(tmp_path / "current" / "colors.gtk.css")
         (install_spine / self.GTK4).symlink_to(tmp_path / "current" / "colors.adw.css")
+        (install_spine / self.ROFI).symlink_to(tmp_path / "current" / "colors.rasi")
 
         result = use_case.run()
 
-        assert set(result.consumer_pointers) == {self.AGS, self.GTK3, self.GTK4}
+        assert set(result.consumer_pointers) == {self.AGS, self.GTK3, self.GTK4, self.ROFI}
         expected_targets = {
             self.AGS: "colors.gtk.css",
             self.GTK3: "colors.gtk.css",
             self.GTK4: "colors.adw.css",
+            self.ROFI: "colors.rasi",
         }
         for path, status in result.consumer_pointers.items():
             assert status.status == "ok"
@@ -370,6 +377,7 @@ class TestInspectConsumerPointerProjection:
         assert result.consumer_pointers[self.AGS].status == "missing"
         assert result.consumer_pointers[self.GTK3].status == "missing"
         assert result.consumer_pointers[self.GTK4].status == "missing"
+        assert result.consumer_pointers[self.ROFI].status == "missing"
         assert all(s.target is None for s in result.consumer_pointers.values())
 
     def test_diverged_flagged_with_actual_target(self, tmp_path: Path) -> None:

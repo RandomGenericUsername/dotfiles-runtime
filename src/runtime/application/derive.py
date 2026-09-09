@@ -24,8 +24,8 @@ staging + load-on-race). Behavior contract locked by the seed test suite:
   apply wraps as ``palette apply failed:`` (palette hard dependency);
   effects/icons degrade gracefully per use case.
 - Migration (Story gt-2-1, AC 8): a palette entry is a valid cache hit
-  ONLY if its ``meta.json`` ``artifact_hashes`` carries all five artifact
-  names AND the five artifact files exist. An incomplete entry
+  ONLY if its ``meta.json`` ``artifact_hashes`` carries all six artifact
+  names AND the six artifact files exist. An incomplete entry
   (pre-growth partial: 3 legacy artifacts + old meta) is evicted
   (``shutil.rmtree``, logged once) and regenerated through the normal
   staging path at the SAME ``<ph>`` — cache keys are unchanged, so
@@ -250,6 +250,7 @@ PALETTE_ARTIFACT_NAMES: Final[tuple[str, ...]] = (
     "colors.gtk.css",
     "colors.adw.css",
     "colors.sequences",
+    "colors.rasi",
 )
 
 
@@ -258,8 +259,8 @@ def ensure_palette_entry_complete(target: Path, seeder: CacheSeeder) -> bool:
 
     The migration mechanism (Story gt-2-1, AC 8): a palette entry dir
     existing at ``cache/palettes/<ph>/`` is a valid cache hit ONLY if its
-    co-located ``meta.json`` ``artifact_hashes`` carries ALL FIVE artifact
-    names and the five artifact files exist (AD-3: meta.json is the
+    co-located ``meta.json`` ``artifact_hashes`` carries ALL SIX artifact
+    names and the six artifact files exist (AD-3: meta.json is the
     completeness oracle — never trust dir existence alone).
 
     An incomplete entry (a pre-growth partial: 3 legacy artifacts +
@@ -380,6 +381,7 @@ class DerivationPipeline:
                     "colors.gtk.css": generated.artifact_hashes["colors_gtk_css"],
                     "colors.adw.css": generated.artifact_hashes["colors_adw_css"],
                     "colors.sequences": generated.artifact_hashes["colors_sequences"],
+                    "colors.rasi": generated.artifact_hashes["colors_rasi"],
                 },
                 generated_at=generated.generated_at,
             )

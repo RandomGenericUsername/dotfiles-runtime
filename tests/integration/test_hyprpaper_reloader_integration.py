@@ -50,6 +50,7 @@ class _FakeCsg:
         (output_dir / "colors.gtk.css").write_text("colors {}")
         (output_dir / "colors.adw.css").write_text("colors {}")
         (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
+        (output_dir / "colors.rasi").write_text("* { background: #000; }")
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -62,6 +63,7 @@ class _FakeCsg:
                 colors_gtk_css=hash_file(output_dir / "colors.gtk.css"),
                 colors_adw_css=hash_file(output_dir / "colors.adw.css"),
                 colors_sequences=hash_file(output_dir / "colors.sequences"),
+                colors_rasi=hash_file(output_dir / "colors.rasi"),
             ),
             generated_at=_now_z(),
         )
@@ -281,3 +283,4 @@ def test_hyprpaper_reloader_integration_shim_failure_is_surfaced(
     use_case = _make_reconcile(repo, state_root, install_spine, [reloader])
     result = use_case.run()  # type: ignore[attr-defined]
     assert "HyprpaperReloader" in result.reload_failures
+

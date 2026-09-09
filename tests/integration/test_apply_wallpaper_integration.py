@@ -37,6 +37,7 @@ class _FakeCsg:
         (output_dir / "colors.gtk.css").write_text("colors {}")
         (output_dir / "colors.adw.css").write_text("colors {}")
         (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
+        (output_dir / "colors.rasi").write_text("* { background: #000; }")
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -49,6 +50,7 @@ class _FakeCsg:
                 colors_gtk_css=hash_file(output_dir / "colors.gtk.css"),
                 colors_adw_css=hash_file(output_dir / "colors.adw.css"),
                 colors_sequences=hash_file(output_dir / "colors.sequences"),
+                colors_rasi=hash_file(output_dir / "colors.rasi"),
             ),
             generated_at="2026-01-01T00:00:00Z",
         )
@@ -277,3 +279,4 @@ class TestApplyWallpaperIntegration:
         after = {p.name: p.readlink() for p in seeded_current.iterdir() if p.is_symlink()}
         assert after == before  # symlinks untouched
         assert (state_root / "history.jsonl").read_text() == history_before
+

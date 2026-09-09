@@ -71,6 +71,7 @@ def _make_state() -> DesktopState:
                 colors_gtk_css="f" * 64,
                 colors_adw_css="1" * 64,
                 colors_sequences="2" * 64,
+                colors_rasi="3" * 64,
             ),
             generated_at=now,
         ),
@@ -109,6 +110,9 @@ def _build_live_tree(state_root: Path, state: DesktopState) -> dict[str, Path]:
         )
         for m in state.monitors
     }
+    # Monitor-agnostic wallpaper alias (primary/first monitor) — mirrors
+    # inspect's _build_expected_targets.
+    targets["wallpaper.png"] = next(iter(targets.values()))
     assert state.palette is not None
     pal_dir = cache_entry_path(state_root, "palettes", state.palette.entry_hash)
     for artifact in (
@@ -117,6 +121,7 @@ def _build_live_tree(state_root: Path, state: DesktopState) -> dict[str, Path]:
         "colors.yaml",
         "colors.adw.css",
         "colors.sequences",
+        "colors.rasi",
     ):
         targets[artifact] = pal_dir / artifact
     assert state.effects is not None

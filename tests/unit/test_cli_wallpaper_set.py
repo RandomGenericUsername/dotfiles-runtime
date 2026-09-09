@@ -48,6 +48,7 @@ def _palette() -> PaletteEntry:
             colors_gtk_css="d" * 64,
             colors_adw_css="e" * 64,
             colors_sequences="f" * 64,
+            colors_rasi="a" * 64,
         ),
         generated_at=_now_z(),
     )
