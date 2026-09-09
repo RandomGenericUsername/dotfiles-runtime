@@ -58,11 +58,12 @@ makes a missing/headless TTY observable. The only vacuous success is "no
 colors.sequences consumer entry at all".
 
 Known Phase-2 limitations: this adapter recolors the LIVE terminal only.
-A NEW shell still reads provisioning's rendered ``generated/palettes/
-colors.sequences`` (``.zshrc.j2:30`` cat, provisioning-owned — the
-runtime never edits provisioning-rendered configs, AD-5); repointing
-that to the runtime state root is gt-3-2. No daemon, no
-per-terminal-emulator config writer (none exist in the spine).
+Every NEW shell reads the runtime's ``$XDG_STATE_HOME/dotfiles/current/
+colors.sequences`` (``.zshrc`` cat repointed by gt-3-2 — the stale
+``generated/palettes`` orphan path is retired), so new shells always carry
+the current palette; other OPEN terminals do not (broadcast needs a
+daemon — Phase 5). No per-terminal-emulator config writer exists in the
+spine.
 
 References: [consumer-wiring.md:34], [shared-data-contract.md swap step
 5], [ARCHITECTURE-SPINE.md AD-15], [R5], [FR-6].
