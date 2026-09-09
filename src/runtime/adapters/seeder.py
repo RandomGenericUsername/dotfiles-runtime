@@ -618,8 +618,11 @@ class CacheSeeder:
           ``current/colors.rasi``.
 
         Deliberately NOT covered: ``<install>/config/hypr/colors.conf``
-        (nothing sources it — verified: no reference under
-        ``dotfiles/config/hypr/*.lua``) and hyprpaper.conf / ITR
+        (the Hyprland config reads the runtime palette DIRECTLY at
+        ``$XDG_STATE_HOME/dotfiles/current/colors.conf`` via
+        ``config/hypr/colors.lua`` — the seeder's ``hyprctl reload`` on
+        every palette swap re-executes that module, so a spine pointer
+        would be redundant) and hyprpaper.conf / ITR
         ``color_scheme.path`` rewrites (dissolved: hyprpaper uses IPC
         with the resolved ``current/`` path; the ITR settings template
         points at ``current/colors.yaml`` as a static string).
