@@ -230,31 +230,58 @@ class ApplyWallpaperUseCase:
     def _build_monitors(
         self, existing: DesktopState | None, wallpaper_hash: str
     ) -> dict[str, MonitorWallpaperConfig]:
-        """Preserve existing monitor configs, updating only source_hash.
+        """Preserve existing monitor configs, reconciled against live outputs.
 
-        When ``existing`` is None (seed skipped — no provisioning spine)
-        or its ``monitors`` dict is empty, default to the monitor set
-        returned by the injected ``IMonitorSource`` when available (real
-        outputs via ``HyprlandMonitorSource``), each ``hyprpaper``
-        backend, ``cover`` fit (AD-18: a wallpaper change must never
-        silently reset a user's per-monitor backend). When no source is
-        injected or detection is unavailable, fall back to the legacy
-        single ``DEFAULT_MONITOR`` default.
+        When live detection (the injected ``IMonitorSource``) returns a
+        non-empty set, that set is AUTHORITATIVE for monitor names: an
+        entry whose name still exists keeps its per-monitor backend/fit/
+        mpv settings (AD-18: never silently reset a user's config) and
+        only ``source_hash`` updates; a detected name with no stored
+        entry (new or RENAMED output) gets a default ``hyprpaper``/``cover``
+        entry; a stored name no longer detected (stale — e.g. an output
+        renamed by the compositor, which made ``hyprctl hyprpaper
+        wallpaper <stale>,…`` fail "Invalid monitor" forever) is dropped.
+
+        When detection is unavailable or empty (headless/CI), the stored
+        set is preserved as-is (no detection to trust), and when
+        ``existing`` is None or has no monitors the legacy
+        ``DEFAULT_MONITOR`` default applies.
         """
-        if existing is not None and existing.monitors:
-            return {
-                name: MonitorWallpaperConfig(
-                    backend=cfg.backend,
-                    source_hash=wallpaper_hash,
-                    fit_mode=cfg.fit_mode,
-                    mpv_options=cfg.mpv_options,
-                    ipc_socket=cfg.ipc_socket,
-                )
-                for name, cfg in existing.monitors.items()
-            }
         detected = (
             self._monitor_source.detect_monitors() if self._monitor_source is not None else []
         )
+        if existing is not None and existing.monitors:
+            if not detected:
+                return {
+                    name: MonitorWallpaperConfig(
+                        backend=cfg.backend,
+                        source_hash=wallpaper_hash,
+                        fit_mode=cfg.fit_mode,
+                        mpv_options=cfg.mpv_options,
+                        ipc_socket=cfg.ipc_socket,
+                    )
+                    for name, cfg in existing.monitors.items()
+                }
+            rebuilt: dict[str, MonitorWallpaperConfig] = {}
+            for name in detected:
+                cfg = existing.monitors.get(name)
+                if cfg is not None:
+                    rebuilt[name] = MonitorWallpaperConfig(
+                        backend=cfg.backend,
+                        source_hash=wallpaper_hash,
+                        fit_mode=cfg.fit_mode,
+                        mpv_options=cfg.mpv_options,
+                        ipc_socket=cfg.ipc_socket,
+                    )
+                else:
+                    rebuilt[name] = MonitorWallpaperConfig(
+                        backend=BackendType.hyprpaper,
+                        source_hash=wallpaper_hash,
+                        fit_mode=FitMode.cover,
+                        mpv_options=None,
+                        ipc_socket=None,
+                    )
+            return rebuilt
         names = detected or [DEFAULT_MONITOR]
         return {
             name: MonitorWallpaperConfig(
