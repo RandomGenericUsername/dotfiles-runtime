@@ -296,7 +296,8 @@ class InspectStateUseCase:
         targets: dict[str, Path] = {}
         # Mirror reconcile's run-layer fallback so an empty-monitors state
         # still reflects the default-monitor link reconcile manages.
-        for monitor_name in list(state.monitors) or [DEFAULT_MONITOR]:
+        monitor_names = list(state.monitors) or [DEFAULT_MONITOR]
+        for monitor_name in monitor_names:
             if (
                 "/" in monitor_name
                 or "\\" in monitor_name
@@ -314,6 +315,10 @@ class InspectStateUseCase:
                 )
                 / "wallpaper.png"
             )
+        # Monitor-agnostic wallpaper alias (primary/first monitor) — same
+        # target as the per-monitor entries above.
+        if monitor_names:
+            targets["wallpaper.png"] = targets[f"wallpaper-{monitor_names[0]}.png"]
         if state.palette is not None:
             pal_dir = cache_entry_path(self._state_root, "palettes", state.palette.entry_hash)
             for artifact in (

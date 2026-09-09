@@ -1223,6 +1223,7 @@ class TestRepointCurrentSymlinksPaletteArtifactSkip:
         names = {p.name for p in created}
         assert names == {
             "wallpaper-DP-1.png",
+            "wallpaper.png",
             "colors.conf",
             "colors.gtk.css",
             "colors.yaml",

@@ -336,6 +336,7 @@ class TestReconcileHappyPath:
         links = _symlink_map(current)
         assert set(links) == {
             "wallpaper-DP-1.png",
+            "wallpaper.png",
             "colors.conf",
             "colors.gtk.css",
             "colors.yaml",

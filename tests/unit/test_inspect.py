@@ -18,6 +18,7 @@ import pytest
 from runtime.adapters.cache import cache_entry_path
 from runtime.application.inspect import InspectStateUseCase
 from runtime.domain.models import (
+    DEFAULT_MONITOR,
     BackendType,
     DesktopState,
     EffectsEntry,
@@ -128,11 +129,14 @@ class _FakeStateRepo(IStateRepository):
 def _expected_targets(state_root: Path, state: DesktopState) -> dict[str, Path]:
     """Build the expected current/ symlink target map for the state."""
     targets: dict[str, Path] = {}
-    for monitor in state.monitors:
+    monitor_names = list(state.monitors) or [DEFAULT_MONITOR]
+    for monitor in monitor_names:
         targets[f"wallpaper-{monitor}.png"] = (
             cache_entry_path(state_root, "wallpapers", state.wallpaper.content_hash)
             / "wallpaper.png"
         )
+    # Monitor-agnostic alias (primary monitor), mirroring inspect/reconcile.
+    targets["wallpaper.png"] = targets[f"wallpaper-{monitor_names[0]}.png"]
     if state.palette is not None:
         pal_dir = cache_entry_path(state_root, "palettes", state.palette.entry_hash)
         for artifact in (
@@ -222,8 +226,9 @@ class TestInspectStateUseCaseProjection:
         assert result.palette is None
         assert result.effects is None
         assert result.icons is None
-        # Only the per-monitor wallpaper symlink is expected when no layers derived
-        assert set(result.current_symlinks) == {"wallpaper-DP-1.png"}
+        # Per-monitor wallpaper symlinks + the monitor-agnostic alias when no
+        # layers derived
+        assert set(result.current_symlinks) == {"wallpaper-DP-1.png", "wallpaper.png"}
 
 
 class TestInspectSymlinkReflection:
@@ -246,6 +251,7 @@ class TestInspectSymlinkReflection:
 
         expected_names = {
             "wallpaper-DP-1.png",
+            "wallpaper.png",
             "colors.yaml",
             "colors.conf",
             "colors.gtk.css",

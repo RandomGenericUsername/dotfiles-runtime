@@ -546,6 +546,11 @@ class CacheSeeder:
             name = f"wallpaper-{monitor_name}.png"
             created.append(self.repoint_current_symlink(name, wallpaper_target))
 
+        # Monitor-agnostic wallpaper alias (gt-4-2 follow-up): consumers that
+        # don't know monitor names (wlogout background) read this one.
+        if monitor_names:
+            created.append(self.repoint_current_symlink("wallpaper.png", wallpaper_target))
+
         # Palette symlinks
         if palette_entry_hash is not None:
             palette_dir = self._state_root / "cache" / "palettes" / palette_entry_hash
