@@ -16,7 +16,7 @@ import pytest
 from typer.testing import CliRunner
 
 import runtime.cli.main as cli_main  # noqa: F401  (used by monkeypatch path strings)
-from runtime.adapters.cache import verify_entry
+from runtime.adapters.cache import resolve_entry_artifact, verify_entry
 from runtime.application.inspect import InspectCacheResult, InspectCacheUseCase
 from runtime.application.verify_cache import VerifyCacheUseCase
 from runtime.cli.main import app
@@ -162,6 +162,31 @@ class TestVerifyEntryVerdicts:
         (d / "stray.bin").write_bytes(b"stray")
         assert verify_entry(d).status == "corrupt"
 
+    def test_nested_filename_keys_ok(self, tmp_path: Path) -> None:
+        """WEG-shaped entry: nested files, meta keys by filename → ok."""
+        d = tmp_path / "cache" / "effects" / ("a" * 64)
+        nested = d / "abstract" / "effect"
+        nested.mkdir(parents=True)
+        (nested / "blur.jpg").write_bytes(b"blur")
+        (d / "meta.json").write_text(
+            json.dumps({"hash_algorithm": "sha256", "artifact_hashes": {"blur.jpg": _h(b"blur")}}),
+            encoding="utf-8",
+        )
+        assert verify_entry(d).status == "ok"
+
+    def test_nested_filename_key_tampered_corrupt(self, tmp_path: Path) -> None:
+        d = tmp_path / "cache" / "effects" / ("a" * 64)
+        nested = d / "abstract" / "effect"
+        nested.mkdir(parents=True)
+        (nested / "blur.jpg").write_bytes(b"tampered")
+        (d / "meta.json").write_text(
+            json.dumps(
+                {"hash_algorithm": "sha256", "artifact_hashes": {"blur.jpg": _h(b"original")}}
+            ),
+            encoding="utf-8",
+        )
+        assert verify_entry(d).status == "corrupt"
+
     def test_non_sha256_algorithm_corrupt(self, tmp_path: Path) -> None:
         d = _write_entry(tmp_path, "effects", "a" * 64, {"effect.png": b"png"})
         meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
@@ -197,9 +222,10 @@ class TestLegacyAnnotation:
         assert health.status == "ok" and health.annotated is True
         meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
         assert meta["source_wallpaper_hash"] == "w" * 64  # other keys preserved
+        # Contract keys are filenames (unique basename), matching the adapter.
         assert meta["artifact_hashes"] == {
             "effect.png": _h(b"png"),
-            "nested/fx.png": _h(b"nested"),
+            "fx.png": _h(b"nested"),
         }
 
     def test_empty_map_is_treated_as_legacy_and_annotated(self, tmp_path: Path) -> None:
@@ -358,3 +384,31 @@ class TestCliShape:
             "counts": {"wallpapers": 0, "palettes": 0, "effects": 1, "icons": 0},
             "total": 1,
         }
+
+
+class TestResolveEntryArtifact:
+    """Contract keys are filenames; generators nest (WEG)."""
+
+    def test_bare_key_resolves_nested_file(self, tmp_path: Path) -> None:
+        nested = tmp_path / "abstract" / "effect"
+        nested.mkdir(parents=True)
+        target = nested / "blur.jpg"
+        target.write_bytes(b"x")
+        assert resolve_entry_artifact(tmp_path, "blur.jpg") == target
+
+    def test_relpath_key_resolves_exactly(self, tmp_path: Path) -> None:
+        nested = tmp_path / "abstract" / "effect"
+        nested.mkdir(parents=True)
+        target = nested / "blur.jpg"
+        target.write_bytes(b"x")
+        assert resolve_entry_artifact(tmp_path, "abstract/effect/blur.jpg") == target
+
+    def test_ambiguous_bare_key_none(self, tmp_path: Path) -> None:
+        for sub in ("effect", "composite"):
+            d = tmp_path / sub
+            d.mkdir(parents=True)
+            (d / "blur.jpg").write_bytes(b"x")
+        assert resolve_entry_artifact(tmp_path, "blur.jpg") is None
+
+    def test_missing_none(self, tmp_path: Path) -> None:
+        assert resolve_entry_artifact(tmp_path, "nope.jpg") is None

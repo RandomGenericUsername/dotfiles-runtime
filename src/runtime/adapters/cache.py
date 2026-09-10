@@ -41,9 +41,9 @@ import os
 import shutil
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 from runtime.adapters.hashing import HASH_ALGORITHM, hash_file
 from runtime.domain.models import CorruptCacheError, EntryHealth
@@ -218,6 +218,115 @@ def hardlink_or_copy(src: Path, dst: Path) -> None:
             raise
 
 
+def _artifact_index(
+    root: Path,
+) -> tuple[dict[str, Path], dict[str, list[Path]], list[Path], tuple[str, str] | None]:
+    """Index the artifact files under ``root`` for key resolution.
+
+    Returns ``(exact_relpath -> path, basename -> [paths], all_files, error)``.
+    ``meta.json`` (root) and ``.meta.json.tmp.*`` leftovers are excluded.
+    Symlink-escape and enumeration failures are returned as an error tuple
+    ``(status, detail)`` (``status`` is ``"missing"`` or ``"corrupt"``).
+
+    Contract: ``artifact_hashes`` keys are FILENAMES (``{"<filename>.png": h}``),
+    but generators nest output (WEG: ``<stem>/{effect,composite,preset}/*``), so
+    callers resolve a bare key by filename anywhere under the entry and an
+    entry-relative key (contains ``/``) as an exact path.
+    """
+    try:
+        root_resolved = root.resolve()
+    except (OSError, ValueError) as exc:
+        return {}, {}, [], ("corrupt", f"cannot resolve entry {root}: {exc}")
+    files: list[Path] = []
+    try:
+        for path in root.rglob("*"):
+            if path.is_dir() and not path.is_symlink():
+                continue
+            if not path.is_file():
+                continue
+            if path.name.startswith(".meta.json.tmp."):
+                continue
+            rel = path.relative_to(root).as_posix()
+            if rel == "meta.json":
+                continue
+            try:
+                resolved = path.resolve()
+            except (OSError, ValueError) as exc:
+                return {}, {}, [], ("corrupt", f"unresolvable artifact {rel!r}: {exc}")
+            if not resolved.is_relative_to(root_resolved):
+                return {}, {}, [], ("corrupt", f"artifact escapes entry: {rel!r}")
+            files.append(path)
+    except OSError as exc:
+        return {}, {}, [], ("corrupt", f"cannot enumerate {root}: {exc}")
+    exact: dict[str, Path] = {}
+    by_base: dict[str, list[Path]] = {}
+    for path in files:
+        exact[path.relative_to(root).as_posix()] = path
+        by_base.setdefault(path.name, []).append(path)
+    return exact, by_base, files, None
+
+
+def resolve_entry_artifact(root: Path, key: str) -> Path | None:
+    """Resolve one recorded key to a file under ``root`` (or ``None``).
+
+    Bare key → unique file with that filename anywhere under ``root``;
+    key containing ``/`` → exact entry-relative path. Ambiguous/missing/
+    escaping → ``None``.
+    """
+    exact, by_base, _files, error = _artifact_index(root)
+    if error is not None:
+        return None
+    if "/" in key:
+        return exact.get(key)
+    candidates = by_base.get(key, [])
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _unsafe_artifact_key(key: str) -> bool:
+    return (
+        not key
+        or key in (".", "meta.json")
+        or key.startswith("/")
+        or "\x00" in key
+        or ".." in Path(key).parts
+    )
+
+
+def match_entry_artifacts(
+    root: Path, recorded: Mapping[str, str]
+) -> tuple[dict[str, Path], tuple[str, str] | None]:
+    """Resolve every recorded key to its file, enforcing completeness.
+
+    Returns ``(key -> path, None)`` on success, else ``({}, (status, detail))``
+    with ``status`` ``"missing"`` (a recorded artifact has no file) or
+    ``"corrupt"`` (ambiguous key, symlink escape, unrecorded file, walk error).
+    Every file under ``root`` must be covered by exactly one recorded key.
+    """
+    exact, by_base, files, error = _artifact_index(root)
+    if error is not None:
+        return {}, error
+    matched: dict[str, Path] = {}
+    for key in recorded:
+        if "/" in key:
+            path = exact.get(key)
+            if path is None:
+                return {}, ("missing", f"recorded artifact missing: {key!r} in {root}")
+            matched[key] = path
+        else:
+            candidates = by_base.get(key, [])
+            if not candidates:
+                return {}, ("missing", f"recorded artifact missing: {key!r} in {root}")
+            if len(candidates) > 1:
+                return {}, ("corrupt", f"ambiguous artifact key {key!r} in {root}")
+            matched[key] = candidates[0]
+    covered = set(matched.values())
+    for path in files:
+        if path not in covered:
+            rel = path.relative_to(root).as_posix()
+            return {}, ("corrupt", f"unrecorded file in {root}: {rel!r}")
+    return matched, None
+
+
 def verify_entry(entry_dir: Path, *, annotate: bool = False) -> EntryHealth:
     """Read-side health check for one published cache entry (Story 3.1, FR-5).
 
@@ -266,73 +375,43 @@ def verify_entry(entry_dir: Path, *, annotate: bool = False) -> EntryHealth:
         isinstance(key, str) and isinstance(value, str) for key, value in recorded.items()
     ):
         return EntryHealth("corrupt", "artifact_hashes malformed")
-    try:
-        entry_resolved = entry_dir.resolve()
-    except (OSError, ValueError) as exc:
-        return EntryHealth("corrupt", f"unresolvable entry: {exc}")
-    for rel, expected in recorded.items():
-        if (
-            not rel
-            or rel in (".", "meta.json")
-            or rel.startswith("/")
-            or "\x00" in rel
-            or ".." in Path(rel).parts
-        ):
-            return EntryHealth("corrupt", f"unsafe artifact key: {rel}")
+    for key in recorded:
+        if _unsafe_artifact_key(key):
+            return EntryHealth("corrupt", f"unsafe artifact key: {key}")
+    matched, error = match_entry_artifacts(entry_dir, recorded)
+    if error is not None:
+        status: Literal["missing", "corrupt"] = "missing" if error[0] == "missing" else "corrupt"
+        return EntryHealth(status, error[1])
+    for key, path in matched.items():
         try:
-            resolved = (entry_dir / rel).resolve()
-        except (OSError, ValueError) as exc:
-            return EntryHealth("corrupt", f"unresolvable artifact {rel}: {exc}")
-        if not resolved.is_relative_to(entry_resolved):
-            return EntryHealth("corrupt", f"artifact escapes entry: {rel}")
-        if not resolved.is_file():
-            return EntryHealth("missing", f"artifact absent: {rel}")
-        try:
-            actual = hash_file(resolved)
+            actual = hash_file(path)
         except OSError as exc:
-            return EntryHealth("corrupt", f"unhashable {rel}: {exc}")
-        if actual != expected:
-            return EntryHealth("corrupt", f"digest mismatch: {rel}")
-    try:
-        recorded_set = set(recorded)
-        for path in entry_dir.rglob("*"):
-            if path.is_dir() and not path.is_symlink():
-                continue
-            if not path.is_file():
-                continue
-            rel = path.relative_to(entry_dir).as_posix()
-            if rel == "meta.json" or path.name.startswith(f".{meta_path.name}.tmp."):
-                continue
-            if rel not in recorded_set:
-                return EntryHealth("corrupt", f"unrecorded file: {rel}")
-    except OSError as exc:
-        return EntryHealth("corrupt", f"completeness walk failed: {exc}")
+            return EntryHealth("corrupt", f"unhashable {key}: {exc}")
+        if actual != recorded[key]:
+            return EntryHealth("corrupt", f"digest mismatch: {key}")
     return EntryHealth("ok", "verified")
 
 
 def _annotate_legacy(entry_dir: Path, meta: dict[str, object], meta_path: Path) -> EntryHealth:
     """Hash every non-meta file under ``entry_dir`` and record it (AD-27).
 
-    Recursive (WEG nested layouts); the root ``meta.json`` and any
-    ``.meta.json.tmp.*`` crash leftover are never hashed. Writes atomically
-    (sibling tmp + ``os.replace``) and preserves other keys + the file mode.
+    Keys mirror the generator convention (contract: ``<filename>``; a
+    basename-colliding file falls back to its entry-relative path). The root
+    ``meta.json`` and any ``.meta.json.tmp.*`` crash leftover are never hashed.
+    Writes atomically (sibling tmp + ``os.replace``); preserves other keys +
+    the file mode.
     """
+    exact, by_base, files, error = _artifact_index(entry_dir)
+    _ = exact
+    if error is not None:
+        return EntryHealth("corrupt", error[1])
     hashes: dict[str, str] = {}
     try:
-        entry_resolved = entry_dir.resolve()
-        for path in entry_dir.rglob("*"):
-            if path.is_dir() and not path.is_symlink():
-                continue
-            if not path.is_file():
-                continue
+        for path in files:
             rel = path.relative_to(entry_dir).as_posix()
-            if rel == "meta.json" or path.name.startswith(f".{meta_path.name}.tmp."):
-                continue
-            resolved = path.resolve()
-            if not resolved.is_relative_to(entry_resolved):
-                return EntryHealth("corrupt", f"artifact escapes entry: {rel}")
-            hashes[rel] = hash_file(resolved)
-    except (OSError, ValueError) as exc:
+            key = path.name if len(by_base.get(path.name, [])) == 1 else rel
+            hashes[key] = hash_file(path)
+    except OSError as exc:
         return EntryHealth("corrupt", f"annotate walk failed: {exc}")
     new_meta = dict(meta)
     new_meta["artifact_hashes"] = hashes
@@ -417,56 +496,21 @@ def verify_staging(staging: Path) -> None:
         raise CorruptCacheError(
             f"staging meta.json carries a malformed artifact_hashes map in {staging}"
         )
-    try:
-        staging_resolved = staging.resolve()
-    except OSError as exc:
-        raise CorruptCacheError(f"cannot resolve staging dir {staging}: {exc}") from exc
-    for relpath, expected in recorded.items():
-        if (
-            not relpath
-            or relpath in (".", "meta.json")
-            or relpath.startswith("/")
-            or "\x00" in relpath
-            or ".." in Path(relpath).parts
-        ):
-            raise CorruptCacheError(f"malformed artifact relpath: {relpath!r} in {staging}")
-        candidate = staging_resolved / relpath
+    for key in recorded:
+        if _unsafe_artifact_key(key):
+            raise CorruptCacheError(f"malformed artifact key: {key!r} in {staging}")
+    matched, error = match_entry_artifacts(staging, recorded)
+    if error is not None:
+        raise CorruptCacheError(error[1])
+    for key, path in matched.items():
         try:
-            resolved = candidate.resolve()
-        except (OSError, ValueError) as exc:
-            raise CorruptCacheError(
-                f"cannot resolve staged artifact {relpath!r} in {staging}: {exc}"
-            ) from exc
-        if not resolved.is_relative_to(staging_resolved):
-            raise CorruptCacheError(
-                f"staged artifact path escapes staging: {relpath!r} in {staging}"
-            )
-        if not resolved.is_file():
-            raise CorruptCacheError(f"recorded artifact missing: {relpath!r} in {staging}")
-        try:
-            actual = hash_file(resolved)
+            actual = hash_file(path)
         except OSError as exc:
             raise CorruptCacheError(
-                f"cannot hash staged artifact {relpath!r} in {staging}: {exc}"
+                f"cannot hash staged artifact {key!r} in {staging}: {exc}"
             ) from exc
-        if actual != expected:
-            raise CorruptCacheError(f"artifact digest mismatch: {relpath!r} in {staging}")
-    recorded_set = set(recorded)
-    try:
-        walk = list(staging.rglob("*"))
-    except OSError as exc:
-        raise CorruptCacheError(f"cannot enumerate staging dir {staging}: {exc}") from exc
-    for path in walk:
-        if path.is_dir() and not path.is_symlink():
-            continue
-        try:
-            rel = path.relative_to(staging).as_posix()
-        except (OSError, ValueError) as exc:
-            raise CorruptCacheError(f"cannot inspect staged entry in {staging}: {exc}") from exc
-        if rel == "meta.json":
-            continue
-        if rel not in recorded_set:
-            raise CorruptCacheError(f"unrecorded file in staging: {rel!r} in {staging}")
+        if actual != recorded[key]:
+            raise CorruptCacheError(f"artifact digest mismatch: {key!r} in {staging}")
 
 
 def populate_via_staging(target: Path, populate_fn: Callable[[Path], None]) -> bool:

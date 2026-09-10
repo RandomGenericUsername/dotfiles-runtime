@@ -70,6 +70,35 @@ class TestHappyPath:
         files = {"stem/effect/a.png": b"png", "top.bin": b"top"}
         assert populate_via_staging(_target(tmp_path), _populate(files)) is True
 
+    def test_nested_layout_with_filename_keys_verified(self, tmp_path: Path) -> None:
+        """WEG contract: files nest, meta keys them by FILENAME. Must verify."""
+
+        def _fn(staging: Path) -> None:
+            nested = staging / "abstract" / "effect"
+            nested.mkdir(parents=True)
+            (nested / "blur.jpg").write_bytes(b"blur-bytes")
+            (staging / "meta.json").write_text(
+                _meta({"blur.jpg": _h(b"blur-bytes")}), encoding="utf-8"
+            )
+
+        assert populate_via_staging(_target(tmp_path), _fn) is True
+        assert (_target(tmp_path) / "abstract" / "effect" / "blur.jpg").read_bytes() == (
+            b"blur-bytes"
+        )
+
+    def test_filename_key_tampered_nested_raises(self, tmp_path: Path) -> None:
+        def _fn(staging: Path) -> None:
+            nested = staging / "abstract" / "effect"
+            nested.mkdir(parents=True)
+            (nested / "blur.jpg").write_bytes(b"tampered")
+            (staging / "meta.json").write_text(
+                _meta({"blur.jpg": _h(b"original")}), encoding="utf-8"
+            )
+
+        with pytest.raises(CorruptCacheError, match="digest mismatch"):
+            populate_via_staging(_target(tmp_path), _fn)
+        assert not _target(tmp_path).exists()
+
 
 class TestCorruption:
     def test_tampered_artifact_raises_and_publishes_nothing(self, tmp_path: Path) -> None:

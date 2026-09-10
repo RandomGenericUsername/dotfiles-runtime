@@ -19,6 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from runtime.adapters.cache import resolve_entry_artifact
 from runtime.adapters.hashing import hash_file
 from runtime.application.inspect import LinkStatusKind
 from runtime.application.reconcile import ReconcileDesktopStateUseCase
@@ -160,7 +161,10 @@ class DoctorUseCase:
                 ):
                     items.append(_item("diverged", f"unsafe artifact key: {rel}"))
                     break
-                if not (entry_dir / rel).is_file():
+                # Contract keys are filenames; generators nest output (WEG), so
+                # resolve by filename (with an entry-relative-path fallback).
+                resolved_artifact = resolve_entry_artifact(entry_dir, rel)
+                if resolved_artifact is None:
                     items.append(_item("diverged", f"artifact absent: {rel}"))
                     break
                 if recorded is None or rel not in recorded:
@@ -171,7 +175,7 @@ class DoctorUseCase:
                         break
                     continue  # presence-only (no digest recorded for this file)
                 try:
-                    actual = hash_file(entry_dir / rel)
+                    actual = hash_file(resolved_artifact)
                 except OSError:
                     items.append(_item("diverged", f"artifact unhashable: {rel}"))
                     break
