@@ -17,16 +17,18 @@ Domain purity (AD-1, AD-14):
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
 import shutil
+import stat
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final, cast
 
-from runtime.adapters.cache import hardlink_or_copy
+from runtime.adapters.cache import CACHE_QUARANTINE_DIR, hardlink_or_copy
 from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
 from runtime.adapters.hashing import HASH_ALGORITHM, hash_file
 from runtime.domain.models import (
@@ -46,6 +48,10 @@ logger = logging.getLogger(__name__)
 # current.json symlink guard): appending through a symlink could write
 # outside state_root, breaking the AD-5 boundary.
 _O_APPEND = os.O_APPEND | os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW
+
+# Serializes history heal + append (Story 2.3): healing is a read-modify-write
+# (os.replace), so concurrent writers must not interleave (AD-4 must-not-lose).
+_HISTORY_LOCK: Final[str] = ".history.lock"
 
 if HASH_ALGORITHM != "sha256":  # pragma: no cover
     raise AssertionError(f"HASH_ALGORITHM must be 'sha256', got {HASH_ALGORITHM!r}")
@@ -687,6 +693,107 @@ class CacheSeeder:
             created.append(dest)
         return created
 
+    def heal_torn_history_tail(self) -> Path | None:
+        """Heal a torn trailing history line (AD-23, Story 2.3).
+
+        Public entry: takes the history lock, then delegates to the locked
+        helper. See :meth:`_heal_torn_history_tail_locked` for semantics.
+        """
+        lock_fd = os.open(str(self._state_root / _HISTORY_LOCK), os.O_WRONLY | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            return self._heal_torn_history_tail_locked()
+        finally:
+            os.close(lock_fd)
+
+    def _heal_torn_history_tail_locked(self) -> Path | None:
+        """Heal a torn trailing history line (caller holds the history lock).
+
+        A torn tail is a non-JSON final line WITHOUT a terminating newline
+        (an interrupted ``os.write``). Readers tolerate it, but any append
+        over it would create a loud middle-corruption line, so the writer
+        heals first.
+
+        Returns the quarantine copy path when healed, else ``None``:
+        - absent/empty file, a symlinked file, or file already ends ``\\n`` → ``None``
+        - trailing bytes blank-only → ``None``
+        - trailing bytes parse as a JSON OBJECT (complete record, newline
+          lost) → restore the newline and return ``None`` (preserves the record)
+        - a valid JSON scalar (not a history record) or unparseable bytes →
+          torn: copy the WHOLE pre-heal file to
+          ``cache/.quarantine/history-<utc>-<pid>.jsonl`` (forensics), then
+          atomically truncate the live file to the last complete newline.
+
+        Never deletes; complete lines are preserved byte-for-byte; idempotent.
+        """
+        history_path = self._state_root / "history.jsonl"
+        if history_path.is_symlink():
+            return None  # mirror writer O_NOFOLLOW / reader refusal; never follow
+        # O(1) common case: only inspect the final byte.
+        try:
+            with open(history_path, "rb") as probe:
+                probe.seek(0, os.SEEK_END)
+                if probe.tell() == 0:
+                    return None
+                probe.seek(-1, os.SEEK_END)
+                if probe.read(1) == b"\n":
+                    return None
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return None
+        try:
+            raw = history_path.read_bytes()
+        except FileNotFoundError, IsADirectoryError:
+            return None
+        last_nl = raw.rfind(b"\n")
+        tail = raw[last_nl + 1 :] if last_nl != -1 else raw
+        if not tail.strip():
+            return None
+        try:
+            parsed = json.loads(tail.decode("utf-8"))
+        except UnicodeDecodeError, ValueError:
+            pass
+        else:
+            if isinstance(parsed, dict):
+                # complete record, only the newline was lost — restore it so
+                # the next append cannot concatenate onto this record.
+                with open(history_path, "ab") as terminate:
+                    terminate.write(b"\n")
+                    terminate.flush()
+                    os.fsync(terminate.fileno())
+                return None
+            # a valid JSON scalar is not a history record → treat as torn
+        quarantine_parent = self._state_root / "cache" / CACHE_QUARANTINE_DIR
+        quarantine_parent.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+        base = f"history-{stamp}-{os.getpid()}"
+        target = quarantine_parent / f"{base}.jsonl"
+        while target.exists() or target.is_symlink():
+            target = quarantine_parent / f"{base}-{uuid.uuid4().hex[:8]}.jsonl"
+        mode = stat.S_IMODE(os.stat(history_path).st_mode)
+        with open(target, "wb") as qh:
+            qh.write(raw)  # same bytes we read — no second-read race
+            qh.flush()
+            os.fsync(qh.fileno())
+        os.chmod(target, mode)
+        keep = raw[: last_nl + 1] if last_nl != -1 else b""
+        tmp = history_path.parent / f".history.jsonl.tmp.{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        try:
+            with open(tmp, "wb") as handle:
+                handle.write(keep)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(tmp, mode)
+            os.replace(tmp, history_path)
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+        logger.warning("history: healed torn trailing line (quarantined to %s)", target)
+        return target
+
     def append_history(
         self,
         trigger: str,
@@ -710,7 +817,7 @@ class CacheSeeder:
 
         Args:
             trigger: event trigger — the pinned enum is
-                ``seed|set|reconcile|force`` ("apply" is NOT valid); this
+                ``seed|set|reconcile|force|regenerate|doctor`` ("apply" is NOT valid); this
                 adapter stays trigger-agnostic and does not validate.
             wallpaper_hash: SHA-256 hex of wallpaper content
             palette_hash: SHA-256 hex of palette entry or None
@@ -735,8 +842,16 @@ class CacheSeeder:
             + "\n"
         )
 
-        fd = os.open(str(history_path), _O_APPEND, 0o644)
+        # Serialize heal + append under the history lock (Story 2.3): healing
+        # is a read-modify-write (os.replace), so a concurrent append must not
+        # interleave (AD-4 must-not-lose). Heal BEFORE os.open — after an
+        # os.replace the old O_APPEND fd would target the unlinked inode.
+        lock_fd = os.open(str(self._state_root / _HISTORY_LOCK), os.O_WRONLY | os.O_CREAT, 0o644)
+        fd: int | None = None
         try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            self._heal_torn_history_tail_locked()
+            fd = os.open(str(history_path), _O_APPEND, 0o644)
             # Loop until the whole line is written — os.write may perform a
             # short write under memory pressure, and a partial line would
             # corrupt the append-only JSONL log (AD-4).
@@ -746,4 +861,6 @@ class CacheSeeder:
                 data = data[written:]
             os.fsync(fd)
         finally:
-            os.close(fd)
+            if fd is not None:
+                os.close(fd)
+            os.close(lock_fd)

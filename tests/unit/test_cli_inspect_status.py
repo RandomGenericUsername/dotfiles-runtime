@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -50,9 +51,7 @@ def _inspect_result() -> InspectStatusResult:
 
 
 @pytest.fixture(autouse=True)
-def _quiet_seed_hook(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def _quiet_seed_hook(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Point first-run seeding at an empty spine so it skips quietly."""
     monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(tmp_path / "install"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
@@ -66,9 +65,7 @@ def _fake_composition(monkeypatch: pytest.MonkeyPatch, behavior: Any) -> None:
 
 
 class TestInspectStatusCliSuccess:
-    def test_success_exits_zero_and_renders_summary(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_success_exits_zero_and_renders_summary(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _fake_composition(monkeypatch, lambda: _inspect_result())
         result = runner.invoke(app, ["inspect", "status"])
 
@@ -98,9 +95,7 @@ class TestInspectStatusCliSuccess:
         assert "effects absent" in result.output
         assert "icons absent" in result.output
 
-    def test_json_format_renders_structured_object(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_json_format_renders_structured_object(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _fake_composition(monkeypatch, lambda: _inspect_result())
         result = runner.invoke(app, ["inspect", "status", "--format", "json"])
 
@@ -215,9 +210,7 @@ class TestInspectStatusCliErrorMapping:
         assert result.exit_code == 1
         assert "permission denied" in result.output
 
-    def test_unexpected_exception_maps_to_exit_1(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_unexpected_exception_maps_to_exit_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom() -> Any:
             raise KeyError("surprise")
 
@@ -234,38 +227,69 @@ class TestAutoSeedGuard:
     def test_inspect_never_auto_seeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[str] = []
         monkeypatch.setattr(cli_main, "_run_seed_if_needed", lambda: calls.append("seed"))
-        monkeypatch.setattr(sys, "argv", ["dotfiles-runtime", "inspect", "status"])
 
-        cli_main.main_callback(output_format=OutputFormat.PLAIN)
+        cli_main.main_callback(
+            ctx=SimpleNamespace(invoked_subcommand="inspect"),
+            output_format=OutputFormat.PLAIN,
+        )
 
         assert calls == []
 
     def test_reconcile_still_skips_auto_seed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[str] = []
         monkeypatch.setattr(cli_main, "_run_seed_if_needed", lambda: calls.append("seed"))
-        monkeypatch.setattr(sys, "argv", ["dotfiles-runtime", "reconcile"])
 
-        cli_main.main_callback(output_format=OutputFormat.PLAIN)
+        cli_main.main_callback(
+            ctx=SimpleNamespace(invoked_subcommand="reconcile"),
+            output_format=OutputFormat.PLAIN,
+        )
 
         assert calls == []
 
     def test_other_commands_still_auto_seed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[str] = []
         monkeypatch.setattr(cli_main, "_run_seed_if_needed", lambda: calls.append("seed"))
-        monkeypatch.setattr(sys, "argv", ["dotfiles-runtime", "version"])
 
-        cli_main.main_callback(output_format=OutputFormat.PLAIN)
+        cli_main.main_callback(
+            ctx=SimpleNamespace(invoked_subcommand="version"),
+            output_format=OutputFormat.PLAIN,
+        )
 
         assert calls == ["seed"]
 
-    def test_absent_state_error_reachable_end_to_end(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_operand_named_like_command_still_seeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`wallpaper set ./reconcile` must seed — the guard keys on the
+        resolved command, never argv text (regression pin for argv parsing)."""
+        calls: list[str] = []
+        monkeypatch.setattr(cli_main, "_run_seed_if_needed", lambda: calls.append("seed"))
+
+        cli_main.main_callback(
+            ctx=SimpleNamespace(invoked_subcommand="wallpaper"),
+            output_format=OutputFormat.PLAIN,
+        )
+
+        assert calls == ["seed"]
+
+    def test_flag_first_invocation_skips_seed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`--format json doctor` resolves command doctor → skip seeding."""
+        calls: list[str] = []
+        monkeypatch.setattr(cli_main, "_run_seed_if_needed", lambda: calls.append("seed"))
+
+        cli_main.main_callback(
+            ctx=SimpleNamespace(invoked_subcommand="doctor"),
+            output_format=OutputFormat.PLAIN,
+        )
+
+        assert calls == []
+
+    def test_absent_state_error_reachable_end_to_end(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """AC 3 — through the full app invocation, the absent-state error is
         reachable (guard skips seeding; no fabricated state masks it)."""
         calls: list[str] = []
         monkeypatch.setattr(
-            cli_main, "_run_seed_if_needed", lambda: calls.append("seed")  # pragma: no cover
+            cli_main,
+            "_run_seed_if_needed",
+            lambda: calls.append("seed"),  # pragma: no cover
         )
         monkeypatch.setattr(sys, "argv", ["dotfiles-runtime", "inspect", "status"])
 

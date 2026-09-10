@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -39,9 +40,7 @@ def _cache_result(
         "icons": icons,
     }
     counts = {layer: len(entries) for layer, entries in layers.items()}
-    return InspectCacheResult(
-        layers=layers, counts=counts, total=sum(counts.values())
-    )
+    return InspectCacheResult(layers=layers, counts=counts, total=sum(counts.values()))
 
 
 def _empty_result() -> InspectCacheResult:
@@ -54,9 +53,7 @@ def _empty_result() -> InspectCacheResult:
 
 
 @pytest.fixture(autouse=True)
-def _quiet_seed_hook(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def _quiet_seed_hook(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Point first-run seeding at an empty spine so it skips quietly."""
     monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(tmp_path / "install"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
@@ -70,9 +67,7 @@ def _fake_composition(monkeypatch: pytest.MonkeyPatch, behavior: Any) -> None:
 
 
 class TestInspectCacheListCliSuccess:
-    def test_success_exits_zero_and_renders_layers(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_success_exits_zero_and_renders_layers(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _fake_composition(monkeypatch, lambda: _cache_result())
         result = runner.invoke(app, ["inspect", "cache", "list"])
 
@@ -95,9 +90,7 @@ class TestInspectCacheListCliSuccess:
         assert result.output.index("palettes") < result.output.index("effects")
         assert result.output.index("effects") < result.output.index("icons")
 
-    def test_plain_hashes_truncated_indented(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_plain_hashes_truncated_indented(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _fake_composition(monkeypatch, lambda: _cache_result())
         result = runner.invoke(app, ["inspect", "cache", "list"])
 
@@ -106,9 +99,7 @@ class TestInspectCacheListCliSuccess:
         # Full 64-char hashes must NOT appear in plain output.
         assert "a" * 64 not in result.output
 
-    def test_json_format_renders_structured_object(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_json_format_renders_structured_object(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _fake_composition(monkeypatch, lambda: _cache_result())
         result = runner.invoke(app, ["inspect", "cache", "list", "--format", "json"])
 
@@ -143,9 +134,7 @@ class TestInspectCacheListCliEmpty:
 
     def test_empty_json_payload_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _fake_composition(monkeypatch, lambda: _empty_result())
-        result = runner.invoke(
-            app, ["inspect", "cache", "list", "--format", "json"]
-        )
+        result = runner.invoke(app, ["inspect", "cache", "list", "--format", "json"])
 
         assert result.exit_code == 0
         assert '"total": 0' in result.output
@@ -154,9 +143,7 @@ class TestInspectCacheListCliEmpty:
 
 
 class TestInspectCacheListCliErrorMapping:
-    def test_value_error_maps_to_exit_1(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_value_error_maps_to_exit_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom() -> Any:
             raise ValueError("cache dir is a symlink (refusing to follow): /x")
 
@@ -176,9 +163,7 @@ class TestInspectCacheListCliErrorMapping:
         assert result.exit_code == 1
         assert "permission denied" in result.output
 
-    def test_unexpected_exception_maps_to_exit_1(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_unexpected_exception_maps_to_exit_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom() -> Any:
             raise KeyError("surprise")
 
@@ -192,16 +177,14 @@ class TestInspectCacheListCliErrorMapping:
 class TestInspectCacheListAutoSeedGuard:
     """inspect cache list is read-only — auto-seed must NEVER run for it."""
 
-    def test_inspect_cache_list_never_auto_seeds(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_inspect_cache_list_never_auto_seeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[str] = []
         monkeypatch.setattr(cli_main, "_run_seed_if_needed", lambda: calls.append("seed"))
-        monkeypatch.setattr(
-            sys, "argv", ["dotfiles-runtime", "inspect", "cache", "list"]
-        )
 
-        cli_main.main_callback(output_format=OutputFormat.PLAIN)
+        cli_main.main_callback(
+            ctx=SimpleNamespace(invoked_subcommand="inspect"),
+            output_format=OutputFormat.PLAIN,
+        )
 
         assert calls == []
 
@@ -219,9 +202,7 @@ class TestInspectCacheListAutoSeedGuard:
 
         calls: list[str] = []
         monkeypatch.setattr(cli_main, "_run_seed_if_needed", lambda: calls.append("seed"))
-        monkeypatch.setattr(
-            sys, "argv", ["dotfiles-runtime", "inspect", "cache", "list"]
-        )
+        monkeypatch.setattr(sys, "argv", ["dotfiles-runtime", "inspect", "cache", "list"])
 
         result = runner.invoke(app, ["inspect", "cache", "list"])
 

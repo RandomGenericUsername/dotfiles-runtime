@@ -23,7 +23,7 @@ Swap sequence order (shared-data-contract, non-negotiable):
 3. ``current.json`` follows (refreshed ``applied_at``).
 4. History: append one ``history.jsonl`` line (trigger ``"reconcile"``
    by default; ``wallpaper set`` passes ``"set"`` via ``run(trigger=...)``
-   — the pinned enum is ``seed|set|reconcile|force``).
+   — the pinned enum is ``seed|set|reconcile|force|regenerate|doctor``).
 5. Reload desktop consumers (fire-and-report, per injected reloader).
 
 Derivation (step 1) runs OUTSIDE the lock (staging is race-safe;
@@ -65,7 +65,7 @@ from runtime.ports.state_repository import IStateRepository
 
 logger = logging.getLogger(__name__)
 
-_VALID_TRIGGERS = frozenset({"seed", "set", "reconcile", "force"})
+_VALID_TRIGGERS = frozenset({"seed", "set", "reconcile", "force", "regenerate", "doctor"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,7 +137,7 @@ class ReconcileDesktopStateUseCase:
 
         Args:
             trigger: history line trigger, validated against the pinned
-                enum ``seed|set|reconcile|force`` (the standalone
+                enum ``seed|set|reconcile|force|regenerate|doctor`` (the standalone
                 ``reconcile`` command keeps the default; the
                 ``wallpaper set`` capstone passes ``"set"``).
 

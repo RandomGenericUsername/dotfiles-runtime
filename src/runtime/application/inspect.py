@@ -66,9 +66,9 @@ _ABSENT_STATE_MESSAGE = (
 
 LinkStatusKind = Literal["ok", "missing", "diverged", "dangling"]
 
-HistoryTrigger = Literal["seed", "set", "reconcile", "force"]
+HistoryTrigger = Literal["seed", "set", "reconcile", "force", "regenerate", "doctor"]
 
-_VALID_HISTORY_TRIGGERS = frozenset({"seed", "set", "reconcile", "force"})
+_VALID_HISTORY_TRIGGERS = frozenset({"seed", "set", "reconcile", "force", "regenerate", "doctor"})
 
 _HISTORY_FIELDS = (
     "ts",
@@ -490,7 +490,7 @@ class InspectHistoryUseCase:
         if not isinstance(trigger, str) or trigger not in _VALID_HISTORY_TRIGGERS:
             raise ValueError(
                 f"history.jsonl line {lineno}: unknown trigger {trigger!r} "
-                f"(expected one of seed|set|reconcile|force)",
+                f"(expected one of seed|set|reconcile|force|regenerate|doctor)",
             )
         ts = obj["ts"]
         wallpaper = obj["wallpaper"]

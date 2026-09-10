@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
@@ -18,12 +17,17 @@ from cli_output.domain.views import CustomView, ErrorView
 
 if TYPE_CHECKING:
     from runtime.application.apply_wallpaper import ApplyWallpaperResult
+    from runtime.application.check_inputs import CheckInputsResult
+    from runtime.application.doctor import DoctorReport, RepairResult
     from runtime.application.inspect import (
         HistoryRecord,
         InspectCacheResult,
         InspectStatusResult,
     )
+    from runtime.application.prune import PrunePlan
     from runtime.application.reconcile import ReconcileResult
+    from runtime.application.regenerate import RegenerateResult
+    from runtime.application.verify_cache import VerifyCacheResult
     from runtime.ports.desktop_reloader import IDesktopReloader
 
 app = typer.Typer(
@@ -178,6 +182,7 @@ def _run_seed_if_needed() -> None:
 
 @app.callback()
 def main_callback(
+    ctx: typer.Context,
     output_format: OutputFormat = typer.Option(
         OutputFormat.PLAIN,
         "--format",
@@ -185,11 +190,18 @@ def main_callback(
         help="Output format",
     ),
 ) -> None:
+    # Surface INFO logs (e.g. prune's per-removal line) when no handler is
+    # configured; never override an embedding app's logging.
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     # P3 — do not auto-seed before reconcile (reconcile must fail loud on
     # absent state). Same for the read-only inspect commands (Story 3.2,
     # AC 3): auto-seeding would mask the absent-state error on provisioned
     # machines and invoke csg/weg/itr for free behind a read command.
-    if "reconcile" in sys.argv or "inspect" in sys.argv:
+    # The COMMAND comes from typer's resolved context (never argv parsing:
+    # operands named "reconcile"/flag values must not skip seeding, and
+    # flag-first invocations must).
+    if ctx.invoked_subcommand in ("reconcile", "inspect", "doctor"):
         return
     _run_seed_if_needed()
 
@@ -446,9 +458,325 @@ def _run_reconcile() -> ReconcileResult:
     return use_case.run()
 
 
+def _run_check_inputs() -> CheckInputsResult:
+    """Compose and run CheckInputsUseCase (reconcile --check-inputs).
+
+    Read-only wiring (Story 1.3): resolve state_root / install_spine (both
+    absolute), construct the JSON state repository, resolve the four spine
+    inputs via ``derive.find_*`` (composition owns discovery per the Story 1.2
+    seam), build the ``InvalidationQueryAdapter``, and inject the repository,
+    the port, and the adapter's ``recorded_inputs`` reader into
+    ``CheckInputsUseCase``. No seeder, mutex, derivation adapters, or
+    reloaders — inspection mutates nothing and invokes no tools.
+    """
+    state_root = _resolve_state_root()
+    install_spine = _resolve_install_spine()
+
+    from runtime.adapters.invalidation import InvalidationQueryAdapter
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.application.check_inputs import CheckInputsUseCase
+    from runtime.application.derive import (
+        find_effects_catalog,
+        find_icon_mappings,
+        find_icon_templates,
+        find_templates_dir,
+    )
+
+    invalidation = InvalidationQueryAdapter(
+        state_root=state_root,
+        templates_dir=find_templates_dir(install_spine),
+        catalog_path=find_effects_catalog(install_spine),
+        icon_templates=find_icon_templates(install_spine),
+        icon_mappings=find_icon_mappings(install_spine),
+    )
+    use_case = CheckInputsUseCase(
+        state_repo=JsonStateRepository(state_root=state_root),
+        invalidation=invalidation,
+        recorded_inputs=invalidation.recorded_inputs,
+    )
+    return use_case.run()
+
+
+def _run_regenerate_stale() -> RegenerateResult:
+    """Compose and run RegenerateStaleUseCase (reconcile --regenerate-stale).
+
+    Mirrors ``_run_wallpaper_set``'s construction: resolve state_root /
+    install_spine (both absolute), build one shared set of adapters
+    (``CacheSeeder``, CSG/WEG/ITR, ``FlockSeedMutex``), resolve the four spine
+    inputs via ``derive.find_*`` (composition owns discovery), then wire
+    ``CheckInputsUseCase`` + ``DerivationPipeline`` + ``ReconcileDesktopState-
+    UseCase`` (with ``_build_reloaders``) into ``RegenerateStaleUseCase``.
+    Shared instances (not duplicated per use case) so locking and staging
+    behave as one pipeline.
+    """
+    state_root = _resolve_state_root()
+    install_spine = _resolve_install_spine()
+
+    from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
+    from runtime.adapters.csg_adapter import CsgAdapter
+    from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+    from runtime.adapters.invalidation import InvalidationQueryAdapter
+    from runtime.adapters.itr_adapter import ItrAdapter
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.adapters.seeder import CacheSeeder
+    from runtime.adapters.weg_adapter import WegAdapter
+    from runtime.application.check_inputs import CheckInputsUseCase
+    from runtime.application.derive import (
+        DerivationPipeline,
+        find_effects_catalog,
+        find_icon_mappings,
+        find_icon_templates,
+        find_templates_dir,
+    )
+    from runtime.application.reconcile import ReconcileDesktopStateUseCase
+    from runtime.application.regenerate import RegenerateStaleUseCase
+
+    state_repo = JsonStateRepository(state_root=state_root)
+    seeder = CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec())
+    mutex = FlockSeedMutex(state_root / ".seed.lock")
+    csg, weg, itr = CsgAdapter(), WegAdapter(), ItrAdapter()
+    invalidation = InvalidationQueryAdapter(
+        state_root=state_root,
+        templates_dir=find_templates_dir(install_spine),
+        catalog_path=find_effects_catalog(install_spine),
+        icon_templates=find_icon_templates(install_spine),
+        icon_mappings=find_icon_mappings(install_spine),
+    )
+    use_case = RegenerateStaleUseCase(
+        check=CheckInputsUseCase(
+            state_repo=state_repo,
+            invalidation=invalidation,
+            recorded_inputs=invalidation.recorded_inputs,
+        ),
+        pipeline=DerivationPipeline(
+            state_root=state_root,
+            seeder=seeder,
+            csg=csg,
+            weg=weg,
+            itr=itr,
+            install_spine=install_spine,
+        ),
+        state_repo=state_repo,
+        reconcile=ReconcileDesktopStateUseCase(
+            state_repo=state_repo,
+            csg=csg,
+            weg=weg,
+            itr=itr,
+            install_spine=install_spine,
+            state_root=state_root,
+            seeder=seeder,
+            mutex=mutex,
+            reloaders=_build_reloaders(state_root),
+        ),
+        mutex=mutex,
+        state_root=state_root,
+    )
+    return use_case.run()
+
+
+def _run_doctor_check() -> DoctorReport:
+    """Compose and run DoctorUseCase.check (doctor command).
+
+    Read-only wiring (Story 2.1): resolve state_root (absolute), construct
+    the JSON state repository, inject both into ``DoctorUseCase``. No seeder,
+    mutex, derivation adapters, or reloaders — the check mutates nothing.
+    Shaped forward-compatibly: Story 2.2 adds ``--repair`` to the same
+    command and a ``repair()`` step on the same use case.
+    """
+    state_root = _resolve_state_root()
+
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.application.doctor import DoctorUseCase
+
+    use_case = DoctorUseCase(
+        state_repo=JsonStateRepository(state_root=state_root),
+        state_root=state_root,
+    )
+    return use_case.check()
+
+
+def _run_doctor_repair() -> RepairResult:
+    """Compose and run DoctorRepairUseCase.repair (doctor --repair).
+
+    Mutation wiring (Story 2.2), sharing ONE set of adapters with the
+    composed reconcile (mirrors ``_run_regenerate_stale``): resolve
+    state_root / install_spine (absolute), build the JSON repository, the
+    seeder, the flock mutex, the CSG/WEG/ITR adapters, the derivation
+    pipeline, and the reconcile use case (with ``_build_reloaders``), then
+    inject the read-only ``DoctorUseCase``, the ``quarantine_entry`` seam,
+    and reconcile into ``DoctorRepairUseCase``.
+    """
+    state_root = _resolve_state_root()
+    install_spine = _resolve_install_spine()
+
+    from runtime.adapters.cache import quarantine_entry
+    from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
+    from runtime.adapters.csg_adapter import CsgAdapter
+    from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+    from runtime.adapters.itr_adapter import ItrAdapter
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.adapters.seeder import CacheSeeder
+    from runtime.adapters.weg_adapter import WegAdapter
+    from runtime.application.doctor import DoctorRepairUseCase, DoctorUseCase
+    from runtime.application.reconcile import ReconcileDesktopStateUseCase
+
+    state_repo = JsonStateRepository(state_root=state_root)
+    seeder = CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec())
+    mutex = FlockSeedMutex(state_root / ".seed.lock")
+    csg, weg, itr = CsgAdapter(), WegAdapter(), ItrAdapter()
+    use_case = DoctorRepairUseCase(
+        doctor=DoctorUseCase(state_repo=state_repo, state_root=state_root),
+        quarantine=lambda layer, entry_hash: quarantine_entry(state_root, layer, entry_hash),
+        reconcile=ReconcileDesktopStateUseCase(
+            state_repo=state_repo,
+            csg=csg,
+            weg=weg,
+            itr=itr,
+            install_spine=install_spine,
+            state_root=state_root,
+            seeder=seeder,
+            mutex=mutex,
+            reloaders=_build_reloaders(state_root),
+        ),
+        state_root=state_root,
+        heal_history_tail=seeder.heal_torn_history_tail,
+    )
+    return use_case.repair()
+
+
+@app.command(help="Check current.json vs current/ symlinks vs cache entries for drift")
+def doctor(
+    output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
+    repair: bool = typer.Option(
+        False,
+        "--repair",
+        help="Quarantine bad entries and reconverge the desktop (mutating)",
+    ),
+) -> None:
+    """Report store/symlink/cache divergence; optionally repair it.
+
+    Read-only drift detection (FR-3, CAP-3) by default: classifies every
+    checked item ok/missing/diverged/dangling and exits non-zero on drift.
+    With ``--repair`` (FR-4): quarantine bad entries by rename-aside and
+    reconverge via reconcile (repopulate/repoint/save/history ``doctor``/reload),
+    idempotent. Mutates nothing without the flag.
+    """
+    renderer = create_renderer(output_format)
+    if repair:
+        try:
+            repair_result = _run_doctor_repair()
+        except (ValueError, RuntimeError, OSError) as exc:
+            logger.error("doctor --repair failed: %s", exc)
+            renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
+            raise typer.Exit(code=1) from None
+        except Exception:
+            logger.exception("doctor --repair failed unexpectedly")
+            renderer.error(
+                ErrorView(
+                    kind="UnexpectedError",
+                    message="doctor --repair failed unexpectedly; see logs",
+                )
+            )
+            raise typer.Exit(code=1) from None
+
+        if repair_result.reload_failures:
+            failed = ", ".join(repair_result.reload_failures)
+            logger.error("doctor --repair: reload failed for %s", failed)
+            renderer.error(ErrorView(kind="ReloadError", message=f"reload failed for: {failed}"))
+            raise typer.Exit(code=1) from None
+        if repair_result.history_trigger is None and repair_result.history_tail_quarantined is None:
+            plain = "already clean: nothing to repair"
+        elif repair_result.history_trigger is None:
+            plain = "repaired: healed torn history tail"
+        else:
+            repopulated = ", ".join(repair_result.repopulated) or "none"
+            tail_note = (
+                ", history tail healed"
+                if repair_result.history_tail_quarantined is not None
+                else ""
+            )
+            plain = (
+                f"repaired: quarantined {len(repair_result.quarantined)}, "
+                f"regenerated {repopulated}{tail_note}"
+            )
+        renderer.custom(
+            CustomView(
+                plain=plain,
+                object={
+                    "quarantined": [str(p) for p in repair_result.quarantined],
+                    "repopulated": list(repair_result.repopulated),
+                    "history_trigger": repair_result.history_trigger,
+                    "history_tail_quarantined": (
+                        str(repair_result.history_tail_quarantined)
+                        if repair_result.history_tail_quarantined is not None
+                        else None
+                    ),
+                    "reload_failures": list(repair_result.reload_failures),
+                },
+                rich=plain,
+            )
+        )
+        return
+    try:
+        report = _run_doctor_check()
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.error("doctor failed: %s", exc)
+        renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
+        raise typer.Exit(code=1) from None
+    except Exception:
+        logger.exception("doctor failed unexpectedly")
+        renderer.error(
+            ErrorView(
+                kind="UnexpectedError",
+                message="doctor failed unexpectedly; see logs",
+            )
+        )
+        raise typer.Exit(code=1) from None
+
+    if report.clean:
+        plain = f"desktop clean: {len(report.items)} item(s) checked"
+    else:
+        counts: dict[str, int] = {}
+        for item in report.items:
+            if item.status != "ok":
+                counts[item.status] = counts.get(item.status, 0) + 1
+        breakdown = ", ".join(f"{status}: {n}" for status, n in sorted(counts.items()))
+        plain = f"drift detected: {breakdown}"
+    renderer.custom(
+        CustomView(
+            plain=plain,
+            object={
+                "clean": report.clean,
+                "items": [
+                    {
+                        "name": item.name,
+                        "kind": item.kind,
+                        "status": item.status,
+                        "detail": item.detail,
+                    }
+                    for item in report.items
+                ],
+            },
+            rich=plain,
+        )
+    )
+    if not report.clean:
+        raise typer.Exit(code=1) from None
+
+
 @app.command(help="Repoint current/ symlinks to converge the desktop with current.json")
 def reconcile(
     output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
+    check_inputs: bool = typer.Option(
+        False,
+        "--check-inputs",
+        help="Read-only: report stale derivation layers without mutating anything",
+    ),
+    regenerate_stale: bool = typer.Option(
+        False,
+        "--regenerate-stale",
+        help="Regenerate stale layers (+ cascade) and reconverge the desktop",
+    ),
 ) -> None:
     """Repoint current/ symlinks to match current.json (swap sequence steps 1-4).
 
@@ -462,6 +790,92 @@ def reconcile(
     composition root.
     """
     renderer = create_renderer(output_format)
+    if check_inputs and regenerate_stale:
+        logger.error("reconcile: --check-inputs and --regenerate-stale are mutually exclusive")
+        renderer.error(
+            ErrorView(
+                kind="MutuallyExclusiveOptions",
+                message="--check-inputs (read) and --regenerate-stale (mutate) "
+                "are mutually exclusive",
+            )
+        )
+        raise typer.Exit(code=2) from None
+    if regenerate_stale:
+        try:
+            regen_result = _run_regenerate_stale()
+        except (ValueError, RuntimeError, OSError) as exc:
+            logger.error("reconcile --regenerate-stale failed: %s", exc)
+            renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
+            raise typer.Exit(code=1) from None
+        except Exception:
+            logger.exception("reconcile --regenerate-stale failed unexpectedly")
+            renderer.error(
+                ErrorView(
+                    kind="UnexpectedError",
+                    message="reconcile --regenerate-stale failed unexpectedly; see logs",
+                )
+            )
+            raise typer.Exit(code=1) from None
+
+        if regen_result.reload_failures:
+            failed = ", ".join(regen_result.reload_failures)
+            logger.error("reconcile --regenerate-stale: reload failed for %s", failed)
+            renderer.error(ErrorView(kind="ReloadError", message=f"reload failed for: {failed}"))
+            raise typer.Exit(code=1) from None
+        regenerated = sorted(regen_result.regenerated)
+        if regenerated:
+            plain = f"regenerated: {', '.join(regenerated)}"
+        else:
+            plain = "already converged: all layers fresh"
+        state = regen_result.state
+        renderer.custom(
+            CustomView(
+                plain=plain,
+                object={
+                    "regenerated": regenerated,
+                    "repointed": [str(p) for p in regen_result.repointed],
+                    "reload_failures": list(regen_result.reload_failures),
+                    "wallpaper": state.wallpaper.content_hash,
+                    "palette": state.palette.entry_hash if state.palette else None,
+                    "effects": state.effects.entry_hash if state.effects else None,
+                    "icons": state.icons.entry_hash if state.icons else None,
+                },
+                rich=plain,
+            )
+        )
+        return
+    if check_inputs:
+        try:
+            check_result = _run_check_inputs()
+        except (ValueError, RuntimeError, OSError) as exc:
+            logger.error("reconcile --check-inputs failed: %s", exc)
+            renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
+            raise typer.Exit(code=1) from None
+        except Exception:
+            logger.exception("reconcile --check-inputs failed unexpectedly")
+            renderer.error(
+                ErrorView(
+                    kind="UnexpectedError",
+                    message="reconcile --check-inputs failed unexpectedly; see logs",
+                )
+            )
+            raise typer.Exit(code=1) from None
+
+        stale = sorted(check_result.stale)
+        fresh = sorted(check_result.fresh)
+        if stale:
+            fresh_desc = ", ".join(fresh) if fresh else "none"
+            plain = f"stale layers: {', '.join(stale)} (fresh: {fresh_desc})"
+        else:
+            plain = "all layers fresh"
+        renderer.custom(
+            CustomView(
+                plain=plain,
+                object={"stale": stale, "fresh": fresh},
+                rich=plain,
+            )
+        )
+        return
     try:
         result = _run_reconcile()
     except (ValueError, RuntimeError, OSError) as exc:
@@ -716,9 +1130,36 @@ def _run_inspect_cache_list() -> InspectCacheResult:
     return use_case.run()
 
 
+def _run_verify_cache() -> VerifyCacheResult:
+    """Compose and run VerifyCacheUseCase (inspect cache list --verify).
+
+    Single-walk verify (Story 3.1): the lister does one directory scan; the
+    ``verify_entry`` adapter seam (p3-3-1) is injected with ``annotate=True``
+    so a legacy entry is lazily annotated on read (AD-27). Read-only except
+    that sanctioned annotation.
+    """
+    state_root = _resolve_state_root()
+
+    from runtime.adapters.cache import verify_entry
+    from runtime.application.inspect import InspectCacheUseCase
+    from runtime.application.verify_cache import VerifyCacheUseCase
+
+    use_case = VerifyCacheUseCase(
+        state_root=state_root,
+        lister=InspectCacheUseCase(state_root=state_root),
+        verify_entry=lambda entry_dir: verify_entry(entry_dir, annotate=True),
+    )
+    return use_case.run()
+
+
 @cache_app.command("list")
 def inspect_cache_list(
     output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
+    verify: bool = typer.Option(
+        False,
+        "--verify",
+        help="Re-hash each entry (ok/corrupt/missing); annotate legacy entries",
+    ),
 ) -> None:
     """List cached derived artifacts per layer, by hash (FR-7, CAP-7).
 
@@ -730,8 +1171,71 @@ def inspect_cache_list(
     absent or empty cache is clean (exit 0 with
     "no cache entries recorded yet"), NOT an error. List-only: no
     eviction surface (AC 2).
+
+    With ``--verify`` (Story 3.1): each entry carries an ``ok/corrupt/missing``
+    verdict from the same single walk; legacy entries are annotated (AD-27);
+    exits 1 when any entry is unhealthy.
     """
     renderer = create_renderer(output_format)
+    if verify:
+        try:
+            verify_result = _run_verify_cache()
+        except (ValueError, RuntimeError, OSError) as exc:
+            logger.error("inspect cache list --verify failed: %s", exc)
+            renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
+            raise typer.Exit(code=1) from None
+        except Exception:
+            logger.exception("inspect cache list --verify failed unexpectedly")
+            renderer.error(
+                ErrorView(
+                    kind="UnexpectedError",
+                    message="inspect cache list --verify failed unexpectedly; see logs",
+                )
+            )
+            raise typer.Exit(code=1) from None
+
+        from runtime.application.inspect import CACHE_LAYER_ORDER
+
+        if verify_result.total == 0:
+            plain = "no cache entries recorded yet"
+        else:
+            sections = []
+            for layer in CACHE_LAYER_ORDER:
+                items = verify_result.layers[layer]
+                lines = [f"{layer} ({len(items)}):"]
+                lines.extend(
+                    f"  {entry_hash[:12]} [{health.status}]" for entry_hash, health in items
+                )
+                sections.append("\n".join(lines))
+            plain = "\n".join(sections)
+            if verify_result.unhealthy:
+                plain += f"\nunhealthy: {verify_result.unhealthy}"
+        renderer.custom(
+            CustomView(
+                plain=plain,
+                object={
+                    "layers": {
+                        layer: [
+                            {
+                                "hash": entry_hash,
+                                "status": health.status,
+                                "detail": health.detail,
+                                "annotated": health.annotated,
+                            }
+                            for entry_hash, health in verify_result.layers[layer]
+                        ]
+                        for layer in CACHE_LAYER_ORDER
+                    },
+                    "counts": verify_result.counts,
+                    "total": verify_result.total,
+                    "unhealthy": verify_result.unhealthy,
+                },
+                rich=plain,
+            )
+        )
+        if verify_result.unhealthy:
+            raise typer.Exit(code=1) from None
+        return
     try:
         result = _run_inspect_cache_list()
     except (ValueError, RuntimeError, OSError) as exc:
@@ -767,6 +1271,131 @@ def inspect_cache_list(
                 "layers": {layer: list(result.layers[layer]) for layer in CACHE_LAYER_ORDER},
                 "counts": {layer: result.counts[layer] for layer in CACHE_LAYER_ORDER},
                 "total": result.total,
+            },
+            rich=plain,
+        )
+    )
+
+
+def _run_prune(
+    dry_run: bool, keep: int, prune_pinned: bool
+) -> tuple[PrunePlan, int, list[tuple[str, str]]]:
+    """Compose + run prune (Story 3.3).
+
+    Fails closed when ``current.json`` is absent (refuse to prune without the
+    active set). Real removal holds the seed mutex across plan + deletions so
+    a concurrent ``wallpaper set``/reconcile cannot activate an entry
+    mid-prune; dry-run is read-only and takes no lock. Returns the plan, the
+    number actually removed (0 for dry-run), and the removed ``(layer, hash)``
+    pairs.
+    """
+    state_root = _resolve_state_root()
+
+    from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.adapters.prune_source import entries_for, remove_entry, seed_pins
+    from runtime.application.prune import PruneUseCase
+
+    state_repo = JsonStateRepository(state_root=state_root)
+    if state_repo.load_current() is None:
+        raise ValueError("no runtime state recorded (missing current.json); refusing to prune")
+
+    def _plan() -> PrunePlan:
+        return PruneUseCase(
+            state_repo=state_repo,
+            entries_for=lambda layer: entries_for(state_root, layer),
+            seed_pins=lambda: seed_pins(state_root),
+            keep=keep,
+        ).run(prune_pinned=prune_pinned)
+
+    if dry_run:
+        return _plan(), 0, []
+
+    mutex = FlockSeedMutex(state_root / ".seed.lock")
+    removed: list[tuple[str, str]] = []
+    failures: list[str] = []
+    with mutex.hold(blocking=True):
+        plan = _plan()
+        for layer, hashes in plan.removals.items():
+            for entry_hash in hashes:
+                try:
+                    if remove_entry(state_root, layer, entry_hash):
+                        removed.append((layer, entry_hash))
+                except OSError as exc:
+                    failures.append(f"{layer}/{entry_hash}")
+                    logger.error("prune: failed cache/%s/%s: %s", layer, entry_hash, exc)
+    if failures:
+        raise RuntimeError(
+            f"prune removed {len(removed)}, failed {len(failures)}: {', '.join(failures)}"
+        )
+    return plan, len(removed), removed
+
+
+@cache_app.command("prune")
+def inspect_cache_prune(
+    output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report reclaimable entries without removing them"
+    ),
+    keep: int = typer.Option(
+        5, "--keep", min=0, help="Keep the N most recent entries per layer (default 5)"
+    ),
+    prune_pinned: bool = typer.Option(
+        False, "--prune-pinned", help="Also prune seed-pinned entries (default: protected)"
+    ),
+) -> None:
+    """Prune unreferenced cache entries outside the keep-policy (FR-6, AD-24).
+
+    Without ``--dry-run`` this is a MUTATING command: it deletes exactly the
+    planned entries (active, last-N, seed-pinned, and undated are protected).
+    ``--dry-run`` is the safe path — it reports reclaimable entries and removes
+    nothing. Idempotent: a second run finds nothing to remove and exits 0.
+    """
+    renderer = create_renderer(output_format)
+    try:
+        plan, removed, removed_pairs = _run_prune(dry_run, keep, prune_pinned)
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.error("inspect cache prune failed: %s", exc)
+        renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
+        raise typer.Exit(code=1) from None
+    except Exception:
+        logger.exception("inspect cache prune failed unexpectedly")
+        renderer.error(
+            ErrorView(
+                kind="UnexpectedError",
+                message="inspect cache prune failed unexpectedly; see logs",
+            )
+        )
+        raise typer.Exit(code=1) from None
+
+    from runtime.application.prune import LAYERS
+
+    if plan.total_removable == 0:
+        plain = "nothing to prune"
+    elif dry_run:
+        lines = [f"reclaimable: {plan.total_removable}"]
+        for layer in LAYERS:
+            if plan.removals[layer]:
+                lines.append(f"{layer} ({len(plan.removals[layer])}):")
+                lines.extend(f"  {h[:12]}" for h in plan.removals[layer])
+        plain = "\n".join(lines)
+    else:
+        lines = [f"reclaimed: {removed}"]
+        lines.extend(f"  {layer}/{h[:12]}" for layer, h in removed_pairs)
+        plain = "\n".join(lines)
+    renderer.custom(
+        CustomView(
+            plain=plain,
+            object={
+                "dry_run": dry_run,
+                "keep": keep,
+                "prune_pinned": prune_pinned,
+                "kept": plan.kept,
+                "removals": {layer: list(plan.removals[layer]) for layer in LAYERS},
+                "total_removable": plan.total_removable,
+                "removed": removed,
+                "removed_count": removed,
+                "removed_hashes": [{"layer": layer, "hash": h} for layer, h in removed_pairs],
             },
             rich=plain,
         )

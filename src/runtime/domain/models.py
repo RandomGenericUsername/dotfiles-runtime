@@ -177,3 +177,43 @@ class DesktopState:
 
 class SeedLockedError(RuntimeError):
     """Raised when another process already holds the seed mutex (AD-11)."""
+
+
+class CorruptCacheError(RuntimeError):
+    """Raised when a cache entry's bytes do not match its recorded digests (AD-26).
+
+    Raised at populate time by ``adapters/cache.py::verify_staging`` (before
+    the staging rename — the corrupt entry never becomes visible) and consumed
+    by ``DoctorUseCase`` repair (Story 2.2: quarantine + repopulate). Lives in
+    the domain so ``application/`` can catch it without importing
+    ``adapters/`` (inward dependencies only).
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class EntryHealth:
+    """Read-side health verdict for one cache entry (Story 3.1, FR-5).
+
+    Shared domain value type: ``adapters/cache.py::verify_entry`` produces it
+    and ``application/verify_cache.py`` consumes it, so neither has to import
+    the other (inward dependencies only).
+    """
+
+    status: Literal["ok", "corrupt", "missing"]
+    detail: str
+    annotated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CacheEntryRef:
+    """One cache entry + its recency timestamp (Story 3.2 prune).
+
+    Shared domain value type: ``adapters/prune_source.py`` produces it and
+    ``application/prune.py`` consumes it. ``timestamp`` is the entry's
+    ``generated_at``/``imported_at`` (ISO-8601), or ``None`` when the meta is
+    missing/corrupt/undated — an undated entry is PROTECTED by prune (never
+    delete what cannot be classified).
+    """
+
+    entry_hash: str
+    timestamp: str | None

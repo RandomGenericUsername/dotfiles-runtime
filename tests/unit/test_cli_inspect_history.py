@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -44,9 +45,7 @@ def _record(
 
 
 @pytest.fixture(autouse=True)
-def _quiet_seed_hook(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def _quiet_seed_hook(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Point first-run seeding at an empty spine so it skips quietly."""
     monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(tmp_path / "install"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
@@ -60,9 +59,7 @@ def _fake_composition(monkeypatch: pytest.MonkeyPatch, behavior: Any) -> None:
 
 
 class TestInspectHistoryCliSuccess:
-    def test_success_exits_zero_and_renders_entries(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_success_exits_zero_and_renders_entries(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _fake_composition(monkeypatch, lambda limit: ([_record()], 1))
         result = runner.invoke(app, ["inspect", "history"])
 
@@ -71,9 +68,7 @@ class TestInspectHistoryCliSuccess:
         assert "set" in result.output
         assert ("a" * 12) in result.output
 
-    def test_newest_first_order_preserved_in_plain(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_newest_first_order_preserved_in_plain(self, monkeypatch: pytest.MonkeyPatch) -> None:
         older = _record(ts="2026-01-01T00:00:00Z", trigger="seed")
         newer = _record(ts="2026-01-02T00:00:00Z", trigger="set")
         _fake_composition(monkeypatch, lambda limit: ([newer, older], 2))
@@ -82,9 +77,7 @@ class TestInspectHistoryCliSuccess:
         assert result.exit_code == 0
         assert result.output.index("2026-01-02") < result.output.index("2026-01-01")
 
-    def test_json_format_renders_structured_object(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_json_format_renders_structured_object(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _fake_composition(monkeypatch, lambda limit: ([_record()], 1))
         result = runner.invoke(app, ["inspect", "history", "--format", "json"])
 
@@ -106,9 +99,7 @@ class TestInspectHistoryCliSuccess:
         assert ("b" * 64) in result.output
         assert "/img/wall.png" in result.output
 
-    def test_json_truncated_flag_when_limited(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_json_truncated_flag_when_limited(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _fake_composition(monkeypatch, lambda limit: ([_record()], 25))
         result = runner.invoke(app, ["inspect", "history", "--format", "json"])
 
@@ -157,9 +148,7 @@ class TestInspectHistoryCliLimit:
         assert result.exit_code == 0
         assert seen == [0]
 
-    def test_negative_limit_maps_to_exit_1(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_negative_limit_maps_to_exit_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(limit: int) -> Any:
             raise ValueError("history limit must be >= 0, got -1")
 
@@ -182,9 +171,7 @@ class TestInspectHistoryCliEmpty:
 
     def test_empty_json_payload_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _fake_composition(monkeypatch, lambda limit: ([], 0))
-        result = runner.invoke(
-            app, ["inspect", "history", "--format", "json", "--limit", "5"]
-        )
+        result = runner.invoke(app, ["inspect", "history", "--format", "json", "--limit", "5"])
 
         assert result.exit_code == 0
         assert '"entries": []' in result.output
@@ -195,9 +182,7 @@ class TestInspectHistoryCliEmpty:
 
 
 class TestInspectHistoryCliErrorMapping:
-    def test_corrupt_middle_maps_to_exit_1(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_corrupt_middle_maps_to_exit_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(limit: int) -> Any:
             raise ValueError("history.jsonl line 2: not valid JSON (oops)")
 
@@ -217,9 +202,7 @@ class TestInspectHistoryCliErrorMapping:
         assert result.exit_code == 1
         assert "permission denied" in result.output
 
-    def test_unexpected_exception_maps_to_exit_1(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_unexpected_exception_maps_to_exit_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(limit: int) -> Any:
             raise KeyError("surprise")
 
@@ -233,14 +216,14 @@ class TestInspectHistoryCliErrorMapping:
 class TestInspectHistoryAutoSeedGuard:
     """inspect history is read-only — auto-seed must NEVER run for it."""
 
-    def test_inspect_history_never_auto_seeds(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_inspect_history_never_auto_seeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[str] = []
         monkeypatch.setattr(cli_main, "_run_seed_if_needed", lambda: calls.append("seed"))
-        monkeypatch.setattr(sys, "argv", ["dotfiles-runtime", "inspect", "history"])
 
-        cli_main.main_callback(output_format=OutputFormat.PLAIN)
+        cli_main.main_callback(
+            ctx=SimpleNamespace(invoked_subcommand="inspect"),
+            output_format=OutputFormat.PLAIN,
+        )
 
         assert calls == []
 
