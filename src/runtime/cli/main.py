@@ -497,6 +497,80 @@ def _run_check_inputs() -> CheckInputsResult:
     return use_case.run()
 
 
+@dataclass(frozen=True, slots=True)
+class _ReconcilePlanResult:
+    """Combined outcome of the ``reconcile --plan`` read-only preview.
+
+    Keeps the stale set from ``CheckInputsUseCase`` alongside the removal
+    plan from ``PruneUseCase`` so the CLI renders both coherently. Pure
+    composition-root data — no application-layer unit backs it (the Phase 4
+    diff engine will replace these internals behind this same surface).
+    """
+
+    stale: frozenset[str]
+    fresh: frozenset[str]
+    removals: dict[str, tuple[str, ...]]
+    kept: dict[str, int]
+    total_removable: int
+    keep: int
+    prune_pinned: bool
+
+
+def _run_reconcile_plan(keep: int, prune_pinned: bool) -> _ReconcilePlanResult:
+    """Compose and run the ``reconcile --plan`` read-only preview.
+
+    Composes the two existing read-only use cases (precedent:
+    ``_run_wallpaper_set`` composes apply + reconcile): ``CheckInputsUseCase``
+    for the stale set, ``PruneUseCase`` for the removal set. No seeder,
+    mutex (no lock — read-only like dry-run), derivation adapters,
+    reloaders, or history appends — the preview mutates nothing and invokes
+    no tools.
+    """
+    state_root = _resolve_state_root()
+    install_spine = _resolve_install_spine()
+
+    from runtime.adapters.invalidation import InvalidationQueryAdapter
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.adapters.prune_source import entries_for, seed_pins
+    from runtime.application.check_inputs import CheckInputsUseCase
+    from runtime.application.derive import (
+        find_effects_catalog,
+        find_icon_mappings,
+        find_icon_templates,
+        find_templates_dir,
+    )
+    from runtime.application.prune import PruneUseCase
+
+    state_repo = JsonStateRepository(state_root=state_root)
+    invalidation = InvalidationQueryAdapter(
+        state_root=state_root,
+        templates_dir=find_templates_dir(install_spine),
+        catalog_path=find_effects_catalog(install_spine),
+        icon_templates=find_icon_templates(install_spine),
+        icon_mappings=find_icon_mappings(install_spine),
+    )
+    check_result = CheckInputsUseCase(
+        state_repo=state_repo,
+        invalidation=invalidation,
+        recorded_inputs=invalidation.recorded_inputs,
+    ).run()
+    plan = PruneUseCase(
+        state_repo=state_repo,
+        entries_for=lambda layer: entries_for(state_root, layer),
+        seed_pins=lambda: seed_pins(state_root),
+        keep=keep,
+    ).run(prune_pinned=prune_pinned)
+    return _ReconcilePlanResult(
+        stale=frozenset(check_result.stale),
+        fresh=frozenset(check_result.fresh),
+        removals=dict(plan.removals),
+        kept=dict(plan.kept),
+        total_removable=plan.total_removable,
+        keep=keep,
+        prune_pinned=prune_pinned,
+    )
+
+
 def _run_regenerate_stale() -> RegenerateResult:
     """Compose and run RegenerateStaleUseCase (reconcile --regenerate-stale).
 
@@ -777,6 +851,17 @@ def reconcile(
         "--regenerate-stale",
         help="Regenerate stale layers (+ cascade) and reconverge the desktop",
     ),
+    plan: bool = typer.Option(
+        False,
+        "--plan",
+        help="Read-only: preview stale layers + prune removal plan without mutating anything",
+    ),
+    keep: int = typer.Option(
+        5, "--keep", min=0, help="Keep the N most recent entries per layer (plan/prune policy)"
+    ),
+    prune_pinned: bool = typer.Option(
+        False, "--prune-pinned", help="Include seed-pinned entries in the plan/prune removal set"
+    ),
 ) -> None:
     """Repoint current/ symlinks to match current.json (swap sequence steps 1-4).
 
@@ -790,13 +875,25 @@ def reconcile(
     composition root.
     """
     renderer = create_renderer(output_format)
-    if check_inputs and regenerate_stale:
-        logger.error("reconcile: --check-inputs and --regenerate-stale are mutually exclusive")
+    if (keep != 5 or prune_pinned) and not plan:
+        logger.error("reconcile: --keep/--prune-pinned require --plan")
         renderer.error(
             ErrorView(
                 kind="MutuallyExclusiveOptions",
-                message="--check-inputs (read) and --regenerate-stale (mutate) "
-                "are mutually exclusive",
+                message="--keep and --prune-pinned require --plan",
+            )
+        )
+        raise typer.Exit(code=2) from None
+    modes = [check_inputs, regenerate_stale, plan]
+    if sum(1 for mode in modes if mode) > 1:
+        logger.error(
+            "reconcile: --check-inputs, --regenerate-stale, and --plan are mutually exclusive"
+        )
+        renderer.error(
+            ErrorView(
+                kind="MutuallyExclusiveOptions",
+                message="--check-inputs (read), --regenerate-stale (mutate), and "
+                "--plan (preview) are mutually exclusive",
             )
         )
         raise typer.Exit(code=2) from None
@@ -839,6 +936,59 @@ def reconcile(
                     "palette": state.palette.entry_hash if state.palette else None,
                     "effects": state.effects.entry_hash if state.effects else None,
                     "icons": state.icons.entry_hash if state.icons else None,
+                },
+                rich=plain,
+            )
+        )
+        return
+    if plan:
+        try:
+            plan_result = _run_reconcile_plan(keep, prune_pinned)
+        except (ValueError, RuntimeError, OSError) as exc:
+            logger.error("reconcile --plan failed: %s", exc)
+            renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
+            raise typer.Exit(code=1) from None
+        except Exception:
+            logger.exception("reconcile --plan failed unexpectedly")
+            renderer.error(
+                ErrorView(
+                    kind="UnexpectedError",
+                    message="reconcile --plan failed unexpectedly; see logs",
+                )
+            )
+            raise typer.Exit(code=1) from None
+
+        stale = sorted(plan_result.stale)
+        fresh = sorted(plan_result.fresh)
+        from runtime.application.prune import LAYERS
+
+        removals = {layer: sorted(plan_result.removals.get(layer, ())) for layer in LAYERS}
+        parts = []
+        if stale:
+            fresh_desc = ", ".join(fresh) if fresh else "none"
+            parts.append(f"stale layers: {', '.join(stale)} (fresh: {fresh_desc})")
+        else:
+            parts.append("all layers fresh")
+        if plan_result.total_removable:
+            parts.append(f"reclaimable: {plan_result.total_removable}")
+            for layer in LAYERS:
+                if removals[layer]:
+                    parts.append(f"{layer} ({len(removals[layer])}):")
+                    parts.extend(f"  {h[:12]}" for h in removals[layer])
+        else:
+            parts.append("nothing reclaimable")
+        plain = "\n".join(parts)
+        renderer.custom(
+            CustomView(
+                plain=plain,
+                object={
+                    "stale": stale,
+                    "fresh": fresh,
+                    "removals": removals,
+                    "kept": dict(plan_result.kept),
+                    "total_removable": plan_result.total_removable,
+                    "keep": plan_result.keep,
+                    "prune_pinned": plan_result.prune_pinned,
                 },
                 rich=plain,
             )
