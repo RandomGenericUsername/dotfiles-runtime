@@ -217,3 +217,18 @@ class CacheEntryRef:
 
     entry_hash: str
     timestamp: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class DesiredState:
+    """Declared intent for Phase 4 declarative convergence (Story 4.2).
+
+    Pure value type: the wallpaper the desktop should show, the keep policy
+    the planner must obey, and explicitly pinned entry hashes. Carries no
+    file-format version (validated at load, not carried) and performs no I/O.
+    Nothing consumes this yet — the diff engine (Epic 3) will.
+    """
+
+    wallpaper: str
+    keep: int
+    pinned: tuple[str, ...]
