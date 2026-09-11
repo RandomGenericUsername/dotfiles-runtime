@@ -232,3 +232,21 @@ class DesiredState:
     wallpaper: str
     keep: int
     pinned: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ActualState:
+    """Observed reality for Phase 4 declarative convergence (Story 4.3).
+
+    Dumb carrier: sorting/canonicalization is the builder's job
+    (``application/actual_state.py``), not the model's. ``current_wallpaper``
+    is ``None`` on a fresh machine (never derived). ``prunable_hashes``
+    mirrors ``PrunePlan.removals`` shape. Nothing consumes this yet — the
+    diff engine (Epic 3) will.
+    """
+
+    current_wallpaper: str | None
+    monitors: tuple[str, ...]
+    prunable_hashes: dict[str, tuple[str, ...]]
+    pinned_hashes: tuple[str, ...]
+    undated_hashes: tuple[str, ...]
