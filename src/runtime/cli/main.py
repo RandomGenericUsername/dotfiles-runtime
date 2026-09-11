@@ -401,28 +401,54 @@ def wallpaper_set(
             else ""
         )
     )
-    renderer.custom(
-        CustomView(
-            plain=summary,
-            object={
-                "wallpaper": state.wallpaper.content_hash,
-                "palette": state.palette.entry_hash if state.palette else None,
-                "effects": state.effects.entry_hash if state.effects else None,
-                "icons": state.icons.entry_hash if state.icons else None,
-                "cache_hits": {
-                    "palette": result.apply.cache_hit_palette,
-                    "effects": result.apply.cache_hit_effects,
-                    "icons": result.apply.cache_hit_icons,
-                },
-                "repointed": [str(p) for p in result.reconcile.repointed],
-                "consumer_symlinks": [str(p) for p in result.reconcile.consumer_symlinks],
-                "skipped": list(result.reconcile.skipped),
-                "cache_regenerated": list(result.reconcile.cache_regenerated),
-                "reload_failures": list(result.reconcile.reload_failures),
-            },
-            rich=summary,
-        )
-    )
+    obj: dict[str, object] = {
+        "wallpaper": state.wallpaper.content_hash,
+        "palette": state.palette.entry_hash if state.palette else None,
+        "effects": state.effects.entry_hash if state.effects else None,
+        "icons": state.icons.entry_hash if state.icons else None,
+        "cache_hits": {
+            "palette": result.apply.cache_hit_palette,
+            "effects": result.apply.cache_hit_effects,
+            "icons": result.apply.cache_hit_icons,
+        },
+        "repointed": [str(p) for p in result.reconcile.repointed],
+        "consumer_symlinks": [str(p) for p in result.reconcile.consumer_symlinks],
+        "skipped": list(result.reconcile.skipped),
+        "cache_regenerated": list(result.reconcile.cache_regenerated),
+        "reload_failures": list(result.reconcile.reload_failures),
+        "inputs_stale": [],
+        "inputs_fresh": [],
+        "inputs_check_error": None,
+    }
+    summary = _append_inputs_check(summary, obj)
+    renderer.custom(CustomView(plain=summary, object=obj, rich=summary))
+
+
+def _append_inputs_check(summary: str, obj: dict[str, object]) -> str:
+    """Run the invalidation check and append its result (Story 4.7).
+
+    Informational only (AC 4): a stale input never changes the exit code —
+    the reload gate already owns set failure — and a check failure is a
+    warning line, never swallowed and never promoted to a set failure.
+    """
+    try:
+        check = _run_check_inputs()
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.warning("wallpaper set: inputs check failed: %s", exc)
+        obj["inputs_check_error"] = str(exc)
+        return summary + f"\ninputs check failed: {exc}"
+    except Exception:
+        logger.warning("wallpaper set: inputs check failed unexpectedly", exc_info=True)
+        obj["inputs_check_error"] = "unexpected failure; see logs"
+        return summary + "\ninputs check failed unexpectedly; see logs"
+    stale = sorted(check.stale)
+    fresh = sorted(check.fresh)
+    obj["inputs_stale"] = stale
+    obj["inputs_fresh"] = fresh
+    if stale:
+        fresh_desc = ", ".join(fresh) if fresh else "none"
+        return summary + f"\ninputs stale: {', '.join(stale)} (fresh: {fresh_desc})"
+    return summary + "\ninputs: all layers fresh"
 
 
 def _run_reconcile() -> ReconcileResult:
