@@ -250,3 +250,32 @@ class ActualState:
     prunable_hashes: dict[str, tuple[str, ...]]
     pinned_hashes: tuple[str, ...]
     undated_hashes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeSet:
+    """Gap between declared intent and observed reality (Story 4.4).
+
+    Dumb carrier: comparison/canonicalization is the diff's job
+    (``application/diff.py``), not the model's. ``wallpaper_target`` is the
+    desired path or ``None`` when converged; ``keep_target`` is the desired
+    keep or ``None`` when unchanged. ``pins_absent`` is informational —
+    seed-pin protection lives with the planner/policy (AD-30), never here.
+    Nothing consumes this yet — the planner (p4-3-2) will.
+    """
+
+    wallpaper_target: str | None
+    pins_to_add: tuple[str, ...]
+    pins_absent: tuple[str, ...]
+    keep_target: int | None
+
+    @property
+    def is_empty(self) -> bool:
+        """Actionable-convergence signal: nothing the planner would act on.
+
+        ``pins_absent`` is deliberately excluded — seed-pins stay protected
+        per the AD-30 floor, so an extra pin is informational residue, not
+        an actionable gap (owner decision, p4-3-1 Gate 2). The planner must
+        still render ``pins_absent`` in ``--plan`` output.
+        """
+        return self.wallpaper_target is None and not self.pins_to_add and self.keep_target is None
