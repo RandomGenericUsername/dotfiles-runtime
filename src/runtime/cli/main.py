@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -16,6 +16,8 @@ from cli_output.domain.enums import OutputFormat
 from cli_output.domain.views import CustomView, ErrorView
 
 if TYPE_CHECKING:
+    from cli_output.adapters.factory import Renderer
+
     from runtime.application.apply_wallpaper import ApplyWallpaperResult
     from runtime.application.check_inputs import CheckInputsResult
     from runtime.application.doctor import DoctorReport, RepairResult
@@ -24,10 +26,12 @@ if TYPE_CHECKING:
         InspectCacheResult,
         InspectStatusResult,
     )
+    from runtime.application.planner import ConvergenceReport
     from runtime.application.prune import PrunePlan
     from runtime.application.reconcile import ReconcileResult
     from runtime.application.regenerate import RegenerateResult
     from runtime.application.verify_cache import VerifyCacheResult
+    from runtime.domain.models import ChangeSet
     from runtime.ports.desktop_reloader import IDesktopReloader
 
 app = typer.Typer(
@@ -516,7 +520,28 @@ class _ReconcilePlanResult:
     prune_pinned: bool
 
 
-def _run_reconcile_plan(keep: int, prune_pinned: bool) -> _ReconcilePlanResult:
+@dataclass(frozen=True, slots=True)
+class _DeclarativePlanResult:
+    """Declarative ``reconcile --plan`` preview (Story 4.5).
+
+    The real gap (``ChangeSet``) plus the stale/fresh continuity rows and the
+    AD-30 prunable set. Pure composition-root data like
+    :class:`_ReconcilePlanResult`.
+    """
+
+    stale: frozenset[str]
+    fresh: frozenset[str]
+    changeset: ChangeSet
+    prunable: dict[str, tuple[str, ...]]
+    total_removable: int
+    compute_keep: int
+    current_keep: int
+    prune_pinned: bool
+
+
+def _run_reconcile_plan(
+    keep: int | None, prune_pinned: bool
+) -> _ReconcilePlanResult | _DeclarativePlanResult:
     """Compose and run the ``reconcile --plan`` read-only preview.
 
     Composes the two existing read-only use cases (precedent:
@@ -525,10 +550,16 @@ def _run_reconcile_plan(keep: int, prune_pinned: bool) -> _ReconcilePlanResult:
     mutex (no lock — read-only like dry-run), derivation adapters,
     reloaders, or history appends — the preview mutates nothing and invokes
     no tools.
+
+    With a ``desired.json`` present (Story 4.5), the declarative branch
+    engages: the same adapter callables feed ``build_actual_state`` and the
+    ``ChangeSet`` diff. Absent file → legacy imperative output untouched.
+    Malformed file → ``ValueError`` (loud, never silent fallback).
     """
     state_root = _resolve_state_root()
     install_spine = _resolve_install_spine()
 
+    from runtime.adapters.desired_state_reader import read_desired_state
     from runtime.adapters.invalidation import InvalidationQueryAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.prune_source import entries_for, seed_pins
@@ -542,6 +573,9 @@ def _run_reconcile_plan(keep: int, prune_pinned: bool) -> _ReconcilePlanResult:
     from runtime.application.prune import PruneUseCase
 
     state_repo = JsonStateRepository(state_root=state_root)
+    # Fail fast on malformed intent: before any invalidation work, loud
+    # ValueError on bad file (AC 4) — never silent fallback to imperative.
+    desired = read_desired_state(state_root)
     invalidation = InvalidationQueryAdapter(
         state_root=state_root,
         templates_dir=find_templates_dir(install_spine),
@@ -554,19 +588,48 @@ def _run_reconcile_plan(keep: int, prune_pinned: bool) -> _ReconcilePlanResult:
         invalidation=invalidation,
         recorded_inputs=invalidation.recorded_inputs,
     ).run()
-    plan = PruneUseCase(
-        state_repo=state_repo,
-        entries_for=lambda layer: entries_for(state_root, layer),
-        seed_pins=lambda: seed_pins(state_root),
-        keep=keep,
-    ).run(prune_pinned=prune_pinned)
-    return _ReconcilePlanResult(
+    if desired is None:
+        resolved_keep = keep if keep is not None else 5
+        plan = PruneUseCase(
+            state_repo=state_repo,
+            entries_for=lambda layer: entries_for(state_root, layer),
+            seed_pins=lambda: seed_pins(state_root),
+            keep=resolved_keep,
+        ).run(prune_pinned=prune_pinned)
+        return _ReconcilePlanResult(
+            stale=frozenset(check_result.stale),
+            fresh=frozenset(check_result.fresh),
+            removals=dict(plan.removals),
+            kept=dict(plan.kept),
+            total_removable=plan.total_removable,
+            keep=resolved_keep,
+            prune_pinned=prune_pinned,
+        )
+    # Declarative branch (AD-30 precedence: code default < desired < CLI flag).
+    if keep is not None:
+        desired = replace(desired, keep=keep)
+    compute_keep = keep if keep is not None else desired.keep
+    current_keep = keep if keep is not None else 5
+    from runtime.application.actual_state import build_actual_state
+    from runtime.application.diff import diff_states
+
+    actual = build_actual_state(
+        state_repo.load_current(),
+        lambda layer: entries_for(state_root, layer),
+        lambda: seed_pins(state_root),
+        compute_keep,
+        prune_pinned,
+    )
+    changeset = diff_states(desired, actual, current_keep)
+    prunable = dict(actual.prunable_hashes)
+    return _DeclarativePlanResult(
         stale=frozenset(check_result.stale),
         fresh=frozenset(check_result.fresh),
-        removals=dict(plan.removals),
-        kept=dict(plan.kept),
-        total_removable=plan.total_removable,
-        keep=keep,
+        changeset=changeset,
+        prunable=prunable,
+        total_removable=sum(len(hashes) for hashes in prunable.values()),
+        compute_keep=compute_keep,
+        current_keep=current_keep,
         prune_pinned=prune_pinned,
     )
 
@@ -838,6 +901,110 @@ def doctor(
         raise typer.Exit(code=1) from None
 
 
+def _render_imperative_plan(renderer: Renderer, plan_result: _ReconcilePlanResult) -> None:
+    """Render the legacy imperative preview (byte-identical, AC 2)."""
+    stale = sorted(plan_result.stale)
+    fresh = sorted(plan_result.fresh)
+    from runtime.application.prune import LAYERS
+
+    removals = {layer: sorted(plan_result.removals.get(layer, ())) for layer in LAYERS}
+    parts = []
+    if stale:
+        fresh_desc = ", ".join(fresh) if fresh else "none"
+        parts.append(f"stale layers: {', '.join(stale)} (fresh: {fresh_desc})")
+    else:
+        parts.append("all layers fresh")
+    if plan_result.total_removable:
+        parts.append(f"reclaimable: {plan_result.total_removable}")
+        for layer in LAYERS:
+            if removals[layer]:
+                parts.append(f"{layer} ({len(removals[layer])}):")
+                parts.extend(f"  {h[:12]}" for h in removals[layer])
+    else:
+        parts.append("nothing reclaimable")
+    plain = "\n".join(parts)
+    renderer.custom(
+        CustomView(
+            plain=plain,
+            object={
+                "stale": stale,
+                "fresh": fresh,
+                "removals": removals,
+                "kept": dict(plan_result.kept),
+                "total_removable": plan_result.total_removable,
+                "keep": plan_result.keep,
+                "prune_pinned": plan_result.prune_pinned,
+            },
+            rich=plain,
+        )
+    )
+
+
+def _render_declarative_plan(renderer: Renderer, result: _DeclarativePlanResult) -> None:
+    """Render the ChangeSet gap (AC 1). Pins-absent rows are informational."""
+    from runtime.application.prune import LAYERS
+
+    changeset = result.changeset
+    stale = sorted(result.stale)
+    fresh = sorted(result.fresh)
+    parts = ["declarative gap vs desired.json:"]
+    if changeset.wallpaper_target is None:
+        parts.append("wallpaper: converged")
+    else:
+        parts.append(f"wallpaper -> {changeset.wallpaper_target}")
+    if changeset.pins_to_add:
+        parts.append(f"pins to add ({len(changeset.pins_to_add)}):")
+        parts.extend(f"  {h[:12]}" for h in changeset.pins_to_add)
+    else:
+        parts.append("pins to add: none")
+    if changeset.pins_absent:
+        parts.append(f"pins absent (protected, informational) ({len(changeset.pins_absent)}):")
+        parts.extend(f"  {h[:12]}" for h in changeset.pins_absent)
+    if changeset.keep_target is None:
+        parts.append(f"keep: {result.current_keep} (converged)")
+    else:
+        parts.append(f"keep: {result.current_keep} -> {changeset.keep_target}")
+    if result.total_removable:
+        parts.append(
+            f"prunable under AD-30 floor (keep={result.compute_keep}): {result.total_removable}"
+        )
+        for layer in LAYERS:
+            hashes = sorted(result.prunable.get(layer, ()))
+            if hashes:
+                parts.append(f"{layer} ({len(hashes)}):")
+                parts.extend(f"  {h[:12]}" for h in hashes)
+    else:
+        parts.append("nothing prunable")
+    if stale:
+        fresh_desc = ", ".join(fresh) if fresh else "none"
+        parts.append(f"stale layers: {', '.join(stale)} (fresh: {fresh_desc})")
+    else:
+        parts.append("all layers fresh")
+    if changeset.is_empty and not result.total_removable:
+        parts.append("already converged: desired state matches actual")
+    plain = "\n".join(parts)
+    renderer.custom(
+        CustomView(
+            plain=plain,
+            object={
+                "declarative": True,
+                "wallpaper_target": changeset.wallpaper_target,
+                "pins_to_add": list(changeset.pins_to_add),
+                "pins_absent": list(changeset.pins_absent),
+                "keep_target": changeset.keep_target,
+                "is_empty": changeset.is_empty,
+                "prunable": {layer: sorted(result.prunable.get(layer, ())) for layer in LAYERS},
+                "total_removable": result.total_removable,
+                "compute_keep": result.compute_keep,
+                "prune_pinned": result.prune_pinned,
+                "stale": stale,
+                "fresh": fresh,
+            },
+            rich=plain,
+        )
+    )
+
+
 @app.command(help="Repoint current/ symlinks to converge the desktop with current.json")
 def reconcile(
     output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
@@ -856,8 +1023,11 @@ def reconcile(
         "--plan",
         help="Read-only: preview stale layers + prune removal plan without mutating anything",
     ),
-    keep: int = typer.Option(
-        5, "--keep", min=0, help="Keep the N most recent entries per layer (plan/prune policy)"
+    keep: int | None = typer.Option(
+        None,
+        "--keep",
+        min=0,
+        help="Keep N recent entries per layer (explicit flag overrides desired.json keep)",
     ),
     prune_pinned: bool = typer.Option(
         False, "--prune-pinned", help="Include seed-pinned entries in the plan/prune removal set"
@@ -875,7 +1045,7 @@ def reconcile(
     composition root.
     """
     renderer = create_renderer(output_format)
-    if (keep != 5 or prune_pinned) and not plan:
+    if (keep is not None or prune_pinned) and not plan:
         logger.error("reconcile: --keep/--prune-pinned require --plan")
         renderer.error(
             ErrorView(
@@ -957,42 +1127,10 @@ def reconcile(
                 )
             )
             raise typer.Exit(code=1) from None
-
-        stale = sorted(plan_result.stale)
-        fresh = sorted(plan_result.fresh)
-        from runtime.application.prune import LAYERS
-
-        removals = {layer: sorted(plan_result.removals.get(layer, ())) for layer in LAYERS}
-        parts = []
-        if stale:
-            fresh_desc = ", ".join(fresh) if fresh else "none"
-            parts.append(f"stale layers: {', '.join(stale)} (fresh: {fresh_desc})")
+        if isinstance(plan_result, _DeclarativePlanResult):
+            _render_declarative_plan(renderer, plan_result)
         else:
-            parts.append("all layers fresh")
-        if plan_result.total_removable:
-            parts.append(f"reclaimable: {plan_result.total_removable}")
-            for layer in LAYERS:
-                if removals[layer]:
-                    parts.append(f"{layer} ({len(removals[layer])}):")
-                    parts.extend(f"  {h[:12]}" for h in removals[layer])
-        else:
-            parts.append("nothing reclaimable")
-        plain = "\n".join(parts)
-        renderer.custom(
-            CustomView(
-                plain=plain,
-                object={
-                    "stale": stale,
-                    "fresh": fresh,
-                    "removals": removals,
-                    "kept": dict(plan_result.kept),
-                    "total_removable": plan_result.total_removable,
-                    "keep": plan_result.keep,
-                    "prune_pinned": plan_result.prune_pinned,
-                },
-                rich=plain,
-            )
-        )
+            _render_imperative_plan(renderer, plan_result)
         return
     if check_inputs:
         try:
@@ -1027,6 +1165,11 @@ def reconcile(
         )
         return
     try:
+        from runtime.adapters.desired_state_reader import read_desired_state
+
+        # Pre-validate intent before ANY mutation (AC 4): a malformed file
+        # must fail here, not after repoint + history append.
+        read_desired_state(_resolve_state_root())
         result = _run_reconcile()
     except (ValueError, RuntimeError, OSError) as exc:
         logger.error("reconcile failed: %s", exc)
@@ -1072,19 +1215,121 @@ def reconcile(
             else ""
         )
     )
+    obj: dict[str, object] = {
+        "repointed": [str(p) for p in result.repointed],
+        "consumer_symlinks": [str(p) for p in result.consumer_symlinks],
+        "skipped": list(result.skipped),
+        "cache_regenerated": list(result.cache_regenerated),
+        "reload_failures": list(result.reload_failures),
+    }
+    try:
+        converge_report = _run_converge()
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.error("reconcile succeeded, converge failed: %s", exc)
+        renderer.error(
+            ErrorView(
+                kind=type(exc).__name__,
+                message=f"reconcile succeeded, converge failed: {exc}",
+            )
+        )
+        raise typer.Exit(code=1) from None
+    except Exception:
+        logger.exception("reconcile converge failed unexpectedly")
+        renderer.error(
+            ErrorView(
+                kind="UnexpectedError",
+                message="reconcile converge failed unexpectedly; see logs",
+            )
+        )
+        raise typer.Exit(code=1) from None
+    if converge_report is not None:
+        summary, obj = _render_converge(summary, obj, converge_report)
     renderer.custom(
         CustomView(
             plain=summary,
-            object={
-                "repointed": [str(p) for p in result.repointed],
-                "consumer_symlinks": [str(p) for p in result.consumer_symlinks],
-                "skipped": list(result.skipped),
-                "cache_regenerated": list(result.cache_regenerated),
-                "reload_failures": list(result.reload_failures),
-            },
+            object=obj,
             rich=summary,
         )
     )
+
+
+def _render_converge(
+    summary: str, obj: dict[str, object], report: ConvergenceReport
+) -> tuple[str, dict[str, object]]:
+    """Append declarative convergence lines (Story 4.5, AC 3)."""
+    deleted_total = sum(len(hashes) for hashes in report.deleted.values())
+    if report.wallpaper_set is None and not deleted_total and not report.pins_pending:
+        return summary + "\ndeclarative state: already converged", {
+            **obj,
+            "converge": "already-converged",
+        }
+    if report.wallpaper_set is not None:
+        summary += f"\nconverged wallpaper: {report.wallpaper_set}"
+    if deleted_total:
+        summary += f"\npruned under AD-30 floor: {deleted_total}"
+        for layer in sorted(report.deleted):
+            if report.deleted[layer]:
+                summary += f"\n  {layer}: {len(report.deleted[layer])}"
+    if report.pins_pending:
+        summary += f"\npins pending (manual): {len(report.pins_pending)}"
+    if report.keep_target is not None:
+        summary += f"\nkeep policy: {report.keep_target} (in force)"
+    return summary, {
+        **obj,
+        "converge_wallpaper": report.wallpaper_set,
+        "converge_deleted": {layer: list(hashes) for layer, hashes in report.deleted.items()},
+        "converge_pins_pending": list(report.pins_pending),
+        "converge_keep_target": report.keep_target,
+    }
+
+
+def _run_converge() -> ConvergenceReport | None:
+    """Execute the declarative gap for plain ``reconcile`` (Story 4.5, AC 3).
+
+    Returns ``None`` when no ``desired.json`` is present (imperative mode
+    untouched). Malformed file → ``ValueError`` (loud, AC 4). No prompt
+    (B2): wallpaper target converges through the existing
+    ``_run_wallpaper_set`` pipeline, then AD-30 deletes run through the
+    ``remove_entry`` seam. ``pins_absent`` never triggers removal.
+    """
+    from pathlib import Path
+
+    from runtime.adapters.desired_state_reader import read_desired_state
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.adapters.prune_source import entries_for, remove_entry, seed_pins
+    from runtime.application.actual_state import build_actual_state
+    from runtime.application.diff import diff_states
+    from runtime.application.planner import ConvergeUseCase
+    from runtime.domain.models import ActualState
+
+    state_root = _resolve_state_root()
+    desired = read_desired_state(state_root)
+    if desired is None:
+        return None
+    state_repo = JsonStateRepository(state_root=state_root)
+
+    def refresh_actual() -> ActualState:
+        return build_actual_state(
+            state_repo.load_current(),
+            lambda layer: entries_for(state_root, layer),
+            lambda: seed_pins(state_root),
+            desired.keep,
+            False,
+        )
+
+    changeset = diff_states(desired, refresh_actual(), 5)
+
+    def set_wallpaper(target: str) -> object:
+        res = _run_wallpaper_set(Path(target))
+        if res.reconcile.reload_failures:
+            raise RuntimeError(f"reload failed for: {', '.join(res.reconcile.reload_failures)}")
+        return res
+
+    return ConvergeUseCase(
+        set_wallpaper,
+        lambda layer, entry_hash: remove_entry(state_root, layer, entry_hash),
+        refresh_actual,
+    ).run(changeset)
 
 
 def _run_inspect_status() -> InspectStatusResult:

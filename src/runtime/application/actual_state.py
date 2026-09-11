@@ -44,6 +44,7 @@ def build_actual_state(
     entries_for: Callable[[str], Sequence[CacheEntryRef]],
     seed_pins: Callable[[], Mapping[str, set[str]]],
     keep: int = 5,
+    prune_pinned: bool = False,
 ) -> ActualState:
     """Project observed reality into an :class:`ActualState`.
 
@@ -51,6 +52,7 @@ def build_actual_state(
     entries are still classified from the injected callables alone. Each
     layer is listed at most once. ``keep`` validation is delegated to
     ``PruneUseCase`` (``keep < 0`` → ``ValueError``) — one source for the rule.
+    ``prune_pinned`` is forwarded to the prune plan (Story 4.5 Item 1).
     """
     refs_by_layer: dict[str, list[CacheEntryRef]] = {}
     pins_cache: dict[str, Mapping[str, set[str]]] = {}
@@ -81,7 +83,7 @@ def build_actual_state(
             if ref.timestamp is None
         }
     )
-    plan = usecase.run()
+    plan = usecase.run(prune_pinned=prune_pinned)
     if current is None:
         current_wallpaper: str | None = None
         monitors: tuple[str, ...] = ()
