@@ -279,3 +279,7 @@ class ChangeSet:
         still render ``pins_absent`` in ``--plan`` output.
         """
         return self.wallpaper_target is None and not self.pins_to_add and self.keep_target is None
+
+
+class HistoryLockError(RuntimeError):
+    """Raised when the history lock cannot be acquired or used (AD-31)."""

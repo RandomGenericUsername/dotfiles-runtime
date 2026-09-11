@@ -23,7 +23,7 @@ from runtime.adapters.cache import resolve_entry_artifact
 from runtime.adapters.hashing import hash_file
 from runtime.application.inspect import LinkStatusKind
 from runtime.application.reconcile import ReconcileDesktopStateUseCase
-from runtime.domain.models import DEFAULT_MONITOR, DesktopState
+from runtime.domain.models import DEFAULT_MONITOR, DesktopState, HistoryLockError
 from runtime.ports.state_repository import IStateRepository
 
 logger = logging.getLogger(__name__)
@@ -288,7 +288,7 @@ class DoctorRepairUseCase:
         report = self._doctor.check()
         try:
             tail = self._heal_tail() if self._heal_tail is not None else None
-        except OSError as exc:
+        except (OSError, HistoryLockError) as exc:
             raise RuntimeError(f"history tail heal failed: {exc}") from exc
         if report.clean and tail is None:
             return RepairResult((), (), None, ())

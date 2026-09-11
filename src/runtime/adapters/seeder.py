@@ -17,7 +17,6 @@ Domain purity (AD-1, AD-14):
 
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import os
@@ -30,10 +29,12 @@ from typing import Any, Final, cast
 
 from runtime.adapters.cache import CACHE_QUARANTINE_DIR, hardlink_or_copy
 from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
+from runtime.adapters.flock_seed_mutex import FlockHistoryMutex
 from runtime.adapters.hashing import HASH_ALGORITHM, hash_file
 from runtime.domain.models import (
     EffectsArtifacts,
     EffectsEntry,
+    HistoryLockError,
     IconsArtifacts,
     IconsEntry,
     PaletteArtifacts,
@@ -699,12 +700,8 @@ class CacheSeeder:
         Public entry: takes the history lock, then delegates to the locked
         helper. See :meth:`_heal_torn_history_tail_locked` for semantics.
         """
-        lock_fd = os.open(str(self._state_root / _HISTORY_LOCK), os.O_WRONLY | os.O_CREAT, 0o644)
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        with FlockHistoryMutex(self._state_root / _HISTORY_LOCK).hold():
             return self._heal_torn_history_tail_locked()
-        finally:
-            os.close(lock_fd)
 
     def _heal_torn_history_tail_locked(self) -> Path | None:
         """Heal a torn trailing history line (caller holds the history lock).
@@ -842,25 +839,35 @@ class CacheSeeder:
             + "\n"
         )
 
-        # Serialize heal + append under the history lock (Story 2.3): healing
-        # is a read-modify-write (os.replace), so a concurrent append must not
-        # interleave (AD-4 must-not-lose). Heal BEFORE os.open — after an
-        # os.replace the old O_APPEND fd would target the unlinked inode.
-        lock_fd = os.open(str(self._state_root / _HISTORY_LOCK), os.O_WRONLY | os.O_CREAT, 0o644)
-        fd: int | None = None
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        # Serialize heal + append under the history lock (Story 2.3, AD-31):
+        # healing is a read-modify-write (os.replace), so a concurrent append
+        # must not interleave (AD-4 must-not-lose). Heal BEFORE os.open —
+        # after an os.replace the old O_APPEND fd would target the unlinked
+        # inode. Lock via the shared flock mutex (Story 4.6): blocking (the
+        # critical section is millisecond-scale) with typed errors.
+        with FlockHistoryMutex(self._state_root / _HISTORY_LOCK).hold():
             self._heal_torn_history_tail_locked()
-            fd = os.open(str(history_path), _O_APPEND, 0o644)
-            # Loop until the whole line is written — os.write may perform a
-            # short write under memory pressure, and a partial line would
-            # corrupt the append-only JSONL log (AD-4).
-            data = memoryview(line.encode("utf-8"))
-            while data:
-                written = os.write(fd, data)
-                data = data[written:]
-            os.fsync(fd)
-        finally:
-            if fd is not None:
-                os.close(fd)
-            os.close(lock_fd)
+            try:
+                fd = os.open(str(history_path), _O_APPEND, 0o644)
+            except OSError as exc:
+                raise HistoryLockError(
+                    f"history append open failed: {history_path}: {exc}"
+                ) from exc
+            try:
+                # Loop until the whole line is written — os.write may perform a
+                # short write under memory pressure, and a partial line would
+                # corrupt the append-only JSONL log (AD-4).
+                data = memoryview(line.encode("utf-8"))
+                while data:
+                    written = os.write(fd, data)
+                    data = data[written:]
+                os.fsync(fd)
+            except OSError as exc:
+                raise HistoryLockError(
+                    f"history append write failed: {history_path}: {exc}"
+                ) from exc
+            finally:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass

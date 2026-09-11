@@ -23,6 +23,7 @@ from runtime.domain.models import (
     BackendType,
     DesktopState,
     FitMode,
+    HistoryLockError,
     MonitorWallpaperConfig,
     PaletteEntry,
     WallpaperEntry,
@@ -461,7 +462,7 @@ class TestCacheSeederAppendHistory:
         outside.write_text("")
         link = tmp_path / "history.jsonl"
         link.symlink_to(outside)
-        with pytest.raises(OSError):
+        with pytest.raises(HistoryLockError):
             seeder.append_history(trigger="seed", wallpaper_hash="a" * 64)
 
     def test_append_line_has_exactly_seven_fields_no_schema_version(self, tmp_path: Path) -> None:
