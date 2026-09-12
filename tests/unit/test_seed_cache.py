@@ -358,7 +358,7 @@ class TestCacheSeederWriteMeta:
 
     def test_load_palette_entry_raises_on_pre_growth_meta(self, tmp_path: Path) -> None:
         """Defense-in-depth: a pre-growth 3-key meta must NEVER load through
-        this path — the missing-key KeyError is loud (the derive hit-validation
+        this path — the schema raises loud (the derive hit-validation
         of AC 8 guarantees old entries never reach it)."""
         seeder = CacheSeeder(state_root=tmp_path)
         seeder.write_palette_meta(
@@ -372,8 +372,48 @@ class TestCacheSeederWriteMeta:
             },
             generated_at="2026-01-01T00:00:00Z",
         )
-        with pytest.raises(KeyError):
+        with pytest.raises(ValueError, match="invalid cache meta"):
             seeder.load_palette_entry(tmp_path / "cache" / "palettes" / ("b" * 64))
+
+    def test_load_palette_entry_names_missing_artifact_field(self, tmp_path: Path) -> None:
+        seeder = CacheSeeder(state_root=tmp_path)
+        entry_dir = tmp_path / "cache" / "palettes" / ("b" * 64)
+        entry_dir.mkdir(parents=True)
+        (entry_dir / "meta.json").write_text(
+            json.dumps(
+                {
+                    "hash_algorithm": "sha256",
+                    "kind": "palette",
+                    "entry_hash": "b" * 64,
+                    "source_wallpaper_hash": "a" * 64,
+                    "input_template_hash": "c" * 64,
+                    "artifact_hashes": {"colors.yaml": "d" * 64},
+                    "generated_at": "2026-01-01T00:00:00Z",
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="colors.conf"):
+            seeder.load_palette_entry(entry_dir)
+
+    def test_load_palette_entry_rejects_cross_kind_meta(self, tmp_path: Path) -> None:
+        seeder = CacheSeeder(state_root=tmp_path)
+        entry_dir = tmp_path / "cache" / "palettes" / ("b" * 64)
+        entry_dir.mkdir(parents=True)
+        (entry_dir / "meta.json").write_text(
+            json.dumps(
+                {
+                    "hash_algorithm": "sha256",
+                    "kind": "wallpaper",
+                    "content_hash": "a" * 64,
+                    "source_path": "/img/w.png",
+                    "imported_at": "2026-01-01T00:00:00Z",
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="expected kind 'palette'"):
+            seeder.load_palette_entry(entry_dir)
 
 
 class TestCacheSeederSymlinkRepoint:

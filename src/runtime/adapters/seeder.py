@@ -27,8 +27,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final, cast
 
+import fastjsonschema
+
 from runtime.adapters.cache import CACHE_QUARANTINE_DIR, hardlink_or_copy
 from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
+from runtime.adapters.contract_schemas import meta_validator, meta_validator_for_kind
 from runtime.adapters.flock_seed_mutex import FlockHistoryMutex
 from runtime.adapters.hashing import HASH_ALGORITHM, hash_file
 from runtime.domain.models import (
@@ -43,6 +46,27 @@ from runtime.domain.models import (
 from runtime.ports.consumer_path_spec import IConsumerPathSpec
 
 logger = logging.getLogger(__name__)
+
+#: Cache meta.json is machine-defined (contracts/schemas/meta.schema.json,
+#: embedded; AD-44). Validated in the trusted loaders — NOT in read_entry_meta,
+#: which the completeness/migration path uses to tolerate partial legacy entries.
+#: Validation is kind-dispatched so a same-kind shape failure names the field;
+#: the generic gate handles an unknown/missing kind.
+_KNOWN_META_KINDS = ("wallpaper", "palette", "effects", "icons")
+
+
+def _validate_meta(data: dict[str, Any], entry_dir: Path) -> None:
+    kind = data.get("kind") if isinstance(data, dict) else None
+    validator = (
+        meta_validator_for_kind(kind)
+        if isinstance(kind, str) and kind in _KNOWN_META_KINDS
+        else meta_validator()
+    )
+    try:
+        validator(data)
+    except fastjsonschema.JsonSchemaValueException as exc:
+        raise ValueError(f"invalid cache meta.json in {entry_dir}: {exc.message}") from exc
+
 
 # O_APPEND + O_NOFOLLOW for atomic history append (AD-4).
 # O_NOFOLLOW hardens against a symlinked history.jsonl (consistency with the
@@ -424,6 +448,12 @@ class CacheSeeder:
         current.json must still carry the entry's real hashes, not sentinels.
         """
         meta = self.read_entry_meta(entry_dir)
+        _validate_meta(meta, entry_dir)
+        if meta.get("kind") != "palette":
+            raise ValueError(
+                f"invalid cache meta.json in {entry_dir}: "
+                f"expected kind 'palette', got {meta.get('kind')!r}"
+            )
         artifact_hashes: dict[str, str] = meta.get("artifact_hashes", {})
         return PaletteEntry(
             hash_algorithm="sha256",
@@ -445,6 +475,12 @@ class CacheSeeder:
     def load_effects_entry(self, entry_dir: Path) -> EffectsEntry:
         """Rebuild an EffectsEntry from a cache entry's meta.json (real hashes)."""
         meta = self.read_entry_meta(entry_dir)
+        _validate_meta(meta, entry_dir)
+        if meta.get("kind") != "effects":
+            raise ValueError(
+                f"invalid cache meta.json in {entry_dir}: "
+                f"expected kind 'effects', got {meta.get('kind')!r}"
+            )
         artifact_hashes: EffectsArtifacts = cast(
             "EffectsArtifacts", meta.get("artifact_hashes", {})
         )
@@ -461,6 +497,12 @@ class CacheSeeder:
     def load_icons_entry(self, entry_dir: Path) -> IconsEntry:
         """Rebuild an IconsEntry from a cache entry's meta.json (real hashes)."""
         meta = self.read_entry_meta(entry_dir)
+        _validate_meta(meta, entry_dir)
+        if meta.get("kind") != "icons":
+            raise ValueError(
+                f"invalid cache meta.json in {entry_dir}: "
+                f"expected kind 'icons', got {meta.get('kind')!r}"
+            )
         artifact_hashes: IconsArtifacts = cast("IconsArtifacts", meta.get("artifact_hashes", {}))
         return IconsEntry(
             hash_algorithm="sha256",

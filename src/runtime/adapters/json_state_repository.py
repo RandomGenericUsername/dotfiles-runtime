@@ -45,6 +45,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
+import fastjsonschema
+
+from runtime.adapters.contract_schemas import current_validator
 from runtime.adapters.hashing import HASH_ALGORITHM, _validate_hex64
 from runtime.domain.models import (
     BackendType,
@@ -63,6 +66,10 @@ if HASH_ALGORITHM != "sha256":
     raise AssertionError(f"HASH_ALGORITHM must be 'sha256', got {HASH_ALGORITHM!r}")
 
 SENTINEL_HASH: Final[str] = "0" * 64  # placeholder; hydrated from cache/<layer>/<hash>/meta.json
+
+#: current.json (v2) is machine-defined (contracts/schemas/current.schema.json,
+#: embedded; AD-44). Business rules the schema cannot express (hex64 digests,
+#: strict ISO-Z, monitor-name safety, mpv gating) remain hand-checked below.
 
 
 def _now_iso_z() -> str:
@@ -273,19 +280,25 @@ class JsonStateRepository(IStateRepository):
 
     def _dict_to_state(self, data: dict[str, Any]) -> DesktopState:
         """Deserialize dict to DesktopState with validation."""
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"current.json invalid: top-level must be an object, got {type(data).__name__}"
+            )
         # Schema version check FIRST (E3 fix)
         v = data.get("schema_version")
         if v != 2:
             raise ValueError(f"unsupported schema_version: {v!r}, expected 2")
-
-        # wallpaper validation
+        # v1 migration (absent monitors) BEFORE schema validation: the schema is v2.
+        if data.get("monitors") is None:
+            data = {**data, "monitors": {}}
         try:
-            w = data["wallpaper"]
-        except KeyError as e:
-            raise ValueError(f"current.json missing required field: {e.args[0]!r}") from e
+            current_validator()(data)
+        except fastjsonschema.JsonSchemaValueException as exc:
+            raise ValueError(f"current.json invalid: {exc.message}") from exc
+
+        # wallpaper business rules (structure already guaranteed by the schema).
+        w = data["wallpaper"]
         _validate_hex64("wallpaper.hash", w["hash"])
-        if not isinstance(w.get("source_path"), str):
-            raise ValueError("wallpaper.source_path must be a string")
         _validate_iso_z("wallpaper.applied_at", w["applied_at"])
         wallpaper = WallpaperEntry(
             hash_algorithm="sha256",
@@ -295,13 +308,8 @@ class JsonStateRepository(IStateRepository):
             imported_at=w["applied_at"],
         )
 
-        # monitors — tolerate absent (v1 legacy, schema_version already verified 2)
-        monitors_raw = data.get("monitors")
-        if monitors_raw is None:
-            # v1 migration deferred to SeedCacheUseCase (1.11)
-            monitors_raw = {}
-        if not isinstance(monitors_raw, dict):
-            raise ValueError("monitors must be a dict")
+        # monitors (present by v1 migration above and schema-checked as a dict).
+        monitors_raw = data["monitors"]
 
         monitors: dict[str, MonitorWallpaperConfig] = {}
         for name, cfg in monitors_raw.items():

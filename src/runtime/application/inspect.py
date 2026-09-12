@@ -52,7 +52,7 @@ from typing import Literal, cast
 import fastjsonschema
 
 from runtime.adapters.cache import CACHE_LAYERS, cache_entry_path
-from runtime.adapters.contract_schemas import load_history_schema
+from runtime.adapters.contract_schemas import history_validator
 from runtime.domain.history import HistoryTrigger
 from runtime.domain.models import (
     DEFAULT_MONITOR,
@@ -75,7 +75,6 @@ LinkStatusKind = Literal["ok", "missing", "diverged", "dangling"]
 #: AD-44); the reader validates every line against it. The schema owns the
 #: required/known keys, the trigger enum, field types, and the optional typed
 #: `details` object — there are no hand-written field checks left to drift.
-_HISTORY_LINE_VALIDATOR = fastjsonschema.compile(load_history_schema())
 
 
 @dataclass(frozen=True, slots=True)
@@ -483,7 +482,7 @@ class InspectHistoryUseCase:
         No field is checked by hand here.
         """
         try:
-            _HISTORY_LINE_VALIDATOR(obj)
+            history_validator()(obj)
         except fastjsonschema.JsonSchemaValueException as exc:
             raise ValueError(f"history.jsonl line {lineno}: {exc.message}") from exc
         record = cast("dict[str, object]", obj)

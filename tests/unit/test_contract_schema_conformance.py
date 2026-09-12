@@ -1,8 +1,7 @@
-"""AD-44 conformance: the embedded history schema equals the canonical one.
+"""AD-44 conformance: embedded schemas equal their canonical definitions.
 
-The canonical schema lives at `contracts/schemas/history.schema.json`; the
-runtime package embeds a copy for enforcement. This executable check fails if
-they ever drift — no prose, no reading a document on each side.
+The canonical schemas live at `contracts/schemas/`; the runtime package embeds
+copies for enforcement. This executable check fails if they ever drift.
 """
 
 from __future__ import annotations
@@ -10,15 +9,39 @@ from __future__ import annotations
 from importlib.resources import files
 from pathlib import Path
 
+import pytest
 
-def test_canonical_history_schema_exists(repo_root: Path) -> None:
-    assert (repo_root / "contracts" / "schemas" / "history.schema.json").is_file()
+_SCHEMAS = ("history", "current", "meta")
 
 
-def test_embedded_history_schema_is_byte_identical_to_canonical(repo_root: Path) -> None:
-    canonical = (repo_root / "contracts" / "schemas" / "history.schema.json").read_bytes()
-    embedded = files("runtime.adapters").joinpath("schemas", "history.schema.json").read_bytes()
+@pytest.mark.parametrize("name", _SCHEMAS)
+def test_canonical_schema_exists(name: str, repo_root: Path) -> None:
+    assert (repo_root / "contracts" / "schemas" / f"{name}.schema.json").is_file()
+
+
+@pytest.mark.parametrize("name", _SCHEMAS)
+def test_embedded_schema_is_byte_identical_to_canonical(name: str, repo_root: Path) -> None:
+    canonical = (repo_root / "contracts" / "schemas" / f"{name}.schema.json").read_bytes()
+    embedded = files("runtime.adapters").joinpath("schemas", f"{name}.schema.json").read_bytes()
     assert embedded == canonical, (
-        "embedded runtime/adapters/schemas/history.schema.json drifted from "
-        "contracts/schemas/history.schema.json — re-copy the canonical file"
+        f"embedded runtime/adapters/schemas/{name}.schema.json drifted from "
+        f"contracts/schemas/{name}.schema.json — re-copy the canonical file"
     )
+
+
+def test_corrupt_schema_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A corrupt schema must fail loud at the validator, never break imports."""
+
+    import runtime.adapters.contract_schemas as cs
+
+    cs._validator.cache_clear()
+    try:
+
+        def _boom(filename: str) -> dict[str, object]:
+            raise OSError("disk gone")
+
+        monkeypatch.setattr(cs, "_load", _boom)
+        with pytest.raises(RuntimeError, match="corrupt contract schema"):
+            cs.history_validator()
+    finally:
+        cs._validator.cache_clear()

@@ -1,0 +1,117 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://dotfiles.local/schemas/meta.schema.json",
+  "title": "cache entry meta.json",
+  "description": "Single machine-checkable definition of the four per-layer meta.json shapes (AD-44).",
+  "oneOf": [
+    { "$ref": "#/definitions/wallpaper" },
+    { "$ref": "#/definitions/palette" },
+    { "$ref": "#/definitions/effects" },
+    { "$ref": "#/definitions/icons" }
+  ],
+  "definitions": {
+    "artifactHashes": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "wallpaper": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hash_algorithm", "kind", "content_hash", "source_path", "imported_at"],
+      "properties": {
+        "hash_algorithm": { "type": "string" },
+        "kind": { "const": "wallpaper" },
+        "content_hash": { "type": "string" },
+        "source_path": { "type": "string" },
+        "imported_at": { "type": "string" }
+      }
+    },
+    "palette": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hash_algorithm",
+        "kind",
+        "entry_hash",
+        "source_wallpaper_hash",
+        "input_template_hash",
+        "artifact_hashes",
+        "generated_at"
+      ],
+      "properties": {
+        "hash_algorithm": { "type": "string" },
+        "kind": { "const": "palette" },
+        "entry_hash": { "type": "string" },
+        "source_wallpaper_hash": { "type": "string" },
+        "input_template_hash": { "type": "string" },
+        "artifact_hashes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "colors.yaml",
+            "colors.conf",
+            "colors.gtk.css",
+            "colors.adw.css",
+            "colors.sequences",
+            "colors.rasi"
+          ],
+          "properties": {
+            "colors.yaml": { "type": "string" },
+            "colors.conf": { "type": "string" },
+            "colors.gtk.css": { "type": "string" },
+            "colors.adw.css": { "type": "string" },
+            "colors.sequences": { "type": "string" },
+            "colors.rasi": { "type": "string" }
+          }
+        },
+        "generated_at": { "type": "string" }
+      }
+    },
+    "effects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hash_algorithm",
+        "kind",
+        "entry_hash",
+        "source_wallpaper_hash",
+        "input_catalog_hash",
+        "artifact_hashes",
+        "generated_at"
+      ],
+      "properties": {
+        "hash_algorithm": { "type": "string" },
+        "kind": { "const": "effects" },
+        "entry_hash": { "type": "string" },
+        "source_wallpaper_hash": { "type": "string" },
+        "input_catalog_hash": { "type": "string" },
+        "artifact_hashes": { "$ref": "#/definitions/artifactHashes" },
+        "generated_at": { "type": "string" }
+      }
+    },
+    "icons": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hash_algorithm",
+        "kind",
+        "entry_hash",
+        "source_palette_hash",
+        "input_templates_hash",
+        "input_mappings_hash",
+        "artifact_hashes",
+        "generated_at"
+      ],
+      "properties": {
+        "hash_algorithm": { "type": "string" },
+        "kind": { "const": "icons" },
+        "entry_hash": { "type": "string" },
+        "source_palette_hash": { "type": "string" },
+        "input_templates_hash": { "type": "string" },
+        "input_mappings_hash": { "type": "string" },
+        "artifact_hashes": { "$ref": "#/definitions/artifactHashes" },
+        "generated_at": { "type": "string" }
+      }
+    }
+  }
+}

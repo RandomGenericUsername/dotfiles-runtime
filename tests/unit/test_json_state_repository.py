@@ -378,7 +378,15 @@ class TestErrorPropagation:
         (tmp_path / "current.json").write_text(json.dumps(data))
 
         repo = JsonStateRepository(state_root=tmp_path)
-        with pytest.raises(ValueError, match="missing required field.*'wallpaper'"):
+        with pytest.raises(ValueError, match=r"current\.json invalid.*wallpaper"):
+            repo.load_current()
+
+    @pytest.mark.parametrize("payload", ["[1, 2]", '"foo"', "42", "null"])
+    def test_load_rejects_non_object_top_level(self, tmp_path: Path, payload: str) -> None:
+        (tmp_path / "current.json").write_text(payload)
+
+        repo = JsonStateRepository(state_root=tmp_path)
+        with pytest.raises(ValueError, match="top-level must be an object"):
             repo.load_current()
 
 
