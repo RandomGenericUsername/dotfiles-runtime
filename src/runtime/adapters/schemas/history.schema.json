@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://dotfiles.local/schemas/history.schema.json",
+  "title": "history.jsonl line",
+  "description": "One append-only history line. Single machine-checkable source of truth (AD-44); the prose in shared-data-contract.md is descriptive.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ts", "trigger", "wallpaper", "palette", "effects", "icons", "source_path"],
+  "properties": {
+    "ts": { "type": "string" },
+    "trigger": {
+      "type": "string",
+      "enum": ["seed", "set", "reconcile", "force", "regenerate", "doctor", "prune"]
+    },
+    "wallpaper": { "type": "string" },
+    "palette": { "type": ["string", "null"] },
+    "effects": { "type": ["string", "null"] },
+    "icons": { "type": ["string", "null"] },
+    "source_path": { "type": "string" },
+    "details": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "removed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "layers": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

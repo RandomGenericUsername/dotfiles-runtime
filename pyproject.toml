@@ -6,6 +6,7 @@ requires-python = ">=3.14"
 dependencies = [
     "typer>=0.12",
     "cli-output",
+    "fastjsonschema>=2.20",
 ]
 
 [project.scripts]
@@ -39,6 +40,10 @@ quote-style = "double"
 [tool.mypy]
 python_version = "3.14"
 strict = true
+
+[[tool.mypy.overrides]]
+module = "fastjsonschema"
+ignore_missing_imports = true
 
 [dependency-groups]
 dev = [

@@ -465,6 +465,18 @@ class TestCacheSeederAppendHistory:
         with pytest.raises(HistoryLockError):
             seeder.append_history(trigger="seed", wallpaper_hash="a" * 64)
 
+    def test_append_rejects_non_finite_details(self, tmp_path: Path) -> None:
+        """R-1: allow_nan=False — never write invalid JSON (NaN/Infinity)."""
+        seeder = CacheSeeder(state_root=tmp_path)
+        with pytest.raises(ValueError):
+            seeder.append_history(
+                trigger="prune",
+                wallpaper_hash="a" * 64,
+                details={"removed": float("nan")},
+            )
+        # nothing was written
+        assert not (tmp_path / "history.jsonl").exists()
+
     def test_append_line_has_exactly_seven_fields_no_schema_version(self, tmp_path: Path) -> None:
         """AR-9 pinned schema: exactly 7 fields, NO ``schema_version`` — the
         version field exists only in ``current.json`` (shared-data-contract)."""

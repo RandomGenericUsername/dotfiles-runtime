@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from runtime.application.reconcile import ReconcileResult
     from runtime.application.regenerate import RegenerateResult
     from runtime.application.verify_cache import VerifyCacheResult
-    from runtime.domain.models import ChangeSet
+    from runtime.domain.models import ChangeSet, DesktopState
     from runtime.ports.desktop_reloader import IDesktopReloader
 
 app = typer.Typer(
@@ -1718,7 +1718,8 @@ def _run_prune(
     from runtime.application.prune import PruneUseCase
 
     state_repo = JsonStateRepository(state_root=state_root)
-    if state_repo.load_current() is None:
+    state = state_repo.load_current()
+    if state is None:
         raise ValueError("no runtime state recorded (missing current.json); refusing to prune")
 
     def _plan() -> PrunePlan:
@@ -1742,14 +1743,57 @@ def _run_prune(
                 try:
                     if remove_entry(state_root, layer, entry_hash):
                         removed.append((layer, entry_hash))
-                except OSError as exc:
+                except (OSError, ValueError) as exc:
                     failures.append(f"{layer}/{entry_hash}")
                     logger.error("prune: failed cache/%s/%s: %s", layer, entry_hash, exc)
-    if failures:
-        raise RuntimeError(
-            f"prune removed {len(removed)}, failed {len(failures)}: {', '.join(failures)}"
-        )
+    # One audit line per real execution (AD-30 / R-1), after the seed mutex is
+    # released so no two flock files are held at once. An append failure must
+    # not mask a removal failure: report both.
+    append_error: str | None = None
+    try:
+        _append_prune_history(state_root, state, removed, failures)
+    except (ValueError, RuntimeError, OSError) as exc:
+        append_error = str(exc)
+        logger.error("prune: audit line not written: %s", exc)
+    if failures or append_error:
+        parts = []
+        if failures:
+            parts.append(
+                f"prune removed {len(removed)}, failed {len(failures)}: {', '.join(failures)}"
+            )
+        if append_error:
+            parts.append(f"audit line not written: {append_error}")
+        raise RuntimeError("; ".join(parts))
     return plan, len(removed), removed
+
+
+def _append_prune_history(
+    state_root: Path,
+    state: DesktopState,
+    removed: list[tuple[str, str]],
+    failures: list[str],
+) -> None:
+    """Append the single prune audit line (AD-30, R-1). Uses the locked writer."""
+    from runtime.adapters.seeder import CacheSeeder
+    from runtime.application.prune import LAYERS
+
+    layers: dict[str, object] = {}
+    for layer in LAYERS:
+        count = sum(1 for removed_layer, _ in removed if removed_layer == layer)
+        if count:
+            layers[layer] = count
+    details: dict[str, object] = {"removed": len(removed), "layers": layers}
+    if failures:
+        details["failed"] = len(failures)
+    CacheSeeder(state_root).append_history(
+        trigger="prune",
+        wallpaper_hash=state.wallpaper.content_hash,
+        palette_hash=state.palette.entry_hash if state.palette else None,
+        effects_hash=state.effects.entry_hash if state.effects else None,
+        icons_hash=state.icons.entry_hash if state.icons else None,
+        source_path=state.wallpaper.source_path,
+        details=details,
+    )
 
 
 @cache_app.command("prune")

@@ -49,7 +49,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
 
+import fastjsonschema
+
 from runtime.adapters.cache import CACHE_LAYERS, cache_entry_path
+from runtime.adapters.contract_schemas import load_history_schema
 from runtime.domain.models import (
     DEFAULT_MONITOR,
     DesktopState,
@@ -66,19 +69,14 @@ _ABSENT_STATE_MESSAGE = (
 
 LinkStatusKind = Literal["ok", "missing", "diverged", "dangling"]
 
-HistoryTrigger = Literal["seed", "set", "reconcile", "force", "regenerate", "doctor"]
+HistoryTrigger = Literal["seed", "set", "reconcile", "force", "regenerate", "doctor", "prune"]
 
-_VALID_HISTORY_TRIGGERS = frozenset({"seed", "set", "reconcile", "force", "regenerate", "doctor"})
-
-_HISTORY_FIELDS = (
-    "ts",
-    "trigger",
-    "wallpaper",
-    "palette",
-    "effects",
-    "icons",
-    "source_path",
-)
+#: The append-only history line is defined once as a machine-checkable schema
+#: (`contracts/schemas/history.schema.json`, embedded in the runtime package,
+#: AD-44); the reader validates every line against it. The schema owns the
+#: required/known keys, the trigger enum, field types, and the optional typed
+#: `details` object — there are no hand-written field checks left to drift.
+_HISTORY_LINE_VALIDATOR = fastjsonschema.compile(load_history_schema())
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,10 +98,11 @@ class HistoryRecord:
     effects: str | None
     icons: str | None
     source_path: str
+    details: dict[str, object] | None = None
 
-    def to_dict(self) -> dict[str, str | None]:
-        """Return the full 7-field dict in pinned schema order."""
-        return {
+    def to_dict(self) -> dict[str, object]:
+        """Return the full dict in pinned schema order (details only when set)."""
+        result: dict[str, object] = {
             "ts": self.ts,
             "trigger": self.trigger,
             "wallpaper": self.wallpaper,
@@ -112,6 +111,9 @@ class HistoryRecord:
             "icons": self.icons,
             "source_path": self.source_path,
         }
+        if self.details is not None:
+            result["details"] = self.details
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -474,53 +476,27 @@ class InspectHistoryUseCase:
 
     @staticmethod
     def _parse_record(obj: object, lineno: int) -> HistoryRecord:
-        """Validate one decoded line against the pinned 7-field schema."""
-        if not isinstance(obj, dict):
-            raise ValueError(
-                f"history.jsonl line {lineno}: expected a JSON object, got {type(obj).__name__}",
-            )
-        keys = set(obj.keys())
-        expected = set(_HISTORY_FIELDS)
-        if keys != expected:
-            raise ValueError(
-                f"history.jsonl line {lineno}: expected exactly keys "
-                f"{sorted(expected)}, got {sorted(keys)}",
-            )
-        trigger = obj["trigger"]
-        if not isinstance(trigger, str) or trigger not in _VALID_HISTORY_TRIGGERS:
-            raise ValueError(
-                f"history.jsonl line {lineno}: unknown trigger {trigger!r} "
-                f"(expected one of seed|set|reconcile|force|regenerate|doctor)",
-            )
-        ts = obj["ts"]
-        wallpaper = obj["wallpaper"]
-        source_path = obj["source_path"]
-        palette = obj["palette"]
-        effects = obj["effects"]
-        icons = obj["icons"]
-        if not isinstance(ts, str):
-            raise ValueError(f"history.jsonl line {lineno}: 'ts' must be a string")
-        if not isinstance(wallpaper, str):
-            raise ValueError(f"history.jsonl line {lineno}: 'wallpaper' must be a string")
-        if not isinstance(source_path, str):
-            raise ValueError(f"history.jsonl line {lineno}: 'source_path' must be a string")
-        for field_name, value in (
-            ("palette", palette),
-            ("effects", effects),
-            ("icons", icons),
-        ):
-            if value is not None and not isinstance(value, str):
-                raise ValueError(
-                    f"history.jsonl line {lineno}: {field_name!r} must be a string or null",
-                )
+        """Validate one decoded line against the history schema (AD-44).
+
+        The schema (``contracts/schemas/history.schema.json``) is the single
+        machine-checkable definition; it enforces the required/known keys, the
+        trigger enum, field types, and the optional typed ``details`` object.
+        No field is checked by hand here.
+        """
+        try:
+            _HISTORY_LINE_VALIDATOR(obj)
+        except fastjsonschema.JsonSchemaValueException as exc:
+            raise ValueError(f"history.jsonl line {lineno}: {exc.message}") from exc
+        record = cast("dict[str, object]", obj)
         return HistoryRecord(
-            ts=ts,
-            trigger=cast("HistoryTrigger", trigger),
-            wallpaper=wallpaper,
-            palette=palette,
-            effects=effects,
-            icons=icons,
-            source_path=source_path,
+            ts=cast("str", record["ts"]),
+            trigger=cast("HistoryTrigger", record["trigger"]),
+            wallpaper=cast("str", record["wallpaper"]),
+            palette=cast("str | None", record["palette"]),
+            effects=cast("str | None", record["effects"]),
+            icons=cast("str | None", record["icons"]),
+            source_path=cast("str", record["source_path"]),
+            details=cast("dict[str, object] | None", record.get("details")),
         )
 
 

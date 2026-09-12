@@ -799,6 +799,7 @@ class CacheSeeder:
         effects_hash: str | None = None,
         icons_hash: str | None = None,
         source_path: str = "",
+        details: dict[str, object] | None = None,
     ) -> None:
         """Append a line to history.jsonl atomically (AD-4, AR-3).
 
@@ -809,35 +810,36 @@ class CacheSeeder:
         adapter, NOT promoted to ``IStateRepository`` — rt-1-10 pinned the
         port minimal (``load_current``/``save`` only); Epic 3 inspection use
         cases consume history through the adapter seam. This is the ONLY
-        history writer; call it through Reconcile/Seed, never from the CLI
-        (rt-2-7 invariant).
+        history writer; call it through Reconcile/Seed, or from the CLI
+        composition root for an explicit audit action (e.g. `cache prune`),
+        never from hidden derivation code.
 
         Args:
             trigger: event trigger — the pinned enum is
-                ``seed|set|reconcile|force|regenerate|doctor`` ("apply" is NOT valid); this
+                ``seed|set|reconcile|force|regenerate|doctor|prune`` ("apply" is NOT valid); this
                 adapter stays trigger-agnostic and does not validate.
             wallpaper_hash: SHA-256 hex of wallpaper content
             palette_hash: SHA-256 hex of palette entry or None
             effects_hash: SHA-256 hex of effects entry or None
             icons_hash: SHA-256 hex of icons entry or None
             source_path: source path or empty string
+            details: optional trigger-specific payload (e.g. prune counts);
+                omitted from the line when None so pre-existing lines are
+                byte-identical
         """
         history_path = self._state_root / "history.jsonl"
-        line = (
-            json.dumps(
-                {
-                    "ts": _now_iso_z(),
-                    "trigger": trigger,
-                    "wallpaper": wallpaper_hash,
-                    "palette": palette_hash,
-                    "effects": effects_hash,
-                    "icons": icons_hash,
-                    "source_path": source_path,
-                },
-                ensure_ascii=False,
-            )
-            + "\n"
-        )
+        record: dict[str, object] = {
+            "ts": _now_iso_z(),
+            "trigger": trigger,
+            "wallpaper": wallpaper_hash,
+            "palette": palette_hash,
+            "effects": effects_hash,
+            "icons": icons_hash,
+            "source_path": source_path,
+        }
+        if details is not None:
+            record["details"] = details
+        line = json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n"
 
         # Serialize heal + append under the history lock (Story 2.3, AD-31):
         # healing is a read-modify-write (os.replace), so a concurrent append

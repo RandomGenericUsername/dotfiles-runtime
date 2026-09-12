@@ -56,9 +56,7 @@ class TestInspectHistoryOrdering:
             [
                 _line(ts="2026-01-01T00:00:00Z", trigger="seed", wallpaper="a" * 64),
                 _line(ts="2026-01-02T00:00:00Z", trigger="set", wallpaper="b" * 64),
-                _line(
-                    ts="2026-01-03T00:00:00Z", trigger="reconcile", wallpaper="c" * 64
-                ),
+                _line(ts="2026-01-03T00:00:00Z", trigger="reconcile", wallpaper="c" * 64),
             ],
         )
         records = InspectHistoryUseCase(tmp_path).run()
@@ -92,9 +90,7 @@ class TestInspectHistoryOrdering:
         assert record.wallpaper == wallpaper
 
     def test_nullable_hashes_round_trip(self, tmp_path: Path) -> None:
-        _write_history(
-            tmp_path, [_line(palette=None, effects=None, icons=None)]
-        )
+        _write_history(tmp_path, [_line(palette=None, effects=None, icons=None)])
         (record,) = InspectHistoryUseCase(tmp_path).run()
         assert record.palette is None
         assert record.effects is None
@@ -169,16 +165,12 @@ class TestInspectHistoryEmpty:
 class TestInspectHistoryCorrupt:
     """AC 5 — middle corruption is loud; torn tail is tolerated."""
 
-    def test_middle_non_json_line_raises_with_line_number(
-        self, tmp_path: Path
-    ) -> None:
+    def test_middle_non_json_line_raises_with_line_number(self, tmp_path: Path) -> None:
         _write_history(tmp_path, [_line(trigger="seed"), "NOT JSON{{{", _line()])
         with pytest.raises(ValueError, match="line 2"):
             InspectHistoryUseCase(tmp_path).run()
 
-    def test_middle_schema_violation_raises_with_line_number(
-        self, tmp_path: Path
-    ) -> None:
+    def test_middle_schema_violation_raises_with_line_number(self, tmp_path: Path) -> None:
         bad = json.dumps({"ts": "x", "trigger": "seed"})
         _write_history(tmp_path, [_line(), bad, _line()])
         with pytest.raises(ValueError, match="line 2"):
@@ -190,9 +182,7 @@ class TestInspectHistoryCorrupt:
             InspectHistoryUseCase(tmp_path).run()
 
     @pytest.mark.parametrize("trigger", ["seed", "set", "reconcile", "force"])
-    def test_all_valid_triggers_accepted(
-        self, tmp_path: Path, trigger: str
-    ) -> None:
+    def test_all_valid_triggers_accepted(self, tmp_path: Path, trigger: str) -> None:
         _write_history(tmp_path, [_line(trigger=trigger)])
         (record,) = InspectHistoryUseCase(tmp_path).run()
         assert record.trigger == trigger
@@ -221,9 +211,7 @@ class TestInspectHistoryCorrupt:
             handle.write('{"partial": ')
         assert len(InspectHistoryUseCase(tmp_path).run(limit=0)) == 1
 
-    def test_trailing_schema_violation_still_raises(
-        self, tmp_path: Path
-    ) -> None:
+    def test_trailing_schema_violation_still_raises(self, tmp_path: Path) -> None:
         bad = json.dumps({"ts": "x"})
         _write_history(tmp_path, [_line(trigger="seed"), bad])
         with pytest.raises(ValueError, match="line 2"):
@@ -262,3 +250,113 @@ class TestInspectHistoryReadOnly:
         assert isinstance(record, HistoryRecord)
         with pytest.raises(AttributeError):
             record.ts = "mutated"  # type: ignore[misc]
+
+
+class TestHistoryOptionalDetails:
+    """Story R-1 — the optional `details` field and the `prune` trigger."""
+
+    def test_prune_line_with_details_is_accepted(self, tmp_path: Path) -> None:
+        _write_history(
+            tmp_path,
+            [
+                json.dumps(
+                    {
+                        "ts": "2026-01-04T00:00:00Z",
+                        "trigger": "prune",
+                        "wallpaper": "a" * 64,
+                        "palette": None,
+                        "effects": None,
+                        "icons": None,
+                        "source_path": "",
+                        "details": {"removed": 2, "layers": {"palettes": 2}},
+                    }
+                )
+            ],
+        )
+        (record,) = InspectHistoryUseCase(tmp_path).run()
+        assert record.trigger == "prune"
+        assert record.details == {"removed": 2, "layers": {"palettes": 2}}
+        assert record.to_dict()["details"] == {"removed": 2, "layers": {"palettes": 2}}
+
+    def test_unknown_key_still_rejected(self, tmp_path: Path) -> None:
+        _write_history(
+            tmp_path,
+            [
+                json.dumps(
+                    {
+                        "ts": "2026-01-04T00:00:00Z",
+                        "trigger": "prune",
+                        "wallpaper": "a" * 64,
+                        "palette": None,
+                        "effects": None,
+                        "icons": None,
+                        "source_path": "",
+                        "bogus": 1,
+                    }
+                )
+            ],
+        )
+        with pytest.raises(ValueError, match="must not contain"):
+            InspectHistoryUseCase(tmp_path).run()
+
+    def test_details_must_be_object(self, tmp_path: Path) -> None:
+        _write_history(
+            tmp_path,
+            [
+                json.dumps(
+                    {
+                        "ts": "2026-01-04T00:00:00Z",
+                        "trigger": "prune",
+                        "wallpaper": "a" * 64,
+                        "palette": None,
+                        "effects": None,
+                        "icons": None,
+                        "source_path": "",
+                        "details": "nope",
+                    }
+                )
+            ],
+        )
+        with pytest.raises(ValueError, match="details"):
+            InspectHistoryUseCase(tmp_path).run()
+
+    def test_details_value_types_enforced(self, tmp_path: Path) -> None:
+        _write_history(
+            tmp_path,
+            [
+                json.dumps(
+                    {
+                        "ts": "2026-01-04T00:00:00Z",
+                        "trigger": "prune",
+                        "wallpaper": "a" * 64,
+                        "palette": None,
+                        "effects": None,
+                        "icons": None,
+                        "source_path": "",
+                        "details": {"removed": "lots"},
+                    }
+                )
+            ],
+        )
+        with pytest.raises(ValueError, match="details"):
+            InspectHistoryUseCase(tmp_path).run()
+
+    def test_missing_required_with_details_present_rejected(self, tmp_path: Path) -> None:
+        _write_history(
+            tmp_path,
+            [
+                json.dumps(
+                    {
+                        "ts": "2026-01-04T00:00:00Z",
+                        "trigger": "prune",
+                        "palette": None,
+                        "effects": None,
+                        "icons": None,
+                        "source_path": "",
+                        "details": {"removed": 1},
+                    }
+                )
+            ],
+        )
+        with pytest.raises(ValueError, match="wallpaper"):
+            InspectHistoryUseCase(tmp_path).run()

@@ -373,3 +373,23 @@ class TestSeedPins:
         (tmp_path / "history.jsonl").write_text(content, encoding="utf-8")
         with pytest.raises(ValueError, match="not valid JSON"):
             seed_pins(tmp_path)
+
+    def test_prune_line_with_details_before_seed_is_ignored(self, tmp_path: Path) -> None:
+        """R-1: a prune audit line (with details) parses and is skipped."""
+        prune = json.dumps(
+            {
+                "ts": "2026-01-01T00:00:00Z",
+                "trigger": "prune",
+                "wallpaper": "0" * 64,
+                "palette": None,
+                "effects": None,
+                "icons": None,
+                "source_path": "",
+                "details": {"removed": 3, "layers": {"palettes": 3}},
+            }
+        )
+        content = prune + "\n" + self._line("seed", wallpaper="1" * 64, palette="2" * 64) + "\n"
+        (tmp_path / "history.jsonl").write_text(content, encoding="utf-8")
+        pins = seed_pins(tmp_path)
+        assert pins["wallpapers"] == {"1" * 64}
+        assert pins["palettes"] == {"2" * 64}

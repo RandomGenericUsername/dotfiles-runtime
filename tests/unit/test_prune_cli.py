@@ -304,3 +304,80 @@ class TestCliPrune:
         result = runner.invoke(app, ["inspect", "cache", "prune"])
         assert result.exit_code == 1
         assert "failed" in (result.output + getattr(result, "stderr", ""))
+
+
+class TestPruneAuditLine:
+    """Story R-1 — one audit line per real prune, none on dry-run."""
+
+    def test_real_prune_appends_one_audit_line(self, tmp_path: Path) -> None:
+        from runtime.application.inspect import InspectHistoryUseCase
+
+        state_root, _ = _seed(tmp_path)
+        result = runner.invoke(app, ["inspect", "cache", "prune"])
+        assert result.exit_code == 0
+        records = InspectHistoryUseCase(state_root).run(limit=0)
+        prune_records = [r for r in records if r.trigger == "prune"]
+        assert len(prune_records) == 1
+        assert prune_records[0].details == {"removed": 2, "layers": {"palettes": 2}}
+
+    def test_dry_run_appends_nothing(self, tmp_path: Path) -> None:
+        state_root, _ = _seed(tmp_path)
+        before = (state_root / "history.jsonl").read_bytes()
+        result = runner.invoke(app, ["inspect", "cache", "prune", "--dry-run"])
+        assert result.exit_code == 0
+        assert (state_root / "history.jsonl").read_bytes() == before
+
+    def test_append_failure_is_surfaced(self, tmp_path: Path) -> None:
+        state_root, _ = _seed(tmp_path)
+        # Real writer failure: history.jsonl replaced by a directory → the
+        # locked append cannot open it. Removals still happen; the failure is
+        # surfaced and must not be silent.
+        history = state_root / "history.jsonl"
+        history.unlink()
+        history.mkdir()
+        result = runner.invoke(app, ["inspect", "cache", "prune"])
+        assert result.exit_code == 1
+        assert "audit line not written" in (result.output + getattr(result, "stderr", ""))
+        # the prune still deleted the planned entries
+        assert not (state_root / "cache" / "palettes" / _h(2)).exists()
+
+    def test_audit_append_happens_after_seed_mutex_released(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import contextlib
+
+        import runtime.adapters.flock_seed_mutex as fsm
+        import runtime.adapters.seeder as seeder_mod
+
+        _seed(tmp_path)
+        order: list[str] = []
+
+        def _hold(self: object, blocking: bool = False) -> object:
+            @contextlib.contextmanager
+            def _cm() -> object:
+                order.append("lock-enter")
+                try:
+                    yield
+                finally:
+                    order.append("lock-exit")
+
+            return _cm()
+
+        def _append(self: object, *args: object, **kwargs: object) -> None:
+            order.append("append")
+
+        monkeypatch.setattr(fsm.FlockSeedMutex, "hold", _hold)
+        monkeypatch.setattr(seeder_mod.CacheSeeder, "append_history", _append)
+        result = runner.invoke(app, ["inspect", "cache", "prune"])
+        assert result.exit_code == 0
+        assert order.index("lock-exit") < order.index("append")
+
+    def test_audit_line_visible_in_inspect_history_json(self, tmp_path: Path) -> None:
+        _seed(tmp_path)
+        runner.invoke(app, ["inspect", "cache", "prune"])
+        result = runner.invoke(app, ["inspect", "history", "--format", "json"])
+        assert result.exit_code == 0
+        entries = json.loads(result.output)["entries"]
+        prune_entries = [e for e in entries if e["trigger"] == "prune"]
+        assert len(prune_entries) == 1
+        assert prune_entries[0]["details"] == {"removed": 2, "layers": {"palettes": 2}}
