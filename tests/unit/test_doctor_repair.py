@@ -219,9 +219,10 @@ class _Env:
     def repair(self) -> RepairResult:
         from runtime.adapters.json_state_repository import JsonStateRepository
 
+        state_repo = JsonStateRepository(state_root=self.state_root)
         use_case = DoctorRepairUseCase(
             doctor=DoctorUseCase(
-                state_repo=JsonStateRepository(state_root=self.state_root),
+                state_repo=state_repo,
                 state_root=self.state_root,
             ),
             quarantine=lambda layer, entry_hash: quarantine_entry(
@@ -229,6 +230,8 @@ class _Env:
             ),
             reconcile=self.reconcile(),
             state_root=self.state_root,
+            append_history=self.seeder.append_history,
+            state_repo=state_repo,
         )
         return use_case.repair()
 
@@ -560,3 +563,176 @@ class TestCliShape:
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0
         assert repair_called == []
+
+
+class TestStoreHistoryRepair:
+    """R-5/AD-41: store↔history divergence (the save↔append crash window)."""
+
+    @staticmethod
+    def _drop_history_tail(env: _Env) -> None:
+        """Simulate the crash window: the store save landed, the append did not."""
+        (env.state_root / "history.jsonl").write_text("", encoding="utf-8")
+
+    def test_pure_divergence_repaired_by_single_doctor_line(self, tmp_path: Path) -> None:
+        env = _setup(tmp_path)
+        assert env.check_clean() is True
+        self._drop_history_tail(env)
+        assert env.check_clean() is False
+        reload_calls = env.reloaders[0].calls
+        before = len(env.history_lines())
+        links_before = {
+            path.name: os.readlink(path)
+            for path in sorted((env.state_root / "current").iterdir())
+            if path.is_symlink()
+        }
+
+        result = env.repair()
+
+        assert result.history_trigger == "doctor"
+        assert result.quarantined == ()
+        assert result.repopulated == ()
+        assert env.reloaders[0].calls == reload_calls  # no desktop side-effects
+        assert env.csg.calls == env.weg.calls == env.itr.calls == 0
+        links_after = {
+            path.name: os.readlink(path)
+            for path in sorted((env.state_root / "current").iterdir())
+            if path.is_symlink()
+        }
+        assert links_after == links_before  # nothing repointed
+        lines = env.history_lines()
+        assert len(lines) == before + 1
+        assert lines[-1]["trigger"] == "doctor"
+        state = env.repo.load_current()
+        assert state is not None
+        assert lines[-1]["wallpaper"] == state.wallpaper.content_hash
+        assert lines[-1]["palette"] == (state.palette.entry_hash if state.palette else None)
+        assert lines[-1]["effects"] == (state.effects.entry_hash if state.effects else None)
+        assert lines[-1]["icons"] == (state.icons.entry_hash if state.icons else None)
+        assert lines[-1]["source_path"] == state.wallpaper.source_path
+        assert env.check_clean() is True
+
+    def test_history_repair_is_idempotent(self, tmp_path: Path) -> None:
+        env = _setup(tmp_path)
+        self._drop_history_tail(env)
+        env.repair()
+        second = env.repair()
+        assert second == RepairResult((), (), None, ())
+
+    def test_mixed_history_plus_entry_uses_full_reconverge(self, tmp_path: Path) -> None:
+        import shutil
+
+        env = _setup(tmp_path)
+        self._drop_history_tail(env)
+        shutil.rmtree(_entry_dir(env, "effects"))
+
+        result = env.repair()
+
+        assert result.history_trigger == "doctor"
+        assert env.check_clean() is True
+        assert env.weg.calls == 1
+
+    def test_without_seams_falls_back_to_reconverge(self, tmp_path: Path) -> None:
+        """Backward-compatible ctor: pure divergence still heals via reconcile."""
+        from runtime.adapters.json_state_repository import JsonStateRepository
+        from runtime.application.doctor import DoctorRepairUseCase, DoctorUseCase
+
+        env = _setup(tmp_path)
+        self._drop_history_tail(env)
+        use_case = DoctorRepairUseCase(
+            doctor=DoctorUseCase(
+                state_repo=JsonStateRepository(state_root=env.state_root),
+                state_root=env.state_root,
+            ),
+            quarantine=lambda layer, entry_hash: quarantine_entry(
+                env.state_root, layer, entry_hash
+            ),
+            reconcile=env.reconcile(),
+            state_root=env.state_root,
+        )
+        result = use_case.repair()
+        assert result.history_trigger == "doctor"
+        assert env.check_clean() is True
+
+    def test_concurrent_converge_skips_duplicate_doctor_line(self, tmp_path: Path) -> None:
+        """Item 1: the check() verdict is stale but the tail already agrees —
+        a concurrent writer converged first, so repair must not append."""
+        from runtime.application.doctor import DoctorReport, DriftItem
+
+        env = _setup(tmp_path)
+        before = len(env.history_lines())
+
+        class _DoctorStale:
+            def check(self) -> DoctorReport:
+                return DoctorReport(
+                    items=(
+                        DriftItem(
+                            "history:tail",
+                            "history",
+                            "diverged",
+                            "stale verdict",
+                        ),
+                    ),
+                    clean=False,
+                )
+
+        use_case = DoctorRepairUseCase(
+            doctor=_DoctorStale(),  # type: ignore[arg-type]
+            quarantine=lambda layer, entry_hash: None,
+            reconcile=env.reconcile(),
+            state_root=env.state_root,
+            append_history=env.seeder.append_history,
+            state_repo=env.repo,
+        )
+        result = use_case.repair()
+
+        assert result.history_trigger is None
+        assert len(env.history_lines()) == before
+        assert env.check_clean() is True
+
+    def test_repair_path_corrupt_middle_line_fails_loud(self, tmp_path: Path) -> None:
+        """Item 2(i): middle corruption aborts repair before any mutation."""
+        env = _setup(tmp_path)
+        with (env.state_root / "history.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write("{corrupt\n")
+        env.seeder.append_history(
+            trigger="set",
+            wallpaper_hash=env.repo.load_current().wallpaper.content_hash,  # type: ignore[union-attr]
+        )
+        history_path = env.state_root / "history.jsonl"
+        before = history_path.read_text(encoding="utf-8")
+        with pytest.raises(ValueError, match=r"history\.jsonl line 2"):
+            env.repair()
+        assert history_path.read_text(encoding="utf-8") == before
+
+    def test_repair_path_store_vanished_fails_loud(self, tmp_path: Path) -> None:
+        """Item 2(h): store deleted between check and append surfaces loudly."""
+        from runtime.application.doctor import DoctorReport, DriftItem
+
+        env = _setup(tmp_path)
+        self._drop_history_tail(env)
+
+        class _DoctorStale:
+            def check(self) -> DoctorReport:
+                return DoctorReport(
+                    items=(
+                        DriftItem(
+                            "history:tail",
+                            "history",
+                            "diverged",
+                            "stale verdict",
+                        ),
+                    ),
+                    clean=False,
+                )
+
+        (env.state_root / "current.json").unlink()
+        use_case = DoctorRepairUseCase(
+            doctor=_DoctorStale(),  # type: ignore[arg-type]
+            quarantine=lambda layer, entry_hash: None,
+            reconcile=env.reconcile(),
+            state_root=env.state_root,
+            append_history=env.seeder.append_history,
+            state_repo=env.repo,
+        )
+        with pytest.raises(RuntimeError, match="now absent"):
+            use_case.repair()

@@ -210,6 +210,18 @@ def _seed_state(state_root: Path) -> None:
         os.symlink(pal_dir / name, current / name)
     os.symlink(eff_dir, current / "effects", target_is_directory=True)
     os.symlink(ico_dir, current / "icons", target_is_directory=True)
+    # R-5: the seeded store is audited — the history tail agrees with
+    # current.json, so the clean-machine baseline stays clean.
+    from runtime.adapters.seeder import CacheSeeder
+
+    CacheSeeder(state_root).append_history(
+        trigger="set",
+        wallpaper_hash=WH,
+        palette_hash=PH,
+        effects_hash=EH,
+        icons_hash=IH,
+        source_path="/img/wall.png",
+    )
 
 
 def _check(state_root: Path) -> DoctorReport:
@@ -373,7 +385,9 @@ def _snapshot(root: Path) -> dict[str, str]:
 
 
 class TestZeroMutation:
-    @pytest.mark.parametrize("breakage", ["none", "missing-entry", "stray-link"])
+    @pytest.mark.parametrize(
+        "breakage", ["none", "missing-entry", "stray-link", "diverged-history", "absent-history"]
+    )
     def test_check_mutates_nothing(self, tmp_path: Path, breakage: str) -> None:
         import shutil
 
@@ -386,6 +400,13 @@ class TestZeroMutation:
             stray = tmp_path / "stray-icons"
             stray.mkdir()
             os.symlink(stray, state_root / "current" / "icons")
+        elif breakage == "diverged-history":
+            history_path = state_root / "history.jsonl"
+            stale = json.loads(history_path.read_text(encoding="utf-8").splitlines()[0])
+            stale["wallpaper"] = "ee" * 32
+            history_path.write_text(json.dumps(stale) + "\n", encoding="utf-8")
+        elif breakage == "absent-history":
+            (state_root / "history.jsonl").unlink()
         before = _snapshot(state_root)
         _check(state_root)
         assert _snapshot(state_root) == before
@@ -517,3 +538,156 @@ def test_repo_sourced_input_is_not_clean(monkeypatch: pytest.MonkeyPatch, tmp_pa
         item["name"].startswith("input:") and item["status"] == "diverged"
         for item in payload["items"]
     )
+
+
+class TestStoreHistoryDivergence:
+    """R-5/AD-41: store vs history-tail agreement leg."""
+
+    def test_matching_tail_is_ok(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        report = _check(state_root)
+        assert report.clean is True
+        assert {i.name: i.status for i in report.items if i.kind == "history"} == {
+            "history:tail": "ok"
+        }
+
+    def test_absent_history_is_diverged(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        (state_root / "history.jsonl").unlink()
+        report = _check(state_root)
+        assert report.clean is False
+        assert _by_name(report)["history:tail"] == "diverged"
+
+    def test_store_ahead_of_tail_is_diverged_and_pure(self, tmp_path: Path) -> None:
+        """Faithful crash window: the history ends at an older record."""
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        lines = (state_root / "history.jsonl").read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1
+        stale = {**json.loads(lines[0]), "wallpaper": "ee" * 32}
+        (state_root / "history.jsonl").write_text(json.dumps(stale) + "\n", encoding="utf-8")
+        report = _check(state_root)
+        assert _by_name(report)["history:tail"] == "diverged"
+        assert [name for name, status in _by_name(report).items() if status != "ok"] == [
+            "history:tail"
+        ]
+        item = next(i for i in report.items if i.name == "history:tail")
+        assert "wallpaper" in item.detail
+
+    def test_applied_at_churn_stays_clean(self, tmp_path: Path) -> None:
+        """Timestamps are not identity: a re-save with fresh applied_at is clean."""
+        import dataclasses
+
+        from runtime.adapters.json_state_repository import JsonStateRepository
+
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        repo = JsonStateRepository(state_root=state_root)
+        state = repo.load_current()
+        assert state is not None
+        repo.save(dataclasses.replace(state, applied_at="2026-09-11T00:00:00Z"))
+        assert _check(state_root).clean is True
+
+    def test_newer_trigger_and_details_stays_clean(self, tmp_path: Path) -> None:
+        """Trigger values and details are not identity: a prune line on top is clean."""
+        from runtime.adapters.seeder import CacheSeeder
+
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        CacheSeeder(state_root).append_history(
+            trigger="prune",
+            wallpaper_hash=WH,
+            palette_hash=PH,
+            effects_hash=EH,
+            icons_hash=IH,
+            source_path="/img/wall.png",
+            details={"removed": 3, "layers": {"effects": 3}},
+        )
+        assert _check(state_root).clean is True
+
+    def test_corrupt_middle_history_line_fails_loud(self, tmp_path: Path) -> None:
+        from runtime.adapters.seeder import CacheSeeder
+
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        with (state_root / "history.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write("{corrupt\n")
+        CacheSeeder(state_root).append_history(
+            trigger="set",
+            wallpaper_hash=WH,
+            palette_hash=PH,
+            effects_hash=EH,
+            icons_hash=IH,
+            source_path="/img/wall.png",
+        )
+        with pytest.raises(ValueError, match=r"history\.jsonl line 2"):
+            _check(state_root)
+
+    def test_symlinked_history_fails_loud(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        real = state_root / "history.jsonl"
+        shadow = tmp_path / "shadow-history.jsonl"
+        shadow.write_bytes(real.read_bytes())
+        real.unlink()
+        os.symlink(shadow, real)
+        with pytest.raises(ValueError, match="symlink"):
+            _check(state_root)
+
+    def test_torn_tail_tolerated_through_check(self, tmp_path: Path) -> None:
+        """Item 2(a): a torn trailing line is skipped; the parseable tail decides."""
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        with (state_root / "history.jsonl").open("ab") as handle:
+            handle.write(b'{"ts": "2026-09-')
+        before = (state_root / "history.jsonl").read_bytes()
+        report = _check(state_root)
+        assert _by_name(report)["history:tail"] == "ok"
+        assert (state_root / "history.jsonl").read_bytes() == before
+
+    def test_reactive_tail_stays_clean(self, tmp_path: Path) -> None:
+        """Item 2(d): the daemon's trigger value is not identity."""
+        from runtime.adapters.seeder import CacheSeeder
+
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        CacheSeeder(state_root).append_history(
+            trigger="reactive",
+            wallpaper_hash=WH,
+            palette_hash=PH,
+            effects_hash=EH,
+            icons_hash=IH,
+            source_path="/img/wall.png",
+        )
+        assert _check(state_root).clean is True
+
+    def test_source_path_variance_stays_clean(self, tmp_path: Path) -> None:
+        """Item 2(e): provenance churn is not identity."""
+        import json as json_module
+
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        history_path = state_root / "history.jsonl"
+        record = json.loads(history_path.read_text(encoding="utf-8").splitlines()[0])
+        record["source_path"] = "/relocated/wall.png"
+        history_path.write_text(json_module.dumps(record) + "\n", encoding="utf-8")
+        assert _check(state_root).clean is True
+
+    def test_details_only_variance_stays_clean(self, tmp_path: Path) -> None:
+        """Item 2(f): same trigger, details differing — still clean."""
+        from runtime.adapters.seeder import CacheSeeder
+
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        CacheSeeder(state_root).append_history(
+            trigger="set",
+            wallpaper_hash=WH,
+            palette_hash=PH,
+            effects_hash=EH,
+            icons_hash=IH,
+            source_path="/img/wall.png",
+            details={"removed": 0, "layers": {}},
+        )
+        assert _check(state_root).clean is True

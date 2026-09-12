@@ -806,6 +806,8 @@ def _run_doctor_repair() -> RepairResult:
         ),
         state_root=state_root,
         heal_history_tail=seeder.heal_torn_history_tail,
+        append_history=seeder.append_history,
+        state_repo=state_repo,
     )
     return use_case.repair()
 
