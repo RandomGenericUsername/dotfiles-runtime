@@ -283,3 +283,12 @@ class ChangeSet:
 
 class HistoryLockError(RuntimeError):
     """Raised when the history lock cannot be acquired or used (AD-31)."""
+
+
+class MissingDerivationInputError(RuntimeError):
+    """A derivation input was not found in the install spine (R-3, AD-43).
+
+    Raised instead of silently reading a repo checkout: in production the
+    runtime resolves inputs from the provisioned spine only, and a missing
+    input is a provisioning defect that must fail loud.
+    """

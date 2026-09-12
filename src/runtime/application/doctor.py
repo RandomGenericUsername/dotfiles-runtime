@@ -67,9 +67,15 @@ class DoctorReport:
 class DoctorUseCase:
     """Three-way drift detection over store, symlinks, and cache entries."""
 
-    def __init__(self, state_repo: IStateRepository, state_root: Path) -> None:
+    def __init__(
+        self,
+        state_repo: IStateRepository,
+        state_root: Path,
+        install_spine: Path | None = None,
+    ) -> None:
         self._state_repo = state_repo
         self._state_root = state_root
+        self._install_spine = install_spine
 
     def check(self) -> DoctorReport:
         """Run the check; return per-item verdicts. Mutates nothing."""
@@ -82,8 +88,49 @@ class DoctorUseCase:
         items: list[DriftItem] = []
         items.extend(self._check_entries(state))
         items.extend(self._check_links(state))
+        items.extend(self._check_input_provenance())
         clean = all(item.status == "ok" for item in items)
         return DoctorReport(items=tuple(items), clean=clean)
+
+    def _check_input_provenance(self) -> list[DriftItem]:
+        """R-3/AD-43: report where each derivation input resolved from.
+
+        ``spine`` is healthy. ``repo`` is only reachable with the explicit dev
+        override set and is informational (never dirties the report). ``missing``
+        is a provisioning defect surfaced loudly.
+        """
+        if self._install_spine is None:
+            return []
+        from runtime.application.derive import input_provenance
+
+        items: list[DriftItem] = []
+        for key, (path, source) in input_provenance(self._install_spine).items():
+            if source == "spine":
+                items.append(
+                    DriftItem(name=f"input:{key}", kind="input", status="ok", detail=str(path))
+                )
+            elif source == "repo":
+                items.append(
+                    DriftItem(
+                        name=f"input:{key}",
+                        kind="input",
+                        status="diverged",
+                        detail=(
+                            f"read from a repo checkout, not the install spine "
+                            f"({path}) — DOTFILES_DEV_INPUTS_ROOT must not be set in production"
+                        ),
+                    )
+                )
+            else:
+                items.append(
+                    DriftItem(
+                        name=f"input:{key}",
+                        kind="input",
+                        status="missing",
+                        detail="not found in install spine (provisioning defect)",
+                    )
+                )
+        return items
 
     def _entry_dir(self, layer: str, entry_hash: str) -> Path:
         return self._state_root / "cache" / layer / entry_hash.lower()

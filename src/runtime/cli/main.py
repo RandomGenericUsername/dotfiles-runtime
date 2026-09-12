@@ -754,6 +754,7 @@ def _run_doctor_check() -> DoctorReport:
     use_case = DoctorUseCase(
         state_repo=JsonStateRepository(state_root=state_root),
         state_root=state_root,
+        install_spine=_resolve_install_spine(),
     )
     return use_case.check()
 
@@ -788,7 +789,9 @@ def _run_doctor_repair() -> RepairResult:
     mutex = FlockSeedMutex(state_root / ".seed.lock")
     csg, weg, itr = CsgAdapter(), WegAdapter(), ItrAdapter()
     use_case = DoctorRepairUseCase(
-        doctor=DoctorUseCase(state_repo=state_repo, state_root=state_root),
+        doctor=DoctorUseCase(
+            state_repo=state_repo, state_root=state_root, install_spine=install_spine
+        ),
         quarantine=lambda layer, entry_hash: quarantine_entry(state_root, layer, entry_hash),
         reconcile=ReconcileDesktopStateUseCase(
             state_repo=state_repo,

@@ -9,8 +9,8 @@ seeder and ``ApplyWallpaperUseCase`` share the exact spine-discovery
 helpers and the per-layer populate pattern (staging + drain + meta-in-
 staging + load-on-race). Behavior contract locked by the seed test suite:
 
-- Spine discovery checks the install spine first, then walks repo
-  ancestors for dev checkouts (deferred-work rt-1-11 coupling).
+- Spine discovery resolves the install spine ONLY (R-3/AD-43). A repo checkout
+  is consulted solely via the explicit `DOTFILES_DEV_INPUTS_ROOT` override.
 - All spine reads are READ-ONLY (AD-11 post-seed rule, AD-15).
 - Entry hash formulas per shared-data-contract Derivation-input hashing
   (adapters/hashing.py): palette = sha256(wh || template_set_hash),
@@ -40,6 +40,7 @@ staging + load-on-race). Behavior contract locked by the seed test suite:
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 from pathlib import Path
 from typing import Final, cast
@@ -53,183 +54,176 @@ from runtime.adapters.hashing import (
     palette_entry_hash,
 )
 from runtime.adapters.seeder import CacheSeeder
-from runtime.domain.models import EffectsEntry, IconsEntry, PaletteEntry
+from runtime.domain.models import (
+    EffectsEntry,
+    IconsEntry,
+    MissingDerivationInputError,
+    PaletteEntry,
+)
 from runtime.ports.color_scheme_generator import IColorSchemeGenerator
 from runtime.ports.effects_generator import IEffectsGenerator
 from runtime.ports.icon_renderer import IIconRenderer
 
 logger = logging.getLogger(__name__)
 
+#: Explicit dev override (R-3, AD-43): when set, the runtime MAY resolve
+#: derivation inputs from a repo checkout instead of the install spine. Unset
+#: in production — resolution is spine-only and a missing input fails loud.
+_DEV_INPUTS_ROOT_ENV = "DOTFILES_DEV_INPUTS_ROOT"
+
+_KIND_DIR = "dir"
+_KIND_FILE = "file"
+
+#: Human labels + the spine path we name when an input is missing.
+_INPUT_LABELS: dict[str, str] = {
+    "csg_templates": "CSG templates dir",
+    "weg_effects": "effects catalog",
+    "icon_templates": "icon templates dir",
+    "icon_mappings": "icon mappings",
+}
+
+#: Keys already warned about a dev-checkout resolution (log once, not per call).
+_WARNED: set[str] = set()
+
+
+def _dev_inputs_root() -> Path | None:
+    raw = os.environ.get(_DEV_INPUTS_ROOT_ENV)
+    return Path(raw).expanduser().resolve() if raw else None
+
+
+def _matches(path: Path, kind: str) -> bool:
+    try:
+        return path.is_dir() if kind == _KIND_DIR else path.is_file()
+    except OSError:
+        return False
+
+
+def _input_candidates(
+    install_spine: Path,
+) -> dict[str, tuple[list[tuple[Path, str]], list[tuple[Path, str]]]]:
+    """Spine candidates (absolute) and repo candidates (relative to the dev root)."""
+    return {
+        "csg_templates": (
+            [(install_spine / "config" / "color-scheme-generator" / "templates", _KIND_DIR)],
+            [
+                (
+                    Path(
+                        "src/cli-tools/color-scheme-generator/src/color_scheme_generator/defaults/templates"
+                    ),
+                    _KIND_DIR,
+                ),
+                (Path("src/cli-tools/color-scheme-generator/defaults/templates"), _KIND_DIR),
+            ],
+        ),
+        "weg_effects": (
+            [(install_spine / "config" / "weg" / "effects.yaml", _KIND_FILE)],
+            [
+                (
+                    Path(
+                        "src/cli-tools/wallpaper-effects-generator/src/wallpaper_effects_generator/defaults/effects.yaml"
+                    ),
+                    _KIND_FILE,
+                ),
+                (
+                    Path("src/cli-tools/wallpaper-effects-generator/defaults/effects.yaml"),
+                    _KIND_FILE,
+                ),
+            ],
+        ),
+        "icon_templates": (
+            [
+                (install_spine / "icon-templates", _KIND_DIR),
+                (install_spine / "config" / "icon-templates-renderer" / "templates", _KIND_DIR),
+            ],
+            [(Path("dotfiles/assets/icon-templates"), _KIND_DIR)],
+        ),
+        "icon_mappings": (
+            [
+                (install_spine / "icon-mappings" / "icons.yaml", _KIND_FILE),
+                (install_spine / "icon-mappings", _KIND_DIR),
+                (install_spine / "config" / "icon-templates-renderer" / "icons.yaml", _KIND_FILE),
+            ],
+            [
+                (
+                    Path("dotfiles/config/icon-template-color-scheme-mappings/icons.yaml"),
+                    _KIND_FILE,
+                ),
+                (Path("dotfiles/config/icon-template-color-scheme-mappings"), _KIND_DIR),
+            ],
+        ),
+    }
+
+
+def resolve_input(key: str, install_spine: Path) -> tuple[Path | None, str]:
+    """Resolve one derivation input; return ``(path, source)``.
+
+    ``source`` is ``"spine"`` (production-correct), ``"repo"`` (dev override in
+    effect), or ``"missing"``. Spine is always tried first; the repo is only
+    consulted when ``DOTFILES_DEV_INPUTS_ROOT`` is set (and then logged).
+    """
+    spine_candidates, repo_candidates = _input_candidates(install_spine)[key]
+    for path, kind in spine_candidates:
+        if _matches(path, kind):
+            return path, "spine"
+    dev = _dev_inputs_root()
+    if dev is not None:
+        for rel, kind in repo_candidates:
+            candidate = dev / rel
+            if _matches(candidate, kind):
+                if key not in _WARNED:
+                    _WARNED.add(key)
+                    logger.warning(
+                        "derivation input %r resolved from dev checkout (%s=%s); "
+                        "production reads the install spine only",
+                        _INPUT_LABELS[key],
+                        _DEV_INPUTS_ROOT_ENV,
+                        dev,
+                    )
+                else:
+                    logger.debug("derivation input %r from dev checkout: %s", key, candidate)
+                return candidate, "repo"
+    return None, "missing"
+
+
+def input_provenance(install_spine: Path) -> dict[str, tuple[Path | None, str]]:
+    """Per-input ``(path, source)`` for every derivation input — used by doctor."""
+    return {key: resolve_input(key, install_spine) for key in _INPUT_LABELS}
+
+
+def require_input(key: str, install_spine: Path) -> Path:
+    path, _ = resolve_input(key, install_spine)
+    if path is None:
+        label = _INPUT_LABELS[key]
+        spine = " | ".join(str(p) for p, _ in _input_candidates(install_spine)[key][0])
+        raise MissingDerivationInputError(
+            f"{label} not found in install spine ({spine}); "
+            f"set {_DEV_INPUTS_ROOT_ENV} to a repo checkout for development"
+        )
+    return path
+
 
 def find_templates_dir(install_spine: Path) -> Path | None:
-    """Discover CSG templates directory (spine first, then repo ancestors)."""
-    spine_templates = install_spine / "config" / "color-scheme-generator" / "templates"
-    try:
-        if spine_templates.is_dir():
-            return spine_templates
-    except OSError:
-        pass
-
-    for parent in install_spine.parents:
-        candidates = [
-            parent
-            / "src"
-            / "cli-tools"
-            / "color-scheme-generator"
-            / "src"
-            / "color_scheme_generator"
-            / "defaults"
-            / "templates",
-            parent / "src" / "cli-tools" / "color-scheme-generator" / "defaults" / "templates",
-        ]
-        for candidate in candidates:
-            try:
-                if candidate.is_dir():
-                    return candidate
-            except OSError:
-                continue
-    return None
+    """Resolve the CSG templates dir (spine-only; dev override opt-in). None = absent."""
+    path, _ = resolve_input("csg_templates", install_spine)
+    return path
 
 
 def find_effects_catalog(install_spine: Path) -> Path | None:
-    """Discover WEG effects catalog (spine first, then repo ancestors)."""
-    spine_catalog = install_spine / "config" / "weg" / "effects.yaml"
-    try:
-        if spine_catalog.is_file():
-            return spine_catalog
-    except OSError:
-        pass
-
-    for parent in install_spine.parents:
-        candidates = [
-            parent
-            / "src"
-            / "cli-tools"
-            / "wallpaper-effects-generator"
-            / "src"
-            / "wallpaper_effects_generator"
-            / "defaults"
-            / "effects.yaml",
-            parent
-            / "src"
-            / "cli-tools"
-            / "wallpaper-effects-generator"
-            / "defaults"
-            / "effects.yaml",
-        ]
-        for candidate in candidates:
-            try:
-                if candidate.is_file():
-                    return candidate
-            except OSError:
-                continue
-    return None
+    """Resolve the WEG effects catalog (spine-only; dev override opt-in). None = absent."""
+    path, _ = resolve_input("weg_effects", install_spine)
+    return path
 
 
 def find_icon_templates(install_spine: Path) -> Path | None:
-    """Discover ITR icon templates directory (spine first, then repo ancestors).
-
-    Search order:
-    1. ``install_spine / "icon-templates"`` (where provisioning's assets role
-       actually deploys them per
-       ``AssetKind.ICON_TEMPLATE.spine_segment()`` —
-       ``<install>/icon-templates/``, pinned by
-       ``shared-data-contract.md` Derivation-input hashing, the docs
-       architecture §1.1 / §7, and Story 2.6 AC 3).
-    2. ``install_spine / "config" / "icon-templates-renderer" / "templates"``
-       (legacy/alternate path; reserved for compatibility).
-    3. Repo ancestors: ``parent / "src" / "cli-tools" / "icon-templates-renderer" / ...``
-    """
-    asset_templates = install_spine / "icon-templates"
-    try:
-        if asset_templates.is_dir():
-            return asset_templates
-    except OSError:
-        pass
-
-    spine_templates = install_spine / "config" / "icon-templates-renderer" / "templates"
-    try:
-        if spine_templates.is_dir():
-            return spine_templates
-    except OSError:
-        pass
-
-    for parent in install_spine.parents:
-        candidates = [
-            parent
-            / "src"
-            / "cli-tools"
-            / "icon-templates-renderer"
-            / "src"
-            / "icon_templates_renderer"
-            / "defaults"
-            / "templates",
-            parent / "src" / "cli-tools" / "icon-templates-renderer" / "defaults" / "templates",
-        ]
-        for candidate in candidates:
-            try:
-                if candidate.is_dir():
-                    return candidate
-            except OSError:
-                continue
-    return None
+    """Resolve the ITR icon-templates dir (spine-only; dev override opt-in). None = absent."""
+    path, _ = resolve_input("icon_templates", install_spine)
+    return path
 
 
 def find_icon_mappings(install_spine: Path) -> Path | None:
-    """Discover ITR icon mappings (spine first, then repo ancestors).
-
-    Search order:
-    1. ``install_spine / "icon-mappings" / "icons.yaml"`` (where provisioning's
-       assets role actually deploys them per
-       ``AssetKind.ICON_MAPPING.spine_segment()`` —
-       ``<install>/icon-mappings/``, pinned by
-       ``shared-data-contract.md` Derivation-input hashing, the docs
-       architecture §1.1 / §7, and Story 2.6 AC 4).
-    2. ``install_spine / "icon-mappings"`` (if it's a directory of YAML files).
-    3. ``install_spine / "config" / "icon-templates-renderer" / "icons.yaml"``
-       (legacy/alternate path; reserved for compatibility).
-    4. Repo ancestors: ``parent / "src" / "cli-tools" / "icon-templates-renderer" / ...``
-    """
-    asset_mappings_file = install_spine / "icon-mappings" / "icons.yaml"
-    try:
-        if asset_mappings_file.is_file():
-            return asset_mappings_file
-    except OSError:
-        pass
-
-    asset_mappings_dir = install_spine / "icon-mappings"
-    try:
-        if asset_mappings_dir.is_dir():
-            return asset_mappings_dir
-    except OSError:
-        pass
-
-    spine_mappings = install_spine / "config" / "icon-templates-renderer" / "icons.yaml"
-    try:
-        if spine_mappings.is_file():
-            return spine_mappings
-    except OSError:
-        pass
-
-    for parent in install_spine.parents:
-        candidates = [
-            parent
-            / "src"
-            / "cli-tools"
-            / "icon-templates-renderer"
-            / "src"
-            / "icon_templates_renderer"
-            / "defaults"
-            / "icons.yaml",
-            parent / "src" / "cli-tools" / "icon-templates-renderer" / "defaults" / "icons.yaml",
-        ]
-        for candidate in candidates:
-            try:
-                if candidate.is_file():
-                    return candidate
-            except OSError:
-                continue
-    return None
+    """Resolve the ITR icon mappings (spine-only; dev override opt-in). None = absent."""
+    path, _ = resolve_input("icon_mappings", install_spine)
+    return path
 
 
 def _hash_path_input(path: Path, what: str) -> str:
@@ -349,10 +343,7 @@ class DerivationPipeline:
         alone is NOT enough — ``ensure_palette_entry_complete`` evicts a
         pre-growth partial entry so the same ``<ph>`` regenerates below.
         """
-        templates_dir = find_templates_dir(self._install_spine)
-        if templates_dir is None:
-            raise RuntimeError(f"CSG templates dir not found (install_spine={self._install_spine})")
-
+        templates_dir = require_input("csg_templates", self._install_spine)
         template_set_hash = canonical_hash_dir(templates_dir)
         peh = palette_entry_hash(wallpaper_hash, template_set_hash)
         target = cache_entry_path(self._state_root, "palettes", peh)
@@ -408,10 +399,7 @@ class DerivationPipeline:
         self, wallpaper_path: Path, wallpaper_hash: str
     ) -> tuple[EffectsEntry, bool]:
         """Ensure the effects cache entry. Cache hit is entry-dir existence."""
-        catalog_path = find_effects_catalog(self._install_spine)
-        if catalog_path is None:
-            raise RuntimeError(f"effects catalog not found (install_spine={self._install_spine})")
-
+        catalog_path = require_input("weg_effects", self._install_spine)
         catalog_hash = hash_file(catalog_path)
         eeh = effects_entry_hash(wallpaper_hash, catalog_hash)
         target = cache_entry_path(self._state_root, "effects", eeh)
@@ -455,12 +443,8 @@ class DerivationPipeline:
 
     def ensure_icons(self, palette_entry_hash: str) -> tuple[IconsEntry, bool]:
         """Ensure the icons cache entry. Cache hit is entry-dir existence."""
-        templates_dir = find_icon_templates(self._install_spine)
-        mappings_path = find_icon_mappings(self._install_spine)
-        if templates_dir is None or mappings_path is None:
-            raise RuntimeError(
-                f"icon templates/mappings not found (install_spine={self._install_spine})"
-            )
+        templates_dir = require_input("icon_templates", self._install_spine)
+        mappings_path = require_input("icon_mappings", self._install_spine)
 
         templates_hash = _hash_path_input(templates_dir, "icon templates")
         mappings_hash_val = _hash_path_input(mappings_path, "icon mappings")

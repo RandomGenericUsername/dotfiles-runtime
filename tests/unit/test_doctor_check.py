@@ -41,8 +41,24 @@ PALETTE_FILES = (
 
 @pytest.fixture(autouse=True)
 def _quiet_seed_hook(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Point first-run seeding at an empty spine so it skips quietly."""
-    monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(tmp_path / "install"))
+    """Point first-run seeding at an empty spine so it skips quietly.
+
+    R-3: doctor now also checks derivation-input provenance, so give the fake
+    spine the four inputs (healthy) — a missing input is a real defect and is
+    tested separately.
+    """
+    spine = tmp_path / "install"
+    (spine / "icon-templates").mkdir(parents=True)
+    (spine / "icon-templates" / "x.svg").write_text("<svg/>", encoding="utf-8")
+    (spine / "icon-mappings").mkdir(parents=True)
+    (spine / "icon-mappings" / "icons.yaml").write_text("icons: {}\n", encoding="utf-8")
+    templates = spine / "config" / "color-scheme-generator" / "templates"
+    templates.mkdir(parents=True)
+    (templates / "t.j2").write_text("x", encoding="utf-8")
+    weg = spine / "config" / "weg"
+    weg.mkdir(parents=True)
+    (weg / "effects.yaml").write_text("effects: {}\n", encoding="utf-8")
+    monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(spine))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
 
 
@@ -449,3 +465,55 @@ class TestCliShape:
             for item in payload["items"]
         )
         assert _snapshot(state_root) == before
+
+
+def test_missing_derivation_input_reported(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """R-3/AD-43: doctor surfaces a derivation input missing from the spine."""
+    monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(tmp_path / "empty-spine"))
+    monkeypatch.delenv("DOTFILES_DEV_INPUTS_ROOT", raising=False)
+    state_root = tmp_path / "state-home" / "dotfiles"
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
+    _seed_state(state_root)
+    result = runner.invoke(app, ["doctor", "--format", "json"])
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["clean"] is False
+    assert any(
+        item["name"].startswith("input:") and item["status"] == "missing"
+        for item in payload["items"]
+    )
+
+
+def test_repo_sourced_input_is_not_clean(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """R-3/AD-43: a repo-sourced input (override set) dirties doctor — never passes as clean."""
+    repo = tmp_path / "checkout"
+    (repo / "dotfiles/assets/icon-templates").mkdir(parents=True)
+    (repo / "dotfiles/assets/icon-templates/x.svg").write_text("<svg/>", encoding="utf-8")
+    mappings = repo / "dotfiles/config/icon-template-color-scheme-mappings"
+    mappings.mkdir(parents=True)
+    (mappings / "icons.yaml").write_text("{}\n", encoding="utf-8")
+    templates = (
+        repo / "src/cli-tools/color-scheme-generator/src/color_scheme_generator/defaults/templates"
+    )
+    templates.mkdir(parents=True)
+    (templates / "t.j2").write_text("x", encoding="utf-8")
+    weg = (
+        repo / "src/cli-tools/wallpaper-effects-generator/src/wallpaper_effects_generator/defaults"
+    )
+    weg.mkdir(parents=True)
+    (weg / "effects.yaml").write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(tmp_path / "empty-spine"))
+    monkeypatch.setenv("DOTFILES_DEV_INPUTS_ROOT", str(repo))
+    state_root = tmp_path / "state-home" / "dotfiles"
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
+    _seed_state(state_root)
+
+    result = runner.invoke(app, ["doctor", "--format", "json"])
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["clean"] is False
+    assert any(
+        item["name"].startswith("input:") and item["status"] == "diverged"
+        for item in payload["items"]
+    )

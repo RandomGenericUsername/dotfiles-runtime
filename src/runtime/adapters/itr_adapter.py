@@ -52,64 +52,6 @@ if HASH_ALGORITHM != "sha256":  # pragma: no cover
 _EMPTY_DIR_HASH = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
-def _find_default_icon_templates() -> Path | None:
-    """Search repo for icon-templates defaults."""
-    for parent in Path(__file__).resolve().parents:
-        candidates = [
-            parent
-            / "src"
-            / "cli-tools"
-            / "icon-templates-renderer"
-            / "src"
-            / "icon_templates_renderer"
-            / "defaults"
-            / "templates",
-            parent / "src" / "cli-tools" / "icon-templates-renderer" / "defaults" / "templates",
-            parent / "icon-templates",
-            parent / "icon_templates",
-        ]
-        for candidate in candidates:
-            try:
-                if candidate.is_dir():
-                    return candidate
-            except OSError:
-                continue
-    return None
-
-
-def _find_default_icon_mappings() -> Path | None:
-    """Search repo for icon-mappings defaults."""
-    for parent in Path(__file__).resolve().parents:
-        candidates = [
-            parent
-            / "src"
-            / "cli-tools"
-            / "icon-templates-renderer"
-            / "src"
-            / "icon_templates_renderer"
-            / "defaults"
-            / "mappings",
-            parent / "src" / "cli-tools" / "icon-templates-renderer" / "defaults" / "mappings",
-            parent
-            / "src"
-            / "cli-tools"
-            / "icon-templates-renderer"
-            / "src"
-            / "icon_templates_renderer"
-            / "defaults"
-            / "icons.yaml",
-            parent / "icon-mappings",
-            parent / "icon_mappings",
-        ]
-        for candidate in candidates:
-            try:
-                if candidate.exists():
-                    return candidate
-            except OSError:
-                continue
-    return None
-
-
 def _validate_itr_bin(itr_bin: str | None) -> str | None:
     if itr_bin is None:
         return None
@@ -260,7 +202,10 @@ class ItrAdapter(IIconRenderer):
         elif self._templates_dir is not None:
             effective_templates = self._templates_dir
         else:
-            effective_templates = _find_default_icon_templates()
+            raise FileNotFoundError(
+                "ITR templates dir not provided (R-3/AD-43: derivation inputs are "
+                "injected from the install spine; there is no repo-ancestor fallback)"
+            )
 
         if effective_templates is None:
             raise FileNotFoundError(
@@ -300,7 +245,10 @@ class ItrAdapter(IIconRenderer):
         elif self._mappings_path is not None:
             effective_mappings = self._mappings_path
         else:
-            effective_mappings = _find_default_icon_mappings()
+            raise FileNotFoundError(
+                "ITR mappings not provided (R-3/AD-43: derivation inputs are "
+                "injected from the install spine; there is no repo-ancestor fallback)"
+            )
 
         if effective_mappings is None:
             raise FileNotFoundError("ITR mappings not found: no default mappings discovered")
