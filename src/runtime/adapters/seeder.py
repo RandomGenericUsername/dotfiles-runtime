@@ -815,8 +815,8 @@ class CacheSeeder:
         never from hidden derivation code.
 
         Args:
-            trigger: event trigger — the pinned enum is
-                ``seed|set|reconcile|force|regenerate|doctor|prune`` ("apply" is NOT valid); this
+            trigger: event trigger — the accepted values are
+                ``runtime.domain.history.HISTORY_TRIGGERS`` ("apply" is NOT valid); this
                 adapter stays trigger-agnostic and does not validate.
             wallpaper_hash: SHA-256 hex of wallpaper content
             palette_hash: SHA-256 hex of palette entry or None

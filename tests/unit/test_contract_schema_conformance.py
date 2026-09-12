@@ -11,17 +11,12 @@ from importlib.resources import files
 from pathlib import Path
 
 
-def _canonical_history_schema() -> Path:
-    repo_root = Path(__file__).resolve().parents[4]
-    return repo_root / "contracts" / "schemas" / "history.schema.json"
+def test_canonical_history_schema_exists(repo_root: Path) -> None:
+    assert (repo_root / "contracts" / "schemas" / "history.schema.json").is_file()
 
 
-def test_canonical_history_schema_exists() -> None:
-    assert _canonical_history_schema().is_file()
-
-
-def test_embedded_history_schema_is_byte_identical_to_canonical() -> None:
-    canonical = _canonical_history_schema().read_bytes()
+def test_embedded_history_schema_is_byte_identical_to_canonical(repo_root: Path) -> None:
+    canonical = (repo_root / "contracts" / "schemas" / "history.schema.json").read_bytes()
     embedded = files("runtime.adapters").joinpath("schemas", "history.schema.json").read_bytes()
     assert embedded == canonical, (
         "embedded runtime/adapters/schemas/history.schema.json drifted from "

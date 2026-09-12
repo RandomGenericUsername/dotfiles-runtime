@@ -59,3 +59,16 @@ def _no_real_desktop_binaries(monkeypatch: pytest.MonkeyPatch) -> None:
         return resolved
 
     monkeypatch.setattr(shutil, "which", _guarded_which)
+
+
+@pytest.fixture(scope="session")
+def repo_root() -> Path:
+    """Locate the repo root by walking up for the canonical schemas dir.
+
+    Avoids a brittle hardcoded `parents[N]` depth so tests survive a move or an
+    installed-only layout.
+    """
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "contracts" / "schemas" / "history.schema.json").is_file():
+            return parent
+    raise RuntimeError("could not locate repo root (contracts/schemas/... missing)")

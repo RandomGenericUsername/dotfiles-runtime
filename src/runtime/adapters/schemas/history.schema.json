@@ -10,7 +10,7 @@
     "ts": { "type": "string" },
     "trigger": {
       "type": "string",
-      "enum": ["seed", "set", "reconcile", "force", "regenerate", "doctor", "prune"]
+      "enum": ["seed", "set", "reconcile", "force", "regenerate", "doctor", "prune", "reactive"]
     },
     "wallpaper": { "type": "string" },
     "palette": { "type": ["string", "null"] },

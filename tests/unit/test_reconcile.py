@@ -802,7 +802,9 @@ class TestReconcileHistoryTriggerParam:
     default stays "reconcile"; the pinned enum is enforced fail-loud
     INSIDE run() only (CacheSeeder.append_history stays trigger-agnostic)."""
 
-    @pytest.mark.parametrize("trigger", ["seed", "set", "reconcile", "force"])
+    @pytest.mark.parametrize(
+        "trigger", ["seed", "set", "reconcile", "force", "regenerate", "doctor", "prune", "reactive"]
+    )
     def test_run_valid_trigger_appends_history_line(self, tmp_path: Path, trigger: str) -> None:
         applied = _apply_state(tmp_path)
         use_case = _make_reconcile(applied)
@@ -832,6 +834,19 @@ class TestReconcileHistoryTriggerParam:
         with pytest.raises(ValueError, match="invalid history trigger"):
             use_case.run(trigger=trigger)
         assert not (applied.state_root / "history.jsonl").exists()
+
+    def test_run_invalid_trigger_message_lists_every_value(self, tmp_path: Path) -> None:
+        from runtime.domain.history import HISTORY_TRIGGERS
+
+        applied = _apply_state(tmp_path)
+        use_case = _make_reconcile(applied)
+
+        with pytest.raises(ValueError) as excinfo:
+            use_case.run(trigger="bogus")
+        message = str(excinfo.value)
+        assert "expected one of" in message
+        for value in HISTORY_TRIGGERS:  # a stale hardcoded list would fail here
+            assert value in message
 
     def test_run_unhashable_trigger_raises_value_error(self, tmp_path: Path) -> None:
         """A non-str trigger must fail loud as ValueError (not TypeError) —

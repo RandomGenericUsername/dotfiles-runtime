@@ -23,7 +23,7 @@ Swap sequence order (shared-data-contract, non-negotiable):
 3. ``current.json`` follows (refreshed ``applied_at``).
 4. History: append one ``history.jsonl`` line (trigger ``"reconcile"``
    by default; ``wallpaper set`` passes ``"set"`` via ``run(trigger=...)``
-   — the pinned enum is ``seed|set|reconcile|force|regenerate|doctor``).
+   — the accepted values are ``runtime.domain.history.HISTORY_TRIGGERS``).
 5. Reload desktop consumers (fire-and-report, per injected reloader).
 
 Derivation (step 1) runs OUTSIDE the lock (staging is race-safe;
@@ -49,6 +49,7 @@ from runtime.adapters.cache import cache_entry_path
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder, _repoint_symlink
 from runtime.application.derive import DerivationPipeline, ensure_palette_entry_complete
+from runtime.domain.history import HISTORY_TRIGGERS
 from runtime.domain.models import (
     DEFAULT_MONITOR,
     DesktopState,
@@ -64,8 +65,6 @@ from runtime.ports.seed_mutex import ISeedMutex
 from runtime.ports.state_repository import IStateRepository
 
 logger = logging.getLogger(__name__)
-
-_VALID_TRIGGERS = frozenset({"seed", "set", "reconcile", "force", "regenerate", "doctor"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,8 +135,8 @@ class ReconcileDesktopStateUseCase:
         """Reconcile: entries → symlinks → current.json → history → reload.
 
         Args:
-            trigger: history line trigger, validated against the pinned
-                enum ``seed|set|reconcile|force|regenerate|doctor`` (the standalone
+            trigger: history line trigger, validated against
+                ``runtime.domain.history.HISTORY_TRIGGERS`` (the standalone
                 ``reconcile`` command keeps the default; the
                 ``wallpaper set`` capstone passes ``"set"``).
 
@@ -151,8 +150,8 @@ class ReconcileDesktopStateUseCase:
                 fires (AC 6b).
             OSError: on filesystem failures.
         """
-        if not isinstance(trigger, str) or trigger not in _VALID_TRIGGERS:
-            valid = ", ".join(sorted(_VALID_TRIGGERS))
+        if not isinstance(trigger, str) or trigger not in HISTORY_TRIGGERS:
+            valid = ", ".join(sorted(HISTORY_TRIGGERS))
             raise ValueError(f"invalid history trigger: {trigger!r} (expected one of {valid})")
         # Fail-fast corrupt/absent guard (mirrors apply):
         state = self._state_repo.load_current()

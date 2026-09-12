@@ -53,6 +53,7 @@ import fastjsonschema
 
 from runtime.adapters.cache import CACHE_LAYERS, cache_entry_path
 from runtime.adapters.contract_schemas import load_history_schema
+from runtime.domain.history import HistoryTrigger
 from runtime.domain.models import (
     DEFAULT_MONITOR,
     DesktopState,
@@ -68,8 +69,6 @@ _ABSENT_STATE_MESSAGE = (
 )
 
 LinkStatusKind = Literal["ok", "missing", "diverged", "dangling"]
-
-HistoryTrigger = Literal["seed", "set", "reconcile", "force", "regenerate", "doctor", "prune"]
 
 #: The append-only history line is defined once as a machine-checkable schema
 #: (`contracts/schemas/history.schema.json`, embedded in the runtime package,
