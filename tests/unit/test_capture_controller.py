@@ -173,6 +173,41 @@ class TestLifecycle:
             CaptureController(client, recorder, clock=_Clock(), cadence=0)
 
 
+class TestRecorderStartFailure:
+    def test_recorder_start_failure_ends_the_job_and_reraises(self) -> None:
+        """A dead recorder must not leak the hub lease (5-4 review)."""
+
+        class _BoomRecorder(_FakeRecorder):
+            def start(self) -> None:
+                raise RuntimeError("recorder backend exited during startup")
+
+        client = _FakeClient()
+        controller = CaptureController(client, _BoomRecorder(), clock=_Clock(), ttl=60.0)
+        with pytest.raises(RuntimeError, match="exited during startup"):
+            controller.start()
+        # No lease leak: the just-begun job is ended non-zero and state is idle.
+        assert client.begins == [("capture", 60.0)]
+        assert client.ends == [("job-1", 1)]
+        assert controller.job_id is None
+        assert controller.state == "idle"
+
+    def test_end_failure_is_contained_and_original_error_propagates(self) -> None:
+        """If EndJob itself fails, the recorder error still surfaces (no mask)."""
+
+        class _BoomRecorder(_FakeRecorder):
+            def start(self) -> None:
+                raise RuntimeError("recorder backend exited during startup")
+
+        class _Flaky(_FakeClient):
+            def end(self, job_id: str, exit_code: int) -> None:
+                raise RuntimeError("hub went away")
+
+        controller = CaptureController(_Flaky(), _BoomRecorder(), clock=_Clock())
+        with pytest.raises(RuntimeError, match="exited during startup"):
+            controller.start()
+        assert controller.job_id is None
+
+
 class TestCadence:
     def test_tick_emits_at_least_once_per_second_while_recording(self) -> None:
         controller, client, _, clock = _controller()

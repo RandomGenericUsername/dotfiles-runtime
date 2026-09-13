@@ -760,6 +760,10 @@ class DbusControlChannel(IControlChannel):
         self._lock = threading.Lock()
         self._timeout = timeout
         self._serve: Callable[[Any], None] | None = None
+        # Replies consumed while serving an interleaved message that belong to
+        # an OUTER pump (a nested Control): stashed so the outer wait can claim
+        # its own ack instead of it being dropped (reply mis-routing).
+        self._pending: list[Any] = []
 
     def set_serve_callback(self, serve: Callable[[Any], None]) -> None:
         """Install the pump that serves interleaved messages during a wait.
@@ -797,6 +801,7 @@ class DbusControlChannel(IControlChannel):
             self._conn = None
             self._endpoints.clear()
             self._serve = None
+            self._pending.clear()
 
     def send_control(self, job_id: str, action: str) -> None:
         with self._lock:
@@ -836,6 +841,12 @@ class DbusControlChannel(IControlChannel):
         owner's serve callback) instead of being swallowed while we block.
         A timeout/unreachable peer drops the endpoint and fails loud; a typed
         job error passes through unchanged.
+
+        Reply discipline (mirrors the job client): a reply that belongs to an
+        *outer* pump (a nested ``Control`` served while this one waits) is
+        stashed in :attr:`_pending`, not dropped, so the outer wait can claim
+        its own ack. Without this, two interleaved ``Control`` calls mis-route
+        the outer ack into a false ``UnknownJob``.
         """
         try:
             serial = next(conn.outgoing_serial)
@@ -845,6 +856,10 @@ class DbusControlChannel(IControlChannel):
             raise UnknownJob(job_id) from exc
         deadline = time.monotonic() + self._timeout
         while True:
+            queued = self._take_pending(serial)
+            if queued is not None:
+                self._complete_reply(queued, job_id, action)
+                return
             try:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -854,14 +869,30 @@ class DbusControlChannel(IControlChannel):
                 self.unbind(job_id)
                 raise UnknownJob(job_id) from exc
             if msg.header.fields.get(HeaderFields.reply_serial, None) == serial:
-                if msg.header.message_type == MessageType.error:
-                    error_name = msg.header.fields.get(HeaderFields.error_name, "")
-                    self._raise_typed_error(error_name, job_id, action)
+                self._complete_reply(msg, job_id, action)
                 return
+            if msg.header.message_type in (MessageType.method_return, MessageType.error):
+                # A reply for an outer pump: keep it for its owner rather than
+                # letting ``serve`` drop it (reply mis-routing).
+                self._pending.append(msg)
+                continue
             try:
                 serve(msg)
             except Exception:
                 logger.exception("hub control pump: serving an interleaved message failed")
+
+    def _take_pending(self, serial: int) -> Any | None:
+        """Remove and return a stashed reply for ``serial`` (FIFO scan)."""
+        for index, reply in enumerate(self._pending):
+            if reply.header.fields.get(HeaderFields.reply_serial, None) == serial:
+                return self._pending.pop(index)
+        return None
+
+    def _complete_reply(self, msg: Any, job_id: str, action: str) -> None:
+        """Consume a matched ack, re-raising a typed job error unchanged."""
+        if msg.header.message_type == MessageType.error:
+            error_name = msg.header.fields.get(HeaderFields.error_name, "")
+            self._raise_typed_error(error_name, job_id, action)
 
     @staticmethod
     def _raise_typed_error(error_name: object, job_id: str, action: str) -> None:
@@ -962,9 +993,7 @@ class JeepneyNameOwner(IBusNameOwner):
                 # ack, the job's own Emit/EndJob arrive on this connection and
                 # must be served, not swallowed. The pump is the same routing
                 # the serve loop uses (single thread, same connection).
-                channel.set_serve_callback(
-                    lambda msg: self._route_message(conn, service, msg)
-                )
+                channel.set_serve_callback(lambda msg: self._route_message(conn, service, msg))
             service.bind_emitter(self._emit_signal)
             # Start records are already queued by the domain hub's
             # constructor; flush emits JobsCleared(epoch) FIRST.

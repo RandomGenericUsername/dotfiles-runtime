@@ -188,6 +188,43 @@ class TestN2PreservedWithoutHost:
             h.service.dispatch("Control", (job_id, "pause"))
 
 
+class TestRecorderStartFailureHost:
+    def test_run_capture_host_surfaces_recorder_error_and_leaves_no_lease(self) -> None:
+        """The runner must not mask a recorder-start failure nor leak the job."""
+        from runtime.cli.main import _run_capture_host
+
+        h = _Harness()
+
+        class _BoomRecorder(IRecorderProcess):
+            def start(self) -> None:
+                raise RuntimeError("recorder backend exited during startup")
+
+            def pause(self) -> None:
+                return None
+
+            def resume(self) -> None:
+                return None
+
+            def stop(self) -> None:
+                return None
+
+            def is_running(self) -> bool:
+                return False
+
+        stop = threading.Event()
+        stop.set()
+        with pytest.raises(RuntimeError, match="exited during startup"):
+            _run_capture_host(
+                command="rec",
+                recorder=_BoomRecorder(),
+                client=h.client,
+                clock=h.clock,
+                stop_event=stop,
+            )
+        h.service.flush()
+        assert h.registry.active_jobs() == {}
+
+
 class TestRunCaptureHostHelper:
     def test_runs_injected_client_through_the_cli_helper(self) -> None:
         """The composition-root runner owns the same lifecycle end to end."""

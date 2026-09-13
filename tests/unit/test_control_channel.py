@@ -73,6 +73,59 @@ def _error_reply(name: str) -> Callable[[Any], Any]:
     return factory
 
 
+class _PumpConn:
+    """Fake connection whose receive queue is scripted by the test (no auto-ack)."""
+
+    def __init__(self) -> None:
+        self.outgoing_serial = itertools.count(1)
+        self.sent: list[Any] = []
+        self.deliver: list[Any] = []
+
+    def send_message(self, message: Any, serial: int | None = None) -> None:
+        if serial is not None:
+            message.header.serial = serial
+        self.sent.append(message)
+
+    def receive(self, *, timeout: float | None = None) -> Any:
+        if self.deliver:
+            return self.deliver.pop(0)
+        raise TimeoutError
+
+
+def _reply_with_serial(serial: int) -> Any:
+    """A method_return whose ``reply_serial`` is ``serial`` (a craftable ack)."""
+    from jeepney import DBusAddress, HeaderFields, new_method_call, new_method_return
+
+    template = new_method_call(
+        DBusAddress(
+            "/org/dotfiles/Events",
+            bus_name="org.dotfiles.Events",
+            interface="org.dotfiles.Events1",
+        ),
+        "Noop",
+        "",
+        (),
+    )
+    reply = new_method_return(template, None, ())
+    reply.header.fields[HeaderFields.reply_serial] = serial
+    return reply
+
+
+def _inbound_control_call(action: str) -> Any:
+    from jeepney import DBusAddress, new_method_call
+
+    return new_method_call(
+        DBusAddress(
+            "/org/dotfiles/Events",
+            bus_name="org.dotfiles.Events",
+            interface="org.dotfiles.Events1",
+        ),
+        "Control",
+        "ss",
+        ("job-2", action),
+    )
+
+
 class TestDbusControlChannel:
     def test_unbound_endpoint_fails_loud(self) -> None:
         channel = DbusControlChannel()
@@ -176,6 +229,39 @@ class TestDbusControlChannel:
         channel.close()
         with pytest.raises(UnknownJob):
             channel.send_control("job-1", "pause")
+
+    def test_outer_ack_is_stashed_across_a_nested_pump(self) -> None:
+        """A nested Control's pump must not swallow the outer Control's ack.
+
+        Two interleaved ``Control`` calls share one connection. When the outer
+        pump serves an interleaved message that starts a nested Control, the
+        nested pump reads the OUTER ack first; it must stash it for the outer
+        pump instead of dropping it (reply mis-routing).
+        """
+        channel = DbusControlChannel()
+        conn = _PumpConn()
+        channel.bind_connection(conn)
+        channel.bind("job-1", ":1.42")
+        channel.bind("job-2", ":1.43")
+
+        served: list[Any] = []
+
+        def serve(msg: Any) -> None:
+            served.append(msg)
+            if len(served) == 1:
+                channel.send_control("job-2", "stop")
+
+        conn.deliver.append(_inbound_control_call("pause"))  # outer pumps this
+        conn.deliver.append(_reply_with_serial(1))  # outer ack (nested reads it)
+        conn.deliver.append(_reply_with_serial(2))  # nested ack
+
+        channel.set_serve_callback(serve)
+        channel.send_control("job-1", "pause")  # must NOT raise UnknownJob
+
+        from jeepney import HeaderFields
+
+        members = [m.header.fields.get(HeaderFields.member) for m in conn.sent]
+        assert members == ["Control", "Control"]
 
     def test_control_pump_serves_interleaved_messages_until_ack(self) -> None:
         """The hub keeps serving the job's calls while waiting for the ack.

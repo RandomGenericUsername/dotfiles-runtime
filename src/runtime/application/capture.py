@@ -93,7 +93,20 @@ class CaptureController:
             raise RuntimeError(f"capture already active in state {self._state!r}")
         job_id = self._client.begin("capture", self._ttl)
         self._job_id = job_id
-        self._recorder.start()
+        try:
+            self._recorder.start()
+        except BaseException:
+            # Never leak the hub lease: the recorder failed after BeginJob, so
+            # end the just-allocated job (exit 1) before re-raising. Without
+            # this a dead recorder would hold a live job until its TTL while
+            # the host's ``stop`` (state still ``idle``) raised a masking
+            # error — 5-4 review, lease-leak-on-recorder-failure.
+            self._job_id = None
+            try:
+                self._client.end(job_id, 1)
+            except Exception:
+                logger.exception("capture: EndJob failed after recorder start error")
+            raise
         now = self._clock()
         self._state = _JOB_STARTED_STATE
         self._segment_start = now
