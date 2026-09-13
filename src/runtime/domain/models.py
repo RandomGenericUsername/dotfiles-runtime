@@ -292,3 +292,15 @@ class MissingDerivationInputError(RuntimeError):
     runtime resolves inputs from the provisioned spine only, and a missing
     input is a provisioning defect that must fail loud.
     """
+
+
+class BusNameError(RuntimeError):
+    """Base for session-bus name ownership failures (Phase 5, AD-33)."""
+
+
+class BusUnavailableError(BusNameError):
+    """The session bus (or its D-Bus client) is unavailable at startup."""
+
+
+class BusNameContentionError(BusNameError):
+    """Another owner holds the well-known name (RequestName DO_NOT_QUEUE lost)."""

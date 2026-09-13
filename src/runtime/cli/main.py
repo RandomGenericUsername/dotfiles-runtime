@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
@@ -32,6 +33,7 @@ if TYPE_CHECKING:
     from runtime.application.regenerate import RegenerateResult
     from runtime.application.verify_cache import VerifyCacheResult
     from runtime.domain.models import ChangeSet, DesktopState
+    from runtime.ports.bus_name_owner import IBusNameOwner
     from runtime.ports.desktop_reloader import IDesktopReloader
 
 app = typer.Typer(
@@ -53,6 +55,9 @@ app.add_typer(inspect_app, name="inspect")
 
 cache_app = typer.Typer(help="Cache commands")
 inspect_app.add_typer(cache_app, name="cache")
+
+daemon_app = typer.Typer(help="Reactive daemon commands (systemd ExecStart surface)")
+app.add_typer(daemon_app, name="daemon")
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +210,7 @@ def main_callback(
     # The COMMAND comes from typer's resolved context (never argv parsing:
     # operands named "reconcile"/flag values must not skip seeding, and
     # flag-first invocations must).
-    if ctx.invoked_subcommand in ("reconcile", "inspect", "doctor"):
+    if ctx.invoked_subcommand in ("reconcile", "inspect", "doctor", "daemon"):
         return
     _run_seed_if_needed()
 
@@ -929,6 +934,120 @@ def doctor(
         )
     )
     if not report.clean:
+        raise typer.Exit(code=1) from None
+
+
+def _build_bus_name_owner() -> IBusNameOwner:
+    """Construct the production bus-name owner (client deferred to P5-1-2)."""
+    from runtime.adapters.dbus_name_owner import DeferredDbusNameOwner
+
+    return DeferredDbusNameOwner()
+
+
+def _install_release_handlers(bus_owner: IBusNameOwner) -> Callable[[], None]:
+    """Install SIGTERM/SIGINT → release handlers; return a restore callable.
+
+    Installed BEFORE ``acquire()`` so no window kills without orderly
+    release (safe: the port requires ``release()`` to tolerate the
+    never-owned state). A signal during startup releases and the loop then
+    exits orderly. Previous dispositions are always restored by the caller —
+    a leaked disposition would wedge the embedding process (and the test
+    runner). A half-installed pair (second install raising) restores the
+    first before propagating.
+    """
+    import signal as _signal
+
+    from runtime.ports.bus_name_owner import BUS_NAME
+
+    previous_term = _signal.getsignal(_signal.SIGTERM)
+    previous_int = _signal.getsignal(_signal.SIGINT)
+
+    def _release_on_signal(signum: int, _frame: object) -> None:
+        logger.info("daemon: caught signal %s — releasing %s", signum, BUS_NAME)
+        bus_owner.release()
+
+    _signal.signal(_signal.SIGTERM, _release_on_signal)
+    try:
+        _signal.signal(_signal.SIGINT, _release_on_signal)
+    except BaseException:
+        _signal.signal(_signal.SIGTERM, previous_term)
+        raise
+
+    def _restore() -> None:
+        _signal.signal(_signal.SIGTERM, previous_term)
+        _signal.signal(_signal.SIGINT, previous_int)
+
+    return _restore
+
+
+def _run_daemon_run(owner: IBusNameOwner | None = None) -> None:
+    """Name-first daemon loop (P5-1-1: acquire, idle, release; no converge).
+
+    1. ``acquire()`` the well-known name (fail-fast, never queue). Failure
+       is fatal (non-zero) so the supervisor retries with backoff — and the
+       process NEVER exits 0 before owning the name (Type=dbus readiness).
+    2. Unseeded (no ``current.json``) is a benign no-op: log at info and
+       idle holding the name (AD-11/C5 — the daemon never seeds).
+       A corrupt OR unreadable store is fatal (fail loud, release the name,
+       never swallow into idle).
+    3. Park signal-paused (no polling, no timers, no locks, no use-case
+       calls). SIGTERM/SIGINT releases the name and returns → exit 0.
+
+    Signal handlers are installed before step 1 (the port tolerates a
+    never-owned release); every path restores them and releases exactly
+    the acquired-or-not owner (release is idempotent).
+
+    P5-1-3 extension slot: the non-gating converge lands between steps 2
+    and 3 (after readiness, never gating it). This story performs zero
+    mutations by design.
+    """
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.domain.models import BusNameError
+    from runtime.ports.bus_name_owner import BUS_NAME
+
+    state_root = _resolve_state_root()
+    bus_owner = owner if owner is not None else _build_bus_name_owner()
+    restore_handlers = _install_release_handlers(bus_owner)
+    try:
+        try:
+            bus_owner.acquire()
+        except BusNameError as exc:
+            raise RuntimeError(f"daemon: cannot own {BUS_NAME}: {exc}") from exc
+        try:
+            state = JsonStateRepository(state_root=state_root).load_current()
+        except ValueError as exc:
+            raise RuntimeError(f"daemon: corrupt current.json: {exc}") from exc
+        except (RuntimeError, OSError) as exc:
+            raise RuntimeError(f"daemon: cannot read current.json: {exc}") from exc
+        if state is None:
+            logger.info(
+                "daemon: unseeded (no current.json) — idling holding %s; "
+                "run `dotfiles-runtime wallpaper set <img>` to seed",
+                BUS_NAME,
+            )
+        bus_owner.wait_until_terminated()
+    finally:
+        restore_handlers()
+        bus_owner.release()
+
+
+@daemon_app.command("run")
+def daemon_run() -> None:
+    """Own org.dotfiles.Events name-first, then idle (the systemd ExecStart).
+
+    Foreground blocking command (AD-33): acquires the well-known name with
+    DO_NOT_QUEUE (fails fast non-zero on contention), idles signal-paused
+    holding it, and releases on SIGTERM → exit 0. No start/stop subcommands
+    exist — ``systemctl --user`` is the control surface. Performs zero
+    mutations in this story (observe-only; converge arrives in P5-1-3).
+    """
+    try:
+        _run_daemon_run()
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.error("daemon run failed: %s", exc)
+        raise typer.Exit(code=1) from None
+    except Exception:
+        logger.exception("daemon run failed unexpectedly")
         raise typer.Exit(code=1) from None
 
 
