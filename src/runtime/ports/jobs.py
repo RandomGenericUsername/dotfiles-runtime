@@ -8,6 +8,10 @@ These ABCs are the transport-agnostic seams the job controllers use:
   in-process adapter binds it to a registry + publisher; the D-Bus adapter
   binds it to the hub's ``BeginJob``/``RenewJob``/``ReportProgress``/
   ``EndJob``/``Emit`` methods. A job NEVER emits a signal directly.
+- :class:`IControlChannel` — the hub-side seam that delivers a validated
+  ``Events1.Control`` to the job as ``Job1.Control`` (request/response; the
+  hub is the single control path). The D-Bus adapter calls the job's
+  bus-attested unique name; the in-process adapter calls a co-hosted job.
 - :class:`IRecorderProcess` — the observed recorder child (start/pause/
   resume/stop/is_running).
 - :class:`ISpeedTestRunner` — one measurement; the real adapter shells the
@@ -24,7 +28,7 @@ from collections.abc import Mapping
 
 from runtime.domain.jobs import SpeedTestResult
 
-__all__ = ["IJobClient", "IRecorderProcess", "ISpeedTestRunner"]
+__all__ = ["IControlChannel", "IJobClient", "IRecorderProcess", "ISpeedTestRunner"]
 
 
 class IJobClient(ABC):
@@ -49,6 +53,26 @@ class IJobClient(ABC):
     @abstractmethod
     def publish(self, topic: str, payload: Mapping[str, object]) -> None:
         """Publish a DOMAIN event on ``topic`` through the hub (AD-38)."""
+
+
+class IControlChannel(ABC):
+    """Hub-side delivery of a validated control action to the job (5-4, H1).
+
+    The hub validates the action against the domain allowlist BEFORE calling
+    this; the channel only delivers the already-validated action and reports
+    the outcome. ``job_id`` identifies the job whose endpoint the concrete
+    adapter resolved (bus-attested unique name, or an in-process handler).
+    """
+
+    @abstractmethod
+    def send_control(self, job_id: str, action: str) -> None:
+        """Deliver ``action`` to the job bound to ``job_id``.
+
+        Returns normally **only on the job's ack**. Raises ``UnknownJob`` when
+        no live endpoint is bound, or the endpoint is unreachable/dead, or the
+        call times out; a typed error the job returns crosses through
+        unchanged. Never reports success for a delivery that did not happen.
+        """
 
 
 class IRecorderProcess(ABC):

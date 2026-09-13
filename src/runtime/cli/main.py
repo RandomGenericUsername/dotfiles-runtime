@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from runtime.ports.bus_name_owner import IBusNameOwner
     from runtime.ports.desktop_reloader import IDesktopReloader
     from runtime.ports.event_bus import IJobRegistry
+    from runtime.ports.jobs import IControlChannel
     from runtime.ports.watch_source import IWatchSource
 
 app = typer.Typer(
@@ -1145,11 +1146,23 @@ def _build_hub_service(
     *,
     sink: SignalSink | None = None,
     registry_factory: Callable[[], IJobRegistry] | None = None,
+    control_channel: IControlChannel | None = None,
 ) -> HubService:
-    """Wrap a registry in the wire-dispatch + signal service (2b-ii-b)."""
+    """Wrap a registry in the wire-dispatch + signal service (2b-ii-b).
+
+    5-4: the injected ``control_channel`` is the hub's request/response path
+    to a job (D-Bus in production, in-process for a co-hosted job). With no
+    channel ``Control`` fails loud (``UnknownJob``) instead of a silent
+    success (N2).
+    """
     from runtime.adapters.dbus_event_bus import HubService
 
-    return HubService(registry, sink=sink, registry_factory=registry_factory)
+    return HubService(
+        registry,
+        sink=sink,
+        registry_factory=registry_factory,
+        control_channel=control_channel,
+    )
 
 
 def _install_release_handlers(bus_owner: IBusNameOwner) -> Callable[[], None]:
@@ -1389,9 +1402,17 @@ def _run_daemon_run(
         # flushed first by HubService.restart().
         registry_factory = lambda: _build_hub(sink)  # noqa: E731
     if bus_owner is None:
-        bus_owner = _build_bus_name_owner(
-            service=_build_hub_service(hub_registry, sink=sink, registry_factory=registry_factory)
+        # 5-4: the hub delegates a validated Control to the job's unique name
+        # over this channel; the owner binds its owned connection on acquire.
+        from runtime.adapters.dbus_event_bus import DbusControlChannel
+
+        service = _build_hub_service(
+            hub_registry,
+            sink=sink,
+            registry_factory=registry_factory,
+            control_channel=DbusControlChannel(),
         )
+        bus_owner = _build_bus_name_owner(service=service)
     restore_handlers = _install_release_handlers(bus_owner)
     stop_watch = threading.Event()
     watchdog_stop = threading.Event()

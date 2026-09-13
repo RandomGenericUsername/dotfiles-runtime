@@ -14,12 +14,15 @@ import ast
 import itertools
 from pathlib import Path
 
+import pytest
+
 from runtime.adapters.dbus_event_bus import HubService, SignalSink
 from runtime.adapters.emit_validation import EmitValidator
 from runtime.adapters.in_process_hub import InProcessJobRegistry
-from runtime.adapters.in_process_job_client import InProcessJobClient
+from runtime.adapters.in_process_job_client import InProcessControlChannel, InProcessJobClient
 from runtime.application.capture import CaptureController
 from runtime.domain.hub import EventHub
+from runtime.domain.models import JobEnded, UnknownJob
 from runtime.ports.jobs import IRecorderProcess
 
 _APPLICATION_DIR = (
@@ -60,7 +63,12 @@ class _FakeRecorder(IRecorderProcess):
 
 def _service(
     clock: _Clock,
-) -> tuple[HubService, InProcessJobRegistry, list[tuple[str, str, tuple[object, ...]]]]:
+) -> tuple[
+    HubService,
+    InProcessJobRegistry,
+    list[tuple[str, str, tuple[object, ...]]],
+    InProcessControlChannel,
+]:
     sink = SignalSink()
     counter = itertools.count(1)
     registry = InProcessJobRegistry(
@@ -71,10 +79,13 @@ def _service(
             sink=sink,
         )
     )
-    service = HubService(registry, EmitValidator(clock=clock), sink=sink)
+    channel = InProcessControlChannel()
+    service = HubService(
+        registry, EmitValidator(clock=clock), sink=sink, control_channel=channel
+    )
     emitted: list[tuple[str, str, tuple[object, ...]]] = []
     service.bind_emitter(lambda name, signature, body: emitted.append((name, signature, body)))
-    return service, registry, emitted
+    return service, registry, emitted, channel
 
 
 class TestControlWiring:
@@ -89,12 +100,11 @@ class TestControlWiring:
         list[dict[str, object]],
     ]:
         clock = _Clock()
-        service, registry, emitted = _service(clock)
+        service, registry, emitted, channel = _service(clock)
         recorder = _FakeRecorder()
-        controller = CaptureController(
-            InProcessJobClient(registry, service), recorder, clock=clock
-        )
-        service.register_control("capture", controller.control)
+        client = InProcessJobClient(registry, service, control=channel)
+        controller = CaptureController(client, recorder, clock=clock)
+        client.set_control_handler(controller.control)
         received: list[dict[str, object]] = []
         service.subscribe(
             "capture.state",
@@ -189,29 +199,55 @@ class TestDomainEventsFlowThroughHub:
         )
 
 
-class TestHubControlRegistration:
-    def test_register_control_validates_arguments(self) -> None:
-        import pytest
+class TestInProcessControlChannel:
+    """The in-process channel is the parity arm of the hub→job port (5-4)."""
 
+    def test_unknown_job_fails_loud(self) -> None:
+        channel = InProcessControlChannel()
+        with pytest.raises(UnknownJob):
+            channel.send_control("job-nope", "pause")
+
+    def test_live_job_without_endpoint_fails_loud(self) -> None:
+        """N2: the domain knows the job but no endpoint is bound."""
         clock = _Clock()
-        service, _, _ = _service(clock)
-        with pytest.raises(ValueError, match="kind"):
-            service.register_control("", lambda job_id, action: None)
-        with pytest.raises(ValueError, match="callable"):
-            service.register_control("capture", "nope")  # type: ignore[arg-type]
-
-    def test_raising_control_handler_is_contained(self) -> None:
-        clock = _Clock()
-        service, _registry, _ = _service(clock)
-        user_calls: list[tuple[str, str]] = []
-
-        def _boom(job_id: str, action: str) -> None:
-            user_calls.append((job_id, action))
-            raise RuntimeError("job handler failed")
-
-        service.register_control("capture", _boom)
+        service, _registry, _emitted, _channel = _service(clock)
         _, (job,) = service.dispatch("BeginJob", ("capture", 60))
-        service.dispatch("Control", (job, "pause"))  # must not raise
-        assert user_calls == [(job, "pause")]
-        # The hub is still healthy after a handler error.
-        assert service.dispatch("GetActiveJobs", ())[1] == ({job: "capture"},)
+        with pytest.raises(UnknownJob):
+            service.dispatch("Control", (job, "pause"))
+
+    def test_bound_handler_receives_action_and_unbind_removes_it(self) -> None:
+        channel = InProcessControlChannel()
+        calls: list[tuple[str, str]] = []
+        channel.bind("job-1", lambda job_id, action: calls.append((job_id, action)))
+        channel.send_control("job-1", "pause")
+        assert calls == [("job-1", "pause")]
+        channel.unbind("job-1")
+        with pytest.raises(UnknownJob):
+            channel.send_control("job-1", "pause")
+
+    def test_job_client_binds_and_unbinds_on_lifecycle(self) -> None:
+        clock = _Clock()
+        service, registry, _emitted, channel = _service(clock)
+        recorder = _FakeRecorder()
+        client = InProcessJobClient(registry, service, control=channel)
+        controller = CaptureController(client, recorder, clock=clock)
+        client.set_control_handler(controller.control)
+
+        job_id = controller.start()
+        service.dispatch("Control", (job_id, "pause"))
+        assert controller.state == "paused"
+        service.dispatch("Control", (job_id, "stop"))
+        assert controller.state == "idle"
+        # EndJob ended the job: a second Control fails loud.
+        with pytest.raises(JobEnded):
+            service.dispatch("Control", (job_id, "resume"))
+
+    def test_job_handler_failure_is_surfaced_not_reported_as_success(self) -> None:
+        service, controller, _recorder, _clock, _emitted, _received = TestControlWiring()._setup()
+        job_id = controller.start()
+        # resume is invalid while recording: the job raises, the hub must not
+        # turn that into a positive ack.
+        with pytest.raises(RuntimeError, match="cannot resume"):
+            service.dispatch("Control", (job_id, "resume"))
+        # The hub stays healthy after the failed delivery.
+        assert service.dispatch("GetActiveJobs", ())[1] == ({job_id: "capture"},)

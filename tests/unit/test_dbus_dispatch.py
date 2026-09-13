@@ -21,6 +21,7 @@ import pytest
 
 from runtime.adapters.dbus_event_bus import (
     SIGNALS,
+    DbusControlChannel,
     HubService,
     JeepneyNameOwner,
     SignalSink,
@@ -40,6 +41,7 @@ from runtime.domain.models import (
     UnknownTopic,
 )
 from runtime.ports.bus_name_owner import BUS_NAME
+from runtime.ports.jobs import IControlChannel
 
 
 class _Clock:
@@ -53,8 +55,23 @@ class _Clock:
         self.now += seconds
 
 
+class _RecordingChannel(IControlChannel):
+    """Fake control channel: records deliveries, acks, or raises on demand."""
+
+    def __init__(self, error: BaseException | None = None) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.error = error
+
+    def send_control(self, job_id: str, action: str) -> None:
+        self.calls.append((job_id, action))
+        if self.error is not None:
+            raise self.error
+
+
 def _service(
-    clock: _Clock | None = None, sink: list[HubEvent] | None = None
+    clock: _Clock | None = None,
+    sink: list[HubEvent] | None = None,
+    control_channel: IControlChannel | None = None,
 ) -> tuple[HubService, _Clock, list[HubEvent], EventHub]:
     from runtime.adapters.in_process_hub import InProcessJobRegistry
 
@@ -67,7 +84,12 @@ def _service(
         id_factory=lambda: f"job-{next(counter)}",
         sink=events.append,
     )
-    return HubService(InProcessJobRegistry(hub)), clock, events, hub
+    return (
+        HubService(InProcessJobRegistry(hub), control_channel=control_channel),
+        clock,
+        events,
+        hub,
+    )
 
 
 class TestHappyPaths:
@@ -78,12 +100,14 @@ class TestHappyPaths:
         assert body[0] == "job-1"
 
     def test_renew_adopt_progress_end_control(self) -> None:
-        service, _, _, _ = _service()
+        channel = _RecordingChannel()
+        service, _, _, _ = _service(control_channel=channel)
         _, (job,) = service.dispatch("BeginJob", ("capture", 60))
         assert service.dispatch("RenewJob", (job,)) == ("", ())
         assert service.dispatch("AdoptJob", (job, 4242)) == ("", ())
         assert service.dispatch("ReportProgress", (job, 0.5)) == ("", ())
         assert service.dispatch("Control", (job, "pause")) == ("", ())
+        assert channel.calls == [(job, "pause")]
         assert service.dispatch("EndJob", (job, 0)) == ("", ())
 
     def test_get_active_jobs_shape(self) -> None:
@@ -94,6 +118,62 @@ class TestHappyPaths:
         signature, (jobs,) = service.dispatch("GetActiveJobs", ())
         assert signature == "a{ss}"
         assert jobs == {live: "capture"}
+
+
+class TestControlDelegation:
+    """5-4: Control is request/response through the injected channel (N2)."""
+
+    def test_control_delegates_and_returns_success_only_on_ack(self) -> None:
+        channel = _RecordingChannel()
+        service, _, _, _ = _service(control_channel=channel)
+        _, (job,) = service.dispatch("BeginJob", ("capture", 60))
+        assert service.dispatch("Control", (job, "pause")) == ("", ())
+        assert channel.calls == [(job, "pause")]
+
+    def test_control_without_channel_fails_loud(self) -> None:
+        """N2: no endpoint ⇒ typed UnknownJob, never a silent success."""
+        service, _, _, _ = _service()
+        _, (job,) = service.dispatch("BeginJob", ("capture", 60))
+        with pytest.raises(UnknownJob):
+            service.dispatch("Control", (job, "pause"))
+
+    def test_channel_unreachable_is_unknown_job(self) -> None:
+        channel = _RecordingChannel(error=UnknownJob("job-9"))
+        service, _, _, _ = _service(control_channel=channel)
+        _, (job,) = service.dispatch("BeginJob", ("capture", 60))
+        with pytest.raises(UnknownJob):
+            service.dispatch("Control", (job, "pause"))
+        name, _ = wire_error_name(UnknownJob(job))
+        assert name == "org.dotfiles.Events1.UnknownJob"
+
+    def test_denied_action_never_reaches_the_channel(self) -> None:
+        channel = _RecordingChannel()
+        service, _, _, _ = _service(control_channel=channel)
+        _, (job,) = service.dispatch("BeginJob", ("capture", 60))
+        with pytest.raises(NotControllable):
+            service.dispatch("Control", (job, "explode"))
+        assert channel.calls == []
+
+    def test_outbound_call_runs_outside_the_dispatcher_lock(self) -> None:
+        """A re-entrant dispatch from the channel must not deadlock (5-4)."""
+        holder: dict[str, HubService] = {}
+        done = threading.Event()
+
+        class _ReentrantChannel(IControlChannel):
+            def send_control(self, job_id: str, action: str) -> None:
+                service = holder["service"]
+                worker = threading.Thread(
+                    target=lambda: (service.dispatch("GetActiveJobs", ()), done.set())
+                )
+                worker.start()
+                if not done.wait(timeout=5):
+                    raise AssertionError("dispatcher lock held across outbound Control")
+                worker.join(timeout=5)
+
+        service, _, _, _ = _service(control_channel=_ReentrantChannel())
+        holder["service"] = service
+        _, (job,) = service.dispatch("BeginJob", ("capture", 60))
+        assert service.dispatch("Control", (job, "pause")) == ("", ())
 
 
 class TestUnknownAndEnded:
@@ -787,6 +867,96 @@ class TestOwnerServeLoop:
     def test_release_without_acquire_is_clean(self) -> None:
         JeepneyNameOwner().release()
         JeepneyNameOwner().release()
+
+
+class _OutboundConn:
+    """Fake connection for the control channel's outbound Job1 calls."""
+
+    def __init__(self) -> None:
+        self.sent: list[Any] = []
+
+    def send_and_get_reply(self, message: Any, timeout: float | None = None) -> Any:
+        from jeepney import new_method_return
+
+        self.sent.append(message)
+        return new_method_return(message, None, ())
+
+
+def _channel_service() -> tuple[HubService, DbusControlChannel, _OutboundConn, EventHub]:
+    from runtime.adapters.in_process_hub import InProcessJobRegistry
+
+    channel = DbusControlChannel()
+    outbound = _OutboundConn()
+    channel.bind_connection(outbound)
+    counter = itertools.count(1)
+    hub = EventHub(
+        epoch=1,
+        clock=_Clock(),
+        id_factory=lambda: f"job-{next(counter)}",
+        sink=[].append,  # type: ignore[arg-type]
+    )
+    service = HubService(InProcessJobRegistry(hub), control_channel=channel)
+    return service, channel, outbound, hub
+
+
+class TestOwnerControlWiring:
+    """5-4 production seam: BeginJob sender becomes the control endpoint."""
+
+    def test_beginjob_binds_sender_and_control_delegates_to_unique_name(self) -> None:
+        from jeepney import HeaderFields
+
+        service, _channel, outbound, _hub = _channel_service()
+        owner = JeepneyNameOwner(service=service)
+        serve = _FakeConn(request_code=1)
+        call = _method_call("BeginJob", "su", ("capture", 30))
+        call.header.fields[HeaderFields.sender] = ":1.77"
+        owner._answer(serve, service, call)
+
+        from jeepney import MessageType
+
+        reply = serve.sent[-1]
+        assert reply.header.message_type == MessageType.method_return
+        job_id = reply.body[0]
+
+        service.dispatch("Control", (job_id, "pause"))
+        (control,) = [
+            m
+            for m in outbound.sent
+            if m.header.fields.get(HeaderFields.member) == "Control"
+        ]
+        assert control.header.fields.get(HeaderFields.destination) == ":1.77"
+        assert tuple(control.body) == ("pause",)
+
+    def test_endjob_unbinds_the_endpoint(self) -> None:
+        from jeepney import HeaderFields
+
+        service, channel, _outbound, _hub = _channel_service()
+        owner = JeepneyNameOwner(service=service)
+        serve = _FakeConn(request_code=1)
+        begin = _method_call("BeginJob", "su", ("capture", 30))
+        begin.header.fields[HeaderFields.sender] = ":1.77"
+        owner._answer(serve, service, begin)
+        job_id = serve.sent[-1].body[0]
+
+        owner._answer(serve, service, _method_call("EndJob", "si", (job_id, 0)))
+        with pytest.raises(UnknownJob):
+            channel.send_control(job_id, "pause")
+
+    def test_name_owner_loss_drops_the_endpoint(self) -> None:
+        from jeepney import DBusAddress, new_signal
+
+        service, channel, _outbound, _hub = _channel_service()
+        channel.bind("job-1", ":1.77")
+        owner = JeepneyNameOwner(service=service)
+        signal = new_signal(
+            DBusAddress("/org/freedesktop/DBus", interface="org.freedesktop.DBus"),
+            "NameOwnerChanged",
+            "sss",
+            (":1.77", ":1.1", ""),
+        )
+        owner._handle_signal(service, signal)
+        with pytest.raises(UnknownJob):
+            channel.send_control("job-1", "pause")
 
 
 class TestWireCodecRoundTrip:

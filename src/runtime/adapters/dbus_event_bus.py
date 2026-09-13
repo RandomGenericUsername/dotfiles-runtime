@@ -51,7 +51,15 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from jeepney import DBusAddress, HeaderFields, MessageType, new_error, new_method_return, new_signal
+from jeepney import (
+    DBusAddress,
+    HeaderFields,
+    MessageType,
+    new_error,
+    new_method_call,
+    new_method_return,
+    new_signal,
+)
 from jeepney.bus_messages import DBusNameFlags, message_bus
 from jeepney.io.blocking import DBusConnection, open_dbus_connection
 
@@ -60,6 +68,7 @@ from runtime.domain.hub import KNOWN_TOPICS, HubEvent
 from runtime.domain.models import (
     BusNameContentionError,
     BusUnavailableError,
+    HubError,
     JobEnded,
     NotControllable,
     PayloadTooLarge,
@@ -69,6 +78,7 @@ from runtime.domain.models import (
 )
 from runtime.ports.bus_name_owner import BUS_NAME, IBusNameOwner
 from runtime.ports.event_bus import IEventPublisher, IEventSubscriber, IJobRegistry
+from runtime.ports.jobs import IControlChannel
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +95,20 @@ _PEER_INTERFACE = "org.freedesktop.DBus.Peer"
 #: Introspection interface answered from the generated XML.
 _INTROSPECT_INTERFACE = "org.freedesktop.DBus.Introspectable"
 
+#: The job-side control object path (5-4): served by a job on its own
+#: bus-attested unique name, called ONLY by the hub. Mirrors the contract
+#: XML ``Job`` node / JSON ``job_interface``.
+JOB_OBJECT_PATH = "/org/dotfiles/Job"
+
+#: The job-side control interface (version in the name only, AD-34).
+JOB_INTERFACE = "org.dotfiles.Job1"
+
+#: The single member a job serves: ``Control(action:s)`` void, failures via
+#: typed errors. Byte-matches ``contracts/event-contract.xml`` (Job node).
+JOB_METHODS: dict[str, dict[str, tuple[tuple[str, str], ...]]] = {
+    "Control": {"in": (("action", "s"),), "out": ()},
+}
+
 #: Standard error for unbound members (anything outside METHODS).
 _UNKNOWN_METHOD = "org.freedesktop.DBus.Error.UnknownMethod"
 
@@ -98,6 +122,16 @@ _NAME_OWNER_MATCH = (
     f"interface='{_DBUS_INTERFACE}',"
     "member='NameOwnerChanged',"
     f"arg0='{BUS_NAME}'"
+)
+
+#: Match rule for job-endpoint cleanup: any name losing its owner lets the
+#: hub drop a stale job_id -> unique-name mapping (the lease expiry then
+#: emits the synthetic finish). Unfiltered by arg0 on purpose.
+_ANY_NAME_OWNER_MATCH = (
+    "type='signal',"
+    f"sender='{_DBUS_INTERFACE}',"
+    f"interface='{_DBUS_INTERFACE}',"
+    "member='NameOwnerChanged'"
 )
 
 #: Generic error for value violations (fraction range, widths) — the
@@ -169,6 +203,29 @@ def introspect_xml() -> str:
         for arg_name, arg_type in args:
             lines.append(f'      <arg name="{arg_name}" type="{arg_type}"/>')
         lines.append("    </signal>")
+    lines.append("  </interface>")
+    lines.append("</node>")
+    return "\n".join(lines) + "\n"
+
+
+def job_introspect_xml() -> str:
+    """Introspection XML for the job-served control object (5-4).
+
+    Single-sourced from :data:`JOB_METHODS` so the job client's served
+    surface can never drift from the contract XML/JSON (pinned by the
+    conformance tests). Mirrors ``contracts/event-contract.xml`` Job node.
+    """
+    lines = [
+        f'<node name="{JOB_OBJECT_PATH}">',
+        f'  <interface name="{JOB_INTERFACE}">',
+    ]
+    for name, spec in JOB_METHODS.items():
+        lines.append(f'    <method name="{name}">')
+        for arg_name, arg_type in spec["in"]:
+            lines.append(f'      <arg name="{arg_name}" type="{arg_type}" direction="in"/>')
+        for arg_name, arg_type in spec["out"]:
+            lines.append(f'      <arg name="{arg_name}" type="{arg_type}" direction="out"/>')
+        lines.append("    </method>")
     lines.append("  </interface>")
     lines.append("</node>")
     return "\n".join(lines) + "\n"
@@ -421,6 +478,7 @@ class HubService(IEventPublisher, IEventSubscriber):
         sink: SignalSink | None = None,
         emitter: SignalEmitter | None = None,
         registry_factory: Callable[[], IJobRegistry] | None = None,
+        control_channel: IControlChannel | None = None,
     ) -> None:
         self._registry = registry
         self._validator = validator if validator is not None else EmitValidator()
@@ -428,9 +486,18 @@ class HubService(IEventPublisher, IEventSubscriber):
         self._sink = sink
         self._emitter: SignalEmitter = emitter if emitter is not None else _drop_signal
         self._registry_factory = registry_factory
+        self._control_channel = control_channel
         self._handlers: dict[str, list[Callable[[str, Mapping[str, object]], None]]] = {}
-        self._control_handlers: dict[str, list[Callable[[str, str], None]]] = {}
         self._handlers_lock = threading.Lock()
+
+    @property
+    def control_channel(self) -> IControlChannel | None:
+        """The injected control channel (``None`` ⇒ ``Control`` fails loud).
+
+        The D-Bus owner reads this to bind its connection and record job
+        endpoints; the hub itself only calls ``send_control`` (5-4).
+        """
+        return self._control_channel
 
     def bind_emitter(self, emitter: SignalEmitter) -> None:
         """Bind the bus send (called by the owner once connected)."""
@@ -465,21 +532,6 @@ class HubService(IEventPublisher, IEventSubscriber):
             raise ValueError(f"handler must be callable, got {type(handler).__name__}")
         with self._handlers_lock:
             self._handlers.setdefault(topic, []).append(handler)
-
-    def register_control(self, kind: str, handler: Callable[[str, str], None]) -> None:
-        """Register ``handler(job_id, action)`` for a job kind's Control path.
-
-        The hub validates the action against the kind allowlist; a
-        registered handler receives the validated action so a co-hosted job
-        can act on it. The hub stays the single control path (AD-37): a UI
-        calls ``Control`` and never reaches the job directly.
-        """
-        if not isinstance(kind, str) or not kind:
-            raise ValueError(f"control kind must be a non-empty string, got {kind!r}")
-        if not callable(handler):
-            raise ValueError(f"handler must be callable, got {type(handler).__name__}")
-        with self._handlers_lock:
-            self._control_handlers.setdefault(kind, []).append(handler)
 
     def flush(self) -> None:
         """Emit every queued sink record (start: ``JobsCleared`` first)."""
@@ -543,10 +595,31 @@ class HubService(IEventPublisher, IEventSubscriber):
                 f"{member} takes {len(expected)} args, got {len(args)}",
             )
         try:
+            if member == "Control":
+                return self._dispatch_control(args)
             with self._lock:
                 return self._dispatch_locked(member, args, sender)
         finally:
             self._drain_signals()
+
+    def _dispatch_control(self, args: tuple[Any, ...]) -> tuple[str, tuple[Any, ...]]:
+        """Validate via the domain, then delegate OUTSIDE the lock (5-4).
+
+        ``Control`` is request/response: the domain allowlist + liveness check
+        runs under the dispatcher lock (fast, no I/O); the outbound call to
+        the job runs after the lock is released, so it can never deadlock the
+        dispatcher if the job calls back into the hub. Returns success only on
+        the job's ack; ``UnknownJob`` when no endpoint can be reached (never a
+        silent success — N2).
+        """
+        job_id, action = args[0], args[1]
+        with self._lock:
+            self._registry.control(job_id, action)
+        channel = self._control_channel
+        if channel is None:
+            raise UnknownJob(job_id)
+        channel.send_control(job_id, action)
+        return "", ()
 
     def _drain_signals(self) -> None:
         """Emit queued sink records; never raises (sink-must-not-raise).
@@ -592,28 +665,6 @@ class HubService(IEventPublisher, IEventSubscriber):
                 logger.exception("hub: signal emission failed for %s; continuing", name)
         if event.event == "domain_event":
             self._notify(event)
-        elif event.event == "control":
-            self._notify_control(event)
-
-    def _notify_control(self, event: HubEvent) -> None:
-        """Fan a validated ``control`` record out to kind handlers (contained).
-
-        No contract signal carries a control delivery, so this is the
-        in-process delivery path for a co-hosted job; a raising handler is
-        logged and swallowed so one bad job cannot break the hub.
-        """
-        kind = event.kind
-        job_id = event.job_id
-        action = event.action
-        if kind is None or job_id is None or action is None:
-            return
-        with self._handlers_lock:
-            handlers = list(self._control_handlers.get(kind, ()))
-        for handler in handlers:
-            try:
-                handler(job_id, action)
-            except Exception:
-                logger.exception("hub: control handler for %s raised", kind)
 
     def _notify(self, event: HubEvent) -> None:
         """Fan a ``domain_event`` out to in-process subscribers (caller-safe)."""
@@ -657,10 +708,9 @@ class HubService(IEventPublisher, IEventSubscriber):
             self._registry.end(args[0], _i32(args[1], "exit_code"))
             return "", ()
         if member == "Control":
-            # Unhashable actions reach the domain, which reports
-            # NotControllable (2a Gate-2) — never a bare TypeError.
-            self._registry.control(args[0], args[1])
-            return "", ()
+            # Handled by _dispatch_control (dispatcher lock released before
+            # the outbound call); reaching here would be a routing bug.
+            raise WireError(_UNKNOWN_METHOD, "Control is not lock-dispatched")
         if member == "GetActiveJobs":
             return "a{ss}", (self._registry.active_jobs(),)
         if member == "Emit":
@@ -676,6 +726,89 @@ class HubService(IEventPublisher, IEventSubscriber):
         if member == "GetTopicState":
             return "a{sv}", (self._registry.topic_state(args[0]),)
         raise WireError(_UNKNOWN_METHOD, f"unbound method table entry: {member!r}")
+
+
+class DbusControlChannel(IControlChannel):
+    """Hub-side control channel over the daemon's jeepney connection (5-4).
+
+    Records the ``job_id -> bus-attested unique name`` mapping (fed from
+    ``BeginJob``'s sender by :class:`JeepneyNameOwner`; transport state only,
+    never the domain) and delivers a validated ``Control`` as
+    ``org.dotfiles.Job1.Control(action)`` to that unique name with a timeout.
+
+    ``send_control`` returns normally **only on the job's ack**. A missing,
+    unreachable, dead, or timed-out endpoint drops the stale mapping and
+    raises ``UnknownJob`` (loud — a UI can always tell the action did not
+    apply; the lease expiry still emits the synthetic ``JobFinished(-1)``).
+    A typed error the job returns is re-raised as its domain type.
+    """
+
+    def __init__(self, *, timeout: float = 5.0) -> None:
+        self._conn: DBusConnection | None = None
+        self._endpoints: dict[str, str] = {}
+        self._lock = threading.Lock()
+        self._timeout = timeout
+
+    def bind_connection(self, conn: DBusConnection) -> None:
+        """Bind the owned connection the outbound calls ride (idempotent)."""
+        with self._lock:
+            self._conn = conn
+
+    def bind(self, job_id: str, endpoint: str) -> None:
+        """Record a job's bus-attested unique name (BeginJob sender)."""
+        with self._lock:
+            self._endpoints[job_id] = endpoint
+
+    def unbind(self, job_id: str) -> None:
+        """Drop a job's endpoint (EndJob)."""
+        with self._lock:
+            self._endpoints.pop(job_id, None)
+
+    def forget_endpoint(self, endpoint: str) -> None:
+        """Drop every job mapped to a unique name that lost its owner."""
+        with self._lock:
+            stale = [job for job, name in self._endpoints.items() if name == endpoint]
+            for job in stale:
+                del self._endpoints[job]
+
+    def close(self) -> None:
+        """Forget the connection + endpoints (release/restart; never raises)."""
+        with self._lock:
+            self._conn = None
+            self._endpoints.clear()
+
+    def send_control(self, job_id: str, action: str) -> None:
+        with self._lock:
+            conn = self._conn
+            endpoint = self._endpoints.get(job_id)
+        if conn is None or endpoint is None:
+            raise UnknownJob(job_id)
+        address = DBusAddress(JOB_OBJECT_PATH, bus_name=endpoint, interface=JOB_INTERFACE)
+        try:
+            reply = conn.send_and_get_reply(
+                new_method_call(address, "Control", "s", (action,)),
+                timeout=self._timeout,
+            )
+        except Exception as exc:
+            # Unreachable/dead peer or timeout: drop the stale mapping and
+            # fail loud (N2). Never report success for a failed delivery.
+            self.unbind(job_id)
+            raise UnknownJob(job_id) from exc
+        if reply.header.message_type == MessageType.error:
+            error_name = reply.header.fields.get(HeaderFields.error_name, "")
+            self._raise_typed_error(error_name, job_id, action)
+
+    @staticmethod
+    def _raise_typed_error(error_name: object, job_id: str, action: str) -> None:
+        """Map a job-returned D-Bus error name back to its domain type."""
+        tail = str(error_name).rsplit(".", 1)[-1] if error_name else ""
+        if tail == "NotControllable":
+            raise NotControllable(job_id, action)
+        if tail == "JobEnded":
+            raise JobEnded(job_id)
+        if tail == "UnknownJob":
+            raise UnknownJob(job_id)
+        raise HubError(f"control for {job_id!r} failed: {error_name or 'unknown error'}")
 
 
 class JeepneyNameOwner(IBusNameOwner):
@@ -745,14 +878,20 @@ class JeepneyNameOwner(IBusNameOwner):
         if self._service is not None:
             # Restart path: learn when ownership of the well-known name
             # changes.  Subscribed AFTER RequestName so our own initial
-            # acquisition (already emitted) is not seen as a restart.
+            # acquisition (already emitted) is not seen as a restart. The
+            # unfiltered rule lets us drop stale job endpoints when a peer
+            # host vanishes (5-4).
             try:
                 conn.send_and_get_reply(message_bus.AddMatch(_NAME_OWNER_MATCH), timeout=5)
+                conn.send_and_get_reply(message_bus.AddMatch(_ANY_NAME_OWNER_MATCH), timeout=5)
             except Exception as exc:
                 self._conn = None
                 self._owned = False
                 _close_quietly(conn)
                 raise BusUnavailableError(f"bus match subscription failed: {exc}") from exc
+            channel = self._control_channel()
+            if channel is not None:
+                channel.bind_connection(conn)
             self._service.bind_emitter(self._emit_signal)
             # Start records are already queued by the domain hub's
             # constructor; flush emits JobsCleared(epoch) FIRST.
@@ -765,11 +904,21 @@ class JeepneyNameOwner(IBusNameOwner):
         self._stopped.set()
         conn, self._conn = self._conn, None
         self._owned = False
+        channel = self._control_channel()
+        if channel is not None:
+            channel.close()
         if conn is not None:
             _close_quietly(conn)
         thread, self._thread = self._thread, None
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=5)
+
+    def _control_channel(self) -> DbusControlChannel | None:
+        """The hub's D-Bus control channel, when one is injected."""
+        if self._service is None:
+            return None
+        channel = self._service.control_channel
+        return channel if isinstance(channel, DbusControlChannel) else None
 
     def wait_until_terminated(self) -> None:
         """Block (no polling, no timers) until :meth:`release`."""
@@ -823,7 +972,16 @@ class JeepneyNameOwner(IBusNameOwner):
         body = tuple(msg.body)
         if len(body) != 3 or not all(isinstance(item, str) for item in body):
             return
-        service.handle_name_owner_changed(body[0], body[1], body[2])
+        name, old_owner, new_owner = body
+        if name == BUS_NAME:
+            service.handle_name_owner_changed(name, old_owner, new_owner)
+            return
+        # A peer host vanished: drop stale job_id -> unique-name mappings so a
+        # later Control fails loud instead of calling a dead endpoint (5-4).
+        if not new_owner:
+            channel = self._control_channel()
+            if channel is not None:
+                channel.forget_endpoint(name)
 
     def _emit_signal(self, name: str, signature: str, body: tuple[Any, ...]) -> None:
         """Send one signal on the served object (never raises)."""
@@ -865,10 +1023,18 @@ class JeepneyNameOwner(IBusNameOwner):
             elif interface == _PEER_INTERFACE and member == "Ping":
                 signature, body = "", ()
             elif interface == INTERFACE:
-                signature, body = service.dispatch(
-                    member, _decode_in_args(member, tuple(msg.body)), sender
-                )
+                decoded = _decode_in_args(member, tuple(msg.body))
+                signature, body = service.dispatch(member, decoded, sender)
                 body = _encode_out_body(member, body)
+                # Endpoint bookkeeping (5-4): the BeginJob sender is the
+                # job's bus-attested unique name and the only address the hub
+                # may later call Job1.Control on. EndJob drops it.
+                channel = self._control_channel()
+                if channel is not None:
+                    if member == "BeginJob" and signature == "s" and body:
+                        channel.bind(str(body[0]), sender)
+                    elif member == "EndJob" and decoded:
+                        channel.unbind(decoded[0])
             else:
                 # Our path, foreign interface: fail loud (a call is never
                 # dropped silently) instead of hanging the caller.

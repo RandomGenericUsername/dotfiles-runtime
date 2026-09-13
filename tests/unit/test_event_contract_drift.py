@@ -27,12 +27,17 @@ from runtime.adapters.dbus_event_bus import (
     INTERFACE as HUB_INTERFACE,
 )
 from runtime.adapters.dbus_event_bus import (
+    JOB_INTERFACE,
+    JOB_METHODS,
+    JOB_OBJECT_PATH,
     METHODS,
     SIGNALS,
 )
 from runtime.adapters.dbus_event_bus import (
     OBJECT_PATH as HUB_OBJECT_PATH,
 )
+from runtime.adapters.dbus_job_client import JOB_INTERFACE as CLIENT_JOB_INTERFACE
+from runtime.adapters.dbus_job_client import JOB_OBJECT_PATH as CLIENT_JOB_OBJECT_PATH
 from runtime.adapters.emit_validation import (
     MAX_PAYLOAD_BYTES as HUB_MAX_PAYLOAD_BYTES,
 )
@@ -50,11 +55,12 @@ def _json(repo_root: Path) -> dict[str, object]:
     return data
 
 
-def _xml_interface(repo_root: Path) -> ET.Element:
+def _xml_interface(repo_root: Path, name: str = "org.dotfiles.Events1") -> ET.Element:
     root = ET.parse(repo_root / "contracts" / "event-contract.xml").getroot()
-    iface = root.find("interface")
-    assert iface is not None
-    return iface
+    for iface in root.iter("interface"):
+        if iface.get("name") == name:
+            return iface
+    raise AssertionError(f"interface {name!r} not found in contract XML")
 
 
 def _xml_methods(iface: ET.Element) -> dict[str, dict[str, list[str]]]:
@@ -116,6 +122,42 @@ def test_hub_adapter_tables_match_contract(repo_root: Path) -> None:
     assert HUB_OBJECT_PATH == data["object_path"] == bs.OBJECT_PATH
     table_signals = {name: [f"{arg}:{sig}" for arg, sig in args] for name, args in SIGNALS.items()}
     assert table_signals == xml_signals == data["signals"]
+
+
+def test_job_control_interface_matches_contract(repo_root: Path) -> None:
+    """The job-side control constants/table match XML Job node + JSON block.
+
+    Pins the 5-4 job interface on both sides of the contract: the hub's
+    ``DbusControlChannel`` constants and the job client's serving constants
+    must be the same values the XML/JSON declare.
+    """
+    data = _json(repo_root)
+    root = ET.parse(repo_root / "contracts" / "event-contract.xml").getroot()
+    job_node = root.find("node[@name='Job']")
+    assert job_node is not None, "Job node missing from the contract XML"
+    iface = _xml_interface(repo_root, JOB_INTERFACE)
+    job = data["job_interface"]
+    assert isinstance(job, dict)
+
+    assert JOB_INTERFACE == CLIENT_JOB_INTERFACE == job["interface"]
+    assert JOB_OBJECT_PATH == CLIENT_JOB_OBJECT_PATH == job["object_path"]
+    assert f"{root.get('name')}/{job_node.get('name')}" == job["object_path"]
+
+    xml_methods = {
+        method.get("name"): {
+            "in": [
+                f"{a.get('name')}:{a.get('type')}"
+                for a in method.findall("arg")
+                if a.get("direction") == "in"
+            ]
+        }
+        for method in iface.findall("method")
+    }
+    table = {
+        name: {"in": [f"{arg}:{sig}" for arg, sig in spec["in"]]}
+        for name, spec in JOB_METHODS.items()
+    }
+    assert table == xml_methods == job["methods"]
 
 
 def test_port_bus_name_matches_contract(repo_root: Path) -> None:

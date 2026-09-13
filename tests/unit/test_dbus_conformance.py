@@ -18,19 +18,32 @@ from pathlib import Path
 
 from runtime.adapters.dbus_event_bus import (
     INTERFACE,
+    JOB_INTERFACE,
+    JOB_METHODS,
+    JOB_OBJECT_PATH,
     METHODS,
     OBJECT_PATH,
     SIGNALS,
     HubService,
     introspect_xml,
+    job_introspect_xml,
 )
 
 
-def _served_interface(repo_root: Path) -> ET.Element:
+def _interface_named(repo_root: Path, name: str) -> ET.Element:
     root = ET.parse(repo_root / "contracts" / "event-contract.xml").getroot()
-    iface = root.find("interface")
-    assert iface is not None
-    return iface
+    for iface in root.iter("interface"):
+        if iface.get("name") == name:
+            return iface
+    raise AssertionError(f"interface {name!r} not found in contract XML")
+
+
+def _served_interface(repo_root: Path) -> ET.Element:
+    return _interface_named(repo_root, INTERFACE)
+
+
+def _job_interface(repo_root: Path) -> ET.Element:
+    return _interface_named(repo_root, JOB_INTERFACE)
 
 
 def _xml_methods(iface: ET.Element) -> dict[str, dict[str, list[str]]]:
@@ -93,6 +106,49 @@ def test_interface_and_path_match_contract(repo_root: Path) -> None:
     assert OBJECT_PATH == data["object_path"] == "/org/dotfiles/Events"
     xml_iface = _served_interface(repo_root)
     assert xml_iface.get("name") == INTERFACE
+
+
+def test_job_interface_matches_contract_xml_json(repo_root: Path) -> None:
+    """JOB_METHODS == XML Job node == JSON job_interface (5-4)."""
+    iface = _job_interface(repo_root)
+    data = json.loads((repo_root / "contracts" / "event-contract.json").read_text())
+    assert isinstance(data, dict)
+    job = data["job_interface"]
+    assert isinstance(job, dict)
+    assert iface.get("name") == job["interface"] == JOB_INTERFACE
+    assert JOB_OBJECT_PATH == job["object_path"]
+    root = ET.parse(repo_root / "contracts" / "event-contract.xml").getroot()
+    assert f"{root.get('name')}/Job" == job["object_path"]
+    xml_methods = {
+        method.get("name"): {
+            "in": [
+                f"{a.get('name')}:{a.get('type')}"
+                for a in method.findall("arg")
+                if a.get("direction") == "in"
+            ]
+        }
+        for method in iface.findall("method")
+    }
+    table = {
+        name: {"in": [f"{arg}:{sig}" for arg, sig in spec["in"]]}
+        for name, spec in JOB_METHODS.items()
+    }
+    assert table == xml_methods == job["methods"]
+
+
+def test_job_introspect_xml_describes_served_job_surface() -> None:
+    """The job client's served Introspect() matches JOB_METHODS at the path."""
+    root = ET.fromstring(job_introspect_xml())
+    assert root.tag == "node"
+    assert root.get("name") == JOB_OBJECT_PATH
+    iface = root.find("interface")
+    assert iface is not None and iface.get("name") == JOB_INTERFACE
+    assert {m.get("name") for m in iface.findall("method")} == set(JOB_METHODS)
+    control = iface.find("method[@name='Control']")
+    assert control is not None
+    assert [
+        (a.get("name"), a.get("type"), a.get("direction")) for a in control.findall("arg")
+    ] == [("action", "s", "in")]
 
 
 def _harness_service() -> object:
