@@ -1,8 +1,10 @@
-"""Desired-state file reader (Phase 4, Story 4.2).
+"""Desired-state file reader (Phase 4, Story 4.2; relocated in Phase 5).
 
-Reads ``state_root/desired.json`` — the declared intent the future diff
-engine converges toward. All filesystem I/O for desired state lives here
-(AD-25); the model itself is pure (``domain.models.DesiredState``).
+Reads ``$XDG_CONFIG_HOME/dotfiles/desired.json`` — the declared intent the
+diff engine converges toward. The intent document moved OUT of ``state_root``
+(Phase 5, AD-36/AD-39) so it can be watched without the runtime writing into
+its own watched root. All filesystem I/O for desired state lives here (AD-25);
+the model itself is pure (``domain.models.DesiredState``).
 
 v1 schema contract (validated strictly — fail loud on typos, matching repo
 philosophy)::
@@ -29,9 +31,16 @@ from pathlib import Path
 from runtime.domain.models import DesiredState
 
 DESIRED_FILENAME = "desired.json"
+#: Config-home-relative directory holding the relocated intent document.
+DESIRED_RELATIVE_DIR = "dotfiles"
 DESIRED_VERSION = 1
 
 _HEX_DIGITS = frozenset("0123456789abcdef")
+
+
+def resolve_desired_path(config_home: Path) -> Path:
+    """Return the relocated intent path: ``<config_home>/dotfiles/desired.json``."""
+    return config_home / DESIRED_RELATIVE_DIR / DESIRED_FILENAME
 
 
 def _is_lower_hex64(value: str) -> bool:
@@ -39,13 +48,13 @@ def _is_lower_hex64(value: str) -> bool:
     return len(value) == 64 and all(c in _HEX_DIGITS for c in value)
 
 
-def read_desired_state(state_root: Path) -> DesiredState | None:
-    """Load and validate ``state_root/desired.json``.
+def read_desired_state(intent_path: Path) -> DesiredState | None:
+    """Load and validate the intent document at ``intent_path``.
 
     Returns ``None`` when the file is absent. Raises ``ValueError`` (naming
     file + field) on any schema violation. Never writes.
     """
-    desired_path = state_root / DESIRED_FILENAME
+    desired_path = intent_path
     if desired_path.is_symlink():
         raise ValueError(f"desired state is a symlink (refusing to follow): {desired_path}")
     try:

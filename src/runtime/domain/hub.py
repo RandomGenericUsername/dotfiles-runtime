@@ -25,10 +25,12 @@ from runtime.domain.models import (
     JobEnded,
     NotControllable,
     UnknownJob,
+    UnknownTopic,
 )
 
 __all__ = [
     "CONTROL_ALLOWLIST",
+    "KNOWN_TOPICS",
     "SYNTHETIC_EXPIRY_EXIT_CODE",
     "EventHub",
     "HubEvent",
@@ -49,6 +51,12 @@ CONTROL_ALLOWLIST: Mapping[str, frozenset[str]] = {
     "capture": frozenset({"pause", "resume", "stop"}),
 }
 
+#: Topics the hub may carry (mirrors ``contracts/event-contract.json``
+#: `topics`; embedded constant, not I/O — same standing as
+#: ``CONTROL_ALLOWLIST``). Unknown topics are never auto-created
+#: (AD-44: the hub never advertises a topic absent from the contract).
+KNOWN_TOPICS: frozenset[str] = frozenset({"icme.saved", "capture.state", "speedtest.finished"})
+
 
 @dataclass(frozen=True, slots=True)
 class HubEvent:
@@ -62,6 +70,15 @@ class HubEvent:
     PascalCase signal names. ``pid`` rides the adoption record for the
     2b/5-4 ownership trail — no contract signal carries a pid today, so 2b
     drops adoption records on the wire (they stay observable in-process).
+    ``domain_event`` carries (topic, producer, seq, epoch, payload) for
+    2b-ii's ``DomainEvent`` signal (topic, producer, seq, epoch, payload).
+    ``control`` carries (kind, action) after a validated ``Control`` so the
+    adapter can deliver the action to a co-hosted job (no contract signal
+    carries a control delivery today, so it stays observable in-process
+    only, exactly like ``job_adopted``).
+
+    Records are equality-compared, never hashed (a ``payload`` dict would
+    not survive ``hash()``).
     """
 
     event: str
@@ -71,6 +88,11 @@ class HubEvent:
     fraction: float | None = None
     exit_code: int | None = None
     pid: int | None = None
+    topic: str | None = None
+    producer: str | None = None
+    seq: int | None = None
+    payload: dict[str, object] | None = None
+    action: str | None = None
 
 
 @dataclass(slots=True)
@@ -178,6 +200,8 @@ class EventHub:
             dict(control_allowlist) if control_allowlist is not None else dict(CONTROL_ALLOWLIST)
         )
         self._jobs: dict[str, _JobRecord] = {}
+        self._topic_state: dict[str, dict[str, object]] = {}
+        self._topic_seq: dict[str, int] = {}
         self._sink(HubEvent(event="jobs_cleared", job_id=None, epoch=epoch))
 
     @property
@@ -258,8 +282,9 @@ class EventHub:
         """Check an action against the kind allowlist (wire: ``Control``).
 
         The single control path (H1): a UI never shells the tool directly.
-        Checking changes no state, so nothing is recorded — 2b wires action
-        delivery around this check.
+        After the allowlist check the validated action is recorded on the
+        sink (``control`` record) so the adapter can deliver it to a
+        co-hosted job; delivery itself is transport, not domain (2b/5-4).
         """
         self._sweep()
         record = self._require_live(job_id)
@@ -267,6 +292,15 @@ class EventHub:
             record.kind, frozenset()
         ):
             raise NotControllable(job_id, action)
+        self._sink(
+            HubEvent(
+                event="control",
+                job_id=job_id,
+                epoch=self._epoch,
+                kind=record.kind,
+                action=action,
+            )
+        )
 
     def active_jobs(self) -> dict[str, str]:
         """``{job_id: kind}`` for live jobs only (2b's ``GetActiveJobs``).
@@ -276,6 +310,58 @@ class EventHub:
         """
         self._sweep()
         return {job_id: record.kind for job_id, record in self._jobs.items() if not record.ended}
+
+    def emit(self, topic: str, payload: dict[str, object], producer: str = "(local)") -> int:
+        """Store a domain event and return its per-topic ``seq`` (2b-ii-a).
+
+        ``seq`` counts from 1 per topic within this hub's epoch and resets
+        by construction on epoch bump (a fresh hub owns a fresh store).
+        Records a ``domain_event`` sink entry carrying
+        (topic, producer, seq, epoch, payload) — 2b-ii binds it to the
+        ``DomainEvent`` signal; no bus emission happens here
+        (sink-must-not-raise holds). Validation (schema/size/depth/rate)
+        is the adapter's job and runs BEFORE this call, so every ``seq``
+        a consumer can hydrate corresponds to a stored payload (no gaps).
+        """
+        if not isinstance(topic, str) or topic not in KNOWN_TOPICS:
+            raise UnknownTopic(topic)
+        if not isinstance(payload, dict):
+            raise ValueError(f"emit payload must be a dict, got {type(payload).__name__}")
+        if not isinstance(producer, str) or not producer:
+            raise ValueError(f"emit producer must be a non-empty string, got {producer!r}")
+        self._sweep()
+        stored = dict(payload)
+        seq = self._topic_seq.get(topic, 0) + 1
+        self._topic_seq[topic] = seq
+        self._topic_state[topic] = stored
+        self._sink(
+            HubEvent(
+                event="domain_event",
+                job_id=None,
+                epoch=self._epoch,
+                topic=topic,
+                producer=producer,
+                seq=seq,
+                payload=dict(stored),
+            )
+        )
+        return seq
+
+    def topic_state(self, topic: str) -> dict[str, object]:
+        """Last payload plus reserved ``_epoch``/``_seq`` (2b-ii-a).
+
+        A known-but-never-emitted topic returns ``{_epoch, _seq: 0}`` —
+        ``0`` is the "nothing yet" sentinel, consistent with epoch ``0``
+        as the consumer never-hydrated sentinel. Consumers compare the
+        ``(epoch, seq)`` pair, never ``seq`` alone.
+        """
+        if not isinstance(topic, str) or topic not in KNOWN_TOPICS:
+            raise UnknownTopic(topic)
+        self._sweep()
+        stored = self._topic_state.get(topic)
+        if stored is None:
+            return {"_epoch": self._epoch, "_seq": 0}
+        return {**stored, "_epoch": self._epoch, "_seq": self._topic_seq[topic]}
 
     def _require_live(self, job_id: object) -> _JobRecord:
         """Return the live record or raise the typed error (sweep first)."""

@@ -1,4 +1,4 @@
-"""Unit tests for the desired-state reader (Phase 4, Story 4.2)."""
+"""Unit tests for the desired-state reader (Phase 4, Story 4.2; Phase 5 relocation)."""
 
 from __future__ import annotations
 
@@ -8,15 +8,20 @@ from pathlib import Path
 
 import pytest
 
-from runtime.adapters.desired_state_reader import read_desired_state
+from runtime.adapters.desired_state_reader import read_desired_state, resolve_desired_path
 from runtime.domain.models import DesiredState
 
 VALID_HASH = "a" * 64
 VALID_DOC = {"version": 1, "wallpaper": "/pics/wall.jpg", "keep": 5, "pinned": [VALID_HASH]}
 
 
-def _write(state_root: Path, payload: object) -> Path:
-    desired = state_root / "desired.json"
+def _intent_path(tmp_path: Path) -> Path:
+    return resolve_desired_path(tmp_path / "config")
+
+
+def _write(tmp_path: Path, payload: object) -> Path:
+    desired = _intent_path(tmp_path)
+    desired.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(payload, str):
         desired.write_text(payload, encoding="utf-8")
     else:
@@ -24,23 +29,27 @@ def _write(state_root: Path, payload: object) -> Path:
     return desired
 
 
+def test_resolve_desired_path_is_under_config_home_dotfiles() -> None:
+    assert resolve_desired_path(Path("/cfg")) == Path("/cfg/dotfiles/desired.json")
+
+
 def test_valid_file_round_trips(tmp_path: Path) -> None:
     _write(tmp_path, VALID_DOC)
-    assert read_desired_state(tmp_path) == DesiredState(
+    assert read_desired_state(_intent_path(tmp_path)) == DesiredState(
         wallpaper="/pics/wall.jpg", keep=5, pinned=(VALID_HASH,)
     )
 
 
 def test_valid_file_empty_pinned(tmp_path: Path) -> None:
     _write(tmp_path, {**VALID_DOC, "pinned": []})
-    assert read_desired_state(tmp_path) == DesiredState(
+    assert read_desired_state(_intent_path(tmp_path)) == DesiredState(
         wallpaper="/pics/wall.jpg", keep=5, pinned=()
     )
 
 
 def test_absent_file_returns_none_and_creates_nothing(tmp_path: Path) -> None:
-    assert read_desired_state(tmp_path) is None
-    assert not (tmp_path / "desired.json").exists()
+    assert read_desired_state(_intent_path(tmp_path)) is None
+    assert not _intent_path(tmp_path).exists()
 
 
 @pytest.mark.parametrize(
@@ -77,21 +86,25 @@ def test_absent_file_returns_none_and_creates_nothing(tmp_path: Path) -> None:
 def test_malformations_raise_value_error(tmp_path: Path, payload: object) -> None:
     _write(tmp_path, payload)
     with pytest.raises(ValueError, match=r"desired\.json|desired state"):
-        read_desired_state(tmp_path)
+        read_desired_state(_intent_path(tmp_path))
 
 
 def test_symlinked_file_refused(tmp_path: Path) -> None:
-    real = tmp_path / "real.json"
+    intent = _intent_path(tmp_path)
+    intent.parent.mkdir(parents=True, exist_ok=True)
+    real = intent.parent / "real.json"
     real.write_text(json.dumps(VALID_DOC), encoding="utf-8")
-    (tmp_path / "desired.json").symlink_to(real)
+    intent.symlink_to(real)
     with pytest.raises(ValueError, match="symlink"):
-        read_desired_state(tmp_path)
+        read_desired_state(intent)
 
 
 def test_dangling_symlink_refused_not_absent(tmp_path: Path) -> None:
-    (tmp_path / "desired.json").symlink_to(tmp_path / "nonexistent.json")
+    intent = _intent_path(tmp_path)
+    intent.parent.mkdir(parents=True, exist_ok=True)
+    intent.symlink_to(intent.parent / "nonexistent.json")
     with pytest.raises(ValueError, match="symlink"):
-        read_desired_state(tmp_path)
+        read_desired_state(intent)
 
 
 def test_model_is_frozen() -> None:

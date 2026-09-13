@@ -25,7 +25,9 @@ from runtime.domain.models import (
     BusNameContentionError,
     BusUnavailableError,
 )
+from runtime.domain.watch import WatchEvent, WatchEventKind
 from runtime.ports.bus_name_owner import BUS_NAME, IBusNameOwner
+from runtime.ports.watch_source import IWatchSource
 
 runner = CliRunner()
 TS = "2026-09-10T00:00:00Z"
@@ -70,6 +72,7 @@ class _FakeOwner(IBusNameOwner):
 @pytest.fixture(autouse=True)
 def _isolated_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config-home"))
     monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(tmp_path / "install"))
 
 
@@ -109,7 +112,8 @@ class TestCommandSurface:
     def test_daemon_run_command_wired(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Wiring only (`_run_daemon_run` mocked): blocking is pinned by the
         real-signal test below, not here."""
-        monkeypatch.setattr(cli_main, "_run_daemon_run", lambda owner=None: None)
+        monkeypatch.setattr(cli_main, "_build_watch_source", lambda: None)
+        monkeypatch.setattr(cli_main, "_run_daemon_run", lambda **_: None)
         result = runner.invoke(app, ["daemon", "run"])
         assert result.exit_code == 0
 
@@ -327,3 +331,96 @@ class TestWellKnownName:
     def test_bus_name_is_versionless(self) -> None:
         assert BUS_NAME == "org.dotfiles.Events"
         assert not BUS_NAME.endswith("1")
+
+
+class _BlockingWatchSource(IWatchSource):
+    """Fake source: blocks until closed, so lifecycle is deterministic."""
+
+    def __init__(self) -> None:
+        self.started = False
+        self.closed = threading.Event()
+        self.rebuilds = 0
+
+    def start(self) -> None:
+        self.started = True
+
+    def close(self) -> None:
+        self.closed.set()
+
+    def rebuild(self) -> None:
+        self.rebuilds += 1
+
+    def read_event(self, timeout: float | None = None) -> WatchEvent | None:
+        self.closed.wait(timeout)
+        return None
+
+
+class TestConvergeOnStart:
+    def test_converge_on_start_runs_after_acquire(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AC: converge-on-start is non-gating, after readiness."""
+        owner = _FakeOwner(immediate_stop=True)
+        monkeypatch.setattr(cli_main, "_build_bus_name_owner", lambda service=None: owner)
+        calls: list[tuple[str, bool]] = []
+
+        def _converge(trigger: object) -> None:
+            calls.append((trigger.reason, trigger.full_rescan))
+
+        cli_main._run_daemon_run(owner=owner, converge=_converge)
+        assert owner.acquired is True
+        assert calls == [("startup", True)]
+
+    def test_converge_on_start_failure_is_recoverable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A converge error must not crash the unit (AD-41)."""
+        owner = _FakeOwner(immediate_stop=True)
+        monkeypatch.setattr(cli_main, "_build_bus_name_owner", lambda service=None: owner)
+
+        def _converge(_trigger: object) -> None:
+            raise RuntimeError("transient converge failure")
+
+        cli_main._run_daemon_run(owner=owner, converge=_converge)
+        assert owner.releases >= 1
+
+    def test_no_converge_when_not_injected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Backward-compatible idle path used by the P5-1-1 tests."""
+        owner = _FakeOwner(immediate_stop=True)
+        monkeypatch.setattr(cli_main, "_build_bus_name_owner", lambda service=None: owner)
+        cli_main._run_daemon_run(owner=owner)
+        assert owner.acquired is True
+
+
+class TestWatchLifecycle:
+    def test_watch_source_started_and_closed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Runs on the main thread: _install_release_handlers needs the main
+        # interpreter thread (signal.signal). A watchdog releases the owner
+        # once the watch source has been installed.
+        owner = _FakeOwner()
+        monkeypatch.setattr(cli_main, "_build_bus_name_owner", lambda service=None: owner)
+        source = _BlockingWatchSource()
+        calls: list[str] = []
+
+        def _converge(trigger: object) -> None:
+            calls.append(trigger.reason)
+
+            def _watchdog() -> None:
+                deadline = time.monotonic() + 5
+                while not source.started and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                owner.stop()
+
+            threading.Thread(target=_watchdog, daemon=True).start()
+
+        cli_main._run_daemon_run(owner=owner, converge=_converge, watch_source=source)
+        assert source.started
+        assert source.closed.is_set()
+        assert calls == ["startup"]
+
+    def test_watch_event_kind_roundtrip(self) -> None:
+        # Sanity: the coordinator consumes the same vocabulary the source emits.
+        event = WatchEvent(kind=WatchEventKind.CREATED, path="/x")
+        assert event.kind is WatchEventKind.CREATED

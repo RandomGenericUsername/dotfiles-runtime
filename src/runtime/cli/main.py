@@ -20,9 +20,10 @@ from cli_output.domain.views import CustomView, ErrorView
 if TYPE_CHECKING:
     from cli_output.adapters.factory import Renderer
 
-    from runtime.adapters.dbus_event_bus import HubService
+    from runtime.adapters.dbus_event_bus import HubService, SignalSink
     from runtime.application.apply_wallpaper import ApplyWallpaperResult
     from runtime.application.check_inputs import CheckInputsResult
+    from runtime.application.converge import ReactiveConvergeResult
     from runtime.application.doctor import DoctorReport, RepairResult
     from runtime.application.inspect import (
         HistoryRecord,
@@ -34,11 +35,13 @@ if TYPE_CHECKING:
     from runtime.application.reconcile import ReconcileResult
     from runtime.application.regenerate import RegenerateResult
     from runtime.application.verify_cache import VerifyCacheResult
+    from runtime.application.watch import WatchTrigger
     from runtime.domain.hub import HubEvent
     from runtime.domain.models import ChangeSet, DesktopState
     from runtime.ports.bus_name_owner import IBusNameOwner
     from runtime.ports.desktop_reloader import IDesktopReloader
     from runtime.ports.event_bus import IJobRegistry
+    from runtime.ports.watch_source import IWatchSource
 
 app = typer.Typer(
     name="dotfiles-runtime",
@@ -92,6 +95,28 @@ def _resolve_state_root() -> Path:
     """
     xdg_state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
     return (xdg_state / "dotfiles").expanduser().resolve()
+
+
+def _resolve_config_home() -> Path:
+    """Resolve the user config home (absolute).
+
+    Uses ``$XDG_CONFIG_HOME`` (default ``~/.config``), resolved so the
+    relocated intent path is CWD-independent.
+    """
+    xdg_config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return xdg_config.expanduser().resolve()
+
+
+def _resolve_desired_path() -> Path:
+    """Resolve the relocated intent document path (AD-39).
+
+    ``$XDG_CONFIG_HOME/dotfiles/desired.json`` — deliberately OUTSIDE
+    ``state_root`` so the runtime can watch it without watching an output it
+    writes.
+    """
+    from runtime.adapters.desired_state_reader import resolve_desired_path
+
+    return resolve_desired_path(_resolve_config_home())
 
 
 def _run_seed_if_needed() -> None:
@@ -254,7 +279,7 @@ def _build_reloaders(state_root: Path) -> list[IDesktopReloader]:
     ]
 
 
-def _run_wallpaper_set(image_path: Path) -> _WallpaperSetResult:
+def _run_wallpaper_set(image_path: Path, *, suppress_history: bool = False) -> _WallpaperSetResult:
     """Compose and run ApplyWallpaperUseCase → ReconcileDesktopStateUseCase.
 
     The full ``wallpaper set`` pipeline (AD-12): apply derives the three
@@ -268,6 +293,11 @@ def _run_wallpaper_set(image_path: Path) -> _WallpaperSetResult:
     ``_run_reconcile`` — the mutex is the same flock file the seeder
     uses, held sequentially by apply (load→save) then reconcile
     (load→repoint→save), matching the AD-12 pipeline.
+
+    ``suppress_history`` (Phase 5): the reactive converge composes this
+    pipeline with a history-suppressing seeder so it writes no
+    ``trigger="set"`` line; the reactive composite owns the single audit
+    line instead.
     """
     state_root = _resolve_state_root()
     install_spine = _resolve_install_spine()
@@ -290,7 +320,9 @@ def _run_wallpaper_set(image_path: Path) -> _WallpaperSetResult:
         itr=ItrAdapter(),
         install_spine=install_spine,
         state_root=state_root,
-        seeder=CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec()),
+        seeder=CacheSeeder(
+            state_root, consumer_spec=StaticConsumerPathSpec(), suppress_history=suppress_history
+        ),
         mutex=FlockSeedMutex(state_root / ".seed.lock"),
         monitor_source=HyprlandMonitorSource(),
     ).run(image_path)
@@ -302,7 +334,9 @@ def _run_wallpaper_set(image_path: Path) -> _WallpaperSetResult:
         itr=ItrAdapter(),
         install_spine=install_spine,
         state_root=state_root,
-        seeder=CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec()),
+        seeder=CacheSeeder(
+            state_root, consumer_spec=StaticConsumerPathSpec(), suppress_history=suppress_history
+        ),
         mutex=FlockSeedMutex(state_root / ".seed.lock"),
         reloaders=_build_reloaders(state_root),
     ).run(trigger="set")
@@ -460,7 +494,7 @@ def _append_inputs_check(summary: str, obj: dict[str, object]) -> str:
     return summary + "\ninputs: all layers fresh"
 
 
-def _run_reconcile() -> ReconcileResult:
+def _run_reconcile(*, suppress_history: bool = False) -> ReconcileResult:
     """Compose and run ReconcileDesktopStateUseCase (reconcile command).
 
     Mirrors ``_run_wallpaper_set``'s wiring: resolve state_root /
@@ -470,6 +504,9 @@ def _run_reconcile() -> ReconcileResult:
     mutex is the same flock file the seeder and apply use: reconcile
     serializes against concurrent ``wallpaper set`` (Story 1.13 review,
     D1 decision).
+
+    ``suppress_history`` (Phase 5) builds the history-suppressing seeder the
+    reactive composite uses so its inner reconcile writes no line.
     """
     state_root = _resolve_state_root()
     install_spine = _resolve_install_spine()
@@ -490,7 +527,9 @@ def _run_reconcile() -> ReconcileResult:
         itr=ItrAdapter(),
         install_spine=install_spine,
         state_root=state_root,
-        seeder=CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec()),
+        seeder=CacheSeeder(
+            state_root, consumer_spec=StaticConsumerPathSpec(), suppress_history=suppress_history
+        ),
         mutex=FlockSeedMutex(state_root / ".seed.lock"),
         reloaders=_build_reloaders(state_root),
     )
@@ -610,7 +649,7 @@ def _run_reconcile_plan(
     state_repo = JsonStateRepository(state_root=state_root)
     # Fail fast on malformed intent: before any invalidation work, loud
     # ValueError on bad file (AC 4) — never silent fallback to imperative.
-    desired = read_desired_state(state_root)
+    desired = read_desired_state(_resolve_desired_path())
     invalidation = InvalidationQueryAdapter(
         state_root=state_root,
         templates_dir=find_templates_dir(install_spine),
@@ -669,7 +708,7 @@ def _run_reconcile_plan(
     )
 
 
-def _run_regenerate_stale() -> RegenerateResult:
+def _run_regenerate_stale(*, suppress_history: bool = False) -> RegenerateResult:
     """Compose and run RegenerateStaleUseCase (reconcile --regenerate-stale).
 
     Mirrors ``_run_wallpaper_set``'s construction: resolve state_root /
@@ -680,6 +719,9 @@ def _run_regenerate_stale() -> RegenerateResult:
     UseCase`` (with ``_build_reloaders``) into ``RegenerateStaleUseCase``.
     Shared instances (not duplicated per use case) so locking and staging
     behave as one pipeline.
+
+    ``suppress_history`` (Phase 5) shares ONE history-suppressing seeder with
+    the composite so the reactive converge writes a single audit line.
     """
     state_root = _resolve_state_root()
     install_spine = _resolve_install_spine()
@@ -704,7 +746,9 @@ def _run_regenerate_stale() -> RegenerateResult:
     from runtime.application.regenerate import RegenerateStaleUseCase
 
     state_repo = JsonStateRepository(state_root=state_root)
-    seeder = CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec())
+    seeder = CacheSeeder(
+        state_root, consumer_spec=StaticConsumerPathSpec(), suppress_history=suppress_history
+    )
     mutex = FlockSeedMutex(state_root / ".seed.lock")
     csg, weg, itr = CsgAdapter(), WegAdapter(), ItrAdapter()
     invalidation = InvalidationQueryAdapter(
@@ -959,29 +1003,41 @@ def _log_hub_event(event: HubEvent) -> None:
     logger.debug("hub: %s", event)
 
 
-def _build_hub() -> IJobRegistry:
-    """Construct the in-process hub (epoch bumped per start, in-memory)."""
+def _build_hub(sink: Callable[[HubEvent], None] | None = None) -> IJobRegistry:
+    """Construct the in-process hub (epoch bumped per start, in-memory).
+
+    ``sink`` is the domain-record destination: the daemon passes the
+    adapter :class:`SignalSink` (queue-then-emit), while tests default to
+    the log-only sink.  Called again on the restart path so each hub start
+    takes a fresh epoch and a fresh registry (``JobsCleared`` first).
+    """
     import time
     import uuid
 
     from runtime.adapters.in_process_hub import InProcessJobRegistry
     from runtime.domain.hub import EventHub
 
+    event_sink = _log_hub_event if sink is None else sink
     return InProcessJobRegistry(
         EventHub(
             epoch=next(_HUB_EPOCH_COUNTER),
             clock=time.monotonic,
             id_factory=lambda: uuid.uuid4().hex,
-            sink=_log_hub_event,
+            sink=event_sink,
         )
     )
 
 
-def _build_hub_service(registry: IJobRegistry) -> HubService:
-    """Wrap a registry in the wire-dispatch service (2b-i job surface)."""
+def _build_hub_service(
+    registry: IJobRegistry,
+    *,
+    sink: SignalSink | None = None,
+    registry_factory: Callable[[], IJobRegistry] | None = None,
+) -> HubService:
+    """Wrap a registry in the wire-dispatch + signal service (2b-ii-b)."""
     from runtime.adapters.dbus_event_bus import HubService
 
-    return HubService(registry)
+    return HubService(registry, sink=sink, registry_factory=registry_factory)
 
 
 def _install_release_handlers(bus_owner: IBusNameOwner) -> Callable[[], None]:
@@ -1020,46 +1076,164 @@ def _install_release_handlers(bus_owner: IBusNameOwner) -> Callable[[], None]:
     return _restore
 
 
+def _run_reactive_converge(*, observe_only: bool = True) -> ReactiveConvergeResult:
+    """Compose the daemon's reactive converge (P5-1-3, AD-35/AD-36/AD-42).
+
+    Runs the existing use cases in the pinned composite order
+
+        CheckInputs → RegenerateStale → Reconcile → declarative
+
+    (all wired with a history-suppressing seeder), then a prune pass, then
+    appends exactly one ``trigger="reactive"`` audit line and persists the
+    last-converged backstop. The backstop hash is computed over exactly the
+    AD-39 watched set, so a change always corresponds to a fireable event.
+
+    ``observe_only`` (the shipped default, AD-35/AD-41) detects a changed
+    input set and returns without running any use case and without appending
+    history. Corrupt/symlinked intent is a logged recoverable skip of the
+    declarative step only — the rest of the composite still converges.
+    """
+    from runtime.adapters.converge_backstop import LastConvergedBackstop
+    from runtime.adapters.converge_inputs import compute_watch_input_hash
+    from runtime.adapters.desired_state_reader import read_desired_state
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.adapters.seeder import CacheSeeder
+    from runtime.adapters.watch_roots import enumerate_watch_roots
+    from runtime.application.converge import ReactiveConvergeUseCase
+
+    state_root = _resolve_state_root()
+    install_spine = _resolve_install_spine()
+    intent_path = _resolve_desired_path()
+    roots = enumerate_watch_roots(install_spine, intent_path)
+    backstop = LastConvergedBackstop(state_root)
+    state_repo = JsonStateRepository(state_root=state_root)
+
+    def _declarative() -> object:
+        try:
+            return _run_converge(suppress_history=True)
+        except ValueError as exc:
+            # Corrupt/symlinked intent is a logged recoverable skip, never a
+            # crash-loop (AD-41); the other steps still converge.
+            logger.warning("reactive: intent document invalid; declarative step skipped: %s", exc)
+            return None
+
+    def _keep() -> int:
+        try:
+            desired = read_desired_state(intent_path)
+        except ValueError:
+            return 5
+        return desired.keep if desired is not None else 5
+
+    def _append_reactive() -> None:
+        state = state_repo.load_current()
+        if state is None:
+            return
+        CacheSeeder(state_root).append_history(
+            trigger="reactive",
+            wallpaper_hash=state.wallpaper.content_hash,
+            palette_hash=state.palette.entry_hash if state.palette else None,
+            effects_hash=state.effects.entry_hash if state.effects else None,
+            icons_hash=state.icons.entry_hash if state.icons else None,
+            source_path=state.wallpaper.source_path,
+        )
+
+    return ReactiveConvergeUseCase(
+        input_hash=lambda: compute_watch_input_hash(roots),
+        read_backstop=backstop.read,
+        write_backstop=backstop.write,
+        has_state=lambda: state_repo.load_current() is not None,
+        check_inputs=_run_check_inputs,
+        regenerate_stale=lambda: _run_regenerate_stale(suppress_history=True),
+        reconcile=lambda: _run_reconcile(suppress_history=True),
+        declarative=_declarative,
+        append_history=_append_reactive,
+        prune=lambda: _run_prune(dry_run=False, keep=_keep(), prune_pinned=False),
+        observe_only=observe_only,
+    ).run()
+
+
+def _build_watch_source() -> IWatchSource | None:
+    """Build the real inotify source over the AD-39 roots (None if unavailable).
+
+    Environment absence (no inotify/libc) is reduced functionality, never a
+    crash: the daemon still owns the name and serves; it simply cannot react.
+    """
+    from runtime.adapters.inotify_watch_source import InotifyWatchSource
+    from runtime.adapters.watch_roots import enumerate_watch_roots
+
+    try:
+        roots = enumerate_watch_roots(_resolve_install_spine(), _resolve_desired_path())
+        return InotifyWatchSource(roots)
+    except Exception:
+        logger.exception("daemon: inotify unavailable; serving without watches")
+        return None
+
+
 def _run_daemon_run(
-    owner: IBusNameOwner | None = None, registry: IJobRegistry | None = None
+    owner: IBusNameOwner | None = None,
+    registry: IJobRegistry | None = None,
+    *,
+    converge: Callable[[WatchTrigger], None] | None = None,
+    watch_source: IWatchSource | None = None,
 ) -> None:
-    """Name-first daemon loop (P5-1-2b-i: serve the job surface; no converge).
+    """Name-first daemon loop (P5-1-3: watch + reactive converge).
 
     1. Build the hub (epoch bumped in-memory per start, ``JobsCleared``
-       recorded first), wrap it in the wire-dispatch service, and
-       ``acquire()`` the well-known name (fail-fast, never queue). Failure
-       is fatal (non-zero) so the supervisor retries with backoff — and the
-       process NEVER exits 0 before owning the name (Type=dbus readiness).
+       recorded first) over the shared :class:`SignalSink`, wrap it in the
+       wire-dispatch service, and ``acquire()`` the well-known name
+       (fail-fast, never queue). Failure is fatal (non-zero) so the
+       supervisor retries with backoff — and the process NEVER exits 0
+       before owning the name (Type=dbus readiness).
     2. Unseeded (no ``current.json``) is a benign no-op: log at info and
        serve holding the name (AD-11/C5 — the daemon never seeds).
-       A corrupt OR unreadable store is fatal (fail loud, release the name,
-       never swallow into serving).
-    3. Serve the job surface on the receive loop while parked
-       signal-paused (no polling, no timers, no locks across use-case
-       calls — hub calls are registry mutations, never use-case calls).
-       SIGTERM/SIGINT releases the name, stops serving, and returns → exit 0.
+       A corrupt OR unreadable store is fatal (fail loud, release the name).
+    3. **Converge-on-start** (AD-36), after readiness so it never gates it
+       (AD-33) and non-gating on failure: a converge error is logged and the
+       daemon keeps serving (AD-41 fatal-vs-recoverable). The injected
+       ``converge`` performs the input-hash backstop short-circuit, so an
+       unchanged input set is a cheap no-op.
+    4. **Watch loop** on a dedicated thread: the transport is an injected
+       :class:`IWatchSource`; :class:`WatchCoordinator` coalesces bursts and
+       hands one trigger per burst to ``converge``. The main thread parks on
+       the bus owner (no polling).
+    5. SIGTERM/SIGINT releases the name, stops the watch thread, closes the
+       source, and returns → exit 0.
 
-    Signal handlers are installed before step 1 (the port tolerates a
-    never-owned release); every path restores them and releases exactly
-    the acquired-or-not owner (release is idempotent).
+    The daemon holds NO lock across a use-case call (AD-35): every use case
+    acquires and releases ``.seed.lock``/``.history.lock`` internally and
+    sequentially; the coordinator's callback never pre-holds one. The daemon
+    never writes a watched root (AD-36).
 
-    P5-1-3 extension slot: the non-gating converge lands between steps 2
-    and 3 (after readiness, never gating it). This story performs zero
-    store mutations by design (the hub registry is runtime state, not the
-    desktop store).
+    Tests inject ``owner``/``converge``/``watch_source``; with neither
+    injected the loop is the P5-1-1 no-watch idle (backward compatible).
     """
+    import threading
+
+    from runtime.adapters.dbus_event_bus import SignalSink
     from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.application.watch import WatchCoordinator
+    from runtime.application.watch import WatchTrigger as _WatchTrigger
     from runtime.domain.models import BusNameError
     from runtime.ports.bus_name_owner import BUS_NAME
 
     state_root = _resolve_state_root()
     bus_owner = owner
     hub_registry = registry
+    sink = SignalSink()
+    registry_factory: Callable[[], IJobRegistry] | None = None
     if hub_registry is None:
-        hub_registry = _build_hub()
+        hub_registry = _build_hub(sink)
+        # Restart path: each NameOwnerChanged rebuilds the hub on a fresh
+        # epoch writing to the SAME sink, so JobsCleared(new epoch) is
+        # flushed first by HubService.restart().
+        registry_factory = lambda: _build_hub(sink)  # noqa: E731
     if bus_owner is None:
-        bus_owner = _build_bus_name_owner(service=_build_hub_service(hub_registry))
+        bus_owner = _build_bus_name_owner(
+            service=_build_hub_service(hub_registry, sink=sink, registry_factory=registry_factory)
+        )
     restore_handlers = _install_release_handlers(bus_owner)
+    stop_watch = threading.Event()
+    watcher: threading.Thread | None = None
     try:
         try:
             bus_owner.acquire()
@@ -1077,35 +1251,86 @@ def _run_daemon_run(
                 "run `dotfiles-runtime wallpaper set <img>` to seed",
                 BUS_NAME,
             )
-        # The hub exists from here on (epoch assigned, JobsCleared recorded)
-        # and is SERVED on the wire in 2b-i (job surface only — Emit,
-        # topic state, and signals arrive in 2b-ii).
-        logger.debug("daemon: hub epoch %s serving job surface", hub_registry.epoch)
+        if converge is not None:
+            try:
+                converge(_WatchTrigger(reason="startup", full_rescan=True))
+            except Exception:
+                logger.exception("daemon: converge-on-start failed (recoverable); continuing")
+        if watch_source is not None and converge is not None:
+            coordinator = WatchCoordinator(watch_source, converge)
+            try:
+                watch_source.start()
+            except Exception:
+                logger.exception("daemon: watch source start failed; serving without watches")
+            else:
+                watcher = threading.Thread(
+                    target=coordinator.serve_events,
+                    args=(stop_watch,),
+                    name="watch",
+                    daemon=True,
+                )
+                watcher.start()
+        logger.debug("daemon: hub epoch %s serving job + event surface", hub_registry.epoch)
         bus_owner.wait_until_terminated()
     finally:
+        stop_watch.set()
+        # Close first: this wakes the real source's blocking select (stop
+        # pipe + fd close) and the fake's blocking read, so the join returns
+        # promptly instead of waiting out the debounce window.
+        if watch_source is not None:
+            try:
+                watch_source.close()
+            except Exception:
+                logger.exception("daemon: closing watch source failed")
+        if watcher is not None:
+            watcher.join(timeout=5)
         restore_handlers()
         bus_owner.release()
 
 
 @daemon_app.command("run")
-def daemon_run() -> None:
-    """Own org.dotfiles.Events name-first, then serve (the systemd ExecStart).
+def daemon_run(
+    activate: bool = typer.Option(
+        False,
+        "--activate",
+        help="Enable automatic convergence (default: observe-only)",
+    ),
+) -> None:
+    """Own org.dotfiles.Events name-first, then watch + serve (systemd ExecStart).
 
     Foreground blocking command (AD-33): acquires the well-known name with
-    DO_NOT_QUEUE (fails fast non-zero on contention), serves the hub job
-    surface on the session bus, and releases on SIGTERM → exit 0. No
-    start/stop subcommands exist — ``systemctl --user`` is the control
-    surface. Performs zero store mutations in this story (observe-only for
-    the desktop; the hub registry is served, converge arrives in P5-1-3).
+    DO_NOT_QUEUE (fails fast non-zero on contention), converges-on-start
+    non-gating, then watches the AD-39 spine roots via inotify (no polling)
+    and serves the hub surface. Automatic convergence is **observe-only by
+    default** (AD-35/AD-41): ``--activate`` enables it. No start/stop
+    subcommands exist — ``systemctl --user`` is the control surface.
+    SIGTERM releases the name → exit 0.
     """
+    watch_source = _build_watch_source()
+
+    def _converge(trigger: WatchTrigger) -> None:
+        try:
+            result = _run_reactive_converge(observe_only=not activate)
+        except (ValueError, RuntimeError, OSError) as exc:
+            logger.error("daemon: reactive converge failed: %s", exc)
+            return
+        except Exception:
+            logger.exception("daemon: reactive converge failed unexpectedly")
+            return
+        if result.ran:
+            logger.info("daemon: reactive converge ran (%s)", result.reason)
+
     try:
-        _run_daemon_run()
+        _run_daemon_run(converge=_converge, watch_source=watch_source)
     except (ValueError, RuntimeError, OSError) as exc:
         logger.error("daemon run failed: %s", exc)
         raise typer.Exit(code=1) from None
     except Exception:
         logger.exception("daemon run failed unexpectedly")
         raise typer.Exit(code=1) from None
+    finally:
+        if watch_source is not None:
+            watch_source.close()
 
 
 def _render_imperative_plan(renderer: Renderer, plan_result: _ReconcilePlanResult) -> None:
@@ -1376,7 +1601,7 @@ def reconcile(
 
         # Pre-validate intent before ANY mutation (AC 4): a malformed file
         # must fail here, not after repoint + history append.
-        read_desired_state(_resolve_state_root())
+        read_desired_state(_resolve_desired_path())
         result = _run_reconcile()
     except (ValueError, RuntimeError, OSError) as exc:
         logger.error("reconcile failed: %s", exc)
@@ -1490,7 +1715,7 @@ def _render_converge(
     }
 
 
-def _run_converge() -> ConvergenceReport | None:
+def _run_converge(*, suppress_history: bool = False) -> ConvergenceReport | None:
     """Execute the declarative gap for plain ``reconcile`` (Story 4.5, AC 3).
 
     Returns ``None`` when no ``desired.json`` is present (imperative mode
@@ -1498,6 +1723,9 @@ def _run_converge() -> ConvergenceReport | None:
     (B2): wallpaper target converges through the existing
     ``_run_wallpaper_set`` pipeline, then AD-30 deletes run through the
     ``remove_entry`` seam. ``pins_absent`` never triggers removal.
+
+    ``suppress_history`` (Phase 5) is threaded to the wallpaper-set pipeline
+    so a reactive composite's declarative step writes no line.
     """
     from pathlib import Path
 
@@ -1510,7 +1738,7 @@ def _run_converge() -> ConvergenceReport | None:
     from runtime.domain.models import ActualState
 
     state_root = _resolve_state_root()
-    desired = read_desired_state(state_root)
+    desired = read_desired_state(_resolve_desired_path())
     if desired is None:
         return None
     state_repo = JsonStateRepository(state_root=state_root)
@@ -1527,7 +1755,7 @@ def _run_converge() -> ConvergenceReport | None:
     changeset = diff_states(desired, refresh_actual(), 5)
 
     def set_wallpaper(target: str) -> object:
-        res = _run_wallpaper_set(Path(target))
+        res = _run_wallpaper_set(Path(target), suppress_history=suppress_history)
         if res.reconcile.reload_failures:
             raise RuntimeError(f"reload failed for: {', '.join(res.reconcile.reload_failures)}")
         return res

@@ -138,9 +138,19 @@ class CacheSeeder:
     - Ensure current/ directory structure exists
     """
 
-    def __init__(self, state_root: Path, consumer_spec: IConsumerPathSpec | None = None) -> None:
+    def __init__(
+        self,
+        state_root: Path,
+        consumer_spec: IConsumerPathSpec | None = None,
+        *,
+        suppress_history: bool = False,
+    ) -> None:
         self._state_root = state_root
         self._consumer_spec: IConsumerPathSpec = consumer_spec or StaticConsumerPathSpec()
+        #: Phase 5 reactive converge: the daemon composes its inner use cases
+        #: with a suppressing seeder so they do not each append history; the
+        #: composite appends exactly one ``trigger="reactive"`` line instead.
+        self._suppress_history = suppress_history
 
     def hardlink_wallpaper(self, src: Path, wallpaper_hash: str) -> Path:
         """Hardlink wallpaper from provisioning into cache (AD-16).
@@ -869,6 +879,8 @@ class CacheSeeder:
                 omitted from the line when None so pre-existing lines are
                 byte-identical
         """
+        if self._suppress_history:
+            return
         history_path = self._state_root / "history.jsonl"
         record: dict[str, object] = {
             "ts": _now_iso_z(),

@@ -45,3 +45,9 @@ class InProcessJobRegistry(IJobRegistry):
 
     def active_jobs(self) -> dict[str, str]:
         return self._hub.active_jobs()
+
+    def emit(self, topic: str, payload: dict[str, object], producer: str = "(local)") -> int:
+        return self._hub.emit(topic, payload, producer=producer)
+
+    def topic_state(self, topic: str) -> dict[str, object]:
+        return self._hub.topic_state(topic)

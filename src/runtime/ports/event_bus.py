@@ -51,7 +51,9 @@ class IJobRegistry(ABC):
     ``adopt``→``AdoptJob(job_id, pid)``, ``report_progress``→
     ``ReportProgress(job_id, fraction)``, ``end``→``EndJob(job_id,
     exit_code)``, ``control``→``Control(job_id, action)``,
-    ``active_jobs``→``GetActiveJobs() → {job_id: kind}``.
+    ``active_jobs``→``GetActiveJobs() → {job_id: kind}``,
+    ``emit``→``Emit(topic, payload)`` (returns the per-topic ``seq``),
+    ``topic_state``→``GetTopicState(topic)``.
 
     Widths are a 2b concern: the domain takes ``float`` ttls and unbounded
     ints, and 2b validates them against the wire types (``ttl:u``,
@@ -95,3 +97,11 @@ class IJobRegistry(ABC):
     @abstractmethod
     def active_jobs(self) -> dict[str, str]:
         """``{job_id: kind}`` for live jobs only (hydration path)."""
+
+    @abstractmethod
+    def emit(self, topic: str, payload: dict[str, object], producer: str = "(local)") -> int:
+        """Store a domain event; return its per-topic ``seq`` (from 1)."""
+
+    @abstractmethod
+    def topic_state(self, topic: str) -> dict[str, object]:
+        """Last payload plus reserved ``_epoch``/``_seq`` (hydration path)."""

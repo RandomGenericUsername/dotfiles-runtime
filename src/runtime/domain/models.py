@@ -346,10 +346,16 @@ class UnknownTopic(HubError):  # noqa: N818
 class PayloadTooLarge(HubError):  # noqa: N818
     """Emit-side (P5-1-2b): the payload exceeds the structural caps."""
 
-    def __init__(self, topic: object, size: int) -> None:
-        super().__init__(f"payload for topic {topic!r} exceeds caps ({size} bytes)")
+    def __init__(self, topic: object, size: int = -1, detail: str = "") -> None:
+        message = f"payload for topic {topic!r} rejected"
+        if size >= 0:
+            message += f" ({size} bytes)"
+        if detail:
+            message += f": {detail}"
+        super().__init__(message)
         self.topic = topic
         self.size = size
+        self.detail = detail
 
 
 class RateLimited(HubError):  # noqa: N818

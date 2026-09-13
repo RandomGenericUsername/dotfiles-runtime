@@ -29,6 +29,12 @@ def _quiet_seed_hook(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Point first-run seeding at an empty spine so it skips quietly."""
     monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(tmp_path / "install"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
+    # Phase 5: the intent document is relocated under $XDG_CONFIG_HOME.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config-home"))
+
+
+def _intent_path(tmp_path: Path) -> Path:
+    return tmp_path / "config-home" / "dotfiles" / "desired.json"
 
 
 def _declarative_result() -> _DeclarativePlanResult:
@@ -96,9 +102,9 @@ def test_plan_renders_converged_state(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_plan_malformed_desired_fails_loud(tmp_path: Path) -> None:
-    state_root = tmp_path / "state-home" / "dotfiles"
-    state_root.mkdir(parents=True)
-    (state_root / "desired.json").write_text("{not json", encoding="utf-8")
+    intent = _intent_path(tmp_path)
+    intent.parent.mkdir(parents=True)
+    intent.write_text("{not json", encoding="utf-8")
     result = runner.invoke(app, ["reconcile", "--plan"])
     assert result.exit_code == 1
     assert "desired.json" in (result.output + getattr(result, "stderr", ""))
@@ -135,9 +141,9 @@ def test_run_converge_returns_none_without_desired() -> None:
 
 
 def test_run_converge_malformed_desired_raises(tmp_path: Path) -> None:
-    state_root = tmp_path / "state-home" / "dotfiles"
-    (state_root).mkdir(parents=True, exist_ok=True)
-    (state_root / "desired.json").write_text('{"version": 9}', encoding="utf-8")
+    intent = _intent_path(tmp_path)
+    intent.parent.mkdir(parents=True, exist_ok=True)
+    intent.write_text('{"version": 9}', encoding="utf-8")
     with pytest.raises(ValueError, match="desired state version"):
         cli_main._run_converge()
 
@@ -148,9 +154,9 @@ def test_run_converge_reload_failure_raises(
     """Reload failures are fatal, never reported as success (Item 2)."""
     import json
 
-    state_root = tmp_path / "state-home" / "dotfiles"
-    state_root.mkdir(parents=True)
-    (state_root / "desired.json").write_text(
+    intent = _intent_path(tmp_path)
+    intent.parent.mkdir(parents=True)
+    intent.write_text(
         json.dumps(
             {
                 "version": 1,
@@ -161,6 +167,8 @@ def test_run_converge_reload_failure_raises(
         ),
         encoding="utf-8",
     )
+    state_root = tmp_path / "state-home" / "dotfiles"
+    state_root.mkdir(parents=True, exist_ok=True)
     (state_root / "current.json").write_text(
         json.dumps(
             {
@@ -182,7 +190,9 @@ def test_run_converge_reload_failure_raises(
     monkeypatch.setattr(
         cli_main,
         "_run_wallpaper_set",
-        lambda target: SimpleNamespace(reconcile=SimpleNamespace(reload_failures=["Hyprpaper"])),
+        lambda target, **_: SimpleNamespace(
+            reconcile=SimpleNamespace(reload_failures=["Hyprpaper"])
+        ),
     )
     with pytest.raises(RuntimeError, match="reload failed for: Hyprpaper"):
         cli_main._run_converge()
@@ -300,9 +310,9 @@ def test_floor_fixture_active_undated_survive_zero_keep() -> None:
 def test_plain_reconcile_malformed_desired_fails_before_swap(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    state_root = tmp_path / "state-home" / "dotfiles"
-    state_root.mkdir(parents=True)
-    (state_root / "desired.json").write_text('{"version": 9}', encoding="utf-8")
+    intent = _intent_path(tmp_path)
+    intent.parent.mkdir(parents=True)
+    intent.write_text('{"version": 9}', encoding="utf-8")
     calls: list[None] = []
 
     def _swap() -> object:

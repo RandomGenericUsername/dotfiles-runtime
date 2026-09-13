@@ -1,12 +1,12 @@
-"""AD-44 conformance for the 2b-i served surface (executable, no live bus).
+"""AD-44 conformance for the full 2b-ii-b served surface (no live bus).
 
 The contract XML is the wire source: this test parses
-`contracts/event-contract.xml` and asserts the adapter's `METHODS` table
-(names, arg names/types/directions) matches the methods block exactly, the
-JSON `methods` table agrees, and the served `Introspect()` XML describes
-exactly the served surface. Signals/topics blocks are pinned as
-2b-ii-owned (present in contract, absent on the wire — asserted, not
-forgotten). A jeepney import anywhere outside `adapters/` fails.
+`contracts/event-contract.xml` and asserts the adapter's `METHODS`/`SIGNALS`
+tables (names, arg names/types/directions/order) match the methods and
+signals blocks exactly, the JSON blocks agree, and the served
+`Introspect()` XML describes exactly the served surface. The embedded
+topics schema table is pinned against the JSON topics block. A jeepney
+import anywhere outside `adapters/` fails.
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ from runtime.adapters.dbus_event_bus import (
     INTERFACE,
     METHODS,
     OBJECT_PATH,
+    SIGNALS,
     HubService,
-    WireError,
     introspect_xml,
 )
 
@@ -49,6 +49,15 @@ def _xml_methods(iface: ET.Element) -> dict[str, dict[str, list[str]]]:
             ],
         }
     return methods
+
+
+def _xml_signals(iface: ET.Element) -> dict[str, list[str]]:
+    signals: dict[str, list[str]] = {}
+    for signal in iface.findall("signal"):
+        signals[signal.get("name") or ""] = [
+            f"{a.get('name')}:{a.get('type')}" for a in signal.findall("arg")
+        ]
+    return signals
 
 
 def test_adapter_methods_match_contract_xml(repo_root: Path) -> None:
@@ -108,37 +117,69 @@ def _harness_service() -> object:
     )
 
 
-def test_emit_and_topic_state_pinned_as_2b_ii_owned(repo_root: Path) -> None:
-    """Emit/GetTopicState are in the contract but NOT served yet (2b-ii).
-
-    Their absence must be a loud UnknownMethod, never a silent no-op —
-    pinned here so 2b-ii cannot forget them either.
-    """
-
+def test_emit_and_topic_state_served(repo_root: Path) -> None:
+    """ii-a serves Emit/GetTopicState (methods block covers them now)."""
     xml_methods = _xml_methods(_served_interface(repo_root))
     assert "Emit" in xml_methods and "GetTopicState" in xml_methods
-    assert "Emit" not in METHODS and "GetTopicState" not in METHODS
+    assert "Emit" in METHODS and "GetTopicState" in METHODS
+
     service = _harness_service()
     assert isinstance(service, HubService)
-    for member in ("Emit", "GetTopicState"):
-        try:
-            service.dispatch(member, ())
-        except WireError as exc:
-            assert exc.dbus_name == "org.freedesktop.DBus.Error.UnknownMethod"
-        else:
-            raise AssertionError(f"{member} unexpectedly dispatched")
+    _, (state,) = service.dispatch("GetTopicState", ("icme.saved",))
+    assert state == {"_epoch": 1, "_seq": 0}
 
 
-def test_signals_pinned_as_2b_ii_owned(repo_root: Path) -> None:
-    """All 5 contract signals exist on the wire contract only (2b-ii binds)."""
+def test_embedded_schema_table_matches_contract_topics(repo_root: Path) -> None:
+    """TOPIC_SCHEMAS == JSON topics block (names, required shapes, enums)."""
+    from runtime.adapters.emit_validation import TOPIC_SCHEMAS
+
+    data = json.loads((repo_root / "contracts" / "event-contract.json").read_text())
+    assert isinstance(data, dict)
+    topics = data["topics"]
+    assert isinstance(topics, dict)
+    assert set(TOPIC_SCHEMAS) == set(topics)
+    sig_to_json_type = {"s": "string", "d": "number", "x": "integer"}
+    for topic, entry in topics.items():
+        assert isinstance(entry, dict)
+        payload = entry["payload"]
+        assert isinstance(payload, dict)
+        schema = TOPIC_SCHEMAS[topic]
+        assert sorted(schema["required"]) == sorted(payload)
+        for field, sig in payload.items():
+            assert schema["properties"][field]["type"] == sig_to_json_type[sig], field
+        for field, values in entry.get("enum", {}).items():
+            assert schema["properties"][field]["enum"] == values, field
+
+
+def test_adapter_signals_match_contract_xml(repo_root: Path) -> None:
+    """SIGNALS == XML signals block (names, arg names/types, order)."""
+    xml_signals = _xml_signals(_served_interface(repo_root))
+    table = {name: [f"{arg}:{sig}" for arg, sig in args] for name, args in SIGNALS.items()}
+    assert table == xml_signals
+
+
+def test_adapter_signals_match_contract_json(repo_root: Path) -> None:
+    """SIGNALS == JSON signals table (same names and signatures)."""
+    data = json.loads((repo_root / "contracts" / "event-contract.json").read_text())
+    assert isinstance(data, dict)
+    json_signals = data["signals"]
+    assert isinstance(json_signals, dict)
+    assert set(SIGNALS) == set(json_signals)
+    for name, args in SIGNALS.items():
+        assert [f"{arg}:{sig}" for arg, sig in args] == list(json_signals[name])
+
+
+def test_signals_are_bound(repo_root: Path) -> None:
+    """All 5 contract signals are emitted (2b-ii-b binds them)."""
     iface = _served_interface(repo_root)
     names = {s.get("name") for s in iface.findall("signal")}
     assert names == {"JobStarted", "JobProgress", "JobFinished", "DomainEvent", "JobsCleared"}
+    assert set(SIGNALS) == names
     assert not (names & set(METHODS))
 
 
 def test_introspect_xml_describes_served_surface() -> None:
-    """Served Introspect() output parses and carries exactly METHODS."""
+    """Served Introspect() output parses and carries exactly METHODS+SIGNALS."""
     root = ET.fromstring(introspect_xml())
     assert root.tag == "node"
     assert root.get("name") == OBJECT_PATH
@@ -146,6 +187,8 @@ def test_introspect_xml_describes_served_surface() -> None:
     assert iface is not None and iface.get("name") == INTERFACE
     described = {m.get("name") for m in iface.findall("method")}
     assert described == set(METHODS)
+    described_signals = {s.get("name") for s in iface.findall("signal")}
+    assert described_signals == set(SIGNALS)
 
 
 def test_jeepney_import_only_in_adapters() -> None:
