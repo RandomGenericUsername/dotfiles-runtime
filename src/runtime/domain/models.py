@@ -304,3 +304,66 @@ class BusUnavailableError(BusNameError):
 
 class BusNameContentionError(BusNameError):
     """Another owner holds the well-known name (RequestName DO_NOT_QUEUE lost)."""
+
+
+class HubError(RuntimeError):
+    """Base for hub job-registry failures (Phase 5, AD-34).
+
+    The six typed errors mirror ``contracts/event-contract.json`` `errors`
+    exactly; P5-1-2b maps them to D-Bus error names on the wire.
+    """
+
+
+# NOTE on naming: the six classes below intentionally do NOT end with
+# `Error` — they mirror the contract JSON `errors` list verbatim so the 2b
+# wire mapping is a pure rename. Each carries a targeted noqa marker below.
+
+
+class UnknownJob(HubError):  # noqa: N818
+    """No job with this id is known to the hub (never seen or registry reset)."""
+
+    def __init__(self, job_id: object) -> None:
+        super().__init__(f"unknown job: {job_id!r}")
+        self.job_id = job_id
+
+
+class JobEnded(HubError):  # noqa: N818
+    """The job ended (or its lease expired) — use-after-end is a loud error."""
+
+    def __init__(self, job_id: object) -> None:
+        super().__init__(f"job has ended: {job_id!r}")
+        self.job_id = job_id
+
+
+class UnknownTopic(HubError):  # noqa: N818
+    """Emit-side (P5-1-2b): the topic is not in the contract topics table."""
+
+    def __init__(self, topic: object) -> None:
+        super().__init__(f"unknown topic: {topic!r}")
+        self.topic = topic
+
+
+class PayloadTooLarge(HubError):  # noqa: N818
+    """Emit-side (P5-1-2b): the payload exceeds the structural caps."""
+
+    def __init__(self, topic: object, size: int) -> None:
+        super().__init__(f"payload for topic {topic!r} exceeds caps ({size} bytes)")
+        self.topic = topic
+        self.size = size
+
+
+class RateLimited(HubError):  # noqa: N818
+    """Emit-side (P5-1-2b): the producer exceeded its publish rate."""
+
+    def __init__(self, topic: object) -> None:
+        super().__init__(f"publish rate exceeded for topic {topic!r}")
+        self.topic = topic
+
+
+class NotControllable(HubError):  # noqa: N818
+    """The action is not in the job kind's control allowlist (H1)."""
+
+    def __init__(self, job_id: object, action: object) -> None:
+        super().__init__(f"job {job_id!r} is not controllable via {action!r}")
+        self.job_id = job_id
+        self.action = action

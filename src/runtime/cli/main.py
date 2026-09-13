@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
+from itertools import count as _count
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -32,9 +33,11 @@ if TYPE_CHECKING:
     from runtime.application.reconcile import ReconcileResult
     from runtime.application.regenerate import RegenerateResult
     from runtime.application.verify_cache import VerifyCacheResult
+    from runtime.domain.hub import HubEvent
     from runtime.domain.models import ChangeSet, DesktopState
     from runtime.ports.bus_name_owner import IBusNameOwner
     from runtime.ports.desktop_reloader import IDesktopReloader
+    from runtime.ports.event_bus import IJobRegistry
 
 app = typer.Typer(
     name="dotfiles-runtime",
@@ -944,6 +947,35 @@ def _build_bus_name_owner() -> IBusNameOwner:
     return DeferredDbusNameOwner()
 
 
+#: In-memory hub epoch source (P5-1-2a Gate-1 rec 4): a fresh process
+#: restarts the counter, so the first hub always takes epoch 1 and every
+#: further hub in the process bumps — never reused within a bus session.
+_HUB_EPOCH_COUNTER = _count(1)
+
+
+def _log_hub_event(event: HubEvent) -> None:
+    """Domain-sink for the daemon hub: lifecycle records go to the logs."""
+    logger.debug("hub: %s", event)
+
+
+def _build_hub() -> IJobRegistry:
+    """Construct the in-process hub (epoch bumped per start, in-memory)."""
+    import time
+    import uuid
+
+    from runtime.adapters.in_process_hub import InProcessJobRegistry
+    from runtime.domain.hub import EventHub
+
+    return InProcessJobRegistry(
+        EventHub(
+            epoch=next(_HUB_EPOCH_COUNTER),
+            clock=time.monotonic,
+            id_factory=lambda: uuid.uuid4().hex,
+            sink=_log_hub_event,
+        )
+    )
+
+
 def _install_release_handlers(bus_owner: IBusNameOwner) -> Callable[[], None]:
     """Install SIGTERM/SIGINT → release handlers; return a restore callable.
 
@@ -1025,6 +1057,10 @@ def _run_daemon_run(owner: IBusNameOwner | None = None) -> None:
                 "run `dotfiles-runtime wallpaper set <img>` to seed",
                 BUS_NAME,
             )
+        # The hub exists from here on (epoch assigned, JobsCleared recorded)
+        # but serves nothing on the wire in 2a — 2b binds it to the bus.
+        hub = _build_hub()
+        logger.debug("daemon: hub epoch %s ready (no wire in 2a)", hub.epoch)
         bus_owner.wait_until_terminated()
     finally:
         restore_handlers()
