@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
     from runtime.adapters.daemon_status import DaemonReport, DaemonStatusSnapshot
     from runtime.adapters.dbus_event_bus import HubService, SignalSink
+    from runtime.adapters.systemd_notify import SystemdNotifier
     from runtime.application.apply_wallpaper import ApplyWallpaperResult
     from runtime.application.check_inputs import CheckInputsResult
     from runtime.application.converge import ReactiveConvergeResult
@@ -108,15 +109,78 @@ def _resolve_install_spine() -> Path:
     return (xdg_data / "dotfiles").expanduser().resolve()
 
 
-def _resolve_state_root() -> Path:
+def _resolve_state_root(session_id: str | None = None) -> Path:
     """Resolve runtime state root path (absolute).
 
     Uses ``$XDG_STATE_HOME/dotfiles`` (default ``~/.local/state/dotfiles``).
     Resolved to an absolute path so symlink targets never dangle when the
     env var holds a relative value.
+
+    **Multi-session scoping (P5 follow-up).** Two concurrent graphical
+    sessions of the same user otherwise share one ``state_root`` and cross-wire
+    each other (one session's ``wallpaper set``/converge repoints the other's
+    consumers). When a session identifier is resolvable the root becomes
+    ``<base>/sessions/<id>``; with no identifier the historical single-session
+    path is returned **byte-identically**. Resolution order:
+
+    1. ``$DOTFILES_SESSION_ID`` (explicit override, sanitized; invalid/empty
+       falls back to the unscoped path — a safe fallback, never a traversal);
+    2. when ``$DOTFILES_SESSION_SCOPE`` is truthy, ``$XDG_SESSION_ID`` then the
+       ``$XDG_RUNTIME_DIR`` basename (e.g. ``/run/user/1000`` → ``1000``).
     """
     xdg_state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
-    return (xdg_state / "dotfiles").expanduser().resolve()
+    base = (xdg_state / "dotfiles").expanduser().resolve()
+    scoped = (
+        _sanitize_session_id(session_id) if session_id is not None else _resolve_session_id()
+    )
+    if scoped is None:
+        return base
+    return (base / "sessions" / scoped).resolve()
+
+
+#: Explicit per-session ``state_root`` opt-in (P5 follow-up). Absent ⇒ the
+#: historical single-session path is used byte-identically.
+_SESSION_ID_ENV = "DOTFILES_SESSION_ID"
+_SESSION_SCOPE_ENV = "DOTFILES_SESSION_SCOPE"
+_SESSION_ID_ALLOWED = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+)
+
+
+def _truthy_env(value: str | None) -> bool:
+    return value is not None and value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _sanitize_session_id(raw: str | None) -> str | None:
+    """Return a safe session id, or ``None`` (safe fallback to unscoped).
+
+    Rejects empty/``.``/``..`` and anything outside ``[A-Za-z0-9._-]`` so a
+    hostile/odd environment value can never escape the sessions directory.
+    """
+    if raw is None:
+        return None
+    candidate = raw.strip()
+    if not candidate or candidate in {".", ".."}:
+        return None
+    if any(ch not in _SESSION_ID_ALLOWED for ch in candidate):
+        return None
+    return candidate
+
+
+def _resolve_session_id() -> str | None:
+    """Resolve a session identifier, or ``None`` for single-session default."""
+    explicit = _sanitize_session_id(os.environ.get(_SESSION_ID_ENV))
+    if explicit is not None:
+        return explicit
+    if not _truthy_env(os.environ.get(_SESSION_SCOPE_ENV)):
+        return None
+    session = _sanitize_session_id(os.environ.get("XDG_SESSION_ID"))
+    if session is not None:
+        return session
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir:
+        return _sanitize_session_id(Path(runtime_dir).name)
+    return None
 
 
 def _resolve_config_home() -> Path:
@@ -985,6 +1049,22 @@ def doctor(
                 counts[item.status] = counts.get(item.status, 0) + 1
         breakdown = ", ".join(f"{status}: {n}" for status, n in sorted(counts.items()))
         plain = f"drift detected: {breakdown}"
+    # Watch-set health is informational here: registration exhaustion is an
+    # environment limit, not desktop drift, so it must not change doctor's
+    # exit code — but it must be visible (AD-40/AD-41).
+    from runtime.adapters.watch_health import WatchHealthStore
+
+    health = WatchHealthStore(_resolve_state_root()).read()
+    if health is None:
+        watch_desc = "watch health: unknown (daemon has not reported)"
+    elif health.degraded:
+        watch_desc = (
+            f"watch health: degraded ({len(health.failed_roots)} unwatched)"
+            + (f": {health.last_error}" if health.last_error else "")
+        )
+    else:
+        watch_desc = "watch health: ok"
+    plain = f"{plain}; {watch_desc}"
     renderer.custom(
         CustomView(
             plain=plain,
@@ -999,6 +1079,16 @@ def doctor(
                     }
                     for item in report.items
                 ],
+                "watch_health": (
+                    None
+                    if health is None
+                    else {
+                        "degraded": health.degraded,
+                        "failed_roots": list(health.failed_roots),
+                        "last_error": health.last_error,
+                        "updated_at": health.updated_at,
+                    }
+                ),
             },
             rich=plain,
         )
@@ -1210,6 +1300,7 @@ def _run_daemon_run(
     *,
     converge: Callable[[WatchTrigger], None] | None = None,
     watch_source: IWatchSource | None = None,
+    notifier: SystemdNotifier | None = None,
 ) -> None:
     """Name-first daemon loop (P5-1-3: watch + reactive converge).
 
@@ -1219,39 +1310,53 @@ def _run_daemon_run(
        (fail-fast, never queue). Failure is fatal (non-zero) so the
        supervisor retries with backoff — and the process NEVER exits 0
        before owning the name (Type=dbus readiness).
-    2. Unseeded (no ``current.json``) is a benign no-op: log at info and
+    2. **sd_notify readiness + watchdog** (AD-33/AD-41 residual): once the
+       name is owned the daemon sends ``READY=1`` and, if a watchdog budget
+       is configured, pings ``WATCHDOG=1`` on a background thread so systemd
+       restarts a wedged-but-name-owning process. With no ``NOTIFY_SOCKET``
+       every call is a no-op and the daemon behaves exactly as before.
+    3. Unseeded (no ``current.json``) is a benign no-op: log at info and
        serve holding the name (AD-11/C5 — the daemon never seeds).
        A corrupt OR unreadable store is fatal (fail loud, release the name).
-    3. **Converge-on-start** (AD-36), after readiness so it never gates it
+    4. **Converge-on-start** (AD-36), after readiness so it never gates it
        (AD-33) and non-gating on failure: a converge error is logged and the
        daemon keeps serving (AD-41 fatal-vs-recoverable). The injected
        ``converge`` performs the input-hash backstop short-circuit, so an
        unchanged input set is a cheap no-op.
-    4. **Watch loop** on a dedicated thread: the transport is an injected
+    5. **Watch loop** on a dedicated thread: the transport is an injected
        :class:`IWatchSource`; :class:`WatchCoordinator` coalesces bursts and
-       hands one trigger per burst to ``converge``. The main thread parks on
-       the bus owner (no polling).
-    5. SIGTERM/SIGINT releases the name, stops the watch thread, closes the
-       source, and returns → exit 0.
+       hands one trigger per burst to ``converge``. A degraded watch set
+       (registration exhaustion) is persisted via
+       :class:`~runtime.adapters.watch_health.WatchHealthStore` so the
+       daemon-independent ``inspect``/``doctor`` surface can report it. The
+       main thread parks on the bus owner (no polling).
+    6. SIGTERM/SIGINT releases the name, stops the watch + watchdog threads,
+       sends ``STOPPING=1``, closes the source, and returns → exit 0.
 
     The daemon holds NO lock across a use-case call (AD-35): every use case
     acquires and releases ``.seed.lock``/``.history.lock`` internally and
     sequentially; the coordinator's callback never pre-holds one. The daemon
     never writes a watched root (AD-36).
 
-    Tests inject ``owner``/``converge``/``watch_source``; with neither
-    injected the loop is the P5-1-1 no-watch idle (backward compatible).
+    Tests inject ``owner``/``converge``/``watch_source``/``notifier``; with
+    neither converge nor watch injected the loop is the P5-1-1 no-watch idle
+    (backward compatible).
     """
     import threading
 
     from runtime.adapters.dbus_event_bus import SignalSink
     from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.adapters.systemd_notify import SystemdNotifier
+    from runtime.adapters.watch_health import WatchHealthStore
     from runtime.application.watch import WatchCoordinator
     from runtime.application.watch import WatchTrigger as _WatchTrigger
     from runtime.domain.models import BusNameError
     from runtime.ports.bus_name_owner import BUS_NAME
 
     state_root = _resolve_state_root()
+    watch_health = WatchHealthStore(state_root)
+    if notifier is None:
+        notifier = SystemdNotifier.from_env()
     bus_owner = owner
     hub_registry = registry
     sink = SignalSink()
@@ -1268,12 +1373,25 @@ def _run_daemon_run(
         )
     restore_handlers = _install_release_handlers(bus_owner)
     stop_watch = threading.Event()
+    watchdog_stop = threading.Event()
     watcher: threading.Thread | None = None
+    watchdog_thread: threading.Thread | None = None
     try:
         try:
             bus_owner.acquire()
         except BusNameError as exc:
             raise RuntimeError(f"daemon: cannot own {BUS_NAME}: {exc}") from exc
+        # Readiness: the name is owned (Type=dbus). sd_notify is best-effort;
+        # no NOTIFY_SOCKET ⇒ no-op (never gates or crashes startup).
+        notifier.ready()
+        if notifier.enabled:
+            watchdog_thread = threading.Thread(
+                target=notifier.run_watchdog,
+                args=(watchdog_stop,),
+                name="watchdog",
+                daemon=True,
+            )
+            watchdog_thread.start()
         try:
             state = JsonStateRepository(state_root=state_root).load_current()
         except ValueError as exc:
@@ -1292,11 +1410,17 @@ def _run_daemon_run(
             except Exception:
                 logger.exception("daemon: converge-on-start failed (recoverable); continuing")
         if watch_source is not None and converge is not None:
-            coordinator = WatchCoordinator(watch_source, converge)
+            coordinator = WatchCoordinator(
+                watch_source, converge, on_status=watch_health.write
+            )
             try:
                 watch_source.start()
             except Exception:
                 logger.exception("daemon: watch source start failed; serving without watches")
+                try:
+                    watch_health.write(watch_source.status())
+                except Exception:
+                    logger.exception("daemon: persisting degraded watch health failed")
             else:
                 watcher = threading.Thread(
                     target=coordinator.serve_events,
@@ -1309,6 +1433,7 @@ def _run_daemon_run(
         bus_owner.wait_until_terminated()
     finally:
         stop_watch.set()
+        watchdog_stop.set()
         # Close first: this wakes the real source's blocking select (stop
         # pipe + fd close) and the fake's blocking read, so the join returns
         # promptly instead of waiting out the debounce window.
@@ -1319,6 +1444,9 @@ def _run_daemon_run(
                 logger.exception("daemon: closing watch source failed")
         if watcher is not None:
             watcher.join(timeout=5)
+        if watchdog_thread is not None:
+            watchdog_thread.join(timeout=5)
+        notifier.stopping()
         restore_handlers()
         bus_owner.release()
 
@@ -1328,6 +1456,7 @@ def daemon_run(
     activate: bool = typer.Option(
         False,
         "--activate",
+        envvar="DOTFILES_RUNTIME_ACTIVATE",
         help="Enable automatic convergence (default: observe-only)",
     ),
 ) -> None:
@@ -1845,6 +1974,7 @@ def _run_inspect_daemon(
         assemble_daemon_report,
         probe_session_bus,
     )
+    from runtime.adapters.watch_health import WatchHealthStore
     from runtime.adapters.watch_roots import enumerate_watch_roots
 
     state_root = _resolve_state_root()
@@ -1855,6 +1985,7 @@ def _run_inspect_daemon(
         backstop_record=backstop.read_record(),
         backstop_path=backstop.path,
         watch_roots=enumerate_watch_roots(_resolve_install_spine(), _resolve_desired_path()),
+        watch_health_record=WatchHealthStore(state_root).read(),
     )
 
 
@@ -1976,6 +2107,16 @@ def inspect_daemon(
             parts.append(f"  {root.path} (directory, depth {root.depth})")
         else:
             parts.append(f"  {root.path} (file)")
+    health = report.watch_health
+    if health is None:
+        parts.append("watch health: unknown (daemon has not reported)")
+    elif health.degraded:
+        error_desc = f": {health.last_error}" if health.last_error else ""
+        parts.append(f"watch health: degraded ({len(health.failed_roots)} unwatched){error_desc}")
+        for failed_root in health.failed_roots:
+            parts.append(f"  UNWATCHED {failed_root}")
+    else:
+        parts.append("watch health: ok")
     plain = "\n".join(parts)
     renderer.custom(
         CustomView(
@@ -1997,6 +2138,16 @@ def inspect_daemon(
                     {"path": root.path, "kind": root.kind, "depth": root.depth}
                     for root in report.watch_roots
                 ],
+                "watch_health": (
+                    None
+                    if health is None
+                    else {
+                        "degraded": health.degraded,
+                        "failed_roots": list(health.failed_roots),
+                        "last_error": health.last_error,
+                        "updated_at": health.updated_at,
+                    }
+                ),
             },
             rich=plain,
         )

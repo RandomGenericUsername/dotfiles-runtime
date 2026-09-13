@@ -191,6 +191,67 @@ class TestInspectDaemonCommand:
         assert "bus: unavailable" in result.output
 
 
+class TestWatchHealthSurface:
+    def _probe_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            daemon_status,
+            "probe_session_bus",
+            lambda timeout=5.0: DaemonStatusSnapshot(
+                bus_available=True, name_owned=False, detail="daemon absent"
+            ),
+        )
+
+    def test_unknown_when_daemon_never_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._probe_absent(monkeypatch)
+        result = runner.invoke(app, ["inspect", "daemon"])
+        assert result.exit_code == 0
+        assert "watch health: unknown" in result.output
+
+    def test_healthy_watch_set_is_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from runtime.adapters.watch_health import WatchHealthStore
+        from runtime.domain.watch import WatchStatus
+
+        self._probe_absent(monkeypatch)
+        WatchHealthStore(_state_root()).write(WatchStatus(registered=5))
+        result = runner.invoke(app, ["inspect", "daemon"])
+        assert result.exit_code == 0
+        assert "watch health: ok" in result.output
+
+    def test_degraded_watch_set_is_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from runtime.adapters.watch_health import WatchHealthStore
+        from runtime.domain.watch import WatchStatus
+
+        self._probe_absent(monkeypatch)
+        WatchHealthStore(_state_root()).write(
+            WatchStatus(
+                registered=2,
+                failed=("/spine/icon-templates",),
+                last_error="No space left on device",
+            )
+        )
+        result = runner.invoke(app, ["inspect", "daemon", "--format", "json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["watch_health"]["degraded"] is True
+        assert payload["watch_health"]["failed_roots"] == ["/spine/icon-templates"]
+        assert payload["watch_health"]["last_error"] == "No space left on device"
+
+    def test_degraded_watch_roots_are_named_in_plain_output(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from runtime.adapters.watch_health import WatchHealthStore
+        from runtime.domain.watch import WatchStatus
+
+        self._probe_absent(monkeypatch)
+        WatchHealthStore(_state_root()).write(
+            WatchStatus(registered=0, failed=("/spine/x", "/spine/y"), last_error="ENOSPC")
+        )
+        result = runner.invoke(app, ["inspect", "daemon"])
+        assert "watch health: degraded (2 unwatched): ENOSPC" in result.output
+        assert "UNWATCHED /spine/x" in result.output
+        assert "UNWATCHED /spine/y" in result.output
+
+
 # ── kill switch (AD-41) ──────────────────────────────────────────────────
 
 

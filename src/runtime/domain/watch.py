@@ -57,3 +57,25 @@ class WatchEvent:
     kind: WatchEventKind
     path: str = ""
     is_directory: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class WatchStatus:
+    """Health of the installed watch set (AD-40 registration exhaustion).
+
+    ``registered`` is how many watches are currently installed; ``failed``
+    names the roots that could **not** be registered (e.g. ``max_user_watches``
+    exhaustion — ``ENOSPC``/``EMFILE``). A non-empty ``failed`` is a degraded
+    watch set: the daemon is temporarily blind to those roots and must retry
+    at the next safe opportunity (never poll). ``last_error`` is diagnostic
+    only and never parsed.
+    """
+
+    registered: int = 0
+    failed: tuple[str, ...] = ()
+    last_error: str | None = None
+
+    @property
+    def degraded(self) -> bool:
+        """True when any root is unwatched."""
+        return bool(self.failed)

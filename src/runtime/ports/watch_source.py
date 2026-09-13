@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from runtime.domain.watch import WatchEvent
+from runtime.domain.watch import WatchEvent, WatchStatus
 
 
 class IWatchSource(ABC):
@@ -35,3 +35,13 @@ class IWatchSource(ABC):
         ``None`` means "no event within the window" — the caller uses it as
         the debounce-quiet signal. It is NOT a poll of watched state.
         """
+
+    def status(self) -> WatchStatus:
+        """Report the installed watch set's health (AD-40 exhaustion).
+
+        Defaults to a healthy empty set so simple fakes stay valid; the real
+        inotify source reports which roots failed to register. The coordinator
+        consumes this to retry dropped registrations on the next safe
+        opportunity — never by polling.
+        """
+        return WatchStatus()

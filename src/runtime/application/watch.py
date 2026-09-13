@@ -31,6 +31,7 @@ from runtime.domain.watch import (
     REGISTRATION_LOSS,
     WatchEvent,
     WatchEventKind,
+    WatchStatus,
 )
 from runtime.ports.watch_source import IWatchSource
 
@@ -100,12 +101,15 @@ class WatchCoordinator:
         on_trigger: Callable[[WatchTrigger], None],
         *,
         debounce: float = DEFAULT_DEBOUNCE_SECONDS,
+        on_status: Callable[[WatchStatus], None] | None = None,
     ) -> None:
         if debounce <= 0:
             raise ValueError(f"debounce must be positive, got {debounce!r}")
         self._source = source
         self._on_trigger = on_trigger
         self._debounce = debounce
+        self._on_status = on_status
+        self._last_status: WatchStatus | None = None
 
     def serve_events(self, stop: threading.Event) -> None:
         """Blocking loop: coalesce events until ``stop`` is set.
@@ -113,23 +117,55 @@ class WatchCoordinator:
         Called on a dedicated thread by the daemon. Each iteration blocks in
         ``source.read_event`` (never a timed state poll); a ``None`` result is
         the quiet-window signal that releases one accumulated trigger.
+
+        A degraded watch set (a root dropped by registration exhaustion) is
+        retried **once per burst** the moment a real event arrives from a
+        still-watched root — the "next safe opportunity" (AD-40). There is no
+        timer and no state poll; a burst that never sees an event never
+        retries, and the source's own blocking read stays the only clock.
         """
         accumulator = WatchAccumulator()
+        self._report_status()
+        retried_this_burst = False
         while not stop.is_set():
             event = self._source.read_event(self._debounce)
             if event is None:
                 trigger = accumulator.take()
                 if trigger is not None:
                     self._fire(trigger)
+                retried_this_burst = False
                 continue
             if accumulator.ingest(event):
-                try:
-                    self._source.rebuild()
-                except Exception:
-                    logger.exception("watch: rebuilding watches failed; continuing")
+                self._rebuild("registration-loss")
+                retried_this_burst = True
+                continue
+            if not retried_this_burst and self._source.status().degraded:
+                self._rebuild("registration-exhaustion")
+                retried_this_burst = True
         # Flush a burst that was still open when stop arrived? Intentionally
         # no: shutdown must not start a long converge the supervisor is about
         # to kill. The change is caught by converge-on-start next time.
+
+    def _rebuild(self, reason: str) -> None:
+        """Re-establish watches; recoverable failure (AD-40/AD-41)."""
+        try:
+            self._source.rebuild()
+        except Exception:
+            logger.exception("watch: rebuilding watches failed (%s); continuing", reason)
+        self._report_status()
+
+    def _report_status(self) -> None:
+        """Emit the watch-set health, but only when it actually changes."""
+        if self._on_status is None:
+            return
+        status = self._source.status()
+        if status == self._last_status:
+            return
+        self._last_status = status
+        try:
+            self._on_status(status)
+        except Exception:
+            logger.exception("watch: watch-status callback failed; continuing")
 
     def _fire(self, trigger: WatchTrigger) -> None:
         """Invoke the converge callback; failures are recoverable (AD-41)."""

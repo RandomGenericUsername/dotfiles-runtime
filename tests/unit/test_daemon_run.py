@@ -424,3 +424,85 @@ class TestWatchLifecycle:
         # Sanity: the coordinator consumes the same vocabulary the source emits.
         event = WatchEvent(kind=WatchEventKind.CREATED, path="/x")
         assert event.kind is WatchEventKind.CREATED
+
+
+class _FakeNotifier:
+    """Records sd_notify calls; watchdog ping is synchronous and deterministic."""
+
+    def __init__(self, *, enabled: bool = False) -> None:
+        self.enabled = enabled
+        self.interval = 0.01
+        self.ready_calls = 0
+        self.watchdog_calls = 0
+        self.stopping_calls = 0
+
+    def ready(self) -> None:
+        self.ready_calls += 1
+
+    def watchdog(self) -> None:
+        self.watchdog_calls += 1
+
+    def stopping(self) -> None:
+        self.stopping_calls += 1
+
+    def run_watchdog(self, stop: threading.Event) -> None:
+        self.watchdog()
+        stop.wait()
+
+
+class TestSystemdNotify:
+    def test_ready_after_acquire_and_stopping_on_shutdown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        owner = _FakeOwner(immediate_stop=True)
+        monkeypatch.setattr(cli_main, "_build_bus_name_owner", lambda service=None: owner)
+        notifier = _FakeNotifier(enabled=False)
+        cli_main._run_daemon_run(owner=owner, notifier=notifier)
+        assert owner.acquired is True
+        assert notifier.ready_calls == 1
+        assert notifier.stopping_calls == 1
+        assert notifier.watchdog_calls == 0  # no watchdog budget configured
+
+    def test_watchdog_thread_pings_when_enabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        owner = _FakeOwner(immediate_stop=True)
+        monkeypatch.setattr(cli_main, "_build_bus_name_owner", lambda service=None: owner)
+        notifier = _FakeNotifier(enabled=True)
+        cli_main._run_daemon_run(owner=owner, notifier=notifier)
+        assert notifier.ready_calls == 1
+        assert notifier.watchdog_calls >= 1
+        assert notifier.stopping_calls == 1
+
+
+class _DegradedBlockingSource(_BlockingWatchSource):
+    def status(self):
+        from runtime.domain.watch import WatchStatus
+
+        return WatchStatus(registered=0, failed=("/spine/x",), last_error="ENOSPC")
+
+
+class TestWatchHealthPersistence:
+    def test_degraded_watch_set_is_persisted(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from runtime.adapters.watch_health import WatchHealthStore
+
+        owner = _FakeOwner()
+        monkeypatch.setattr(cli_main, "_build_bus_name_owner", lambda service=None: owner)
+        source = _DegradedBlockingSource()
+
+        def _converge(_trigger: object) -> None:
+            def _watchdog() -> None:
+                deadline = time.monotonic() + 5
+                while not source.started and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                time.sleep(0.05)
+                owner.stop()
+
+            threading.Thread(target=_watchdog, daemon=True).start()
+
+        cli_main._run_daemon_run(owner=owner, converge=_converge, watch_source=source)
+        record = WatchHealthStore(_state_root(tmp_path)).read()
+        assert record is not None
+        assert record.degraded is True
+        assert record.failed_roots == ("/spine/x",)
+        assert record.last_error == "ENOSPC"

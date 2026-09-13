@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import collections
 import ctypes
+import errno
 import logging
 import os
 import select
@@ -36,10 +37,16 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from runtime.adapters.watch_roots import WatchRoot
-from runtime.domain.watch import WatchEvent, WatchEventKind
+from runtime.domain.watch import WatchEvent, WatchEventKind, WatchStatus
 from runtime.ports.watch_source import IWatchSource
 
 logger = logging.getLogger(__name__)
+
+#: errno values that mean watch-registration capacity is exhausted rather
+#: than a transient per-path problem (AD-40). These are logged at ERROR
+#: (loud) and surfaced as a degraded watch set so the daemon is never
+#: permanently blind without a trace.
+_EXHAUSTION_ERRNOS = frozenset({errno.ENOSPC, errno.EMFILE, errno.ENFILE})
 
 # ── inotify masks (linux/inotify.h) ──────────────────────────────────
 IN_MODIFY = 0x00000002
@@ -103,6 +110,8 @@ class InotifyWatchSource(IWatchSource):
         self._stop_w: int | None = None
         self._watches: dict[int, _Watch] = {}
         self._pending: collections.deque[WatchEvent] = collections.deque()
+        self._failed: dict[str, str] = {}
+        self._last_error: str | None = None
         self._closed = False
 
     # ── lifecycle ────────────────────────────────────────────────────
@@ -143,6 +152,8 @@ class InotifyWatchSource(IWatchSource):
                 pass
         self._watches.clear()
         self._pending.clear()
+        self._failed.clear()
+        self._last_error = None
 
     # ── watch installation ───────────────────────────────────────────
     def rebuild(self) -> None:
@@ -152,8 +163,25 @@ class InotifyWatchSource(IWatchSource):
             self._lib.inotify_rm_watch(fd, wd)
         self._watches.clear()
         self._pending.clear()
+        # Retry every root, including ones dropped by an earlier registration
+        # exhaustion (AD-40): the capacity may have freed up since.
+        self._failed.clear()
+        self._last_error = None
         for index, root in enumerate(self._roots):
             self._install_root(index, root)
+
+    def status(self) -> WatchStatus:
+        """Return the installed watch count and any unwatchable roots (AD-40)."""
+        return WatchStatus(
+            registered=len(self._watches),
+            failed=tuple(sorted(self._failed)),
+            last_error=self._last_error,
+        )
+
+    def _record_unwatchable(self, path: Path, reason: str) -> None:
+        """Record a root that could not be watched (surfaced, never silent)."""
+        self._failed[str(path)] = reason
+        self._last_error = reason
 
     def _install_root(self, index: int, root: WatchRoot) -> None:
         path = root.path
@@ -167,12 +195,14 @@ class InotifyWatchSource(IWatchSource):
         parent = path.parent
         if not parent.is_dir():
             logger.warning("watch: file root parent missing, not watched: %s", path)
+            self._record_unwatchable(path, "parent missing")
             return
         self._add_watch(parent, filename=path.name, depth=0, root_index=index)
 
     def _install_dir_root(self, index: int, path: Path, max_depth: int) -> None:
         if not path.is_dir():
             logger.warning("watch: directory root missing, not watched: %s", path)
+            self._record_unwatchable(path, "directory missing")
             return
         root_str = str(path)
         for dirpath, dirnames, _filenames in os.walk(path):
@@ -190,13 +220,27 @@ class InotifyWatchSource(IWatchSource):
             self._require_fd(), os.fsencode(str(directory)), _DIR_WATCH_MASK
         )
         if wd < 0:
-            errno = ctypes.get_errno()
-            logger.warning(
-                "watch: cannot watch %s (%s); root(s) at it stay unwatched",
-                directory,
-                os.strerror(errno),
-            )
+            err = ctypes.get_errno()
+            reason = os.strerror(err)
+            self._record_unwatchable(directory, reason)
+            if err in _EXHAUSTION_ERRNOS:
+                # AD-40: watch-registration exhaustion is a degraded state,
+                # not an invisible drop. Log loudly; the coordinator retries
+                # dropped roots at the next safe opportunity (never polls).
+                logger.error(
+                    "watch: registration exhausted (%s) at %s; "
+                    "unwatched until a retry succeeds",
+                    reason,
+                    directory,
+                )
+            else:
+                logger.warning(
+                    "watch: cannot watch %s (%s); root(s) at it stay unwatched",
+                    directory,
+                    reason,
+                )
             return
+        self._failed.pop(str(directory), None)
         self._watches[wd] = _Watch(str(directory), filename, depth, root_index)
 
     # ── event reading ────────────────────────────────────────────────

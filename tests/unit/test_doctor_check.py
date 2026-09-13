@@ -466,6 +466,26 @@ class TestCliShape:
         assert "desktop clean" in result.output
         assert _snapshot(state_root) == before
 
+    def test_degraded_watch_health_is_reported_without_changing_exit_code(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """AD-40: watch exhaustion is visible in doctor but is not desktop drift."""
+        from runtime.adapters.watch_health import WatchHealthStore
+        from runtime.domain.watch import WatchStatus
+
+        state_root = tmp_path / "state-home" / "dotfiles"
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
+        _seed_state(state_root)
+        WatchHealthStore(state_root).write(
+            WatchStatus(registered=1, failed=("/spine/x",), last_error="ENOSPC")
+        )
+        result = runner.invoke(app, ["doctor", "--format", "json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["clean"] is True
+        assert payload["watch_health"]["degraded"] is True
+        assert payload["watch_health"]["failed_roots"] == ["/spine/x"]
+
     def test_diverged_machine_end_to_end(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

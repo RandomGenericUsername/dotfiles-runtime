@@ -37,6 +37,7 @@ from jeepney.io.blocking import DBusConnection, open_dbus_connection
 
 from runtime.adapters.converge_backstop import BackstopRecord
 from runtime.adapters.dbus_event_bus import INTERFACE, OBJECT_PATH, _unwrap_value
+from runtime.adapters.watch_health import WatchHealthRecord
 from runtime.adapters.watch_roots import WatchRoot
 from runtime.ports.bus_name_owner import BUS_NAME
 
@@ -44,6 +45,7 @@ __all__ = [
     "DaemonBackstopView",
     "DaemonReport",
     "DaemonStatusSnapshot",
+    "DaemonWatchHealthView",
     "DaemonWatchRootView",
     "assemble_daemon_report",
     "probe_session_bus",
@@ -87,6 +89,16 @@ class DaemonWatchRootView:
 
 
 @dataclass(frozen=True, slots=True)
+class DaemonWatchHealthView:
+    """The daemon's last reported watch-set health (AD-40)."""
+
+    degraded: bool
+    failed_roots: tuple[str, ...]
+    last_error: str | None
+    updated_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class DaemonReport:
     """The assembled read-only daemon status report."""
 
@@ -97,6 +109,7 @@ class DaemonReport:
     detail: str | None
     backstop: DaemonBackstopView
     watch_roots: tuple[DaemonWatchRootView, ...]
+    watch_health: DaemonWatchHealthView | None = None
 
     @property
     def reduced_functionality(self) -> bool:
@@ -210,6 +223,7 @@ def assemble_daemon_report(
     backstop_record: BackstopRecord | None,
     backstop_path: Path,
     watch_roots: Sequence[WatchRoot],
+    watch_health_record: WatchHealthRecord | None = None,
 ) -> DaemonReport:
     """Assemble the full report (pure — no bus, no filesystem reads)."""
     backstop = DaemonBackstopView(
@@ -226,6 +240,16 @@ def assemble_daemon_report(
         )
         for root in watch_roots
     )
+    health = (
+        None
+        if watch_health_record is None
+        else DaemonWatchHealthView(
+            degraded=watch_health_record.degraded,
+            failed_roots=watch_health_record.failed_roots,
+            last_error=watch_health_record.last_error,
+            updated_at=watch_health_record.updated_at,
+        )
+    )
     return DaemonReport(
         bus_available=snapshot.bus_available,
         name_owned=snapshot.name_owned,
@@ -234,4 +258,5 @@ def assemble_daemon_report(
         detail=snapshot.detail,
         backstop=backstop,
         watch_roots=roots,
+        watch_health=health,
     )
