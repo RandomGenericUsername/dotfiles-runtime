@@ -1,15 +1,19 @@
-"""Persisted last-converged input-hash backstop (AD-36).
+"""Persisted last-converged input-hash backstop (AD-36/AD-44).
 
 The backstop lives **under ``state_root``** — an output location, never a
 watched root — so persisting it can never re-trigger the watcher. It is a
 small JSON record ``{"version": 1, "input_hash": "<hex|sentinel>",
 "converged_at": "<iso8601-z>"}`` (the timestamp is additive/non-breaking;
-a pre-timestamp record still reads).
+a pre-timestamp record still reads). Its shape is machine-defined by
+``contracts/schemas/last-converged.schema.json`` (embedded byte-identical under
+``schemas/``) and enforced here on read via ``fastjsonschema`` (AD-44).
 
 Absent or corrupt backstop ⇒ ``None`` ("treat as changed"): the daemon then
-converges and rewrites it. A symlinked record is refused (no-follow, mirrors
-the desired/history/meta symlink policy) and read as ``None``. Writes are
-atomic (tmp + ``os.replace``) so a crash mid-write never yields a torn
+converges and rewrites it. A record that violates the schema — corrupt JSON,
+wrong version, missing ``input_hash``, or a mistyped field — is likewise read
+as ``None`` and logged, never fatal. A symlinked record is refused (no-follow,
+mirrors the desired/history/meta symlink policy) and read as ``None``. Writes
+are atomic (tmp + ``os.replace``) so a crash mid-write never yields a torn
 record — a torn record would merely read as corrupt and re-converge.
 
 The read-only status surface (P5-1-4) consumes :meth:`read_record` to show
@@ -23,14 +27,46 @@ import errno
 import json
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import cache
+from importlib.resources import files
 from pathlib import Path
+from typing import Any, cast
+
+import fastjsonschema
 
 logger = logging.getLogger(__name__)
 
 BACKSTOP_FILENAME = "last-converged.json"
 BACKSTOP_VERSION = 1
+BACKSTOP_SCHEMA_FILENAME = "last-converged.schema.json"
+
+Validator = Callable[[object], None]
+
+
+def _load_backstop_schema() -> dict[str, Any]:
+    """Read the embedded last-converged record schema (draft-07)."""
+    resource = files("runtime.adapters").joinpath("schemas", BACKSTOP_SCHEMA_FILENAME)
+    return cast("dict[str, Any]", json.loads(resource.read_text(encoding="utf-8")))
+
+
+@cache
+def last_converged_validator() -> Validator:
+    """Validator for a persisted last-converged record (draft-07, AD-44).
+
+    Lazy and cached like the shared-contract validators: a corrupt embedded
+    schema fails loud here (``RuntimeError``), never at import. The reader
+    catches schema *value* violations and treats the record as changed.
+    """
+    try:
+        schema = _load_backstop_schema()
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            f"corrupt contract schema {BACKSTOP_SCHEMA_FILENAME}: {exc}"
+        ) from exc
+    return cast("Validator", fastjsonschema.compile(schema))
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,17 +127,18 @@ class LastConvergedBackstop:
         except json.JSONDecodeError:
             logger.warning("backstop corrupt; treating as changed: %s", self._path)
             return None
-        if not isinstance(data, dict) or data.get("version") != BACKSTOP_VERSION:
-            logger.warning("backstop shape invalid; treating as changed: %s", self._path)
+        try:
+            last_converged_validator()(data)
+        except fastjsonschema.JsonSchemaValueException:
+            logger.warning(
+                "backstop shape invalid (contract schema); treating as changed: %s", self._path
+            )
             return None
-        value = data.get("input_hash")
-        if not isinstance(value, str) or not value:
-            logger.warning("backstop input_hash invalid; treating as changed: %s", self._path)
-            return None
-        converged_at = data.get("converged_at")
-        if not isinstance(converged_at, str) or not converged_at:
-            converged_at = None
-        return BackstopRecord(input_hash=value, converged_at=converged_at)
+        record = cast("dict[str, Any]", data)
+        return BackstopRecord(
+            input_hash=record["input_hash"],
+            converged_at=record.get("converged_at"),
+        )
 
     def write(self, input_hash: str) -> None:
         """Atomically persist ``input_hash`` + timestamp (tmp + fsync + replace)."""

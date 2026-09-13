@@ -9,9 +9,10 @@ from __future__ import annotations
 from importlib.resources import files
 from pathlib import Path
 
+import fastjsonschema
 import pytest
 
-_SCHEMAS = ("history", "current", "meta")
+_SCHEMAS = ("history", "current", "meta", "last-converged")
 
 
 @pytest.mark.parametrize("name", _SCHEMAS)
@@ -45,3 +46,45 @@ def test_corrupt_schema_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
             cs.history_validator()
     finally:
         cs._validator.cache_clear()
+
+
+def test_backstop_reader_validator_is_the_embedded_schema() -> None:
+    """The reader validates records against the embedded (canonical) schema."""
+    from runtime.adapters.converge_backstop import last_converged_validator
+
+    validate = last_converged_validator()
+    validate({"version": 1, "input_hash": "ab" * 32})
+    validate({"version": 1, "input_hash": "ab" * 32, "converged_at": "2026-09-13T00:00:00Z"})
+    with pytest.raises(fastjsonschema.JsonSchemaValueException):
+        validate({"version": 2, "input_hash": "ab" * 32})
+
+
+def test_backstop_reader_treats_schema_violation_as_changed(tmp_path: Path) -> None:
+    from runtime.adapters.converge_backstop import BackstopRecord, LastConvergedBackstop
+
+    path = tmp_path / "last-converged.json"
+    path.write_text('{"version": 1, "input_hash": "ab", "converged_at": 5}', encoding="utf-8")
+    assert LastConvergedBackstop(tmp_path).read_record() is None
+
+    path.write_text('{"version": 1, "input_hash": "ab"}', encoding="utf-8")
+    assert LastConvergedBackstop(tmp_path).read_record() == BackstopRecord("ab", None)
+
+
+def test_backstop_reader_corrupt_schema_fails_loud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A corrupt embedded backstop schema fails loud at the validator."""
+
+    import runtime.adapters.converge_backstop as cb
+
+    cb.last_converged_validator.cache_clear()
+    try:
+
+        def _boom() -> dict[str, object]:
+            raise OSError("disk gone")
+
+        monkeypatch.setattr(cb, "_load_backstop_schema", _boom)
+        with pytest.raises(RuntimeError, match="corrupt contract schema"):
+            cb.last_converged_validator()
+    finally:
+        cb.last_converged_validator.cache_clear()
