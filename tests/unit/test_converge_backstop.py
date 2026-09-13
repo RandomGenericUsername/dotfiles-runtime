@@ -21,7 +21,36 @@ def test_write_then_read_round_trips(tmp_path: Path) -> None:
     backstop.write("ab" * 32)
     assert backstop.read() == "ab" * 32
     record = json.loads((tmp_path / BACKSTOP_FILENAME).read_text(encoding="utf-8"))
-    assert record == {"version": 1, "input_hash": "ab" * 32}
+    assert record["version"] == 1
+    assert record["input_hash"] == "ab" * 32
+    # Additive timestamp (P5-1-4): the record carries when it converged.
+    assert isinstance(record["converged_at"], str) and record["converged_at"].endswith("Z")
+
+
+def test_read_record_exposes_hash_and_timestamp(tmp_path: Path) -> None:
+    from runtime.adapters.converge_backstop import BackstopRecord
+
+    backstop = LastConvergedBackstop(tmp_path)
+    backstop.write("cd" * 32)
+    rec = backstop.read_record()
+    assert isinstance(rec, BackstopRecord)
+    assert rec.input_hash == "cd" * 32
+    assert rec.converged_at is not None
+
+
+def test_read_record_tolerates_pre_timestamp_records(tmp_path: Path) -> None:
+    """Backward compatible: a v1 record without ``converged_at`` still reads."""
+    (tmp_path / BACKSTOP_FILENAME).write_text(
+        json.dumps({"version": 1, "input_hash": "ee" * 32}), encoding="utf-8"
+    )
+    rec = LastConvergedBackstop(tmp_path).read_record()
+    assert rec is not None
+    assert rec.input_hash == "ee" * 32
+    assert rec.converged_at is None
+
+
+def test_read_record_absent_is_none(tmp_path: Path) -> None:
+    assert LastConvergedBackstop(tmp_path).read_record() is None
 
 
 def test_second_write_replaces(tmp_path: Path) -> None:

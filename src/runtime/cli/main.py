@@ -20,6 +20,7 @@ from cli_output.domain.views import CustomView, ErrorView
 if TYPE_CHECKING:
     from cli_output.adapters.factory import Renderer
 
+    from runtime.adapters.daemon_status import DaemonReport, DaemonStatusSnapshot
     from runtime.adapters.dbus_event_bus import HubService, SignalSink
     from runtime.application.apply_wallpaper import ApplyWallpaperResult
     from runtime.application.check_inputs import CheckInputsResult
@@ -67,6 +68,27 @@ daemon_app = typer.Typer(help="Reactive daemon commands (systemd ExecStart surfa
 app.add_typer(daemon_app, name="daemon")
 
 logger = logging.getLogger(__name__)
+
+
+def _log_automatic_action(
+    *,
+    trigger: str,
+    action: str,
+    outcome: str,
+    **fields: object,
+) -> None:
+    """Emit one structured log line for an automatic daemon action (AD-41).
+
+    Every automatic action (reactive converge, its regenerate step, prune)
+    records **what** ran, **why** (its trigger), and the outcome, so an
+    invisible mutation is never possible. Fields ride both the message
+    (greppable) and the ``LogRecord`` (``extra=``) for machine consumers.
+    """
+    details = " ".join(f"{key}={value}" for key, value in sorted(fields.items()))
+    message = f"automatic action: trigger={trigger} action={action} outcome={outcome}"
+    if details:
+        message = f"{message} {details}"
+    logger.info(message, extra={"trigger": trigger, "action": action, "outcome": outcome})
 
 
 def _resolve_install_spine() -> Path:
@@ -1076,7 +1098,9 @@ def _install_release_handlers(bus_owner: IBusNameOwner) -> Callable[[], None]:
     return _restore
 
 
-def _run_reactive_converge(*, observe_only: bool = True) -> ReactiveConvergeResult:
+def _run_reactive_converge(
+    *, observe_only: bool = True, source: str | None = None
+) -> ReactiveConvergeResult:
     """Compose the daemon's reactive converge (P5-1-3, AD-35/AD-36/AD-42).
 
     Runs the existing use cases in the pinned composite order
@@ -1137,7 +1161,7 @@ def _run_reactive_converge(*, observe_only: bool = True) -> ReactiveConvergeResu
             source_path=state.wallpaper.source_path,
         )
 
-    return ReactiveConvergeUseCase(
+    result = ReactiveConvergeUseCase(
         input_hash=lambda: compute_watch_input_hash(roots),
         read_backstop=backstop.read,
         write_backstop=backstop.write,
@@ -1150,6 +1174,17 @@ def _run_reactive_converge(*, observe_only: bool = True) -> ReactiveConvergeResu
         prune=lambda: _run_prune(dry_run=False, keep=_keep(), prune_pinned=False),
         observe_only=observe_only,
     ).run()
+    # Trigger-logged automatic action (AD-41): reactive converge + its
+    # regenerate step carry trigger="reactive"; source is the watch reason.
+    _log_automatic_action(
+        trigger="reactive",
+        action="converge",
+        outcome=result.reason,
+        ran=result.ran,
+        input_hash=result.input_hash[:12],
+        source=source or "event",
+    )
+    return result
 
 
 def _build_watch_source() -> IWatchSource | None:
@@ -1305,20 +1340,24 @@ def daemon_run(
     default** (AD-35/AD-41): ``--activate`` enables it. No start/stop
     subcommands exist — ``systemctl --user`` is the control surface.
     SIGTERM releases the name → exit 0.
+
+    **Kill switch (AD-41):** ``systemctl --user stop dotfiles-runtime-daemon``
+    sends SIGTERM; the installed handler releases ``org.dotfiles.Events`` and
+    the process exits 0. There is no self-managed stop mechanism — systemd is
+    the only control surface, so a compromised or wedged daemon can always be
+    stopped with the standard supervisor command.
     """
     watch_source = _build_watch_source()
 
     def _converge(trigger: WatchTrigger) -> None:
         try:
-            result = _run_reactive_converge(observe_only=not activate)
+            _run_reactive_converge(observe_only=not activate, source=trigger.reason)
         except (ValueError, RuntimeError, OSError) as exc:
             logger.error("daemon: reactive converge failed: %s", exc)
             return
         except Exception:
             logger.exception("daemon: reactive converge failed unexpectedly")
             return
-        if result.ran:
-            logger.info("daemon: reactive converge ran (%s)", result.reason)
 
     try:
         _run_daemon_run(converge=_converge, watch_source=watch_source)
@@ -1790,6 +1829,35 @@ def _run_inspect_status() -> InspectStatusResult:
     return use_case.run()
 
 
+def _run_inspect_daemon(
+    probe: Callable[[], DaemonStatusSnapshot] | None = None,
+) -> DaemonReport:
+    """Compose the read-only daemon status report (P5-1-4, AD-41).
+
+    The live probe is daemon-independent: absent daemon or absent bus is an
+    explicit reduced-functionality result, never an error. The locally
+    persisted facts (last-converged backstop record + resolved AD-39 watch
+    roots) are always available even with no daemon. ``probe`` is injectable
+    so tests never touch a live bus.
+    """
+    from runtime.adapters.converge_backstop import LastConvergedBackstop
+    from runtime.adapters.daemon_status import (
+        assemble_daemon_report,
+        probe_session_bus,
+    )
+    from runtime.adapters.watch_roots import enumerate_watch_roots
+
+    state_root = _resolve_state_root()
+    backstop = LastConvergedBackstop(state_root)
+    snapshot = probe() if probe is not None else probe_session_bus()
+    return assemble_daemon_report(
+        snapshot,
+        backstop_record=backstop.read_record(),
+        backstop_path=backstop.path,
+        watch_roots=enumerate_watch_roots(_resolve_install_spine(), _resolve_desired_path()),
+    )
+
+
 @inspect_app.command("status")
 def inspect_status(
     output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
@@ -1850,6 +1918,87 @@ def inspect_status(
                 },
             },
             rich=summary,
+        )
+    )
+
+
+@inspect_app.command("daemon")
+def inspect_daemon(
+    output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
+) -> None:
+    """Show daemon presence/health and the persisted last-converged backstop.
+
+    Read-only and daemon-independent (AD-41): absence of the daemon or the
+    session bus degrades explicitly to "reduced functionality" and exits 0 —
+    never an error. Reports whether ``org.dotfiles.Events`` is owned, the hub
+    epoch (via ``GetTopicState`` when reachable), active jobs (via
+    ``GetActiveJobs`` when reachable), the persisted last-converged record
+    (inputs hash + timestamp), and the resolved AD-39 watch-root set.
+    Mutates nothing and requires no daemon.
+    """
+    renderer = create_renderer(output_format)
+    try:
+        report = _run_inspect_daemon()
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.error("inspect daemon failed: %s", exc)
+        renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
+        raise typer.Exit(code=1) from None
+    except Exception:
+        logger.exception("inspect daemon failed unexpectedly")
+        renderer.error(
+            ErrorView(
+                kind="UnexpectedError",
+                message="inspect daemon failed unexpectedly; see logs",
+            )
+        )
+        raise typer.Exit(code=1) from None
+
+    if report.name_owned:
+        epoch_desc = report.epoch if report.epoch is not None else "unknown"
+        head = f"daemon: present ({len(report.active_jobs)} active job(s), epoch {epoch_desc})"
+    else:
+        head = "daemon: absent / reduced functionality (commands stay authoritative)"
+    bus_desc = "available" if report.bus_available else "unavailable"
+    parts = [head, f"bus: {bus_desc}"]
+    if report.detail:
+        parts.append(f"detail: {report.detail}")
+    backstop = report.backstop
+    if backstop.present and backstop.input_hash:
+        converged_at = backstop.converged_at or "unknown"
+        parts.append(f"last converged: {backstop.input_hash[:12]} at {converged_at}")
+    else:
+        parts.append("last converged: none recorded")
+    for job_id, kind in sorted(report.active_jobs.items()):
+        parts.append(f"  active job {job_id} ({kind})")
+    parts.append(f"watch roots ({len(report.watch_roots)}):")
+    for root in report.watch_roots:
+        if root.kind == "directory":
+            parts.append(f"  {root.path} (directory, depth {root.depth})")
+        else:
+            parts.append(f"  {root.path} (file)")
+    plain = "\n".join(parts)
+    renderer.custom(
+        CustomView(
+            plain=plain,
+            object={
+                "daemon_present": report.name_owned,
+                "bus_available": report.bus_available,
+                "reduced_functionality": report.reduced_functionality,
+                "epoch": report.epoch,
+                "active_jobs": dict(report.active_jobs),
+                "detail": report.detail,
+                "last_converged": {
+                    "path": backstop.path,
+                    "present": backstop.present,
+                    "input_hash": backstop.input_hash,
+                    "converged_at": backstop.converged_at,
+                },
+                "watch_roots": [
+                    {"path": root.path, "kind": root.kind, "depth": root.depth}
+                    for root in report.watch_roots
+                ],
+            },
+            rich=plain,
         )
     )
 
@@ -2140,7 +2289,15 @@ def _run_prune(
         ).run(prune_pinned=prune_pinned)
 
     if dry_run:
-        return _plan(), 0, []
+        plan = _plan()
+        _log_automatic_action(
+            trigger="prune",
+            action="prune",
+            outcome="dry-run",
+            removable=plan.total_removable,
+            dry_run=True,
+        )
+        return plan, 0, []
 
     mutex = FlockSeedMutex(state_root / ".seed.lock")
     removed: list[tuple[str, str]] = []
@@ -2172,7 +2329,23 @@ def _run_prune(
             )
         if append_error:
             parts.append(f"audit line not written: {append_error}")
+        _log_automatic_action(
+            trigger="prune",
+            action="prune",
+            outcome="audit-failed" if append_error and not failures else "failed",
+            removed=len(removed),
+            failed=len(failures),
+            dry_run=False,
+        )
         raise RuntimeError("; ".join(parts))
+    _log_automatic_action(
+        trigger="prune",
+        action="prune",
+        outcome="removed" if removed else "noop",
+        removed=len(removed),
+        failed=0,
+        dry_run=False,
+    )
     return plan, len(removed), removed
 
 

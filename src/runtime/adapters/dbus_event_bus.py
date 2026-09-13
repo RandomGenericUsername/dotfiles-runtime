@@ -55,7 +55,7 @@ from jeepney import DBusAddress, HeaderFields, MessageType, new_error, new_metho
 from jeepney.bus_messages import DBusNameFlags, message_bus
 from jeepney.io.blocking import DBusConnection, open_dbus_connection
 
-from runtime.adapters.emit_validation import EmitValidator
+from runtime.adapters.emit_validation import EmitValidator, sv_variant_signature
 from runtime.domain.hub import KNOWN_TOPICS, HubEvent
 from runtime.domain.models import (
     BusNameContentionError,
@@ -236,28 +236,16 @@ def _unwrap_value(value: Any) -> Any:
 def _variant_sig(value: Any) -> str:
     """Infer the D-Bus signature for a validated plain value.
 
-    Inputs are validator-clean (no None/empty-list/unbounded-int/
-    non-finite leftovers); anything else is a programming error and
-    raises loudly instead of emitting a malformed variant. ``bool``
-    precedes ``int`` (subclass trap); ``int``→``x``, ``float``→``d``
-    (contract-typed; producers send contract types).
+    Delegates to the validator's single source of truth
+    (:func:`runtime.adapters.emit_validation.sv_variant_signature`), so the
+    encoder can never serialise a shape the validator would refuse:
+    homogeneous non-empty arrays (``a<elem>``), dicts (``a{sv}``),
+    ``bool``→``b`` (precedes ``int``: subclass trap), ``int``→``x``,
+    ``float``→``d``, ``str``→``s``. Inputs are validator-clean on the emit
+    path; a failure here is a programming error and raises loudly instead of
+    emitting a malformed variant.
     """
-    if isinstance(value, bool):
-        return "b"
-    if isinstance(value, str):
-        return "s"
-    if isinstance(value, int):
-        return "x"
-    if isinstance(value, float):
-        return "d"
-    if isinstance(value, list) and value:
-        first = _variant_sig(value[0])
-        if all(_variant_sig(item) == first for item in value):
-            return f"a{first}"
-        raise RuntimeError(f"heterogeneous array has no element type: {value!r}")
-    if isinstance(value, dict):
-        return "a{sv}"
-    raise RuntimeError(f"no variant encoding for {value!r}")
+    return sv_variant_signature(value)
 
 
 def _wrap_value(value: Any) -> tuple[str, Any]:
@@ -563,25 +551,49 @@ class HubService(IEventPublisher, IEventSubscriber):
     def _drain_signals(self) -> None:
         """Emit queued sink records; never raises (sink-must-not-raise).
 
-        A failing emitter is logged and swallowed: a transient bus failure
-        must not take the name off the bus (Gate-1 Q7).  Subscribers are
-        notified for every ``domain_event`` regardless of send outcome.
+        Each record is processed independently under a containment guard, so
+        a mapping/encoding failure for one record can neither drop the
+        records queued after it nor escape into the dispatch ``finally`` (a
+        single bad payload must never become a generic ``Failed`` reply or
+        corrupt the bus).  The validator refuses such payloads before they
+        are stored; this is the belt-and-suspenders second line.  A failing
+        emitter is logged and swallowed too (Gate-1 Q7): a transient bus
+        failure must not take the name off the bus.  Subscribers are notified
+        for every ``domain_event`` regardless of send outcome.
         """
         sink = self._sink
         if sink is None:
             return
         for event in sink.drain():
+            try:
+                self._emit_record(event)
+            except Exception:
+                logger.exception("hub: dropping signal record %r; continuing", event.event)
+
+    def _emit_record(self, event: HubEvent) -> None:
+        """Bind one record to its signal and deliver in-process; contained.
+
+        Mapping failure is separated from send failure so a bad wire payload
+        skips only the send: in-process subscribers still see the
+        ``domain_event`` (the wire is at-most-once, hydration repairs it).
+        """
+        try:
             mapped = signal_for(event)
-            if mapped is not None:
-                name, signature, body = mapped
-                try:
-                    self._emitter(name, signature, body)
-                except Exception:
-                    logger.exception("hub: signal emission failed for %s; continuing", name)
-            if event.event == "domain_event":
-                self._notify(event)
-            elif event.event == "control":
-                self._notify_control(event)
+        except Exception:
+            logger.exception(
+                "hub: signal mapping failed for record %r; dropping signal", event.event
+            )
+            mapped = None
+        if mapped is not None:
+            name, signature, body = mapped
+            try:
+                self._emitter(name, signature, body)
+            except Exception:
+                logger.exception("hub: signal emission failed for %s; continuing", name)
+        if event.event == "domain_event":
+            self._notify(event)
+        elif event.event == "control":
+            self._notify_control(event)
 
     def _notify_control(self, event: HubEvent) -> None:
         """Fan a validated ``control`` record out to kind handlers (contained).

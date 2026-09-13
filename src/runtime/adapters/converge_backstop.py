@@ -2,13 +2,19 @@
 
 The backstop lives **under ``state_root``** — an output location, never a
 watched root — so persisting it can never re-trigger the watcher. It is a
-small JSON record ``{"version": 1, "input_hash": "<hex|sentinel>"}``.
+small JSON record ``{"version": 1, "input_hash": "<hex|sentinel>",
+"converged_at": "<iso8601-z>"}`` (the timestamp is additive/non-breaking;
+a pre-timestamp record still reads).
 
 Absent or corrupt backstop ⇒ ``None`` ("treat as changed"): the daemon then
 converges and rewrites it. A symlinked record is refused (no-follow, mirrors
 the desired/history/meta symlink policy) and read as ``None``. Writes are
 atomic (tmp + ``os.replace``) so a crash mid-write never yields a torn
 record — a torn record would merely read as corrupt and re-converge.
+
+The read-only status surface (P5-1-4) consumes :meth:`read_record` to show
+the inputs hash **and** the last-converged timestamp without requiring the
+daemon. ``read()`` stays the hash-only contract the reactive use case binds.
 """
 
 from __future__ import annotations
@@ -17,12 +23,27 @@ import errno
 import json
 import logging
 import os
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 BACKSTOP_FILENAME = "last-converged.json"
 BACKSTOP_VERSION = 1
+
+
+@dataclass(frozen=True, slots=True)
+class BackstopRecord:
+    """One persisted last-converged record (inputs hash + timestamp)."""
+
+    input_hash: str
+    converged_at: str | None
+
+
+def _now_iso_z() -> str:
+    """Current UTC time as strict ISO-8601 ending with ``Z``."""
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 class LastConvergedBackstop:
@@ -37,6 +58,15 @@ class LastConvergedBackstop:
 
     def read(self) -> str | None:
         """Return the persisted input hash, or ``None`` when absent/corrupt."""
+        record = self.read_record()
+        return None if record is None else record.input_hash
+
+    def read_record(self) -> BackstopRecord | None:
+        """Return the full persisted record (hash + timestamp), or ``None``.
+
+        Same absence/corruption policy as :meth:`read`; the timestamp is
+        optional so records written before the field existed still read.
+        """
         if self._path.is_symlink():
             logger.warning("backstop is a symlink (refusing to follow): %s", self._path)
             return None
@@ -68,14 +98,21 @@ class LastConvergedBackstop:
         if not isinstance(value, str) or not value:
             logger.warning("backstop input_hash invalid; treating as changed: %s", self._path)
             return None
-        return value
+        converged_at = data.get("converged_at")
+        if not isinstance(converged_at, str) or not converged_at:
+            converged_at = None
+        return BackstopRecord(input_hash=value, converged_at=converged_at)
 
     def write(self, input_hash: str) -> None:
-        """Atomically persist ``input_hash`` (tmp + fsync + ``os.replace``)."""
+        """Atomically persist ``input_hash`` + timestamp (tmp + fsync + replace)."""
         if not isinstance(input_hash, str) or not input_hash:
             raise ValueError(f"input_hash must be a non-empty string, got {input_hash!r}")
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        record = {"version": BACKSTOP_VERSION, "input_hash": input_hash}
+        record = {
+            "version": BACKSTOP_VERSION,
+            "input_hash": input_hash,
+            "converged_at": _now_iso_z(),
+        }
         line = json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n"
         tmp = self._path.with_name(f".{self._path.name}.tmp-{os.getpid()}")
         try:

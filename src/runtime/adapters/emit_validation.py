@@ -23,9 +23,13 @@ size → depth → schema → rate. Only accepted emits consume rate quota.
   express the no-opaque-binary rule). ``None`` has no D-Bus representation
   and is rejected; empty arrays are unwrappable (no element type to
   infer) and are rejected; ``int`` is range-checked to int64 (the wire
-  ``x``); non-finite floats are unmeasurable and rejected. Reserved
-  top-level keys ``_epoch``/``_seq`` are rejected (the hub owns them on
-  output).
+  ``x``); non-finite floats are unmeasurable and rejected. Arrays must be
+  **homogeneous** — every element has to infer one signature, because an
+  ``a<elem>`` wire type carries exactly one element type; heterogeneity is
+  rejected recursively (nested arrays/dicts included) so the validator
+  admits exactly what the wire encoder ``_variant_sig`` can serialise.
+  Reserved top-level keys ``_epoch``/``_seq`` are rejected (the hub owns
+  them on output).
 - **Rate:** sliding 60 s window keyed on (sender, topic) at 60/min plus a
   600/min hub-wide ceiling (both named constants in code + tests, never
   in the contract files). The sender half is the bus-attested unique
@@ -61,6 +65,7 @@ __all__ = [
     "EmitValidator",
     "payload_depth",
     "payload_size_bytes",
+    "sv_variant_signature",
 ]
 
 #: Maximum canonical-JSON UTF-8 bytes per payload (2a Gate-1 ruling).
@@ -135,33 +140,62 @@ class _IncompatibleValueError(ValueError):
     """Internal: one incompatibility with its JSON-pointer-ish path."""
 
 
-def _check_sv_compatible(value: object, path: str) -> None:
-    """Reject anything without a D-Bus ``a{sv}`` representation."""
+def sv_variant_signature(value: object, path: str = "$") -> str:
+    """Validate ``a{sv}``-compatibility and infer the D-Bus variant signature.
+
+    The single source of truth for *both* the emit validator and the wire
+    encoder (``dbus_event_bus._variant_sig`` delegates here), so a value the
+    validator accepts is exactly a value the encoder can serialise — they
+    cannot drift. Returns the variant signature (``b``/``s``/``x``/``d``,
+    ``a<elem>`` for arrays, ``a{sv}`` for dicts) and raises
+    :class:`_IncompatibleValueError` for anything without a D-Bus ``a{sv}``
+    representation.
+
+    Arrays must be non-empty AND **homogeneous**: every element has to infer
+    the same signature, because an ``a<elem>`` wire type carries exactly one
+    element type. Heterogeneity is rejected recursively — a bad element
+    inside a nested array/dict is caught at its own path.
+    """
     if isinstance(value, bool):
-        return
+        return "b"
     if isinstance(value, str):
-        return
+        return "s"
     if isinstance(value, int):
         if not _I64_MIN <= value <= _I64_MAX:
             raise _IncompatibleValueError(f"{path}: int out of int64 range")
-        return
+        return "x"
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
             raise _IncompatibleValueError(f"{path}: non-finite float")
-        return
+        return "d"
     if isinstance(value, list):
         if not value:
             raise _IncompatibleValueError(f"{path}: empty array has no element type")
-        for index, item in enumerate(value):
-            _check_sv_compatible(item, f"{path}[{index}]")
-        return
+        element_signature = sv_variant_signature(value[0], f"{path}[0]")
+        for index, item in enumerate(value[1:], start=1):
+            item_signature = sv_variant_signature(item, f"{path}[{index}]")
+            if item_signature != element_signature:
+                raise _IncompatibleValueError(
+                    f"{path}: heterogeneous array at [{index}] "
+                    f"({item_signature} != {element_signature})"
+                )
+        return f"a{element_signature}"
     if isinstance(value, dict):
         for key, item in value.items():
             if not isinstance(key, str):
                 raise _IncompatibleValueError(f"{path}: non-string key {key!r}")
-            _check_sv_compatible(item, f"{path}.{key}")
-        return
+            sv_variant_signature(item, f"{path}.{key}")
+        return "a{sv}"
     raise _IncompatibleValueError(f"{path}: no D-Bus representation for {type(value).__name__}")
+
+
+def _check_sv_compatible(value: object, path: str) -> None:
+    """Reject anything without a D-Bus ``a{sv}`` representation.
+
+    Thin wrapper over :func:`sv_variant_signature` (the validator and the
+    wire encoder share one implementation).
+    """
+    sv_variant_signature(value, path)
 
 
 class EmitRateLimiter:
