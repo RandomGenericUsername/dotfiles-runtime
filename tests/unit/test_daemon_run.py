@@ -1,10 +1,10 @@
-"""Unit tests for P5-1-1 daemon run skeleton (name-first, no converge).
+"""Unit tests for P5-1-1 daemon run skeleton (name-first, serve, release).
 
 The bus-name seam is covered by an injected fake (no live bus/systemd in
-tests — AC 7); the deferred production adapter is pinned to fail fatal.
-Real-signal delivery is exercised exactly once (SIGTERM → release → exit 0)
-with a stop-event watchdog so a broken handler fails the test, never hangs
-the runner.
+tests — AC 7); the real jeepney owner is pinned to fail fatal without a
+bus. Real-signal delivery is exercised exactly once (SIGTERM → release →
+exit 0) with a stop-event watchdog so a broken handler fails the test,
+never hangs the runner.
 """
 
 from __future__ import annotations
@@ -138,7 +138,7 @@ class TestNameFirst:
         monkeypatch.setattr(
             cli_main,
             "_build_bus_name_owner",
-            lambda: _FakeOwner(BusNameContentionError("held by pid 1")),
+            lambda service=None: _FakeOwner(BusNameContentionError("held by pid 1")),
         )
         with caplog.at_level("ERROR", logger="runtime.cli.main"):
             result = runner.invoke(app, ["daemon", "run"])
@@ -150,17 +150,22 @@ class TestNameFirst:
         monkeypatch.setattr(
             cli_main,
             "_build_bus_name_owner",
-            lambda: _FakeOwner(BusUnavailableError("no bus")),
+            lambda service=None: _FakeOwner(BusUnavailableError("no bus")),
         )
         result = runner.invoke(app, ["daemon", "run"])
         assert result.exit_code == 1
 
-    def test_deferred_adapter_fails_fatal(self, tmp_path: Path) -> None:
-        """Production seam today: acquire always raises BusUnavailableError."""
-        from runtime.adapters.dbus_name_owner import DeferredDbusNameOwner
+    def test_real_owner_without_bus_fails_fatal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Production seam: no bus → BusUnavailableError (never exit 0)."""
 
-        owner = DeferredDbusNameOwner()
-        with pytest.raises(BusUnavailableError, match="P5-1-2"):
+        def _no_bus(*args: object, **kwargs: object) -> object:
+            raise OSError("cannot connect: no bus")
+
+        monkeypatch.setattr("runtime.adapters.dbus_event_bus.open_dbus_connection", _no_bus)
+        from runtime.adapters.dbus_event_bus import JeepneyNameOwner
+
+        owner = JeepneyNameOwner()
+        with pytest.raises(BusUnavailableError, match="cannot connect"):
             owner.acquire()
         # Release-then-wait is a clean no-op pair (never-owned tolerance).
         owner.release()
@@ -177,7 +182,7 @@ class TestStartupRouting:
     ) -> None:
         """AC 3: no current.json → info + idle holding the name, exit 0."""
         owner = _FakeOwner(immediate_stop=True)
-        monkeypatch.setattr(cli_main, "_build_bus_name_owner", lambda: owner)
+        monkeypatch.setattr(cli_main, "_build_bus_name_owner", lambda service=None: owner)
         seed_calls: list[str] = []
         monkeypatch.setattr(cli_main, "_run_seed_if_needed", lambda: seed_calls.append("seed"))
         result = runner.invoke(app, ["daemon", "run"])
@@ -192,7 +197,7 @@ class TestStartupRouting:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         owner = _FakeOwner(immediate_stop=True)
-        monkeypatch.setattr(cli_main, "_build_bus_name_owner", lambda: owner)
+        monkeypatch.setattr(cli_main, "_build_bus_name_owner", lambda service=None: owner)
         state_root = _state_root(tmp_path)
         _save_minimal_state(state_root)
         before = (state_root / "current.json").read_bytes()
@@ -206,7 +211,7 @@ class TestStartupRouting:
     def test_corrupt_store_is_fatal(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """Corrupt current.json fails loud (never swallowed into idle)."""
         owner = _FakeOwner(immediate_stop=True)
-        monkeypatch.setattr(cli_main, "_build_bus_name_owner", lambda: owner)
+        monkeypatch.setattr(cli_main, "_build_bus_name_owner", lambda service=None: owner)
         state_root = _state_root(tmp_path)
         state_root.mkdir(parents=True, exist_ok=True)
         (state_root / "current.json").write_text("{corrupt", encoding="utf-8")
@@ -219,7 +224,7 @@ class TestStartupRouting:
     ) -> None:
         """Item 3: OSError (not just ValueError) still releases the name."""
         owner = _FakeOwner(immediate_stop=True)
-        monkeypatch.setattr(cli_main, "_build_bus_name_owner", lambda: owner)
+        monkeypatch.setattr(cli_main, "_build_bus_name_owner", lambda service=None: owner)
         state_root = _state_root(tmp_path)
         state_root.parent.mkdir(parents=True, exist_ok=True)
         state_root.write_text("squatter", encoding="utf-8")  # ENOTDIR on read

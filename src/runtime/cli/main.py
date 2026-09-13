@@ -20,6 +20,7 @@ from cli_output.domain.views import CustomView, ErrorView
 if TYPE_CHECKING:
     from cli_output.adapters.factory import Renderer
 
+    from runtime.adapters.dbus_event_bus import HubService
     from runtime.application.apply_wallpaper import ApplyWallpaperResult
     from runtime.application.check_inputs import CheckInputsResult
     from runtime.application.doctor import DoctorReport, RepairResult
@@ -940,11 +941,11 @@ def doctor(
         raise typer.Exit(code=1) from None
 
 
-def _build_bus_name_owner() -> IBusNameOwner:
-    """Construct the production bus-name owner (client deferred to P5-1-2)."""
-    from runtime.adapters.dbus_name_owner import DeferredDbusNameOwner
+def _build_bus_name_owner(service: HubService | None = None) -> IBusNameOwner:
+    """Construct the session-bus owner serving the hub service (P5-1-2b-i)."""
+    from runtime.adapters.dbus_event_bus import JeepneyNameOwner
 
-    return DeferredDbusNameOwner()
+    return JeepneyNameOwner(service=service)
 
 
 #: In-memory hub epoch source (P5-1-2a Gate-1 rec 4): a fresh process
@@ -974,6 +975,13 @@ def _build_hub() -> IJobRegistry:
             sink=_log_hub_event,
         )
     )
+
+
+def _build_hub_service(registry: IJobRegistry) -> HubService:
+    """Wrap a registry in the wire-dispatch service (2b-i job surface)."""
+    from runtime.adapters.dbus_event_bus import HubService
+
+    return HubService(registry)
 
 
 def _install_release_handlers(bus_owner: IBusNameOwner) -> Callable[[], None]:
@@ -1012,18 +1020,24 @@ def _install_release_handlers(bus_owner: IBusNameOwner) -> Callable[[], None]:
     return _restore
 
 
-def _run_daemon_run(owner: IBusNameOwner | None = None) -> None:
-    """Name-first daemon loop (P5-1-1: acquire, idle, release; no converge).
+def _run_daemon_run(
+    owner: IBusNameOwner | None = None, registry: IJobRegistry | None = None
+) -> None:
+    """Name-first daemon loop (P5-1-2b-i: serve the job surface; no converge).
 
-    1. ``acquire()`` the well-known name (fail-fast, never queue). Failure
+    1. Build the hub (epoch bumped in-memory per start, ``JobsCleared``
+       recorded first), wrap it in the wire-dispatch service, and
+       ``acquire()`` the well-known name (fail-fast, never queue). Failure
        is fatal (non-zero) so the supervisor retries with backoff — and the
        process NEVER exits 0 before owning the name (Type=dbus readiness).
     2. Unseeded (no ``current.json``) is a benign no-op: log at info and
-       idle holding the name (AD-11/C5 — the daemon never seeds).
+       serve holding the name (AD-11/C5 — the daemon never seeds).
        A corrupt OR unreadable store is fatal (fail loud, release the name,
-       never swallow into idle).
-    3. Park signal-paused (no polling, no timers, no locks, no use-case
-       calls). SIGTERM/SIGINT releases the name and returns → exit 0.
+       never swallow into serving).
+    3. Serve the job surface on the receive loop while parked
+       signal-paused (no polling, no timers, no locks across use-case
+       calls — hub calls are registry mutations, never use-case calls).
+       SIGTERM/SIGINT releases the name, stops serving, and returns → exit 0.
 
     Signal handlers are installed before step 1 (the port tolerates a
     never-owned release); every path restores them and releases exactly
@@ -1031,14 +1045,20 @@ def _run_daemon_run(owner: IBusNameOwner | None = None) -> None:
 
     P5-1-3 extension slot: the non-gating converge lands between steps 2
     and 3 (after readiness, never gating it). This story performs zero
-    mutations by design.
+    store mutations by design (the hub registry is runtime state, not the
+    desktop store).
     """
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.domain.models import BusNameError
     from runtime.ports.bus_name_owner import BUS_NAME
 
     state_root = _resolve_state_root()
-    bus_owner = owner if owner is not None else _build_bus_name_owner()
+    bus_owner = owner
+    hub_registry = registry
+    if hub_registry is None:
+        hub_registry = _build_hub()
+    if bus_owner is None:
+        bus_owner = _build_bus_name_owner(service=_build_hub_service(hub_registry))
     restore_handlers = _install_release_handlers(bus_owner)
     try:
         try:
@@ -1058,9 +1078,9 @@ def _run_daemon_run(owner: IBusNameOwner | None = None) -> None:
                 BUS_NAME,
             )
         # The hub exists from here on (epoch assigned, JobsCleared recorded)
-        # but serves nothing on the wire in 2a — 2b binds it to the bus.
-        hub = _build_hub()
-        logger.debug("daemon: hub epoch %s ready (no wire in 2a)", hub.epoch)
+        # and is SERVED on the wire in 2b-i (job surface only — Emit,
+        # topic state, and signals arrive in 2b-ii).
+        logger.debug("daemon: hub epoch %s serving job surface", hub_registry.epoch)
         bus_owner.wait_until_terminated()
     finally:
         restore_handlers()
@@ -1069,13 +1089,14 @@ def _run_daemon_run(owner: IBusNameOwner | None = None) -> None:
 
 @daemon_app.command("run")
 def daemon_run() -> None:
-    """Own org.dotfiles.Events name-first, then idle (the systemd ExecStart).
+    """Own org.dotfiles.Events name-first, then serve (the systemd ExecStart).
 
     Foreground blocking command (AD-33): acquires the well-known name with
-    DO_NOT_QUEUE (fails fast non-zero on contention), idles signal-paused
-    holding it, and releases on SIGTERM → exit 0. No start/stop subcommands
-    exist — ``systemctl --user`` is the control surface. Performs zero
-    mutations in this story (observe-only; converge arrives in P5-1-3).
+    DO_NOT_QUEUE (fails fast non-zero on contention), serves the hub job
+    surface on the session bus, and releases on SIGTERM → exit 0. No
+    start/stop subcommands exist — ``systemctl --user`` is the control
+    surface. Performs zero store mutations in this story (observe-only for
+    the desktop; the hub registry is served, converge arrives in P5-1-3).
     """
     try:
         _run_daemon_run()

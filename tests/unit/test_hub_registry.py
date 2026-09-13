@@ -337,8 +337,8 @@ class TestDaemonWiring:
 
 
 class TestNoWireIn2a:
-    """P5-1-2a invariant: zero D-Bus imports anywhere (2b relaxes this to
-    adapters-only — update this test then, not before)."""
+    """P5-1-2b-i invariant: D-Bus imports live in adapters/ ONLY
+    (relaxed from the 2a zero-import rule now that the wire exists)."""
 
     def test_no_dbus_imports(self) -> None:
         roots = [
@@ -347,6 +347,7 @@ class TestNoWireIn2a:
         offenders: list[str] = []
         for root in roots:
             for path in sorted(root.rglob("*.py")):
+                rel = path.relative_to(roots[0]).as_posix()
                 tree = ast.parse(path.read_text(encoding="utf-8"))
                 for node in ast.walk(tree):
                     names: list[str] = []
@@ -356,6 +357,8 @@ class TestNoWireIn2a:
                         names = [node.module]
                     for name in names:
                         base = name.split(".")[0].lower()
-                        if base in {"dbus", "gi", "dasbus", "jeepney", "sdbus", "dbus_fast"}:
+                        if base in {"dbus", "gi", "dasbus", "sdbus", "dbus_fast"}:
+                            offenders.append(f"{path}:{node.lineno}: {name}")
+                        if base == "jeepney" and not rel.startswith("adapters/"):
                             offenders.append(f"{path}:{node.lineno}: {name}")
         assert offenders == []
