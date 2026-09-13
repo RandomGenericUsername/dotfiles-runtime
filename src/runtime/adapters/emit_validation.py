@@ -32,8 +32,12 @@ size → depth → schema → rate. Only accepted emits consume rate quota.
   them on output).
 - **Rate:** sliding 60 s window keyed on (sender, topic) at 60/min plus a
   600/min hub-wide ceiling (both named constants in code + tests, never
-  in the contract files). The sender half is the bus-attested unique
-  name, never self-asserted (AD-38 accounting, not authorization).
+  in the contract files). A per-topic override table raises the per-key
+  budget for contract-mandated high-cadence streams (``capture.state``
+  emits >= 1/s while recording, exactly the base cap); overrides only
+  raise the floor and the global ceiling remains the backstop. The sender
+  half is the bus-attested unique name, never self-asserted (AD-38
+  accounting, not authorization).
 
 Every structural rejection raises typed :class:`PayloadTooLarge` (the
 contract's typed list has no ``BadSchema`` — the 2b-i ``BadFraction``
@@ -46,7 +50,7 @@ from __future__ import annotations
 import json
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import fastjsonschema
@@ -57,6 +61,7 @@ from runtime.domain.models import PayloadTooLarge, RateLimited, UnknownTopic
 __all__ = [
     "MAX_PAYLOAD_BYTES",
     "MAX_PAYLOAD_DEPTH",
+    "PER_TOPIC_RATE_PER_MIN",
     "RATE_GLOBAL_PER_MIN",
     "RATE_PER_KEY_PER_MIN",
     "RATE_WINDOW_S",
@@ -77,7 +82,22 @@ MAX_PAYLOAD_DEPTH = 8
 #: Accepted emits per (sender, topic) per sliding window (2a Gate-1 ruling).
 RATE_PER_KEY_PER_MIN = 60
 
-#: Accepted emits hub-wide per sliding window (backstop: 10x per-key).
+#: Per-(sender, topic) accepted-emit overrides for topics whose contract
+#: cadence exceeds :data:`RATE_PER_KEY_PER_MIN`. Overrides only RAISE the
+#: floor (a bad entry can never weaken the base spam bound) and the
+#: :data:`RATE_GLOBAL_PER_MIN` ceiling still applies as backstop.
+#:
+#: ``capture.state`` rationale: the contract mandates >= 1 emit/s while
+#: recording (exactly 60/min), so the base cap is fully consumed and any
+#: start/pause/resume/stop transition in the same window would be throttled.
+#: 4x (240/min) leaves room for transition churn plus tick jitter over a
+#: multi-minute recording while staying below the 600/min hub-wide ceiling
+#: (>= 360/min remains available to every other topic).
+PER_TOPIC_RATE_PER_MIN: Mapping[str, int] = {
+    "capture.state": RATE_PER_KEY_PER_MIN * 4,
+}
+
+#: Accepted emits hub-wide per sliding window (backstop for the per-key caps).
 RATE_GLOBAL_PER_MIN = 600
 
 #: Sliding-window length in seconds.
@@ -199,7 +219,14 @@ def _check_sv_compatible(value: object, path: str) -> None:
 
 
 class EmitRateLimiter:
-    """Sliding-window publish accounting (injected clock, deterministic)."""
+    """Sliding-window publish accounting (injected clock, deterministic).
+
+    The effective per-(sender, topic) limit is
+    ``max(per_key, per_topic.get(topic, 0))``. Per-topic overrides raise the
+    budget for contract-mandated high-cadence streams (``capture.state``)
+    without ever lowering the base spam bound; the global ceiling is
+    unchanged and still applies.
+    """
 
     def __init__(
         self,
@@ -208,13 +235,21 @@ class EmitRateLimiter:
         global_limit: int = RATE_GLOBAL_PER_MIN,
         window: float = RATE_WINDOW_S,
         clock: Callable[[], float] = time.monotonic,
+        per_topic: Mapping[str, int] | None = None,
     ) -> None:
         self._per_key = per_key
         self._global_limit = global_limit
         self._window = window
         self._clock = clock
+        self._per_topic: Mapping[str, int] = dict(
+            PER_TOPIC_RATE_PER_MIN if per_topic is None else per_topic
+        )
         self._key_hits: dict[tuple[str, str], deque[float]] = {}
         self._global_hits: deque[float] = deque()
+
+    def per_key_limit(self, topic: str) -> int:
+        """Effective per-(sender, topic) budget for ``topic`` (override-aware)."""
+        return max(self._per_key, self._per_topic.get(topic, 0))
 
     def check(self, sender: str, topic: str) -> None:
         """Count one accepted emit or raise :class:`RateLimited`."""
@@ -225,7 +260,10 @@ class EmitRateLimiter:
             key_hits.popleft()
         while self._global_hits and self._global_hits[0] <= cutoff:
             self._global_hits.popleft()
-        if len(key_hits) >= self._per_key or len(self._global_hits) >= self._global_limit:
+        if (
+            len(key_hits) >= self.per_key_limit(topic)
+            or len(self._global_hits) >= self._global_limit
+        ):
             raise RateLimited(topic)
         key_hits.append(now)
         self._global_hits.append(now)

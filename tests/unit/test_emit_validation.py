@@ -12,6 +12,7 @@ import pytest
 from runtime.adapters.emit_validation import (
     MAX_PAYLOAD_BYTES,
     MAX_PAYLOAD_DEPTH,
+    PER_TOPIC_RATE_PER_MIN,
     RATE_GLOBAL_PER_MIN,
     RATE_PER_KEY_PER_MIN,
     RATE_WINDOW_S,
@@ -50,6 +51,17 @@ class TestConstants:
         assert RATE_PER_KEY_PER_MIN == 60
         assert RATE_GLOBAL_PER_MIN == 600
         assert RATE_WINDOW_S == 60.0
+
+    def test_capture_state_override_is_derived_and_below_global_backstop(self) -> None:
+        """The capture.state budget is a code constant: 4× the contract
+        cadence (240/min), strictly above the base cap and strictly below the
+        hub-wide ceiling so the global backstop still bites."""
+        budget = PER_TOPIC_RATE_PER_MIN["capture.state"]
+        assert budget == RATE_PER_KEY_PER_MIN * 4 == 240
+        assert RATE_PER_KEY_PER_MIN < budget < RATE_GLOBAL_PER_MIN
+
+    def test_overrides_only_cover_contract_high_cadence_topics(self) -> None:
+        assert set(PER_TOPIC_RATE_PER_MIN) == {"capture.state"}
 
 
 class TestKnownTopics:
@@ -165,26 +177,27 @@ class TestSvCompatibility:
 
 class TestRateLimiter:
     def test_sixty_first_per_key_then_limited(self) -> None:
+        """A topic without an override keeps the base 60/min cap."""
         limiter = EmitRateLimiter()
         for _ in range(60):
-            limiter.check(":1.1", "capture.state")
+            limiter.check(":1.1", "icme.saved")
         with pytest.raises(RateLimited):
-            limiter.check(":1.1", "capture.state")
+            limiter.check(":1.1", "icme.saved")
 
     def test_window_slides(self) -> None:
         clock = _Clock()
         limiter = EmitRateLimiter(clock=clock)
         for _ in range(60):
-            limiter.check(":1.1", "capture.state")
+            limiter.check(":1.1", "icme.saved")
         clock.advance(60.0)
-        limiter.check(":1.1", "capture.state")
+        limiter.check(":1.1", "icme.saved")
 
     def test_per_sender_topic_isolation(self) -> None:
         limiter = EmitRateLimiter()
         for _ in range(60):
-            limiter.check(":1.1", "capture.state")
-        limiter.check(":1.2", "capture.state")  # other sender unaffected
-        limiter.check(":1.1", "icme.saved")  # other topic unaffected
+            limiter.check(":1.1", "icme.saved")
+        limiter.check(":1.2", "icme.saved")  # other sender unaffected
+        limiter.check(":1.1", "capture.state")  # other topic unaffected
 
     def test_global_ceiling(self) -> None:
         limiter = EmitRateLimiter(per_key=1000, global_limit=3)
@@ -204,3 +217,92 @@ class TestRateLimiter:
             validator.validate("icme.saved", {}, ":1.9")  # invalid: no quota spent
         with pytest.raises(RateLimited):
             validator.validate("icme.saved", {"path": "/a"}, ":1.9")  # 61st valid: spent
+
+
+class TestCaptureStateBudget:
+    """The per-topic override keeps the >= 1/s recording stream alive."""
+
+    def test_limit_is_override_not_base(self) -> None:
+        limiter = EmitRateLimiter()
+        assert limiter.per_key_limit("capture.state") == 240
+        assert limiter.per_key_limit("icme.saved") == 60
+
+    def test_sustained_recording_with_transitions_is_not_throttled(self) -> None:
+        """5 minutes of 1/s ticks plus periodic transitions stay under budget.
+
+        The base 60/min cap throttles this same stream, so the test also
+        proves the override is load-bearing rather than a wider safety margin.
+        """
+        clock = _Clock()
+        limiter = EmitRateLimiter(clock=clock)
+        base = EmitRateLimiter(clock=clock, per_topic={})  # override disabled
+        base_throttled = False
+        for second in range(300):
+            limiter.check(":1.1", "capture.state")
+            try:
+                base.check(":1.1", "capture.state")
+            except RateLimited:
+                base_throttled = True
+            if second % 30 == 0:  # a transition burst every 30 s
+                limiter.check(":1.1", "capture.state")
+                try:
+                    base.check(":1.1", "capture.state")
+                except RateLimited:
+                    base_throttled = True
+            clock.advance(1.0)
+        assert base_throttled, "the base cap must be the thing the override fixes"
+
+    def test_transition_burst_within_cadence_is_accepted(self) -> None:
+        """Base cap would throttle the 61st emit in a window; override does not."""
+        clock = _Clock()
+        limiter = EmitRateLimiter(clock=clock)
+        base = EmitRateLimiter(clock=clock, per_topic={})
+        for _ in range(60):
+            limiter.check(":1.1", "capture.state")  # 60 contract ticks
+            base.check(":1.1", "capture.state")
+        for _ in range(4):  # start/pause/resume/stop transitions
+            limiter.check(":1.1", "capture.state")
+        with pytest.raises(RateLimited):
+            base.check(":1.1", "capture.state")  # the base cap is tripped
+
+    def test_override_boundary_still_bounded(self) -> None:
+        limiter = EmitRateLimiter()
+        for _ in range(240):
+            limiter.check(":1.1", "capture.state")
+        with pytest.raises(RateLimited):
+            limiter.check(":1.1", "capture.state")
+
+    def test_global_backstop_still_applies_to_capture_state(self) -> None:
+        limiter = EmitRateLimiter(global_limit=3)
+        limiter.check(":1.1", "capture.state")
+        limiter.check(":1.2", "capture.state")
+        limiter.check(":1.3", "capture.state")
+        with pytest.raises(RateLimited):
+            limiter.check(":1.4", "capture.state")
+
+    def test_injected_override_never_lowers_below_base(self) -> None:
+        """A table entry only raises the floor; ``per_key`` is preserved."""
+        limiter = EmitRateLimiter(per_topic={"capture.state": 5})
+        assert limiter.per_key_limit("capture.state") == 60
+
+    def test_validator_accepts_multi_minute_capture_state_stream(self) -> None:
+        """End-to-end through EmitValidator: 3 minutes at 1/s + transitions.
+
+        Without the per-topic override the transition emits inside the 60 s
+        window would make the 61st validate raise :class:`RateLimited`.
+        """
+        clock = _Clock()
+        validator, _ = _validator(clock)
+        for tick in range(180):
+            validator.validate(
+                "capture.state",
+                {"state": "recording", "elapsed_seconds": tick},
+                ":1.1",
+            )
+            if tick % 30 == 0:  # pause/resume burst
+                validator.validate(
+                    "capture.state",
+                    {"state": "paused", "elapsed_seconds": tick},
+                    ":1.1",
+                )
+            clock.advance(1.0)
