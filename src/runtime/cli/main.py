@@ -1189,7 +1189,10 @@ def _install_release_handlers(bus_owner: IBusNameOwner) -> Callable[[], None]:
 
 
 def _run_reactive_converge(
-    *, observe_only: bool = True, source: str | None = None
+    *,
+    observe_only: bool = True,
+    source: str | None = None,
+    prune_on_reactive: bool = False,
 ) -> ReactiveConvergeResult:
     """Compose the daemon's reactive converge (P5-1-3, AD-35/AD-36/AD-42).
 
@@ -1197,15 +1200,24 @@ def _run_reactive_converge(
 
         CheckInputs → RegenerateStale → Reconcile → declarative
 
-    (all wired with a history-suppressing seeder), then a prune pass, then
-    appends exactly one ``trigger="reactive"`` audit line and persists the
-    last-converged backstop. The backstop hash is computed over exactly the
-    AD-39 watched set, so a change always corresponds to a fireable event.
+    (all wired with a history-suppressing seeder), then — **only when opted
+    in** — a prune pass, then appends exactly one ``trigger="reactive"`` audit
+    line and persists the last-converged backstop. The backstop hash is
+    computed over exactly the AD-39 watched set, so a change always
+    corresponds to a fireable event.
 
     ``observe_only`` (the shipped default, AD-35/AD-41) detects a changed
     input set and returns without running any use case and without appending
     history. Corrupt/symlinked intent is a logged recoverable skip of the
     declarative step only — the rest of the composite still converges.
+
+    ``prune_on_reactive`` (default **False**) gates the prune leg. When off,
+    the composite runs regenerate/reconcile/declarative but performs **no
+    deletion and writes no ``prune`` history line**; the would-be removal
+    count under the AD-30 floor is computed read-only and logged at INFO.
+    When on, the real AD-30-bounded prune runs exactly as before (one
+    ``prune`` line with counts). The opt-in is a CLI flag / env var and never
+    lives under a watched root.
     """
     from runtime.adapters.converge_backstop import LastConvergedBackstop
     from runtime.adapters.converge_inputs import compute_watch_input_hash
@@ -1261,9 +1273,18 @@ def _run_reactive_converge(
         reconcile=lambda: _run_reconcile(suppress_history=True),
         declarative=_declarative,
         append_history=_append_reactive,
-        prune=lambda: _run_prune(dry_run=False, keep=_keep(), prune_pinned=False),
+        prune=(
+            (lambda: _run_prune(dry_run=False, keep=_keep(), prune_pinned=False))
+            if prune_on_reactive
+            else None
+        ),
         observe_only=observe_only,
     ).run()
+    # Opt-in-off: no deletion, no prune history line. Compute the AD-30
+    # would-be count read-only at the settled post-composite state and log the
+    # skip (AD-30; the reactive line is the only history record).
+    if result.ran and not prune_on_reactive:
+        _log_reactive_prune_skipped(state_root, _keep())
     # Trigger-logged automatic action (AD-41): reactive converge + its
     # regenerate step carry trigger="reactive"; source is the watch reason.
     _log_automatic_action(
@@ -1459,6 +1480,15 @@ def daemon_run(
         envvar="DOTFILES_RUNTIME_ACTIVATE",
         help="Enable automatic convergence (default: observe-only)",
     ),
+    prune_on_reactive: bool = typer.Option(
+        False,
+        "--prune-on-reactive",
+        envvar="DOTFILES_REACTIVE_PRUNE",
+        help=(
+            "Run the AD-30-bounded prune on each reactive converge "
+            "(default: skip; no deletion, no prune history line)"
+        ),
+    ),
 ) -> None:
     """Own org.dotfiles.Events name-first, then watch + serve (systemd ExecStart).
 
@@ -1470,6 +1500,13 @@ def daemon_run(
     subcommands exist — ``systemctl --user`` is the control surface.
     SIGTERM releases the name → exit 0.
 
+    **Reactive prune is opt-in, default off.** With ``--activate`` the
+    reactive converge regenerates/reconciles but performs no deletion. Pass
+    ``--prune-on-reactive`` (or set ``$DOTFILES_REACTIVE_PRUNE``) to opt into
+    the real AD-30-bounded prune (one ``prune`` history line per converge);
+    with it off the would-be count is logged read-only at INFO and no ``prune``
+    line is written. The flag is inert while observe-only.
+
     **Kill switch (AD-41):** ``systemctl --user stop dotfiles-runtime-daemon``
     sends SIGTERM; the installed handler releases ``org.dotfiles.Events`` and
     the process exits 0. There is no self-managed stop mechanism — systemd is
@@ -1480,7 +1517,11 @@ def daemon_run(
 
     def _converge(trigger: WatchTrigger) -> None:
         try:
-            _run_reactive_converge(observe_only=not activate, source=trigger.reason)
+            _run_reactive_converge(
+                observe_only=not activate,
+                source=trigger.reason,
+                prune_on_reactive=prune_on_reactive,
+            )
         except (ValueError, RuntimeError, OSError) as exc:
             logger.error("daemon: reactive converge failed: %s", exc)
             return
@@ -2407,6 +2448,54 @@ def inspect_cache_list(
     )
 
 
+def _build_prune_plan(state_root: Path, keep: int, prune_pinned: bool) -> PrunePlan:
+    """Compute the AD-30 prune plan read-only (no deletion, no lock, no history).
+
+    Shared by the real prune (which calls it under the seed mutex) and the
+    opt-in-off reactive skip log (which calls it read-only just to report the
+    would-be count). Fails closed when ``current.json`` is absent.
+    """
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.adapters.prune_source import entries_for, seed_pins
+    from runtime.application.prune import PruneUseCase
+
+    state_repo = JsonStateRepository(state_root=state_root)
+    if state_repo.load_current() is None:
+        raise ValueError("no runtime state recorded (missing current.json); refusing to prune")
+    return PruneUseCase(
+        state_repo=state_repo,
+        entries_for=lambda layer: entries_for(state_root, layer),
+        seed_pins=lambda: seed_pins(state_root),
+        keep=keep,
+    ).run(prune_pinned=prune_pinned)
+
+
+def _log_reactive_prune_skipped(state_root: Path, keep: int) -> None:
+    """Log the opt-in-off prune skip with its read-only would-be count (AD-30).
+
+    No deletion, no lock, no history line: only the reactive audit line is
+    written. The plan is computed after the composite settled, so the count
+    reflects exactly what a real prune would have removed. A planning failure
+    is logged (never raised) so observability cannot turn a good converge into
+    a daemon-side failure.
+    """
+    try:
+        plan = _build_prune_plan(state_root, keep, prune_pinned=False)
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.info(
+            "reactive: prune skipped (opt-in off: --prune-on-reactive / "
+            "DOTFILES_REACTIVE_PRUNE); would-be count unavailable: %s",
+            exc,
+        )
+        return
+    logger.info(
+        "reactive: prune skipped (opt-in off: --prune-on-reactive / "
+        "DOTFILES_REACTIVE_PRUNE); %d entr%s would be removed under the AD-30 floor",
+        plan.total_removable,
+        "y" if plan.total_removable == 1 else "ies",
+    )
+
+
 def _run_prune(
     dry_run: bool, keep: int, prune_pinned: bool
 ) -> tuple[PrunePlan, int, list[tuple[str, str]]]:
@@ -2423,24 +2512,15 @@ def _run_prune(
 
     from runtime.adapters.flock_seed_mutex import FlockSeedMutex
     from runtime.adapters.json_state_repository import JsonStateRepository
-    from runtime.adapters.prune_source import entries_for, remove_entry, seed_pins
-    from runtime.application.prune import PruneUseCase
+    from runtime.adapters.prune_source import remove_entry
 
     state_repo = JsonStateRepository(state_root=state_root)
     state = state_repo.load_current()
     if state is None:
         raise ValueError("no runtime state recorded (missing current.json); refusing to prune")
 
-    def _plan() -> PrunePlan:
-        return PruneUseCase(
-            state_repo=state_repo,
-            entries_for=lambda layer: entries_for(state_root, layer),
-            seed_pins=lambda: seed_pins(state_root),
-            keep=keep,
-        ).run(prune_pinned=prune_pinned)
-
     if dry_run:
-        plan = _plan()
+        plan = _build_prune_plan(state_root, keep, prune_pinned)
         _log_automatic_action(
             trigger="prune",
             action="prune",
@@ -2454,7 +2534,7 @@ def _run_prune(
     removed: list[tuple[str, str]] = []
     failures: list[str] = []
     with mutex.hold(blocking=True):
-        plan = _plan()
+        plan = _build_prune_plan(state_root, keep, prune_pinned)
         for layer, hashes in plan.removals.items():
             for entry_hash in hashes:
                 try:

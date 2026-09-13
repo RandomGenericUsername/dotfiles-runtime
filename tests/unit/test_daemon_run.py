@@ -473,6 +473,65 @@ class TestSystemdNotify:
         assert notifier.stopping_calls == 1
 
 
+class TestReactivePruneOptIn:
+    """`--prune-on-reactive` / `$DOTFILES_REACTIVE_PRUNE` gates the prune leg.
+
+    Default off: the converge is still wired observe-only/active as before,
+    but the reactive prune stays off unless explicitly opted in. The flag is
+    inert while observe-only (AD-35/AD-41).
+    """
+
+    def _captured(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        args: list[str],
+        env: dict[str, str] | None = None,
+    ) -> list[dict[str, object]]:
+        from runtime.application.watch import WatchTrigger
+
+        captured: list[dict[str, object]] = []
+        monkeypatch.setattr(cli_main, "_build_watch_source", lambda: None)
+        monkeypatch.setattr(
+            cli_main, "_run_reactive_converge", lambda **kwargs: captured.append(kwargs)
+        )
+
+        def _fake_daemon_run(*, converge=None, watch_source=None, **_kwargs):  # noqa: ANN001
+            assert converge is not None
+            converge(WatchTrigger(reason="startup", full_rescan=True))
+
+        monkeypatch.setattr(cli_main, "_run_daemon_run", _fake_daemon_run)
+        result = runner.invoke(app, args, env=env)
+        assert result.exit_code == 0
+        return captured
+
+    def test_default_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured = self._captured(monkeypatch, ["daemon", "run", "--activate"])
+        assert captured[0]["prune_on_reactive"] is False
+        assert captured[0]["observe_only"] is False
+
+    def test_flag_opts_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured = self._captured(
+            monkeypatch, ["daemon", "run", "--activate", "--prune-on-reactive"]
+        )
+        assert captured[0]["prune_on_reactive"] is True
+        assert captured[0]["observe_only"] is False
+
+    def test_env_var_opts_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured = self._captured(
+            monkeypatch,
+            ["daemon", "run", "--activate"],
+            env={"DOTFILES_REACTIVE_PRUNE": "1"},
+        )
+        assert captured[0]["prune_on_reactive"] is True
+
+    def test_flag_without_activate_still_observe_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured = self._captured(monkeypatch, ["daemon", "run", "--prune-on-reactive"])
+        assert captured[0]["observe_only"] is True
+        assert captured[0]["prune_on_reactive"] is True
+
+
 class _DegradedBlockingSource(_BlockingWatchSource):
     def status(self):
         from runtime.domain.watch import WatchStatus

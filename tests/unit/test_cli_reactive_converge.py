@@ -7,6 +7,7 @@ backstop, and the input hasher are real, so these tests assert the AD-42
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -15,6 +16,8 @@ import pytest
 import runtime.cli.main as cli_main
 
 TS = "2026-09-10T00:00:00Z"
+WP = "e" * 64
+ACTIVE = "a" * 64
 
 
 @pytest.fixture(autouse=True)
@@ -56,6 +59,74 @@ def _history_lines(state_root: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
 
+def _h(n: int) -> str:
+    return f"{n:064x}"
+
+
+def _ts(n: int) -> str:
+    return f"2026-09-{n:02d}T00:00:00Z"
+
+
+def _write_palette(state_root: Path, entry_hash: str, ts: str) -> Path:
+    d = state_root / "cache" / "palettes" / entry_hash
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "meta.json").write_text(
+        json.dumps(
+            {
+                "hash_algorithm": "sha256",
+                "kind": "palette",
+                "generated_at": ts,
+                "artifact_hashes": {"colors.yaml": hashlib.sha256(b"y").hexdigest()},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (d / "colors.yaml").write_text("y", encoding="utf-8")
+    return d
+
+
+def _seed_prunable(state_root: Path) -> None:
+    """Active palette + 7 old palettes: 2 removable under the keep=5 floor."""
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.domain.models import DesktopState, PaletteEntry, WallpaperEntry
+
+    _write_palette(state_root, ACTIVE, _ts(20))
+    for i in range(1, 8):
+        _write_palette(state_root, _h(i), _ts(i))
+    JsonStateRepository(state_root=state_root).save(
+        DesktopState(
+            schema_version=2,
+            wallpaper=WallpaperEntry(
+                hash_algorithm="sha256",
+                kind="wallpaper",
+                content_hash=WP,
+                source_path="/img/w.png",
+                imported_at=_ts(20),
+            ),
+            monitors={},
+            palette=PaletteEntry(
+                hash_algorithm="sha256",
+                kind="palette",
+                entry_hash=ACTIVE,
+                source_wallpaper_hash=WP,
+                input_template_hash="t" * 64,
+                artifact_hashes={},
+                generated_at=_ts(20),
+            ),
+            effects=None,
+            icons=None,
+            applied_at=_ts(20),
+        )
+    )
+
+
+def _palette_entries(state_root: Path) -> set[str]:
+    layer = state_root / "cache" / "palettes"
+    if not layer.exists():
+        return set()
+    return {p.name for p in layer.iterdir() if p.is_dir()}
+
+
 def _fake_composite(monkeypatch: pytest.MonkeyPatch, calls: list[str]) -> None:
     monkeypatch.setattr(cli_main, "_run_check_inputs", lambda: calls.append("check"))
     monkeypatch.setattr(
@@ -73,7 +144,9 @@ def test_active_converge_writes_one_reactive_line_and_backstop(
     calls: list[str] = []
     _fake_composite(monkeypatch, calls)
 
-    result = cli_main._run_reactive_converge(observe_only=False)
+    result = cli_main._run_reactive_converge(
+        observe_only=False, prune_on_reactive=True
+    )
 
     assert result.ran is True
     assert result.reason == "converged"
@@ -89,8 +162,10 @@ def test_second_converge_is_a_backstop_noop(monkeypatch: pytest.MonkeyPatch) -> 
     calls: list[str] = []
     _fake_composite(monkeypatch, calls)
 
-    cli_main._run_reactive_converge(observe_only=False)
-    result = cli_main._run_reactive_converge(observe_only=False)
+    cli_main._run_reactive_converge(observe_only=False, prune_on_reactive=True)
+    result = cli_main._run_reactive_converge(
+        observe_only=False, prune_on_reactive=True
+    )
 
     assert result.ran is False
     assert result.reason == "unchanged"
@@ -125,11 +200,95 @@ def test_corrupt_intent_is_recoverable_skip(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(cli_main, "_run_converge", _boom)
 
-    result = cli_main._run_reactive_converge(observe_only=False)
+    result = cli_main._run_reactive_converge(
+        observe_only=False, prune_on_reactive=True
+    )
 
     assert result.ran is True  # the other steps still converge
     assert calls == ["check", "regenerate", "reconcile", "prune"]
     assert len(_history_lines(state_root)) == 1
+
+
+class TestReactivePrunePolicy:
+    """Reactive prune is opt-in (default off): no deletion unless asked (AD-30)."""
+
+    def test_default_off_removes_nothing_and_writes_no_prune_line(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        state_root = cli_main._resolve_state_root()
+        state_root.mkdir(parents=True, exist_ok=True)
+        _seed_prunable(state_root)
+        before = _palette_entries(state_root)
+        calls: list[str] = []
+        # NOTE: _run_prune is NOT faked — the skip count uses the real,
+        # read-only plan path.
+        monkeypatch.setattr(cli_main, "_run_check_inputs", lambda: calls.append("check"))
+        monkeypatch.setattr(
+            cli_main, "_run_regenerate_stale", lambda **_: calls.append("regenerate")
+        )
+        monkeypatch.setattr(cli_main, "_run_reconcile", lambda **_: calls.append("reconcile"))
+        monkeypatch.setattr(cli_main, "_run_converge", lambda **_: calls.append("declarative"))
+
+        with caplog.at_level("INFO", logger="runtime.cli.main"):
+            result = cli_main._run_reactive_converge(observe_only=False)
+
+        assert result.ran is True
+        assert calls == ["check", "regenerate", "reconcile", "declarative"]
+        lines = _history_lines(state_root)
+        assert len(lines) == 1
+        assert lines[0]["trigger"] == "reactive"
+        assert not any(line["trigger"] == "prune" for line in lines)
+        assert _palette_entries(state_root) == before  # zero deletions
+        assert any(
+            "reactive: prune skipped (opt-in off" in r.message for r in caplog.records
+        )
+        # The would-be count is reported (3 old palettes beyond the keep=5 floor).
+        assert any("3 entries would be removed" in r.message for r in caplog.records)
+
+    def test_opt_in_performs_real_prune_and_respects_floor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state_root = cli_main._resolve_state_root()
+        state_root.mkdir(parents=True, exist_ok=True)
+        _seed_prunable(state_root)
+        calls: list[str] = []
+        monkeypatch.setattr(cli_main, "_run_check_inputs", lambda: calls.append("check"))
+        monkeypatch.setattr(
+            cli_main, "_run_regenerate_stale", lambda **_: calls.append("regenerate")
+        )
+        monkeypatch.setattr(cli_main, "_run_reconcile", lambda **_: calls.append("reconcile"))
+        monkeypatch.setattr(cli_main, "_run_converge", lambda **_: calls.append("declarative"))
+
+        result = cli_main._run_reactive_converge(
+            observe_only=False, prune_on_reactive=True
+        )
+
+        assert result.ran is True
+        lines = _history_lines(state_root)
+        reactive = [line for line in lines if line["trigger"] == "reactive"]
+        prune = [line for line in lines if line["trigger"] == "prune"]
+        assert len(reactive) == 1
+        assert len(prune) == 1
+        details = prune[0]["details"]
+        assert details["removed"] == 3
+        assert details["layers"]["palettes"] == 3
+        # AD-30 floor: active (newest) + the next four dated survive; days 1-3 go.
+        assert _palette_entries(state_root) == {ACTIVE, *(_h(i) for i in range(4, 8))}
+
+    def test_skip_log_reports_zero_when_nothing_removable(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        state_root = _seed_state()  # no cache entries
+        calls: list[str] = []
+        _fake_composite(monkeypatch, calls)
+
+        with caplog.at_level("INFO", logger="runtime.cli.main"):
+            result = cli_main._run_reactive_converge(observe_only=False)
+
+        assert result.ran is True
+        assert any(
+            "0 entries would be removed" in r.message for r in caplog.records
+        )
 
 
 def test_unseeded_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:

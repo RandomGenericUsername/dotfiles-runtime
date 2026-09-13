@@ -381,7 +381,9 @@ class TestTriggerLoggedActions:
         monkeypatch.setattr(cli_main, "_run_reconcile", lambda **_: None)
         monkeypatch.setattr(cli_main, "_run_converge", lambda **_: None)
         with caplog.at_level("INFO", logger="runtime.cli.main"):
-            result = cli_main._run_reactive_converge(observe_only=False, source="change")
+            result = cli_main._run_reactive_converge(
+                observe_only=False, source="change", prune_on_reactive=True
+            )
 
         assert result.ran is True
         records = InspectHistoryUseCase(state_root).run(limit=0)
