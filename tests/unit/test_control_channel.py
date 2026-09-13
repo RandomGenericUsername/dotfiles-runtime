@@ -9,6 +9,7 @@ timed-out endpoints (N2), and typed-error pass-through.
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Callable
 from typing import Any
 
@@ -32,6 +33,8 @@ class _FakeConn:
     ) -> None:
         self.sent: list[Any] = []
         self.timeout: float | None = None
+        self.deliver: list[Any] = []
+        self.outgoing_serial = itertools.count(1)
         self._reply_factory = reply_factory
         self._error = error
 
@@ -45,6 +48,20 @@ class _FakeConn:
         if self._reply_factory is not None:
             return self._reply_factory(message)
         return new_method_return(message, None, ())
+
+    def send_message(self, message: Any, serial: int | None = None) -> None:
+        """Pumping path: record the call and queue its reply for ``receive``."""
+        from jeepney import new_method_return
+
+        if serial is not None:
+            message.header.serial = serial
+        self.sent.append(message)
+        self.deliver.append(new_method_return(message, None, ()))
+
+    def receive(self, *, timeout: float | None = None) -> Any:
+        if self.deliver:
+            return self.deliver.pop(0)
+        raise TimeoutError
 
 
 def _error_reply(name: str) -> Callable[[Any], Any]:
@@ -159,3 +176,37 @@ class TestDbusControlChannel:
         channel.close()
         with pytest.raises(UnknownJob):
             channel.send_control("job-1", "pause")
+
+    def test_control_pump_serves_interleaved_messages_until_ack(self) -> None:
+        """The hub keeps serving the job's calls while waiting for the ack.
+
+        A job reports back (Emit/EndJob) from inside its Control handler; the
+        hub must dispatch those interleaved messages rather than block and
+        drop them (N1 re-entrancy).
+        """
+        from jeepney import DBusAddress, HeaderFields, new_method_call
+
+        conn = _FakeConn()
+        channel = DbusControlChannel()
+        channel.bind_connection(conn)
+        channel.bind("job-1", ":1.42")
+        served: list[Any] = []
+        channel.set_serve_callback(served.append)
+
+        interleaved = new_method_call(
+            DBusAddress(
+                "/org/dotfiles/Events",
+                bus_name="org.dotfiles.Events",
+                interface="org.dotfiles.Events1",
+            ),
+            "Emit",
+            "sa{sv}",
+            ("capture.state", {}),
+        )
+        conn.deliver.append(interleaved)
+
+        channel.send_control("job-1", "pause")
+
+        assert served == [interleaved]
+        (sent,) = conn.sent
+        assert sent.header.fields.get(HeaderFields.member) == "Control"

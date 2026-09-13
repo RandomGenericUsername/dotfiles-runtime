@@ -24,11 +24,17 @@ Ports are ABCs only (layering rule); concrete adapters live in
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from runtime.domain.jobs import SpeedTestResult
 
-__all__ = ["IControlChannel", "IJobClient", "IRecorderProcess", "ISpeedTestRunner"]
+__all__ = [
+    "IControlChannel",
+    "IControllableJobClient",
+    "IJobClient",
+    "IRecorderProcess",
+    "ISpeedTestRunner",
+]
 
 
 class IJobClient(ABC):
@@ -53,6 +59,21 @@ class IJobClient(ABC):
     @abstractmethod
     def publish(self, topic: str, payload: Mapping[str, object]) -> None:
         """Publish a DOMAIN event on ``topic`` through the hub (AD-38)."""
+
+
+class IControllableJobClient(IJobClient, ABC):
+    """A job client that can serve the hub's delegated ``Job1.Control`` (5-4).
+
+    The out-of-process capture host binds its controller's pause/resume/stop
+    through this seam; the D-Bus adapter serves ``org.dotfiles.Job1`` on the
+    same connection used for ``BeginJob`` and the degraded local adapter
+    accepts-and-ignores it (no remote caller). A job that does not accept
+    control (e.g. the speed test) is a plain :class:`IJobClient`.
+    """
+
+    @abstractmethod
+    def set_control_handler(self, handler: Callable[[str, str], None]) -> None:
+        """Bind ``handler(job_id, action)`` for inbound ``Job1.Control`` calls."""
 
 
 class IControlChannel(ABC):

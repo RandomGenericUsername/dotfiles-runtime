@@ -741,6 +741,17 @@ class DbusControlChannel(IControlChannel):
     raises ``UnknownJob`` (loud — a UI can always tell the action did not
     apply; the lease expiry still emits the synthetic ``JobFinished(-1)``).
     A typed error the job returns is re-raised as its domain type.
+
+    **Re-entrancy (N1).** The hub's ``Control`` call is request/response and
+    the job typically reports back (``Emit``/``EndJob``) from inside its
+    Control handler. If the hub simply blocked on the ack, the job's
+    synchronous callback would wait on a hub that is waiting on the job —
+    a 5s stall, then a dropped event and a false ``UnknownJob``. When a serve
+    callback is installed (the owner does this), ``send_control`` keeps
+    receiving and dispatching interleaved messages on the same connection
+    while it waits, so the job's callbacks are answered and the ack arrives.
+    With no callback (unit tests / non-owner callers) it falls back to the
+    straight ``send_and_get_reply``.
     """
 
     def __init__(self, *, timeout: float = 5.0) -> None:
@@ -748,6 +759,15 @@ class DbusControlChannel(IControlChannel):
         self._endpoints: dict[str, str] = {}
         self._lock = threading.Lock()
         self._timeout = timeout
+        self._serve: Callable[[Any], None] | None = None
+
+    def set_serve_callback(self, serve: Callable[[Any], None]) -> None:
+        """Install the pump that serves interleaved messages during a wait.
+
+        The owner binds this to its own receive-loop routing so the job's
+        callbacks are answered while the hub waits for a ``Control`` ack.
+        """
+        self._serve = serve
 
     def bind_connection(self, conn: DBusConnection) -> None:
         """Bind the owned connection the outbound calls ride (idempotent)."""
@@ -776,27 +796,72 @@ class DbusControlChannel(IControlChannel):
         with self._lock:
             self._conn = None
             self._endpoints.clear()
+            self._serve = None
 
     def send_control(self, job_id: str, action: str) -> None:
         with self._lock:
             conn = self._conn
             endpoint = self._endpoints.get(job_id)
+            serve = self._serve
         if conn is None or endpoint is None:
             raise UnknownJob(job_id)
         address = DBusAddress(JOB_OBJECT_PATH, bus_name=endpoint, interface=JOB_INTERFACE)
+        call = new_method_call(address, "Control", "s", (action,))
+        if serve is None:
+            try:
+                reply = conn.send_and_get_reply(call, timeout=self._timeout)
+            except Exception as exc:
+                # Unreachable/dead peer or timeout: drop the stale mapping and
+                # fail loud (N2). Never report success for a failed delivery.
+                self.unbind(job_id)
+                raise UnknownJob(job_id) from exc
+            if reply.header.message_type == MessageType.error:
+                error_name = reply.header.fields.get(HeaderFields.error_name, "")
+                self._raise_typed_error(error_name, job_id, action)
+            return
+        self._send_and_pump(conn, serve, call, job_id, action)
+
+    def _send_and_pump(
+        self,
+        conn: DBusConnection,
+        serve: Callable[[Any], None],
+        call: Any,
+        job_id: str,
+        action: str,
+    ) -> None:
+        """Send the Control call and, while waiting, serve interleaved messages.
+
+        Keeps the hub's single connection single-threaded: the job's own
+        ``Emit``/``EndJob`` arrive here and are dispatched/replied to (via the
+        owner's serve callback) instead of being swallowed while we block.
+        A timeout/unreachable peer drops the endpoint and fails loud; a typed
+        job error passes through unchanged.
+        """
         try:
-            reply = conn.send_and_get_reply(
-                new_method_call(address, "Control", "s", (action,)),
-                timeout=self._timeout,
-            )
+            serial = next(conn.outgoing_serial)
+            conn.send_message(call, serial=serial)
         except Exception as exc:
-            # Unreachable/dead peer or timeout: drop the stale mapping and
-            # fail loud (N2). Never report success for a failed delivery.
             self.unbind(job_id)
             raise UnknownJob(job_id) from exc
-        if reply.header.message_type == MessageType.error:
-            error_name = reply.header.fields.get(HeaderFields.error_name, "")
-            self._raise_typed_error(error_name, job_id, action)
+        deadline = time.monotonic() + self._timeout
+        while True:
+            try:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("job control ack timed out")
+                msg = conn.receive(timeout=remaining)
+            except Exception as exc:
+                self.unbind(job_id)
+                raise UnknownJob(job_id) from exc
+            if msg.header.fields.get(HeaderFields.reply_serial, None) == serial:
+                if msg.header.message_type == MessageType.error:
+                    error_name = msg.header.fields.get(HeaderFields.error_name, "")
+                    self._raise_typed_error(error_name, job_id, action)
+                return
+            try:
+                serve(msg)
+            except Exception:
+                logger.exception("hub control pump: serving an interleaved message failed")
 
     @staticmethod
     def _raise_typed_error(error_name: object, job_id: str, action: str) -> None:
@@ -876,6 +941,7 @@ class JeepneyNameOwner(IBusNameOwner):
         self._owned = True
         self._stopped.clear()
         if self._service is not None:
+            service = self._service
             # Restart path: learn when ownership of the well-known name
             # changes.  Subscribed AFTER RequestName so our own initial
             # acquisition (already emitted) is not seen as a restart. The
@@ -892,10 +958,17 @@ class JeepneyNameOwner(IBusNameOwner):
             channel = self._control_channel()
             if channel is not None:
                 channel.bind_connection(conn)
-            self._service.bind_emitter(self._emit_signal)
+                # Re-entrancy (N1): while the hub waits for a job's Control
+                # ack, the job's own Emit/EndJob arrive on this connection and
+                # must be served, not swallowed. The pump is the same routing
+                # the serve loop uses (single thread, same connection).
+                channel.set_serve_callback(
+                    lambda msg: self._route_message(conn, service, msg)
+                )
+            service.bind_emitter(self._emit_signal)
             # Start records are already queued by the domain hub's
             # constructor; flush emits JobsCleared(epoch) FIRST.
-            self._service.flush()
+            service.flush()
             self._thread = threading.Thread(target=self._serve_loop, name="dbus-serve", daemon=True)
             self._thread.start()
 
@@ -945,18 +1018,27 @@ class JeepneyNameOwner(IBusNameOwner):
                 logger.exception("hub serve: receive failed")
                 time.sleep(0.05)
                 continue
-            if msg.header.message_type == MessageType.signal:
-                try:
-                    self._handle_signal(service, msg)
-                except Exception:
-                    logger.exception("hub serve: signal handling failed; continuing")
-                continue
-            if msg.header.message_type != MessageType.method_call:
-                continue
+            self._route_message(conn, service, msg)
+
+    def _route_message(self, conn: DBusConnection, service: HubService, msg: Any) -> None:
+        """Route one received message (used by the serve loop and control pump).
+
+        Single-threaded and connection-shared: the control pump calls this
+        from inside ``send_control`` so the job's interleaved callbacks are
+        dispatched/replied to while the hub waits for its Control ack.
+        """
+        if msg.header.message_type == MessageType.signal:
             try:
-                self._answer(conn, service, msg)
+                self._handle_signal(service, msg)
             except Exception:
-                logger.exception("hub serve: answer failed; continuing")
+                logger.exception("hub serve: signal handling failed; continuing")
+            return
+        if msg.header.message_type != MessageType.method_call:
+            return
+        try:
+            self._answer(conn, service, msg)
+        except Exception:
+            logger.exception("hub serve: answer failed; continuing")
 
     def _handle_signal(self, service: HubService, msg: Any) -> None:
         """Route a received bus signal (restart path).

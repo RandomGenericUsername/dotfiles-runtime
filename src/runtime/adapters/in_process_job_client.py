@@ -20,7 +20,7 @@ from collections.abc import Callable, Mapping
 
 from runtime.domain.models import UnknownJob
 from runtime.ports.event_bus import IEventPublisher, IJobRegistry
-from runtime.ports.jobs import IControlChannel, IJobClient
+from runtime.ports.jobs import IControlChannel, IControllableJobClient
 
 __all__ = ["InProcessControlChannel", "InProcessJobClient"]
 
@@ -55,7 +55,7 @@ class InProcessControlChannel(IControlChannel):
         handler(job_id, action)
 
 
-class InProcessJobClient(IJobClient):
+class InProcessJobClient(IControllableJobClient):
     """``IJobClient`` over a registry + publisher (no transport).
 
     When a control channel is injected, a handler set via

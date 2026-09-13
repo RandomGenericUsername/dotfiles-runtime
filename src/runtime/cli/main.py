@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from importlib.metadata import PackageNotFoundError
@@ -24,6 +27,7 @@ if TYPE_CHECKING:
     from runtime.adapters.dbus_event_bus import HubService, SignalSink
     from runtime.adapters.systemd_notify import SystemdNotifier
     from runtime.application.apply_wallpaper import ApplyWallpaperResult
+    from runtime.application.capture_host import CaptureHost
     from runtime.application.check_inputs import CheckInputsResult
     from runtime.application.converge import ReactiveConvergeResult
     from runtime.application.doctor import DoctorReport, RepairResult
@@ -43,7 +47,7 @@ if TYPE_CHECKING:
     from runtime.ports.bus_name_owner import IBusNameOwner
     from runtime.ports.desktop_reloader import IDesktopReloader
     from runtime.ports.event_bus import IJobRegistry
-    from runtime.ports.jobs import IControlChannel
+    from runtime.ports.jobs import IControlChannel, IControllableJobClient, IRecorderProcess
     from runtime.ports.watch_source import IWatchSource
 
 app = typer.Typer(
@@ -326,7 +330,7 @@ def main_callback(
     # The COMMAND comes from typer's resolved context (never argv parsing:
     # operands named "reconcile"/flag values must not skip seeding, and
     # flag-first invocations must).
-    if ctx.invoked_subcommand in ("reconcile", "inspect", "doctor", "daemon"):
+    if ctx.invoked_subcommand in ("reconcile", "inspect", "doctor", "daemon", "capture"):
         return
     _run_seed_if_needed()
 
@@ -454,6 +458,16 @@ _IMAGE_PATH_ARG = typer.Argument(help="Path to the wallpaper image file")
 _OUTPUT_FORMAT_OPTION = typer.Option(OutputFormat.PLAIN, "--format", "-f")
 _HISTORY_LIMIT_OPTION = typer.Option(
     20, "--limit", "-n", help="Maximum history entries to show (newest first, 0 = all)"
+)
+_CAPTURE_COMMAND_OPTION = typer.Option(
+    ...,
+    "--command",
+    help="Recorder command line, e.g. 'gpu-screen-recorder -w DP-1 -o out.mp4'",
+)
+_CAPTURE_BACKEND_OPTION = typer.Option(
+    None,
+    "--backend",
+    help="Recorder backend override (inferred from the executable when omitted)",
 )
 
 
@@ -1561,6 +1575,146 @@ def daemon_run(
     finally:
         if watch_source is not None:
             watch_source.close()
+
+
+def _noop() -> None:
+    """A do-nothing restore/teardown callback."""
+
+
+def _build_capture_client() -> IControllableJobClient:
+    """Build the production capture job client, degrading when no hub exists.
+
+    One bus probe (never a poll): the reactive daemon owns
+    ``org.dotfiles.Events`` and the capture job must register with it. An
+    absent bus or an absent daemon is **reduced functionality** — the
+    recorder still runs, it simply reports to no hub and accepts no remote
+    ``Control`` — never an error (AD-41). The degraded adapter is a no-op so
+    the host lifecycle is identical on both arms.
+    """
+    from runtime.adapters.daemon_status import probe_session_bus
+    from runtime.adapters.dbus_job_client import DbusJobClient
+    from runtime.adapters.local_job_client import LocalJobClient
+
+    snapshot = probe_session_bus()
+    if not snapshot.name_owned:
+        logger.warning(
+            "capture: daemon absent (%s); running with reduced functionality "
+            "(no capture.state events, no remote pause/resume/stop)",
+            snapshot.detail or "no owner for the hub name",
+        )
+        return LocalJobClient()
+    return DbusJobClient()
+
+
+def _install_capture_stop_handlers(host: CaptureHost) -> Callable[[], None]:
+    """Install SIGTERM/SIGINT → request_stop; return a restore callable.
+
+    Mirrors the daemon's release-handler discipline: installed before the
+    blocking serve loop, always restored by the caller (a leaked disposition
+    would wedge the embedding process). SIGINT is installed after SIGTERM
+    with rollback so a half-installed pair never survives.
+    """
+    import signal as _signal
+
+    previous_term = _signal.getsignal(_signal.SIGTERM)
+    previous_int = _signal.getsignal(_signal.SIGINT)
+
+    def _on_signal(signum: int, _frame: object) -> None:
+        logger.info("capture: caught signal %s — stopping recording", signum)
+        host.request_stop()
+
+    _signal.signal(_signal.SIGTERM, _on_signal)
+    try:
+        _signal.signal(_signal.SIGINT, _on_signal)
+    except BaseException:
+        _signal.signal(_signal.SIGTERM, previous_term)
+        raise
+
+    def _restore() -> None:
+        _signal.signal(_signal.SIGTERM, previous_term)
+        _signal.signal(_signal.SIGINT, previous_int)
+
+    return _restore
+
+
+def _run_capture_host(
+    *,
+    command: str,
+    backend: str | None = None,
+    recorder: IRecorderProcess | None = None,
+    client: IControllableJobClient | None = None,
+    clock: Callable[[], float] | None = None,
+    stop_event: threading.Event | None = None,
+) -> int:
+    """Run the resident capture host in the foreground (blocking, no polling).
+
+    The recorder command is a shell words string (the launcher resolves the
+    target/backend and passes the exact argv). With a live daemon the client
+    is a :class:`DbusJobClient`: ``BeginJob`` registers the job, its blocking
+    ``serve`` loop drives ``tick`` (lease renew + >= 1/s ``capture.state``)
+    and answers ``org.dotfiles.Job1.Control``; a validated ``stop`` (or a
+    SIGTERM/SIGINT) ends the loop and :meth:`CaptureHost.stop` finalizes the
+    recorder and ``EndJob``. With no daemon/bus the degraded local client
+    runs the same lifecycle but blocks on the stop event with no bus.
+
+    Injectables (``recorder``/``client``/``clock``/``stop_event``) exist for
+    hermetic tests; the CLI passes none and installs signal handlers.
+    """
+    from runtime.adapters.dbus_job_client import DbusJobClient
+    from runtime.adapters.subprocess_recorder import SubprocessRecorder
+    from runtime.application.capture_host import CaptureHost
+
+    resolved_clock: Callable[[], float] = time.monotonic if clock is None else clock
+    if recorder is None:
+        recorder = SubprocessRecorder(shlex.split(command), backend=backend)
+    if client is None:
+        client = _build_capture_client()
+    host = CaptureHost(client, recorder, clock=resolved_clock, stop_event=stop_event)
+    restore = _install_capture_stop_handlers(host) if stop_event is None else _noop
+
+    def _drive_tick() -> None:
+        host.tick()
+
+    try:
+        host.start()
+        if isinstance(client, DbusJobClient):
+            client.serve(host.stop_requested, tick=_drive_tick)
+        else:
+            host.wait()
+    finally:
+        host.stop()
+        if isinstance(client, DbusJobClient):
+            client.close()
+        restore()
+    return 0
+
+
+@app.command(help="Run the resident capture job (owns the recorder; serves hub Control)")
+def capture(
+    command: str = _CAPTURE_COMMAND_OPTION,
+    backend: str | None = _CAPTURE_BACKEND_OPTION,
+) -> None:
+    """Foreground resident capture host (Phase 5, AD-37/AD-38/AD-40).
+
+    Owns the recorder child, registers a ``capture`` lifetime job with a
+    running daemon (``BeginJob``/``RenewJob``/``EndJob``), publishes the
+    ``capture.state`` domain event through the hub on every transition and
+    at least once per second while recording, and serves
+    ``org.dotfiles.Job1.Control`` so the bar's pause/resume/stop reaches the
+    real recording — closing the N1 production-host gap. This is the only
+    process that owns the recorder; the legacy short-lived ``capture-tool``
+    control path spawns it. With no daemon/bus it still records with reduced
+    functionality (no events, no remote control) and never crash-loops;
+    SIGTERM/SIGINT stops the recorder and exits 0.
+    """
+    try:
+        _run_capture_host(command=command, backend=backend)
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.error("capture failed: %s", exc)
+        raise typer.Exit(code=1) from None
+    except Exception:
+        logger.exception("capture failed unexpectedly")
+        raise typer.Exit(code=1) from None
 
 
 def _render_imperative_plan(renderer: Renderer, plan_result: _ReconcilePlanResult) -> None:

@@ -20,6 +20,7 @@ injectable so the whole client is unit-testable without a live bus.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -44,7 +45,7 @@ from runtime.adapters.dbus_event_bus import (
 )
 from runtime.domain.models import JobEnded, NotControllable, UnknownJob
 from runtime.ports.bus_name_owner import BUS_NAME
-from runtime.ports.jobs import IJobClient
+from runtime.ports.jobs import IControllableJobClient
 
 __all__ = ["DbusJobClient"]
 
@@ -65,7 +66,7 @@ def _connect_session() -> DBusConnection:
         raise RuntimeError(f"job client cannot connect to the session bus: {exc}") from exc
 
 
-class DbusJobClient(IJobClient):
+class DbusJobClient(IControllableJobClient):
     """``IJobClient`` over the hub's ``org.dotfiles.Events1`` methods.
 
     Also serves ``org.dotfiles.Job1`` for the hub's delegated control calls.
@@ -82,6 +83,7 @@ class DbusJobClient(IJobClient):
         self._timeout = timeout
         self._job_id: str | None = None
         self._control_handler: Callable[[str, str], None] | None = None
+        self._pending: list[Any] = []
 
     def set_control_handler(self, handler: Callable[[str, str], None]) -> None:
         """Bind the job-side handler ``handler(job_id, action)`` for Control.
@@ -105,10 +107,50 @@ class DbusJobClient(IJobClient):
         return self._conn
 
     def _call(self, member: str, signature: str, body: tuple[Any, ...]) -> tuple[Any, ...]:
+        conn = self._ensure()
         address = DBusAddress(OBJECT_PATH, bus_name=BUS_NAME, interface=INTERFACE)
-        reply = self._ensure().send_and_get_reply(
-            new_method_call(address, member, signature, body), timeout=self._timeout
-        )
+        message = new_method_call(address, member, signature, body)
+        serial = next(conn.outgoing_serial)
+        conn.send_message(message, serial=serial)
+        deadline = time.monotonic() + self._timeout
+        while True:
+            # A nested ``_call`` (a Control handler publishing/ending) may have
+            # already read our reply while it pumped; take it back rather than
+            # waiting for a message that was consumed.
+            queued = self._take_pending(serial)
+            if queued is not None:
+                return self._reply_body(member, queued)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"{member} reply timed out")
+            reply = conn.receive(timeout=remaining)
+            reply_to = reply.header.fields.get(HeaderFields.reply_serial, None)
+            if reply_to == serial:
+                return self._reply_body(member, reply)
+            if reply.header.message_type in (MessageType.method_return, MessageType.error):
+                # A reply for an outer ``_call``; stash it for its owner.
+                self._pending.append(reply)
+                continue
+            # An inbound Control (or Peer/Introspect) while we wait for our
+            # own reply: serve it on this connection rather than swallowing it
+            # (the hub may be calling us mid-tick). Never dropped.
+            try:
+                self._answer(reply)
+            except OSError:
+                raise
+            except Exception:
+                logger.exception("job client: serving an interleaved message failed")
+
+    def _take_pending(self, serial: int) -> Any | None:
+        """Remove and return a stashed reply for ``serial`` (FIFO scan)."""
+        for index, reply in enumerate(self._pending):
+            if reply.header.fields.get(HeaderFields.reply_serial, None) == serial:
+                return self._pending.pop(index)
+        return None
+
+    @staticmethod
+    def _reply_body(member: str, reply: Any) -> tuple[Any, ...]:
+        """Validate a matched reply and return its body (typed error passthrough)."""
         if reply.header.message_type == MessageType.error:
             error_name = reply.header.fields.get(HeaderFields.error_name, "unknown error")
             raise RuntimeError(f"{member} failed: {error_name}")
@@ -189,6 +231,9 @@ class DbusJobClient(IJobClient):
             elif interface == _PEER_INTERFACE and member == "Ping":
                 signature, body = "", ()
             elif interface == JOB_INTERFACE and member == "Control":
+                # The handler may call back into the hub (publish/end); the
+                # hub is pumping while it waits for this ack, so those calls
+                # are answered rather than stalled (see ``_call``).
                 self._handle_control_call(tuple(msg.body))
                 signature, body = "", ()
             else:

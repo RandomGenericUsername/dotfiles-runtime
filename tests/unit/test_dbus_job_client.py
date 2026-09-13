@@ -9,6 +9,7 @@ the registered handler is pinned without a bus.
 
 from __future__ import annotations
 
+import itertools
 from typing import Any
 
 import pytest
@@ -17,28 +18,46 @@ from runtime.adapters.dbus_job_client import DbusJobClient
 
 
 class _FakeConn:
-    """Scripted stand-in for a jeepney blocking connection."""
+    """Scripted stand-in for a jeepney blocking connection.
+
+    Outbound method calls (``send_message`` of a method_call) are recorded in
+    ``sent`` and a scripted reply is queued for ``receive``; the client's
+    ``_call`` pump then reads it. Replies the client itself sends are recorded
+    in ``delivered``. ``deliver`` can be preloaded with inbound calls the pump
+    must serve while waiting.
+    """
 
     def __init__(self, error_member: str | None = None) -> None:
         self.sent: list[Any] = []
         self.delivered: list[Any] = []
         self.deliver: list[Any] = []
+        self.order: list[str] = []
         self.error_member = error_member
         self.closed = False
+        self.outgoing_serial = itertools.count(1)
 
-    def send_and_get_reply(self, message: Any, timeout: float | None = None) -> Any:
-        from jeepney import HeaderFields, new_error, new_method_return
+    def send_message(self, message: Any, serial: int | None = None) -> None:
+        from jeepney import HeaderFields, MessageType
 
-        member = message.header.fields.get(HeaderFields.member, "")
-        self.sent.append(message)
+        if message.header.message_type == MessageType.method_call:
+            if serial is not None:
+                message.header.serial = serial
+            member = message.header.fields.get(HeaderFields.member, "")
+            self.sent.append(message)
+            self.order.append(f"call:{member}")
+            self.deliver.append(self._reply_for(message, member))
+        else:
+            self.delivered.append(message)
+            self.order.append(f"reply:{message.header.message_type.name}")
+
+    def _reply_for(self, message: Any, member: str) -> Any:
+        from jeepney import new_error, new_method_return
+
         if member == self.error_member:
             return new_error(message, "org.dotfiles.Events1.RateLimited", "s", ("too fast",))
         if member == "BeginJob":
             return new_method_return(message, "s", ("job-7",))
         return new_method_return(message, None, ())
-
-    def send_message(self, message: Any, serial: int | None = None) -> None:
-        self.delivered.append(message)
 
     def receive(self, *, timeout: float | None = None) -> Any:
         if self.deliver:
@@ -282,3 +301,52 @@ class TestServingJobControl:
         client._answer(_job_call("Control", "s", ("stop",)))
         assert controller.state == "idle"
         assert recorder.calls == ["start", "pause", "resume", "stop"]
+
+    def test_inbound_control_is_served_while_a_job_call_waits(self) -> None:
+        """The job's own reply-wait must not drop an inbound Control (N1).
+
+        The hub can call ``Job1.Control`` while the job is waiting for its
+        ``Emit``/``RenewJob`` reply; the client serves it mid-wait instead of
+        swallowing it (which would strand the hub until its 5s timeout).
+        """
+        from jeepney import HeaderFields, MessageType
+
+        conn = _FakeConn()
+        client = self._serving_client(conn)
+        seen: list[tuple[str, str]] = []
+        client.set_control_handler(lambda job_id, action: seen.append((job_id, action)))
+
+        # Arrives before the synchronized reply for the Emit below.
+        conn.deliver.append(_job_call("Control", "s", ("pause",)))
+        client.publish("capture.state", {"state": "recording", "elapsed_seconds": 1})
+
+        assert seen == [("job-7", "pause")]
+        assert any(
+            message.header.fields.get(HeaderFields.member) == "Emit"
+            for message in conn.sent
+        )
+        assert any(
+            message.header.message_type == MessageType.method_return
+            for message in conn.delivered
+        )
+
+    def test_nested_call_pump_holds_the_outer_reply_for_its_owner(self) -> None:
+        """A Control handler's own call must not consume the outer call's reply.
+
+        When a Control arrives mid-``Emit``, the handler publishes again; that
+        inner ``_call`` pump can read the OUTER Emit's reply first. It must
+        stash it (not drop it), so the outer call still completes.
+        """
+        conn = _FakeConn()
+        client = self._serving_client(conn)
+
+        def _handler(job_id: str, action: str) -> None:
+            client.publish("capture.state", {"state": "paused"})
+
+        client.set_control_handler(_handler)
+        conn.deliver.append(_job_call("Control", "s", ("pause",)))
+        # Outer call. Its reply is queued before the inner call's reply, so the
+        # inner pump sees the outer reply first.
+        client.publish("capture.state", {"state": "recording"})
+
+        assert len(conn.sent) == 3  # BeginJob + outer Emit + inner Emit
