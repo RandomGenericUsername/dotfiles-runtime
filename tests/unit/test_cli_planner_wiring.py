@@ -326,3 +326,102 @@ def test_plain_reconcile_malformed_desired_fails_before_swap(
     output = result.output + getattr(result, "stderr", "")
     assert "desired.json" in output
     assert "version" in output
+
+
+def _write_palette_entry(state_root: Path, entry_hash: str, generated_at: str) -> None:
+    import hashlib
+    import json
+
+    d = state_root / "cache" / "palettes" / entry_hash
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "meta.json").write_text(
+        json.dumps(
+            {
+                "hash_algorithm": "sha256",
+                "kind": "palette",
+                "generated_at": generated_at,
+                "artifact_hashes": {"colors.yaml": hashlib.sha256(b"y").hexdigest()},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (d / "colors.yaml").write_text("y", encoding="utf-8")
+
+
+def _seed_prunable_palettes(state_root: Path) -> None:
+    """Active palette + 7 older dated entries; desired matches the active one."""
+    import json
+
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.domain.models import DesktopState, PaletteEntry, WallpaperEntry
+
+    active = "a" * 64
+    wallpaper = "e" * 64
+    _write_palette_entry(state_root, active, "2026-09-20T00:00:00Z")
+    for i in range(1, 8):
+        _write_palette_entry(state_root, f"{i:064x}", f"2026-09-{i:02d}T00:00:00Z")
+    JsonStateRepository(state_root=state_root).save(
+        DesktopState(
+            schema_version=2,
+            wallpaper=WallpaperEntry(
+                hash_algorithm="sha256",
+                kind="wallpaper",
+                content_hash=wallpaper,
+                source_path="/img/w.png",
+                imported_at="2026-09-20T00:00:00Z",
+            ),
+            monitors={},
+            palette=PaletteEntry(
+                hash_algorithm="sha256",
+                kind="palette",
+                entry_hash=active,
+                source_wallpaper_hash=wallpaper,
+                input_template_hash="t" * 64,
+                artifact_hashes={},
+                generated_at="2026-09-20T00:00:00Z",
+            ),
+            effects=None,
+            icons=None,
+            applied_at="2026-09-20T00:00:00Z",
+        )
+    )
+    intent = cli_main._resolve_desired_path()
+    intent.parent.mkdir(parents=True, exist_ok=True)
+    intent.write_text(
+        json.dumps({"version": 1, "wallpaper": "/img/w.png", "keep": 5, "pinned": []}),
+        encoding="utf-8",
+    )
+
+
+def _palette_dir_entries(state_root: Path) -> set[str]:
+    layer = state_root / "cache" / "palettes"
+    if not layer.is_dir():
+        return set()
+    return {p.name for p in layer.iterdir() if p.is_dir()}
+
+
+def test_run_converge_defaults_to_real_deletion_for_manual_reconcile() -> None:
+    """Phase 4 behavior unchanged: plain ``reconcile`` deletes beyond-keep."""
+    state_root = cli_main._resolve_state_root()
+    state_root.mkdir(parents=True, exist_ok=True)
+    _seed_prunable_palettes(state_root)
+
+    report = cli_main._run_converge()
+
+    assert report is not None
+    assert sum(len(hashes) for hashes in report.deleted.values()) == 3
+    assert len(_palette_dir_entries(state_root)) == 5
+
+
+def test_run_converge_allow_delete_false_never_deletes() -> None:
+    """R1: the reactive declarative leg plans but physically removes nothing."""
+    state_root = cli_main._resolve_state_root()
+    state_root.mkdir(parents=True, exist_ok=True)
+    _seed_prunable_palettes(state_root)
+    before = _palette_dir_entries(state_root)
+
+    report = cli_main._run_converge(allow_delete=False)
+
+    assert report is not None
+    assert sum(len(hashes) for hashes in report.deleted.values()) == 0
+    assert _palette_dir_entries(state_root) == before

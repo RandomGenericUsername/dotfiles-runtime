@@ -1238,13 +1238,15 @@ def _run_reactive_converge(
     history. Corrupt/symlinked intent is a logged recoverable skip of the
     declarative step only — the rest of the composite still converges.
 
-    ``prune_on_reactive`` (default **False**) gates the prune leg. When off,
-    the composite runs regenerate/reconcile/declarative but performs **no
-    deletion and writes no ``prune`` history line**; the would-be removal
-    count under the AD-30 floor is computed read-only and logged at INFO.
-    When on, the real AD-30-bounded prune runs exactly as before (one
-    ``prune`` line with counts). The opt-in is a CLI flag / env var and never
-    lives under a watched root.
+    ``prune_on_reactive`` (default **False**) is the sole deletion gate in the
+    reactive path. The declarative step always runs with ``allow_delete=False``
+    (it plans but never deletes), so when the flag is off the composite
+    performs **no deletion at all** and writes no ``prune`` history line; the
+    would-be removal count under the AD-30 floor is computed read-only and
+    logged at INFO at the settled state. When on, the real AD-30-bounded prune
+    runs exactly once after the declarative step and is audited with exactly
+    one ``prune`` line whose counts equal the entries actually removed. The
+    opt-in is a CLI flag / env var and never lives under a watched root.
     """
     from runtime.adapters.converge_backstop import LastConvergedBackstop
     from runtime.adapters.converge_inputs import compute_watch_input_hash
@@ -1263,7 +1265,7 @@ def _run_reactive_converge(
 
     def _declarative() -> object:
         try:
-            return _run_converge(suppress_history=True)
+            return _run_converge(suppress_history=True, allow_delete=False)
         except ValueError as exc:
             # Corrupt/symlinked intent is a logged recoverable skip, never a
             # crash-loop (AD-41); the other steps still converge.
@@ -1520,8 +1522,8 @@ def daemon_run(
         "--prune-on-reactive",
         envvar="DOTFILES_REACTIVE_PRUNE",
         help=(
-            "Run the AD-30-bounded prune on each reactive converge "
-            "(default: skip; no deletion, no prune history line)"
+            "Run the AD-30-bounded prune once per reactive converge "
+            "(default: no deletion at all, no prune history line)"
         ),
     ),
 ) -> None:
@@ -1535,12 +1537,14 @@ def daemon_run(
     subcommands exist — ``systemctl --user`` is the control surface.
     SIGTERM releases the name → exit 0.
 
-    **Reactive prune is opt-in, default off.** With ``--activate`` the
-    reactive converge regenerates/reconciles but performs no deletion. Pass
-    ``--prune-on-reactive`` (or set ``$DOTFILES_REACTIVE_PRUNE``) to opt into
-    the real AD-30-bounded prune (one ``prune`` history line per converge);
-    with it off the would-be count is logged read-only at INFO and no ``prune``
-    line is written. The flag is inert while observe-only.
+    **Reactive prune is opt-in, default off — and off means no deletion.**
+    The reactive path's declarative step never deletes (it only plans), so
+    with the flag off a reactive converge regenerates/reconciles and removes
+    nothing anywhere (no cache entry, no ``prune`` history line); the
+    would-be count is logged read-only at INFO. Pass ``--prune-on-reactive``
+    (or set ``$DOTFILES_REACTIVE_PRUNE``) to opt into the real AD-30-bounded
+    prune, which runs exactly once after the declarative step and is audited
+    with exactly one ``prune`` line. The flag is inert while observe-only.
 
     **Kill switch (AD-41):** ``systemctl --user stop dotfiles-runtime-daemon``
     sends SIGTERM; the installed handler releases ``org.dotfiles.Events`` and
@@ -2099,7 +2103,9 @@ def _render_converge(
     }
 
 
-def _run_converge(*, suppress_history: bool = False) -> ConvergenceReport | None:
+def _run_converge(
+    *, suppress_history: bool = False, allow_delete: bool = True
+) -> ConvergenceReport | None:
     """Execute the declarative gap for plain ``reconcile`` (Story 4.5, AC 3).
 
     Returns ``None`` when no ``desired.json`` is present (imperative mode
@@ -2110,6 +2116,14 @@ def _run_converge(*, suppress_history: bool = False) -> ConvergenceReport | None
 
     ``suppress_history`` (Phase 5) is threaded to the wallpaper-set pipeline
     so a reactive composite's declarative step writes no line.
+
+    ``allow_delete`` (default ``True``) selects the deletion executor. The
+    manual ``reconcile`` path keeps the real ``remove_entry`` seam (Phase 4
+    behavior unchanged). When ``False`` a no-op executor (returns ``False``)
+    is wired instead: ``ConvergeUseCase`` still plans the AD-30 removals but
+    physically deletes nothing and reports no deleted hashes. The daemon's
+    reactive declarative step always passes ``allow_delete=False`` so the
+    opt-in ``prune`` leg is the sole deletion authority in that path (R1).
     """
     from pathlib import Path
 
@@ -2144,9 +2158,14 @@ def _run_converge(*, suppress_history: bool = False) -> ConvergenceReport | None
             raise RuntimeError(f"reload failed for: {', '.join(res.reconcile.reload_failures)}")
         return res
 
+    def remove_executor(layer: str, entry_hash: str) -> bool:
+        if not allow_delete:
+            return False
+        return remove_entry(state_root, layer, entry_hash)
+
     return ConvergeUseCase(
         set_wallpaper,
-        lambda layer, entry_hash: remove_entry(state_root, layer, entry_hash),
+        remove_executor,
         refresh_actual,
     ).run(changeset)
 

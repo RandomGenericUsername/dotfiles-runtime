@@ -519,6 +519,11 @@ def sandbox(tmp_path: Path) -> Iterator[_Sandbox]:
 
 def test_phase5_reactive_runtime_end_to_end(sandbox: _Sandbox) -> None:
     """Daemon surface + reactive converge (prune off) + real capture Control."""
+    # Beyond-keep entries exist up front: with the opt-in OFF the reactive
+    # path must delete NOTHING (R1 regression — the declarative step no longer
+    # executes removals).
+    sandbox.add_prunable_palettes(7)
+    palettes_before = sandbox.palette_entries()
     with _private_bus() as address:
         with _running_daemon(sandbox, address, ("--activate",)) as (daemon, client):
             # 1. Ownership + inspect daemon (real subprocess) reports it.
@@ -545,11 +550,12 @@ def test_phase5_reactive_runtime_end_to_end(sandbox: _Sandbox) -> None:
             assert _wait(lambda: sandbox.reactive_count() == before + 1), daemon.log_text()
             assert sandbox.reactive_count() == before + 1
 
-            # 3. The reactive prune audit is skipped by default: no ``prune``
-            #    history line. (The declarative step's diff-driven trim is a
-            #    separate, always-on mechanism — see the completion report's
-            #    "declarative trim" finding; it is NOT asserted here.)
+            # 3. The reactive prune is skipped by default: no ``prune`` history
+            #    line AND no cache entry removed anywhere — the declarative
+            #    step only plans (allow_delete=False), it never trims. This is
+            #    the R1 regression proof at the process level.
             assert sandbox.prune_lines() == []
+            assert sandbox.palette_entries() == palettes_before
 
             # 5. GetTopicState hydration works and N2 Control fails loud.
             state = client.topic_state("capture.state")
@@ -571,28 +577,40 @@ def test_phase5_reactive_runtime_end_to_end(sandbox: _Sandbox) -> None:
 
 
 def test_reactive_prune_opt_in_removes_and_writes_a_prune_line(sandbox: _Sandbox) -> None:
-    """``--prune-on-reactive`` runs the AD-30-bounded prune; default does not."""
-    prunable = sandbox.add_prunable_palettes(7)
-    before = sandbox.palette_entries()
-    assert len(prunable & before) == 7
-
+    """``--prune-on-reactive`` runs the AD-30-bounded prune once; default does not."""
     with _private_bus() as address:
         with _running_daemon(sandbox, address, ("--activate", "--prune-on-reactive")) as (
             _daemon,
             _client,
         ):
-            assert _wait(lambda: sandbox.reactive_count() >= 1)
+            # Startup converge has nothing prunable yet; wait for it to settle.
+            assert _wait(lambda: sandbox.reactive_count() >= 1), _daemon.log_text()
+            baseline_prune = len(sandbox.prune_lines())
+
+            # Now add beyond-keep entries. Adding cache entries is not a watched
+            # change, so exactly one reactive converge is triggered by the touch
+            # below — and it must delete the prunable entries for real.
+            prunable = sandbox.add_prunable_palettes(7)
+            before = sandbox.palette_entries()
+            assert len(prunable & before) == 7
+
             sandbox.touch_watched_input()
-            # The opt-in flag adds the ``prune`` audit line (the observable
-            # difference vs. the default). NOTE: in the real composite the
-            # declarative step trims beyond-keep entries first, so this line
-            # reports ``removed=0`` — a finding recorded in the completion
-            # report, not asserted away here.
-            assert _wait(lambda: bool(sandbox.prune_lines())), _daemon.log_text()
-            assert len(sandbox.prune_lines()) >= 1
+            assert _wait(lambda: sandbox.reactive_count() >= 2), _daemon.log_text()
+            assert _wait(lambda: len(sandbox.prune_lines()) > baseline_prune), _daemon.log_text()
+
             after = sandbox.palette_entries()
-            assert len(after) < len(before)
-            assert after  # keep floor retained at least the active entry
+            removed = len(before) - len(after)
+            prune = sandbox.prune_lines()
+            # Exactly one prune line per reactive converge (one for the touch).
+            assert len(prune) == baseline_prune + 1
+            details = prune[-1]["details"]
+            # The audit count equals the entries actually removed, > 0 (R1).
+            assert removed > 0
+            assert details["removed"] == removed
+            assert details["layers"]["palettes"] == removed
+            # AD-30 floor: the active/newest entries survive; only old ones go.
+            assert after
+            assert sandbox.reactive_count() == 2
 
 
 def _exercise_capture_host(
