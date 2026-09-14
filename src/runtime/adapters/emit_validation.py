@@ -139,6 +139,29 @@ TOPIC_SCHEMAS: dict[str, dict[str, Any]] = {
         },
         "additionalProperties": True,
     },
+    "clipboard.update": {
+        "type": "object",
+        "required": ["type", "hash", "path", "preview"],
+        "properties": {
+            "type": {
+                "type": "string",
+                "enum": ["text", "image", "link", "code", "color", "emoji"],
+            },
+            "hash": {"type": "string"},
+            "path": {"type": "string"},
+            "preview": {"type": "string"},
+        },
+        "additionalProperties": True,
+    },
+    "clipboard.state": {
+        "type": "object",
+        "required": ["state", "job_id"],
+        "properties": {
+            "state": {"type": "string", "enum": ["idle", "running", "paused"]},
+            "job_id": {"type": "string"},
+        },
+        "additionalProperties": True,
+    },
 }
 
 

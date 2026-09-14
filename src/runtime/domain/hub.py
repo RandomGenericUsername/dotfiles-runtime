@@ -49,13 +49,22 @@ SYNTHETIC_EXPIRY_EXIT_CODE: int = -1
 #: same reason.
 CONTROL_ALLOWLIST: Mapping[str, frozenset[str]] = {
     "capture": frozenset({"pause", "resume", "stop"}),
+    "clipboard": frozenset({"pause", "resume", "stop"}),
 }
 
 #: Topics the hub may carry (mirrors ``contracts/event-contract.json``
 #: `topics`; embedded constant, not I/O — same standing as
 #: ``CONTROL_ALLOWLIST``). Unknown topics are never auto-created
 #: (AD-44: the hub never advertises a topic absent from the contract).
-KNOWN_TOPICS: frozenset[str] = frozenset({"icme.saved", "capture.state", "speedtest.finished"})
+KNOWN_TOPICS: frozenset[str] = frozenset(
+    {
+        "icme.saved",
+        "capture.state",
+        "speedtest.finished",
+        "clipboard.update",
+        "clipboard.state",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
