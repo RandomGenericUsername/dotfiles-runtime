@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from runtime.application.apply_wallpaper import ApplyWallpaperResult
     from runtime.application.capture_host import CaptureHost
     from runtime.application.check_inputs import CheckInputsResult
+    from runtime.application.clipboard_host import ClipboardHost
     from runtime.application.converge import ReactiveConvergeResult
     from runtime.application.doctor import DoctorReport, RepairResult
     from runtime.application.inspect import (
@@ -331,7 +332,14 @@ def main_callback(
     # The COMMAND comes from typer's resolved context (never argv parsing:
     # operands named "reconcile"/flag values must not skip seeding, and
     # flag-first invocations must).
-    if ctx.invoked_subcommand in ("reconcile", "inspect", "doctor", "daemon", "capture"):
+    if ctx.invoked_subcommand in (
+        "reconcile",
+        "inspect",
+        "doctor",
+        "daemon",
+        "capture",
+        "clipboard",
+    ):
         return
     _run_seed_if_needed()
 
@@ -1743,6 +1751,136 @@ def capture(
         raise typer.Exit(code=1) from None
     except Exception:
         logger.exception("capture failed unexpectedly")
+        raise typer.Exit(code=1) from None
+
+
+def _build_clipboard_client() -> IControllableJobClient:
+    """Build the production clipboard job client, degrading when no hub exists.
+
+    Mirrors :func:`_build_capture_client`: one bus probe (never a poll). An
+    absent daemon is reduced functionality — the watcher still records history,
+    it simply publishes no events and accepts no remote ``Control`` — never an
+    error (AD-41). The degraded adapter is a no-op so the host lifecycle is
+    identical on both arms.
+    """
+    from runtime.adapters.daemon_status import probe_session_bus
+    from runtime.adapters.dbus_job_client import DbusJobClient
+    from runtime.adapters.local_job_client import LocalJobClient
+
+    snapshot = probe_session_bus()
+    if not snapshot.name_owned:
+        logger.warning(
+            "clipboard: daemon absent (%s); running with reduced functionality "
+            "(no clipboard events, no remote pause/resume/stop)",
+            snapshot.detail or "no owner for the hub name",
+        )
+        return LocalJobClient()
+    return DbusJobClient()
+
+
+def _install_clipboard_stop_handlers(host: ClipboardHost) -> Callable[[], None]:
+    """Install SIGTERM/SIGINT → request_stop; return a restore callable."""
+    import signal as _signal
+
+    previous_term = _signal.getsignal(_signal.SIGTERM)
+    previous_int = _signal.getsignal(_signal.SIGINT)
+
+    def _on_signal(signum: int, _frame: object) -> None:
+        logger.info("clipboard: caught signal %s — stopping watcher", signum)
+        host.request_stop()
+
+    _signal.signal(_signal.SIGTERM, _on_signal)
+    try:
+        _signal.signal(_signal.SIGINT, _on_signal)
+    except BaseException:
+        _signal.signal(_signal.SIGTERM, previous_term)
+        raise
+
+    def _restore() -> None:
+        _signal.signal(_signal.SIGTERM, previous_term)
+        _signal.signal(_signal.SIGINT, previous_int)
+
+    return _restore
+
+
+def _run_clipboard_host(
+    *,
+    source: object | None = None,
+    store: object | None = None,
+    config: object | None = None,
+    client: IControllableJobClient | None = None,
+    clock: Callable[[], float] | None = None,
+    stop_event: threading.Event | None = None,
+) -> int:
+    """Run the resident clipboard host in the foreground (blocking, no polling).
+
+    With a live daemon the client is a :class:`DbusJobClient`: ``BeginJob``
+    registers the ``clipboard`` job, its blocking ``serve`` loop drives
+    ``tick`` (source drain + lease renew) and answers
+    ``org.dotfiles.Job1.Control``; a validated ``stop`` (or SIGTERM/SIGINT)
+    ends the loop and :meth:`ClipboardHost.stop` ends the hub job. With no
+    daemon/bus the degraded local client runs the same lifecycle but the host
+    drains its own loop with no bus. Injectables exist for hermetic tests.
+    """
+    from runtime.adapters.clipboard_config import JsonClipboardConfigReader
+    from runtime.adapters.dbus_job_client import DbusJobClient
+    from runtime.adapters.json_history_store import JsonClipboardStore
+    from runtime.adapters.wl_paste_source import WlPasteSource
+    from runtime.application.clipboard_host import ClipboardHost
+
+    resolved_clock: Callable[[], float] = time.monotonic if clock is None else clock
+    resolved_source = WlPasteSource() if source is None else source
+    resolved_store = JsonClipboardStore() if store is None else store
+    resolved_config = JsonClipboardConfigReader() if config is None else config
+    if client is None:
+        client = _build_clipboard_client()
+    host = ClipboardHost(
+        client,
+        resolved_source,  # type: ignore[arg-type]
+        resolved_store,  # type: ignore[arg-type]
+        resolved_config,  # type: ignore[arg-type]
+        clock=resolved_clock,
+        stop_event=stop_event,
+    )
+    restore = _install_clipboard_stop_handlers(host) if stop_event is None else _noop
+
+    def _drive_tick() -> None:
+        host.tick()
+
+    try:
+        host.start()
+        logger.info("clipboard: watching (mode=%s)", host.controller.source_mode)
+        if isinstance(client, DbusJobClient):
+            client.serve(host.stop_requested, tick=_drive_tick)
+        else:
+            host.serve()
+    finally:
+        host.stop()
+        if isinstance(client, DbusJobClient):
+            client.close()
+        restore()
+    return 0
+
+
+@app.command(help="Run the resident clipboard watcher (history + hub events)")
+def clipboard() -> None:
+    """Foreground resident clipboard host (Phase 5, AD-37/AD-38/AD-40).
+
+    Owns the clipboard source (``wl-paste --watch`` with a declared polling
+    fallback), persists history to the JSON store, registers a ``clipboard``
+    lifetime job with a running daemon, publishes ``clipboard.update`` per
+    captured item and ``clipboard.state`` on every transition, and serves
+    ``org.dotfiles.Job1.Control`` so the overlay's incognito pause/resume/stop
+    reaches the real watcher. With no daemon/bus it still records history with
+    reduced functionality and never crash-loops.
+    """
+    try:
+        _run_clipboard_host()
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.error("clipboard failed: %s", exc)
+        raise typer.Exit(code=1) from None
+    except Exception:
+        logger.exception("clipboard failed unexpectedly")
         raise typer.Exit(code=1) from None
 
 

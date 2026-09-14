@@ -47,6 +47,8 @@ _VALID_BASE: dict[str, dict[str, object]] = {
     "icme.saved": {"path": "/a/b"},
     "capture.state": {"state": "recording", "elapsed_seconds": 1},
     "speedtest.finished": {"down_mbps": 1.0, "up_mbps": 2.0, "latency_ms": 3.0},
+    "clipboard.update": {"type": "text", "hash": "h", "path": "", "preview": "hi"},
+    "clipboard.state": {"state": "running", "job_id": "job-1"},
 }
 
 #: The reproduced payload shapes. ``bool`` vs ``int`` is included because
