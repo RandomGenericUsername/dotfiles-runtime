@@ -111,6 +111,7 @@ class InotifyWatchSource(IWatchSource):
         self._watches: dict[int, _Watch] = {}
         self._pending: collections.deque[WatchEvent] = collections.deque()
         self._failed: dict[str, str] = {}
+        self._warned: set[str] = set()
         self._last_error: str | None = None
         self._closed = False
 
@@ -153,15 +154,22 @@ class InotifyWatchSource(IWatchSource):
         self._watches.clear()
         self._pending.clear()
         self._failed.clear()
+        self._warned.clear()
         self._last_error = None
 
     # ── watch installation ───────────────────────────────────────────
     def rebuild(self) -> None:
-        """Remove every watch and re-install the enumerated roots (AD-40)."""
-        fd = self._require_fd()
-        for wd in list(self._watches):
-            self._lib.inotify_rm_watch(fd, wd)
-        self._watches.clear()
+        """Re-install the enumerated roots (AD-40), idempotently.
+
+        Deliberately does NOT ``inotify_rm_watch`` first. ``inotify_add_watch``
+        on an already-watched path returns the existing wd, so re-running the
+        install recovers dropped/exhausted roots without tearing anything
+        down. Removing would make the kernel emit one ``IN_IGNORED`` per wd —
+        and because the kernel reuses wd numbers, those self-inflicted events
+        look like real registration loss, sending the coordinator into an
+        endless rebuild loop (the ~500 warns/s flood).
+        """
+        self._require_fd()
         self._pending.clear()
         # Retry every root, including ones dropped by an earlier registration
         # exhaustion (AD-40): the capacity may have freed up since.
@@ -183,6 +191,20 @@ class InotifyWatchSource(IWatchSource):
         self._failed[str(path)] = reason
         self._last_error = reason
 
+    def _warn_once(self, path: Path | str, message: str) -> None:
+        """Warn about an unwatchable root at most once until it recovers.
+
+        ``rebuild`` re-attempts every root, so a permanently missing root
+        (e.g. ``desired.json`` with no parent dir) would otherwise re-log on
+        every rebuild. The warning is re-armed by ``_add_watch`` when the root
+        is successfully installed, so a genuinely new failure is never muted.
+        """
+        key = str(path)
+        if key in self._warned:
+            return
+        self._warned.add(key)
+        logger.warning("watch: %s: %s", message, path)
+
     def _install_root(self, index: int, root: WatchRoot) -> None:
         path = root.path
         if root.is_directory:
@@ -194,14 +216,14 @@ class InotifyWatchSource(IWatchSource):
         """Watch the immediate parent filtered to the exact filename."""
         parent = path.parent
         if not parent.is_dir():
-            logger.warning("watch: file root parent missing, not watched: %s", path)
+            self._warn_once(path, "file root parent missing, not watched")
             self._record_unwatchable(path, "parent missing")
             return
         self._add_watch(parent, filename=path.name, depth=0, root_index=index)
 
     def _install_dir_root(self, index: int, path: Path, max_depth: int) -> None:
         if not path.is_dir():
-            logger.warning("watch: directory root missing, not watched: %s", path)
+            self._warn_once(path, "directory root missing, not watched")
             self._record_unwatchable(path, "directory missing")
             return
         root_str = str(path)
@@ -219,29 +241,33 @@ class InotifyWatchSource(IWatchSource):
         wd = self._lib.inotify_add_watch(
             self._require_fd(), os.fsencode(str(directory)), _DIR_WATCH_MASK
         )
+        key = str(directory)
         if wd < 0:
             err = ctypes.get_errno()
             reason = os.strerror(err)
+            if key not in self._warned:
+                self._warned.add(key)
+                if err in _EXHAUSTION_ERRNOS:
+                    # AD-40: watch-registration exhaustion is a degraded state,
+                    # not an invisible drop. Log loudly; the coordinator retries
+                    # dropped roots at the next safe opportunity (never polls).
+                    logger.error(
+                        "watch: registration exhausted (%s) at %s; "
+                        "unwatched until a retry succeeds",
+                        reason,
+                        directory,
+                    )
+                else:
+                    logger.warning(
+                        "watch: cannot watch %s (%s); root(s) at it stay unwatched",
+                        directory,
+                        reason,
+                    )
             self._record_unwatchable(directory, reason)
-            if err in _EXHAUSTION_ERRNOS:
-                # AD-40: watch-registration exhaustion is a degraded state,
-                # not an invisible drop. Log loudly; the coordinator retries
-                # dropped roots at the next safe opportunity (never polls).
-                logger.error(
-                    "watch: registration exhausted (%s) at %s; "
-                    "unwatched until a retry succeeds",
-                    reason,
-                    directory,
-                )
-            else:
-                logger.warning(
-                    "watch: cannot watch %s (%s); root(s) at it stay unwatched",
-                    directory,
-                    reason,
-                )
             return
-        self._failed.pop(str(directory), None)
-        self._watches[wd] = _Watch(str(directory), filename, depth, root_index)
+        self._failed.pop(key, None)
+        self._warned.discard(key)
+        self._watches[wd] = _Watch(key, filename, depth, root_index)
 
     # ── event reading ────────────────────────────────────────────────
     def read_event(self, timeout: float | None = None) -> WatchEvent | None:
@@ -289,12 +315,20 @@ class InotifyWatchSource(IWatchSource):
             return
         watch = self._watches.get(wd)
         if mask & IN_IGNORED:
+            # An IN_IGNORED for a wd we no longer track is the kernel's
+            # acknowledgement of a watch WE removed — ``rebuild`` calls
+            # ``inotify_rm_watch`` for every wd. Surfacing it as registration
+            # loss makes the coordinator re-trigger ``rebuild`` forever (the
+            # flood: ~500 warns/s). Only a still-tracked wd is a real,
+            # involuntary loss (the watched dir was deleted/renamed).
+            if watch is None:
+                return
             self._watches.pop(wd, None)
             self._pending.append(
                 WatchEvent(
                     kind=WatchEventKind.IGNORED,
-                    path=watch.directory if watch else "",
-                    is_directory=bool(watch and watch.filename is None),
+                    path=watch.directory,
+                    is_directory=watch.filename is None,
                 )
             )
             return

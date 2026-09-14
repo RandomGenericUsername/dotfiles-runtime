@@ -91,6 +91,7 @@ class _FakeLib:
 
     def __init__(self, *, fail_first: bool = True) -> None:
         self.calls = 0
+        self.rm_calls = 0
         self.fail_first = fail_first
         self.next_wd = 100
 
@@ -106,6 +107,7 @@ class _FakeLib:
         return wd
 
     def inotify_rm_watch(self, _fd: int, _wd: int) -> int:
+        self.rm_calls += 1
         return 0
 
 
@@ -151,5 +153,74 @@ class TestInotifyAdapterExhaustion:
             status = source.status()
             assert status.degraded is True
             assert status.failed == (str(tmp_path / "does-not-exist"),)
+        finally:
+            source.close()
+
+
+class TestIgnoredEventHandling:
+    """IN_IGNORED from our OWN rebuild removal must not look like a loss.
+
+    ``rebuild`` calls ``inotify_rm_watch`` for every wd; the kernel answers
+    with one IN_IGNORED per removal. Treating those as registration loss made
+    the coordinator re-trigger ``rebuild`` forever (the ~500 warns/s flood).
+    """
+
+    def _source(self, tmp_path: Path) -> InotifyWatchSource:
+        (tmp_path / "tree").mkdir()
+        source = InotifyWatchSource((WatchRoot(tmp_path / "tree", is_directory=True, depth=1),))
+        source._lib = _FakeLib(fail_first=False)  # type: ignore[assignment]
+        source.start()
+        return source
+
+    def test_ignored_for_untracked_watch_is_not_surfaced(self, tmp_path: Path) -> None:
+        source = self._source(tmp_path)
+        try:
+            source._pending.clear()
+            # A wd the source no longer tracks == the kernel acking OUR rm_watch.
+            source._dispatch(999999, inotify_module.IN_IGNORED, "")
+            assert list(source._pending) == []
+        finally:
+            source.close()
+
+    def test_ignored_for_tracked_watch_is_surfaced(self, tmp_path: Path) -> None:
+        source = self._source(tmp_path)
+        try:
+            source._pending.clear()
+            wd = next(iter(source._watches))
+            source._dispatch(wd, inotify_module.IN_IGNORED, "")
+            assert [e.kind for e in source._pending] == [WatchEventKind.IGNORED]
+            assert wd not in source._watches
+        finally:
+            source.close()
+
+    def test_rebuild_never_calls_rm_watch(self, tmp_path: Path) -> None:
+        """Rebuild must re-add idempotently; rm_watch would self-emit IN_IGNORED."""
+        source = self._source(tmp_path)
+        try:
+            source.rebuild()
+            source.rebuild()
+            assert source._lib.rm_calls == 0  # type: ignore[attr-defined]
+            assert source.status().registered >= 1
+        finally:
+            source.close()
+
+
+class TestMissingRootWarnOnce:
+    def test_missing_parent_warns_once_across_rebuilds(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        missing = tmp_path / "nope" / "desired.json"  # parent directory absent
+        source = InotifyWatchSource((WatchRoot(missing, is_directory=False),))
+        source._lib = _FakeLib()  # type: ignore[assignment]
+        with caplog.at_level(logging.WARNING, logger="runtime.adapters.inotify_watch_source"):
+            source.start()
+            source.rebuild()
+            source.rebuild()
+        try:
+            warnings = [
+                r for r in caplog.records if "file root parent missing" in r.getMessage()
+            ]
+            assert len(warnings) == 1
+            assert source.status().degraded is True
         finally:
             source.close()
