@@ -256,6 +256,48 @@ def _use_case(
     return use_case, pipe, repo, recon, mutex
 
 
+class TestReconcileSuppression:
+    """``reconcile=False`` (reactive composite) must not reconverge internally.
+
+    The composite runs its own single Reconcile after RegenerateStale. Running
+    the internal one too made one daemon converge restart consumers twice.
+    """
+
+    def _pipe(self) -> _FakePipeline:
+        new = _entries(palette_hash=NEW_PH, effects_hash=EH, icons_hash=NEW_IH)
+        return _FakePipeline(
+            palette_entry=new["palette"],
+            effects_entry=new["effects"],
+            icons_entry=new["icons"],
+        )
+
+    def test_reconcile_false_skips_internal_reconverge(self, tmp_path: Path) -> None:
+        state = _desktop_state()
+        use_case, _pipe, repo, recon, _mutex = _use_case(
+            stale_script=[frozenset({"icons"})],
+            state=state,
+            pipeline=self._pipe(),
+            tmp_path=tmp_path,
+            state_root=tmp_path / "state",
+        )
+        result = use_case.run(reconcile=False)
+        assert result.regenerated == frozenset({"icons"})
+        assert recon.triggers == []  # no internal reconcile/reload
+        assert repo.saves  # pointers still persisted
+
+    def test_reconcile_true_still_reconverges(self, tmp_path: Path) -> None:
+        state = _desktop_state()
+        use_case, _pipe, _repo, recon, _mutex = _use_case(
+            stale_script=[frozenset({"icons"})],
+            state=state,
+            pipeline=self._pipe(),
+            tmp_path=tmp_path,
+            state_root=tmp_path / "state",
+        )
+        use_case.run()
+        assert recon.triggers == ["regenerate"]
+
+
 class TestNoOpAndAbsent:
     def test_empty_stale_is_noop(self, tmp_path: Path) -> None:
         state = _desktop_state()

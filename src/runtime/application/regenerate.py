@@ -76,8 +76,15 @@ class RegenerateStaleUseCase:
         self._mutex = mutex
         self._state_root = state_root
 
-    def run(self) -> RegenerateResult:
-        """Regenerate stale layers and reconverge. Idempotent and re-runnable."""
+    def run(self, *, reconcile: bool = True) -> RegenerateResult:
+        """Regenerate stale layers and reconverge. Idempotent and re-runnable.
+
+        ``reconcile=False`` (the reactive composite's call) regenerates and
+        saves the new pointers but SKIPS the internal reconverge: the composite
+        runs its own single ``Reconcile`` step right after. Reconcile runs the
+        consumer reloaders (an AGS restart), so doing it in both places made one
+        daemon converge reset the desktop twice.
+        """
         stale = self._check.run().stale
         state = self._state_repo.load_current()
         if state is None:
@@ -120,6 +127,8 @@ class RegenerateStaleUseCase:
             state, palette=new_palette, effects=new_effects, icons=new_icons
         )
         self._save_guarded(state, updated)
+        if not reconcile:
+            return RegenerateResult(regenerated=frozenset(rebuilt), state=updated)
         reconciled = self._reconcile.run(trigger="regenerate")
         return RegenerateResult(
             regenerated=frozenset(rebuilt),

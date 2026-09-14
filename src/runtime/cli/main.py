@@ -809,7 +809,9 @@ def _run_reconcile_plan(
     )
 
 
-def _run_regenerate_stale(*, suppress_history: bool = False) -> RegenerateResult:
+def _run_regenerate_stale(
+    *, suppress_history: bool = False, reconcile: bool = True
+) -> RegenerateResult:
     """Compose and run RegenerateStaleUseCase (reconcile --regenerate-stale).
 
     Mirrors ``_run_wallpaper_set``'s construction: resolve state_root /
@@ -888,7 +890,7 @@ def _run_regenerate_stale(*, suppress_history: bool = False) -> RegenerateResult
         mutex=mutex,
         state_root=state_root,
     )
-    return use_case.run()
+    return use_case.run(reconcile=reconcile)
 
 
 def _run_doctor_check() -> DoctorReport:
@@ -1298,7 +1300,7 @@ def _run_reactive_converge(
         write_backstop=backstop.write,
         has_state=lambda: state_repo.load_current() is not None,
         check_inputs=_run_check_inputs,
-        regenerate_stale=lambda: _run_regenerate_stale(suppress_history=True),
+        regenerate_stale=lambda: _run_regenerate_stale(suppress_history=True, reconcile=False),
         reconcile=lambda: _run_reconcile(suppress_history=True),
         declarative=_declarative,
         append_history=_append_reactive,
