@@ -362,3 +362,145 @@ class TestWallpaperSetCliErrorMapping:
 
         assert result.exit_code == 1
         assert "unexpectedly" in result.output
+
+
+class _RecordingClient:
+    """Fake IJobClient recording ``wallpaper.state`` publishes."""
+
+    def __init__(self, *, fail_publish: bool = False) -> None:
+        self.published: list[tuple[str, dict[str, object]]] = []
+        self.fail_publish = fail_publish
+
+    def publish(self, topic: str, payload: Any) -> None:
+        if self.fail_publish:
+            raise RuntimeError("bus down")
+        self.published.append((topic, dict(payload)))
+
+
+def _fake_set_use_cases(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    apply_result: Any = None,
+    apply_error: Exception | None = None,
+) -> None:
+    """Route the real ``_run_wallpaper_set`` through canned use cases."""
+
+    class _FakeApplyUseCase:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        def run(self, image_path: Path) -> Any:
+            if apply_error is not None:
+                raise apply_error
+            return apply_result
+
+    class _FakeReconcileUseCase:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        def run(self, trigger: str = "reconcile") -> Any:
+            return _reconcile_result()
+
+    monkeypatch.setattr(
+        "runtime.application.apply_wallpaper.ApplyWallpaperUseCase", _FakeApplyUseCase
+    )
+    monkeypatch.setattr(
+        "runtime.application.reconcile.ReconcileDesktopStateUseCase",
+        _FakeReconcileUseCase,
+    )
+
+
+class TestWallpaperStateEmission:
+    """``wallpaper.state`` transitions around the real composition root."""
+
+    def test_success_publishes_applying_then_done(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from runtime.adapters.hashing import hash_file
+        import runtime.cli.main as cli_main
+
+        img = tmp_path / "wall.png"
+        img.write_bytes(b"state emit bytes")
+        _fake_set_use_cases(monkeypatch, apply_result=_result())
+        client = _RecordingClient()
+
+        cli_main._run_wallpaper_set(img, client=client)
+
+        assert client.published == [
+            ("wallpaper.state", {"state": "applying", "wallpaper_hash": hash_file(img)}),
+            ("wallpaper.state", {"state": "done", "wallpaper_hash": "f" * 64}),
+        ]
+
+    def test_apply_failure_publishes_error_and_reraises(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from runtime.adapters.hashing import hash_file
+        import runtime.cli.main as cli_main
+
+        img = tmp_path / "wall.png"
+        img.write_bytes(b"doomed emit bytes")
+        _fake_set_use_cases(
+            monkeypatch,
+            apply_result=_result(),
+            apply_error=RuntimeError("palette apply failed: boom"),
+        )
+        client = _RecordingClient()
+
+        with pytest.raises(RuntimeError, match="palette apply failed"):
+            cli_main._run_wallpaper_set(img, client=client)
+
+        assert client.published == [
+            ("wallpaper.state", {"state": "applying", "wallpaper_hash": hash_file(img)}),
+            ("wallpaper.state", {"state": "error", "wallpaper_hash": hash_file(img)}),
+        ]
+
+    def test_missing_input_publishes_error_with_empty_hash(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import runtime.cli.main as cli_main
+
+        _fake_set_use_cases(
+            monkeypatch,
+            apply_result=_result(),
+            apply_error=ValueError("wallpaper image not found"),
+        )
+        client = _RecordingClient()
+
+        with pytest.raises(ValueError, match="not found"):
+            cli_main._run_wallpaper_set(tmp_path / "missing.png", client=client)
+
+        assert client.published == [
+            ("wallpaper.state", {"state": "applying", "wallpaper_hash": ""}),
+            ("wallpaper.state", {"state": "error", "wallpaper_hash": ""}),
+        ]
+
+    def test_publish_failure_never_fails_the_set(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import runtime.cli.main as cli_main
+
+        img = tmp_path / "wall.png"
+        img.write_bytes(b"bus down bytes")
+        _fake_set_use_cases(monkeypatch, apply_result=_result())
+        client = _RecordingClient(fail_publish=True)
+
+        result = cli_main._run_wallpaper_set(img, client=client)
+
+        assert result.reconcile.state.wallpaper.content_hash == "f" * 64
+        assert client.published == []
+
+    def test_build_client_degrades_without_daemon(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import runtime.cli.main as cli_main
+        from runtime.adapters.daemon_status import DaemonStatusSnapshot
+        from runtime.adapters.local_job_client import LocalJobClient
+
+        monkeypatch.setattr(
+            "runtime.adapters.daemon_status.probe_session_bus",
+            lambda timeout=5.0: DaemonStatusSnapshot(
+                bus_available=False,
+                name_owned=False,
+                detail="no owner for the hub name",
+            ),
+        )
+
+        assert isinstance(cli_main._build_wallpaper_client(), LocalJobClient)

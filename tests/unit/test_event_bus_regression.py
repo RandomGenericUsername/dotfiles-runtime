@@ -49,6 +49,7 @@ _VALID_BASE: dict[str, dict[str, object]] = {
     "speedtest.finished": {"down_mbps": 1.0, "up_mbps": 2.0, "latency_ms": 3.0},
     "clipboard.update": {"type": "text", "hash": "h", "path": "", "preview": "hi"},
     "clipboard.state": {"state": "running", "job_id": "job-1"},
+    "wallpaper.state": {"state": "applying", "wallpaper_hash": "f" * 64},
 }
 
 #: The reproduced payload shapes. ``bool`` vs ``int`` is included because

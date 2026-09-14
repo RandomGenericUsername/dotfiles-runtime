@@ -52,10 +52,13 @@ guards on it because csg's stdout may be captured mid-pipeline; the
 runtime adapter's contract is a SURFACED failure (spec-literal R5: the
 terminal cannot be re-themed → ``False`` with ``TerminalColorApplier``
 in ``ReconcileResult.reload_failures``). Attempting the write
-unconditionally, wrapped in the mandated exception tuple
-``(FileNotFoundError, PermissionError, OSError, ValueError)``, is what
-makes a missing/headless TTY observable. The only vacuous success is "no
-colors.sequences consumer entry at all".
+unconditionally is what makes a genuinely broken TTY observable — with
+ONE carve-out: ``errno.ENXIO`` from ``open()`` means the process has no
+controlling terminal at all (GUI-spawned ``wallpaper set``, headless
+runs), so there is no live terminal to re-theme and the adapter returns
+``True`` with the same vacuous standing as a missing consumer entry.
+Every other ``OSError`` (``ENOENT``, ``EACCES``, ``EISDIR``, write
+failures) stays a surfaced ``False``.
 
 Known Phase-2 limitations: this adapter recolors the LIVE terminal only.
 Every NEW shell reads the runtime's ``$XDG_STATE_HOME/dotfiles/current/
@@ -71,6 +74,7 @@ References: [consumer-wiring.md:34], [shared-data-contract.md swap step
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 from pathlib import Path
@@ -124,10 +128,12 @@ class TerminalColorApplier(IDesktopReloader):
         Returns:
             True when the palette was applied successfully, or vacuously
             when ``current/colors.sequences`` does not exist (nothing to
-            apply). False on a dangling symlink, a corrupt artifact
+            apply) or when the process has no controlling terminal
+            (``ENXIO`` on open — GUI-spawned/headless, nothing to re-theme).
+            False on a dangling symlink, a corrupt artifact
             (empty, or not starting with the OSC introducer ``ESC]``), an
-            unreadable file, or a ``/dev/tty`` open/write failure — each
-            logged with the cause (surfaced failure, per R5; the
+            unreadable file, or any other ``/dev/tty`` open/write failure —
+            each logged with the cause (surfaced failure, per R5; the
             reconcile use case collects the class name into
             ``ReconcileResult.reload_failures``).
 
@@ -163,7 +169,27 @@ class TerminalColorApplier(IDesktopReloader):
             with open(self._tty_path, "wb") as tty:
                 tty.write(payload)
                 tty.flush()
-        except (FileNotFoundError, PermissionError, OSError, ValueError) as exc:
+        except OSError as exc:
+            # No controlling terminal (GUI-spawned processes, headless runs):
+            # open("/dev/tty") raises ENXIO ("No such device or address").
+            # There is no live terminal to re-theme — vacuous success with
+            # the same standing as a missing consumer entry (nothing to do,
+            # not a failure). Every other open/write error stays a surfaced
+            # failure (R5).
+            if exc.errno == errno.ENXIO:
+                logger.info(
+                    "TerminalColorApplier: no controlling terminal (%s); "
+                    "skipping live-terminal apply",
+                    self._tty_path,
+                )
+                return True
+            logger.warning(
+                "TerminalColorApplier reload failed: cannot write palette to %s: %s",
+                self._tty_path,
+                exc,
+            )
+            return False
+        except ValueError as exc:
             logger.warning(
                 "TerminalColorApplier reload failed: cannot write palette to %s: %s",
                 self._tty_path,

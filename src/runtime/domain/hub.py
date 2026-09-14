@@ -63,6 +63,7 @@ KNOWN_TOPICS: frozenset[str] = frozenset(
         "speedtest.finished",
         "clipboard.update",
         "clipboard.state",
+        "wallpaper.state",
     }
 )
 

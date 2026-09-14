@@ -52,7 +52,11 @@ _LIVENESS_POLL_INTERVAL = 0.25
 
 #: Config-dir names never restarted automatically. The icon color mapping
 #: editor can hold unsaved edits; a wallpaper change must not discard them.
-DEFAULT_SKIP_CONFIG_DIRS: frozenset[str] = frozenset({"ags-icme"})
+#: The wallpaper selector is on-demand with a self-hiding window: restarting
+#: it after a set would pop the dialog back open uninvited (it starts
+#: visible, ICME pattern). It refreshes its palette live from the
+#: ``wallpaper.state`` domain event instead (no restart needed).
+DEFAULT_SKIP_CONFIG_DIRS: frozenset[str] = frozenset({"ags-icme", "ags-wallpaper-selector"})
 
 _INSTANCE_NAME_RE = re.compile(r"""instanceName\s*:\s*["']([^"']+)["']""")
 

@@ -126,6 +126,12 @@ class ApplyWallpaperUseCase:
     def run(self, image_path: Path) -> ApplyWallpaperResult:
         """Apply a wallpaper: derive → cache → persist ``current.json``.
 
+        Variant inputs (an image already living under
+        ``<state_root>/cache/effects/``, i.e. a WEG-derived variant
+        promoted to wallpaper) skip the effects layer — feeding a
+        derived artifact back into its own derivation is a loop — while
+        palette and icons still derive from the variant's pixels.
+
         Raises:
             ValueError: if the input path is missing, empty, or not a
                 regular file; or propagated from a corrupt current.json
@@ -156,13 +162,17 @@ class ApplyWallpaperUseCase:
             raise RuntimeError(f"palette apply failed: {exc}") from exc
 
         # Effects + icons (graceful degradation): entry None on failure,
-        # current.json field null (history schema allows nulls).
+        # current.json field null (history schema allows nulls). A variant
+        # input (already a WEG artifact) skips effects derivation outright.
         effects: EffectsEntry | None = None
         cache_hit_effects = False
-        try:
-            effects, cache_hit_effects = self._pipeline.ensure_effects(img, wallpaper_hash)
-        except Exception as exc:
-            logger.warning("apply: effects generation failed; continuing: %s", exc)
+        if self._is_weg_artifact(img):
+            logger.info("apply: input is a WEG-derived variant; skipping effects generation")
+        else:
+            try:
+                effects, cache_hit_effects = self._pipeline.ensure_effects(img, wallpaper_hash)
+            except Exception as exc:
+                logger.warning("apply: effects generation failed; continuing: %s", exc)
 
         icons: IconsEntry | None = None
         cache_hit_icons = False
@@ -210,6 +220,20 @@ class ApplyWallpaperUseCase:
             cache_hit_icons=cache_hit_icons,
             state=state,
         )
+
+    def _is_weg_artifact(self, img: Path) -> bool:
+        """True when the input already lives in the effects cache layer.
+
+        ``img`` is validated absolute at this point; any file under
+        ``<state_root>/cache/effects/`` is a derived artifact, not a
+        derivation input, so the effects layer must not run on it
+        (variants-of-variants). The palette and icons layers are
+        unaffected — they still derive from the variant's pixels.
+        """
+        try:
+            return img.is_relative_to(self._state_root / "cache" / "effects")
+        except OSError, ValueError:
+            return False
 
     @staticmethod
     def _validate_input(image_path: Path) -> Path:

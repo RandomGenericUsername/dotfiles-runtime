@@ -162,6 +162,15 @@ TOPIC_SCHEMAS: dict[str, dict[str, Any]] = {
         },
         "additionalProperties": True,
     },
+    "wallpaper.state": {
+        "type": "object",
+        "required": ["state", "wallpaper_hash"],
+        "properties": {
+            "state": {"type": "string", "enum": ["applying", "done", "error"]},
+            "wallpaper_hash": {"type": "string"},
+        },
+        "additionalProperties": True,
+    },
 }
 
 

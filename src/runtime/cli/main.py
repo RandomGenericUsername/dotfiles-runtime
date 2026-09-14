@@ -48,7 +48,12 @@ if TYPE_CHECKING:
     from runtime.ports.bus_name_owner import IBusNameOwner
     from runtime.ports.desktop_reloader import IDesktopReloader
     from runtime.ports.event_bus import IJobRegistry
-    from runtime.ports.jobs import IControlChannel, IControllableJobClient, IRecorderProcess
+    from runtime.ports.jobs import (
+        IControlChannel,
+        IControllableJobClient,
+        IJobClient,
+        IRecorderProcess,
+    )
     from runtime.ports.watch_source import IWatchSource
 
 app = typer.Typer(
@@ -390,8 +395,56 @@ def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list
     return reloaders
 
 
+#: Domain topic published around every ``wallpaper set`` (contract
+#: ``topics`` → ``wallpaper.state``): ``applying`` at set start,
+#: ``done``/``error`` at finish. Publish-only — the synchronous set
+#: registers no job lease; the hub's ``Emit`` needs no job.
+_WALLPAPER_STATE_TOPIC = "wallpaper.state"
+
+
+def _build_wallpaper_client() -> IJobClient:
+    """Build the production wallpaper-state publisher, degrading with no hub.
+
+    Mirrors :func:`_build_capture_client`: one bus probe (never a poll).
+    An absent daemon is reduced functionality — the set still applies, it
+    simply publishes no ``wallpaper.state`` events — never an error
+    (AD-41). The degraded adapter is a no-op so every caller path is
+    identical on both arms.
+    """
+    from runtime.adapters.daemon_status import probe_session_bus
+    from runtime.adapters.dbus_job_client import DbusJobClient
+    from runtime.adapters.local_job_client import LocalJobClient
+
+    snapshot = probe_session_bus()
+    if not snapshot.name_owned:
+        logger.info(
+            "wallpaper: daemon absent (%s); applying without wallpaper.state events",
+            snapshot.detail or "no owner for the hub name",
+        )
+        return LocalJobClient()
+    return DbusJobClient()
+
+
+def _publish_wallpaper_state(client: IJobClient, state: str, wallpaper_hash: str) -> None:
+    """Publish one ``wallpaper.state`` transition; never fail the set.
+
+    Emission is informational (AD-37: indicators, never control) — a hub
+    failure must not turn a successful apply into a failed command, and a
+    publish failure on the error path must not mask the original
+    exception.
+    """
+    try:
+        client.publish(_WALLPAPER_STATE_TOPIC, {"state": state, "wallpaper_hash": wallpaper_hash})
+    except Exception:
+        logger.exception("wallpaper: wallpaper.state publish failed; continuing")
+
+
 def _run_wallpaper_set(
-    image_path: Path, *, suppress_history: bool = False, include_terminal: bool = True
+    image_path: Path,
+    *,
+    suppress_history: bool = False,
+    include_terminal: bool = True,
+    client: IJobClient | None = None,
 ) -> _WallpaperSetResult:
     """Compose and run ApplyWallpaperUseCase → ReconcileDesktopStateUseCase.
 
@@ -411,13 +464,23 @@ def _run_wallpaper_set(
     pipeline with a history-suppressing seeder so it writes no
     ``trigger="set"`` line; the reactive composite owns the single audit
     line instead.
+
+    ``client`` (tests): an injected :class:`IJobClient` recording the
+    ``wallpaper.state`` transitions; the CLI passes none and the
+    production client is built (D-Bus when the daemon owns the hub
+    name, no-op otherwise).
     """
+    from runtime.adapters.dbus_job_client import DbusJobClient
+
     state_root = _resolve_state_root()
     install_spine = _resolve_install_spine()
+    if client is None:
+        client = _build_wallpaper_client()
 
     from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
     from runtime.adapters.csg_adapter import CsgAdapter
     from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+    from runtime.adapters.hashing import hash_file
     from runtime.adapters.hyprland_monitor_source import HyprlandMonitorSource
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
@@ -427,33 +490,50 @@ def _run_wallpaper_set(
     from runtime.application.derive import find_templates_dir
     from runtime.application.reconcile import ReconcileDesktopStateUseCase
 
-    apply_result = ApplyWallpaperUseCase(
-        state_repo=JsonStateRepository(state_root=state_root),
-        csg=CsgAdapter(templates_dir=find_templates_dir(install_spine)),
-        weg=WegAdapter(),
-        itr=ItrAdapter(),
-        install_spine=install_spine,
-        state_root=state_root,
-        seeder=CacheSeeder(
-            state_root, consumer_spec=StaticConsumerPathSpec(), suppress_history=suppress_history
-        ),
-        mutex=FlockSeedMutex(state_root / ".seed.lock"),
-        monitor_source=HyprlandMonitorSource(),
-    ).run(image_path)
+    try:
+        resolved = image_path.expanduser().resolve()
+        pending_hash = hash_file(resolved) if resolved.is_file() else ""
+    except OSError:
+        pending_hash = ""
+    _publish_wallpaper_state(client, "applying", pending_hash)
+    try:
+        apply_result = ApplyWallpaperUseCase(
+            state_repo=JsonStateRepository(state_root=state_root),
+            csg=CsgAdapter(templates_dir=find_templates_dir(install_spine)),
+            weg=WegAdapter(),
+            itr=ItrAdapter(),
+            install_spine=install_spine,
+            state_root=state_root,
+            seeder=CacheSeeder(
+                state_root,
+                consumer_spec=StaticConsumerPathSpec(),
+                suppress_history=suppress_history,
+            ),
+            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            monitor_source=HyprlandMonitorSource(),
+        ).run(image_path)
 
-    reconcile_result = ReconcileDesktopStateUseCase(
-        state_repo=JsonStateRepository(state_root=state_root),
-        csg=CsgAdapter(templates_dir=find_templates_dir(install_spine)),
-        weg=WegAdapter(),
-        itr=ItrAdapter(),
-        install_spine=install_spine,
-        state_root=state_root,
-        seeder=CacheSeeder(
-            state_root, consumer_spec=StaticConsumerPathSpec(), suppress_history=suppress_history
-        ),
-        mutex=FlockSeedMutex(state_root / ".seed.lock"),
-        reloaders=_build_reloaders(state_root, include_terminal=include_terminal),
-    ).run(trigger="set")
+        reconcile_result = ReconcileDesktopStateUseCase(
+            state_repo=JsonStateRepository(state_root=state_root),
+            csg=CsgAdapter(templates_dir=find_templates_dir(install_spine)),
+            weg=WegAdapter(),
+            itr=ItrAdapter(),
+            install_spine=install_spine,
+            state_root=state_root,
+            seeder=CacheSeeder(
+                state_root,
+                consumer_spec=StaticConsumerPathSpec(),
+                suppress_history=suppress_history,
+            ),
+            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            reloaders=_build_reloaders(state_root, include_terminal=include_terminal),
+        ).run(trigger="set")
+    except Exception:
+        _publish_wallpaper_state(client, "error", pending_hash)
+        raise
+    _publish_wallpaper_state(client, "done", reconcile_result.state.wallpaper.content_hash)
+    if isinstance(client, DbusJobClient):
+        client.close()
 
     return _WallpaperSetResult(apply=apply_result, reconcile=reconcile_result)
 

@@ -963,3 +963,76 @@ class TestSeederImportWallpaper:
         meta = json.loads((entry_dir / "meta.json").read_text())
         assert meta["source_path"] == "/original/first/import.png"
         assert meta["imported_at"] == "2026-01-01T00:00:00Z"
+
+
+class TestApplyWallpaperVariantInput:
+    """Mechanism A: a WEG-derived variant promoted to wallpaper skips WEG.
+
+    Detection is by path — the input already lives under
+    ``<state_root>/cache/effects/``. Palette and icons still derive
+    from the variant's pixels; only the effects layer is skipped, so
+    no variants-of-variants are ever generated.
+    """
+
+    def _variant_in(self, tmp_path: Path) -> Path:
+        variant = tmp_path / "state" / "cache" / "effects" / ("e" * 64) / "some_stem" / "blur.png"
+        variant.parent.mkdir(parents=True)
+        variant.write_bytes(b"weg-derived variant bytes")
+        return variant
+
+    def test_variant_input_skips_weg_but_runs_csg_and_itr(self, tmp_path: Path) -> None:
+        _setup_spine(tmp_path / "install")
+        repo = _FakeStateRepo()
+        csg, weg, itr = _FakeCsg(), _FakeWeg(), _FakeItr()
+        use_case = _make_use_case(tmp_path, repo, csg=csg, weg=weg, itr=itr)
+        variant = self._variant_in(tmp_path)
+
+        result = use_case.run(variant)
+
+        assert (csg.calls, weg.calls, itr.calls) == (1, 0, 1)
+        assert result.state.palette is not None
+        assert result.state.effects is None
+        assert result.state.icons is not None
+        assert not result.cache_hit_effects
+
+    def test_variant_palette_derives_from_variant_pixels(self, tmp_path: Path) -> None:
+        _setup_spine(tmp_path / "install")
+        repo = _FakeStateRepo()
+        use_case = _make_use_case(tmp_path, repo)
+        variant = self._variant_in(tmp_path)
+
+        result = use_case.run(variant)
+
+        wh = hash_file(variant)
+        assert result.wallpaper_hash == wh
+        assert result.state.wallpaper.source_path == str(variant)
+        assert result.state.palette is not None
+        assert result.state.palette.source_wallpaper_hash == wh
+        assert result.state.icons is not None
+        assert result.state.icons.source_palette_hash == result.state.palette.entry_hash
+        # Promoted variant owns its bytes in the wallpapers layer (copy policy).
+        assert (tmp_path / "state" / "cache" / "wallpapers" / wh / "wallpaper.png").is_file()
+
+    def test_variant_skip_is_logged(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        _setup_spine(tmp_path / "install")
+        repo = _FakeStateRepo()
+        use_case = _make_use_case(tmp_path, repo)
+        variant = self._variant_in(tmp_path)
+
+        with caplog.at_level(logging.INFO, logger="runtime.application.apply_wallpaper"):
+            use_case.run(variant)
+
+        assert any("skipping effects generation" in r.message for r in caplog.records)
+
+    def test_same_bytes_outside_effects_layer_still_generates_effects(self, tmp_path: Path) -> None:
+        """Path scoping: identical content outside ``cache/effects/`` runs WEG."""
+        _setup_spine(tmp_path / "install")
+        repo = _FakeStateRepo()
+        weg = _FakeWeg()
+        use_case = _make_use_case(tmp_path, repo, weg=weg)
+        img = _img_in(tmp_path, "wall.png", b"weg-derived variant bytes")
+
+        result = use_case.run(img)
+
+        assert weg.calls == 1
+        assert result.state.effects is not None

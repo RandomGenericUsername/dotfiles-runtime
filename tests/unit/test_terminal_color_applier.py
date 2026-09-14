@@ -257,6 +257,25 @@ class TestTerminalColorApplierFailure:
         monkeypatch.setattr("builtins.open", _fail_open)
         assert applier.reload() is False
 
+    def test_no_controlling_terminal_enxio_returns_true(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """GUI-spawned/headless ``wallpaper set`` has no controlling terminal:
+        ``open("/dev/tty")`` raises ``ENXIO`` — vacuous success (nothing to
+        re-theme), not a surfaced failure. Every other errno still fails."""
+        import errno
+
+        state_root = _make_sequences(tmp_path)
+        applier = TerminalColorApplier(state_root=state_root, tty_path=tmp_path / "tty")
+
+        def _no_ctty(*_args: object, **_kwargs: object) -> object:
+            raise OSError(errno.ENXIO, "No such device or address")
+
+        monkeypatch.setattr("builtins.open", _no_ctty)
+        with caplog.at_level(logging.INFO, logger="runtime.adapters.terminal_color_applier"):
+            assert applier.reload() is True
+        assert any("no controlling terminal" in r.message for r in caplog.records)
+
 
 class TestTerminalColorApplierInterface:
     def test_port_conformance(self, tmp_path: Path) -> None:

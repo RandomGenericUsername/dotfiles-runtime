@@ -326,6 +326,40 @@ class TestAgsReloaderStandaloneTools:
         )
         mock_popen.assert_called_once()
 
+    def test_skips_wallpaper_selector_dir(self, ags_bin: Path) -> None:
+        """The selector self-hides on apply and refreshes its palette from
+        ``wallpaper.state`` — a restart would pop its visible-on-start window
+        back open uninvited, so only the bar is touched."""
+        apps = [
+            AgsAppProcess(
+                pid=1,
+                argv=(
+                    "ags",
+                    "run",
+                    "-d",
+                    "/home/u/.config/ags-wallpaper-selector",
+                    "--log-file",
+                    "/tmp/ws.log",
+                ),
+                config_dir=Path("/home/u/.config/ags-wallpaper-selector"),
+                instance="wallpaper-selector",
+            )
+        ]
+        reloader = AgsReloader(ags_path=ags_bin, app_lister=lambda: apps)
+        fake = _FakeProcess(code=None)
+        with (
+            patch("runtime.adapters.ags_reloader.subprocess.run") as mock_run,
+            patch(
+                "runtime.adapters.ags_reloader.subprocess.Popen", return_value=fake
+            ) as mock_popen,
+            patch("runtime.adapters.ags_reloader.time.sleep"),
+        ):
+            assert reloader.reload() is True
+        mock_run.assert_called_once_with(
+            [str(ags_bin), "quit"], capture_output=True, text=True, timeout=10
+        )
+        mock_popen.assert_called_once()
+
     def test_tool_death_returns_false(self, ags_bin: Path) -> None:
         reloader = AgsReloader(ags_path=ags_bin, app_lister=_running_tool)
         bar = _FakeProcess(code=None)
