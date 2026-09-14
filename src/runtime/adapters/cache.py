@@ -128,7 +128,8 @@ def cache_entry_path(state_root: Path, layer: str, entry_hash: str) -> Path:
          source_wallpaper_hash: "<wh>", input_template_hash: "<th>",
          artifact_hashes: {colors.yaml: "<h>", colors.conf: "<h>",
                            colors.gtk.css: "<h>", colors.adw.css: "<h>",
-                           colors.sequences: "<h>", colors.rasi: "<h>"},
+                           colors.sequences: "<h>", colors.rasi: "<h>",
+                           colors.kitty: "<h>"},
          generated_at: "2026-08-29T00:00:00Z"}
 
     ``hash_algorithm`` MUST be ``HASH_ALGORITHM`` literal ``"sha256"``.

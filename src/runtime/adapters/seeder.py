@@ -478,6 +478,7 @@ class CacheSeeder:
                 colors_adw_css=artifact_hashes["colors.adw.css"],
                 colors_sequences=artifact_hashes["colors.sequences"],
                 colors_rasi=artifact_hashes["colors.rasi"],
+                colors_kitty=artifact_hashes["colors.kitty"],
             ),
             generated_at=meta["generated_at"],
         )
@@ -594,6 +595,7 @@ class CacheSeeder:
         - current/colors.adw.css → cache/palettes/<ph>/colors.adw.css
         - current/colors.sequences → cache/palettes/<ph>/colors.sequences
         - current/colors.rasi → cache/palettes/<ph>/colors.rasi
+        - current/colors.kitty → cache/palettes/<ph>/colors.kitty
         - current/effects/ → cache/effects/<eh>/
         - current/icons/ → cache/icons/<ih>/
 
@@ -622,6 +624,7 @@ class CacheSeeder:
                 "colors.adw.css",
                 "colors.sequences",
                 "colors.rasi",
+                "colors.kitty",
             ):
                 target = palette_dir / artifact_name
                 # exists() follows symlinks — a dangling symlink at the target

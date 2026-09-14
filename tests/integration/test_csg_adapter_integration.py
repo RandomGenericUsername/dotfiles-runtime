@@ -27,10 +27,11 @@ pytestmark = pytest.mark.integration
 
 
 def _csg_supports_artifact_set(csg_bin: str) -> bool:
-    """True when the on-PATH csg bundles ``colors.adw.css.j2`` (gt-1-1 format).
+    """True when the on-PATH csg bundles the newest palette formats.
 
-    A stale install (9 templates) predates ``ColorFormat.ADW_CSS`` and cannot
-    produce the 5-artifact set. Probed via ``dump-templates`` into a temp dir.
+    Requires ``colors.adw.css.j2`` (gt-1-1) AND ``colors.kitty.j2``
+    (add-csg-kitty-color-format). A stale install predates one of them and
+    cannot produce the full palette set. Probed via ``dump-templates``.
     """
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / "tpl"
@@ -45,7 +46,9 @@ def _csg_supports_artifact_set(csg_bin: str) -> bool:
             return False
         if result.returncode != 0:
             return False
-        return (out / "templates" / "colors.adw.css.j2").is_file()
+        return (out / "templates" / "colors.adw.css.j2").is_file() and (
+            out / "templates" / "colors.kitty.j2"
+        ).is_file()
 
 
 def _find_templates_dir() -> Path | None:
@@ -90,9 +93,9 @@ def test_csg_adapter_integration_real_binary(tmp_path: Path) -> None:
         pytest.skip("csg not on PATH — integration requires csg binary")
     if not _csg_supports_artifact_set(csg_bin):
         pytest.skip(
-            "host csg binary predates ColorFormat.ADW_CSS (dump-templates lacks "
-            "colors.adw.css.j2) — refresh the install from "
-            "src/cli-tools/color-scheme-generator; the 5-artifact set cannot be "
+            "host csg binary predates the kitty/adw palette formats (dump-templates "
+            "lacks colors.kitty.j2 or colors.adw.css.j2) — refresh the install from "
+            "src/cli-tools/color-scheme-generator; the full palette set cannot be "
             "produced by this binary (environment staleness, not a code defect)"
         )
 
@@ -139,13 +142,15 @@ def test_csg_adapter_integration_real_binary(tmp_path: Path) -> None:
 
     entry = adapter.generate(wallpaper, output_dir)
 
-    # Verify five files exist and hashes match
+    # Verify the palette files exist and hashes match
     for name in (
         "colors.yaml",
         "colors.conf",
         "colors.gtk.css",
         "colors.adw.css",
         "colors.sequences",
+        "colors.rasi",
+        "colors.kitty",
     ):
         p = output_dir / name
         assert p.is_file(), f"expected {name} in {output_dir}"
@@ -161,5 +166,7 @@ def test_csg_adapter_integration_real_binary(tmp_path: Path) -> None:
     assert entry.artifact_hashes["colors_gtk_css"] == hash_file(output_dir / "colors.gtk.css")
     assert entry.artifact_hashes["colors_adw_css"] == hash_file(output_dir / "colors.adw.css")
     assert entry.artifact_hashes["colors_sequences"] == hash_file(output_dir / "colors.sequences")
+    assert entry.artifact_hashes["colors_rasi"] == hash_file(output_dir / "colors.rasi")
+    assert entry.artifact_hashes["colors_kitty"] == hash_file(output_dir / "colors.kitty")
     # Output dir under state_root/cache/palettes
     assert output_dir.is_dir()

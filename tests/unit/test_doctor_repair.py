@@ -64,6 +64,7 @@ class _Csg:
             "colors.adw.css": b"adw",
             "colors.sequences": b"seq",
             "colors.rasi": b"rasi",
+            "colors.kitty": b"kitty",
         }
         hashes: dict[str, str] = {}
         for name, content in artifacts.items():

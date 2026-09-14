@@ -54,6 +54,7 @@ def _entries(
                 "colors.adw.css": "e" * 64,
                 "colors.sequences": "e" * 64,
                 "colors.rasi": "e" * 64,
+                "colors.kitty": "e" * 64,
             },
             generated_at=TS,
         )
@@ -555,6 +556,7 @@ class TestRegenerateEndToEnd:
                     "colors.adw.css": b"adw",
                     "colors.sequences": b"seq",
                     "colors.rasi": b"rasi",
+                    "colors.kitty": b"kitty",
                 }
                 hashes = {}
                 for name, content in artifacts.items():

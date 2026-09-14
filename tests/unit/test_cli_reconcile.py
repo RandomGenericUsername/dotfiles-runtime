@@ -47,6 +47,7 @@ def _palette() -> PaletteEntry:
             colors_adw_css="e" * 64,
             colors_sequences="f" * 64,
             colors_rasi="a" * 64,
+            colors_kitty="a" * 64,
         ),
         generated_at=_now_z(),
     )
@@ -146,8 +147,8 @@ class TestReconcileCompositionRootWiring:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """AC 5 — the reconcile composition root wires Hyprland, AGS,
-        Hyprpaper and the terminal palette applier (each with the
-        reconcile ``state_root``), in that order."""
+        Hyprpaper, the terminal palette applier (each with the reconcile
+        ``state_root``), then the kitty reloader, in that order."""
         captured: dict[str, Any] = {}
 
         class _FakeUseCase:
@@ -166,6 +167,7 @@ class TestReconcileCompositionRootWiring:
         from runtime.adapters.ags_reloader import AgsReloader
         from runtime.adapters.hyprland_reloader import HyprlandReloader
         from runtime.adapters.hyprpaper_reloader import HyprpaperReloader
+        from runtime.adapters.kitty_reloader import KittyReloader
         from runtime.adapters.terminal_color_applier import TerminalColorApplier
 
         reloaders = captured["reloaders"]
@@ -175,9 +177,47 @@ class TestReconcileCompositionRootWiring:
             AgsReloader,
             HyprpaperReloader,
             TerminalColorApplier,
+            KittyReloader,
         ]
         assert reloaders[2]._state_root == captured["state_root"]  # type: ignore[attr-defined]
         assert reloaders[3]._state_root == captured["state_root"]  # type: ignore[attr-defined]
+
+    def test_composition_root_excludes_terminal_when_disabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The daemon passes ``include_terminal=False``: no
+        ``TerminalColorApplier`` (no controlling tty), kitty still present."""
+        captured: dict[str, Any] = {}
+
+        class _FakeUseCase:
+            def __init__(self, **kwargs: Any) -> None:
+                captured["reloaders"] = kwargs.get("reloaders")
+
+            def run(self) -> Any:
+                return _reconcile_result()
+
+        monkeypatch.setattr(
+            "runtime.application.reconcile.ReconcileDesktopStateUseCase", _FakeUseCase
+        )
+        cli_main._run_reconcile(include_terminal=False)
+
+        from runtime.adapters.kitty_reloader import KittyReloader
+
+        names = [type(r).__name__ for r in captured["reloaders"]]
+        assert "TerminalColorApplier" not in names
+        assert names[-1] == KittyReloader.__name__
+
+    def test_build_reloaders_include_terminal_flag(self) -> None:
+        from runtime.adapters.kitty_reloader import KittyReloader
+        from runtime.adapters.terminal_color_applier import TerminalColorApplier
+
+        with_terminal = cli_main._build_reloaders(Path("/tmp/state"), include_terminal=True)
+        without_terminal = cli_main._build_reloaders(Path("/tmp/state"), include_terminal=False)
+
+        assert type(with_terminal[-2]) is TerminalColorApplier
+        assert type(with_terminal[-1]) is KittyReloader
+        assert not any(type(r) is TerminalColorApplier for r in without_terminal)
+        assert type(without_terminal[-1]) is KittyReloader
 
 
 class TestReconcileCliErrorMapping:

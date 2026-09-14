@@ -45,7 +45,7 @@ def _copy_wallpaper_fixture(tmp_path: Path) -> Path:
 
 
 def _fake_success_factory() -> MagicMock:
-    """Return a fake subprocess.run that writes six artifacts into env out dir."""
+    """Return a fake subprocess.run that writes seven artifacts into env out dir."""
 
     def fake_run(
         args: list[str],
@@ -63,6 +63,7 @@ def _fake_success_factory() -> MagicMock:
         (out / "colors.adw.css").write_text("@define-color window_bg_bg #000;\n")
         (out / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         (out / "colors.rasi").write_text("* { background: #000; }\n")
+        (out / "colors.kitty").write_text("* { background: #000; }")
         return subprocess.CompletedProcess(args, 0, "", "")
 
     return MagicMock(side_effect=fake_run)
@@ -102,6 +103,7 @@ def test_csg_generate_env_override_writes_to_output_dir(
     assert entry.artifact_hashes["colors_adw_css"] == hash_file(output_dir / "colors.adw.css")
     assert entry.artifact_hashes["colors_sequences"] == hash_file(output_dir / "colors.sequences")
     assert entry.artifact_hashes["colors_rasi"] == hash_file(output_dir / "colors.rasi")
+    assert entry.artifact_hashes["colors_kitty"] == hash_file(output_dir / "colors.kitty")
     # Files exist
     assert (output_dir / "colors.yaml").is_file()
     assert (output_dir / "colors.conf").is_file()
@@ -109,6 +111,7 @@ def test_csg_generate_env_override_writes_to_output_dir(
     assert (output_dir / "colors.adw.css").is_file()
     assert (output_dir / "colors.sequences").is_file()
     assert (output_dir / "colors.rasi").is_file()
+    assert (output_dir / "colors.kitty").is_file()
     # Env keys literal, no -o flag
     assert fake.call_count == 1
     # Extract args and env from mock call
@@ -125,14 +128,15 @@ def test_csg_generate_env_override_writes_to_output_dir(
     assert "-o" not in args_passed
     assert "--output" not in args_passed
     assert "--format" in args_passed
-    # Ensure all six formats present
-    assert args_passed.count("--format") == 6
+    # Ensure all seven formats present
+    assert args_passed.count("--format") == 7
     assert args_passed[args_passed.index("--format") + 1] == "yaml"
     assert args_passed[args_passed.index("--format") + 3] == "conf"
     assert args_passed[args_passed.index("--format") + 5] == "gtk.css"
     assert args_passed[args_passed.index("--format") + 7] == "adw.css"
     assert args_passed[args_passed.index("--format") + 9] == "sequences"
     assert args_passed[args_passed.index("--format") + 11] == "rasi"
+    assert args_passed[args_passed.index("--format") + 13] == "kitty"
     # Verify no staging leak
     cache_root = tmp_path / "state" / "cache"
     assert list(cache_root.glob(".staging-*")) == []
@@ -229,6 +233,7 @@ def test_csg_adapter_container_env_passthrough(
         (out / "colors.adw.css").write_text("adw")
         (out / "colors.sequences").write_text("seq")
         (out / "colors.rasi").write_text("rasi")
+        (out / "colors.kitty").write_text("* { background: #000; }")
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake_run)
@@ -375,6 +380,7 @@ def test_csg_adapter_artifact_hashes_are_hex64(
         "colors_adw_css",
         "colors_sequences",
         "colors_rasi",
+        "colors_kitty",
     ):
         h = entry.artifact_hashes[key]  # type: ignore[literal-required]
         assert len(h) == 64
@@ -464,6 +470,7 @@ def test_csg_adapter_no_settings_toml_rewrite_even_on_container(
         (out / "colors.adw.css").write_text("adw")
         (out / "colors.sequences").write_text("seq")
         (out / "colors.rasi").write_text("rasi")
+        (out / "colors.kitty").write_text("* { background: #000; }")
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake_container_run)

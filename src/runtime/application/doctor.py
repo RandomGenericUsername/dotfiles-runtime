@@ -39,6 +39,7 @@ PALETTE_LINK_NAMES: tuple[str, ...] = (
     "colors.adw.css",
     "colors.sequences",
     "colors.rasi",
+    "colors.kitty",
 )
 
 

@@ -72,6 +72,7 @@ def _make_state() -> DesktopState:
                 colors_adw_css="1" * 64,
                 colors_sequences="2" * 64,
                 colors_rasi="3" * 64,
+                colors_kitty="3" * 64,
             ),
             generated_at=now,
         ),
@@ -122,6 +123,7 @@ def _build_live_tree(state_root: Path, state: DesktopState) -> dict[str, Path]:
         "colors.adw.css",
         "colors.sequences",
         "colors.rasi",
+        "colors.kitty",
     ):
         targets[artifact] = pal_dir / artifact
     assert state.effects is not None

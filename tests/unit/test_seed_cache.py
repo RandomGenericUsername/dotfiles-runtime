@@ -38,6 +38,14 @@ def _now_z() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
+def test_palette_artifact_names_include_kitty() -> None:
+    """The completeness oracle carries colors.kitty (Change 2)."""
+    from runtime.application.derive import PALETTE_ARTIFACT_NAMES
+
+    assert "colors.kitty" in PALETTE_ARTIFACT_NAMES
+    assert len(PALETTE_ARTIFACT_NAMES) == 7
+
+
 def _make_wallpaper_hash() -> str:
     return hash_file(WALLPAPER_PNG)
 
@@ -109,6 +117,7 @@ class _FakeCsg:
         (output_dir / "colors.adw.css").write_text("colors {}")
         (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         (output_dir / "colors.rasi").write_text("* { background: #000; }")
+        (output_dir / "colors.kitty").write_text("* { background: #000; }")
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -122,6 +131,7 @@ class _FakeCsg:
                 colors_adw_css=hash_file(output_dir / "colors.adw.css"),
                 colors_sequences=hash_file(output_dir / "colors.sequences"),
                 colors_rasi=hash_file(output_dir / "colors.rasi"),
+                colors_kitty=hash_file(output_dir / "colors.kitty"),
             ),
             generated_at=_now_z(),
         )
@@ -343,6 +353,7 @@ class TestCacheSeederWriteMeta:
                 "colors.adw.css": "a" * 64,
                 "colors.sequences": "b" * 64,
                 "colors.rasi": "c" * 64,
+                "colors.kitty": "9" * 64,
             },
             generated_at="2026-01-01T00:00:00Z",
         )
@@ -355,6 +366,7 @@ class TestCacheSeederWriteMeta:
         assert entry.artifact_hashes["colors_adw_css"] == "a" * 64
         assert entry.artifact_hashes["colors_sequences"] == "b" * 64
         assert entry.artifact_hashes["colors_rasi"] == "c" * 64
+        assert entry.artifact_hashes["colors_kitty"] == "9" * 64
 
     def test_load_palette_entry_raises_on_pre_growth_meta(self, tmp_path: Path) -> None:
         """Defense-in-depth: a pre-growth 3-key meta must NEVER load through
@@ -606,6 +618,7 @@ class TestSeedCacheUseCaseRunsOnFirstRun:
             "colors.adw.css",
             "colors.sequences",
             "colors.rasi",
+            "colors.kitty",
         ):
             assert (palette_dir / name).is_file(), f"missing {name}"
         meta = json.loads((palette_dir / "meta.json").read_text())
@@ -624,6 +637,7 @@ class TestSeedCacheUseCaseRunsOnFirstRun:
             "colors.adw.css",
             "colors.sequences",
             "colors.rasi",
+            "colors.kitty",
         ):
             assert meta["artifact_hashes"][name] == hash_file(palette_dir / name)
         # effects/icons likewise carry real hashes
@@ -683,6 +697,7 @@ class TestSeedCacheUseCaseRunsOnFirstRun:
             "colors.adw.css",
             "colors.sequences",
             "colors.rasi",
+            "colors.kitty",
         ):
             link = current_dir / name
             assert link.is_symlink(), f"missing symlink {name}"
@@ -1172,13 +1187,14 @@ class TestPreGrowthPaletteEntryMigration:
             "colors.adw.css",
             "colors.sequences",
             "colors.rasi",
+            "colors.kitty",
         }
         for name in meta["artifact_hashes"]:
             assert (palette_dir / name).is_file(), f"missing regenerated artifact {name}"
         # current/ carries the new symlinks
         current_dir = tmp_path / "current"
         palette_dir_resolved = palette_dir.resolve()
-        for name in ("colors.adw.css", "colors.sequences", "colors.rasi"):
+        for name in ("colors.adw.css", "colors.sequences", "colors.rasi", "colors.kitty"):
             link = current_dir / name
             assert link.is_symlink(), f"missing symlink {name}"
             assert link.resolve() == (palette_dir_resolved / name)
@@ -1213,6 +1229,7 @@ class TestPreGrowthPaletteEntryMigration:
             "colors.adw.css",
             "colors.sequences",
             "colors.rasi",
+            "colors.kitty",
         }
         caplog.clear()
         with caplog.at_level(logging.INFO, logger="runtime.application.derive"):
@@ -1256,11 +1273,11 @@ class TestPreGrowthPaletteEntryMigration:
         with pytest.raises(OSError, match="eviction failed"):
             ensure_palette_entry_complete(entry, CacheSeeder(tmp_path))
 
-    def test_five_artifact_entry_is_migrated_to_six(self, tmp_path: Path) -> None:
-        """add-rofi-app-launcher migration: an entry carrying the five
-        legacy artifacts + five-key meta (the gt-2-1 growth state) is
-        treated as incomplete — evicted once, regenerated as six through
-        the normal staging path at the SAME <ph>."""
+    def test_six_artifact_entry_is_migrated_to_seven(self, tmp_path: Path) -> None:
+        """kitty-format migration: an entry carrying the six legacy
+        artifacts + six-key meta (the pre-kitty growth state) is treated as
+        incomplete — evicted once, regenerated as seven through the normal
+        staging path at the SAME <ph>."""
         from runtime.adapters.hashing import canonical_hash_dir, palette_entry_hash
         from runtime.application.derive import (
             DerivationPipeline,
@@ -1281,6 +1298,7 @@ class TestPreGrowthPaletteEntryMigration:
             "colors.gtk.css",
             "colors.adw.css",
             "colors.sequences",
+            "colors.rasi",
         ):
             (entry / name).write_text(name)
         CacheSeeder(tmp_path).write_palette_meta_in(
@@ -1294,12 +1312,13 @@ class TestPreGrowthPaletteEntryMigration:
                 "colors.gtk.css": "c" * 64,
                 "colors.adw.css": "d" * 64,
                 "colors.sequences": "e" * 64,
+                "colors.rasi": "f" * 64,
             },
             generated_at="2026-01-01T00:00:00Z",
         )
 
         assert ensure_palette_entry_complete(entry, CacheSeeder(tmp_path)) is False
-        assert not entry.exists(), "five-artifact legacy entry must be evicted"
+        assert not entry.exists(), "six-artifact legacy entry must be evicted"
 
         entry2, hit = DerivationPipeline(
             state_root=tmp_path,
@@ -1311,7 +1330,7 @@ class TestPreGrowthPaletteEntryMigration:
         ).ensure_palette(WALLPAPER_PNG, wh)
         assert hit is False
         assert entry2.entry_hash == ph
-        assert (entry / "colors.rasi").is_file()
+        assert (entry / "colors.kitty").is_file()
         meta = json.loads((entry / "meta.json").read_text())
         assert set(meta["artifact_hashes"]) == {
             "colors.yaml",
@@ -1320,6 +1339,7 @@ class TestPreGrowthPaletteEntryMigration:
             "colors.adw.css",
             "colors.sequences",
             "colors.rasi",
+            "colors.kitty",
         }
         # Second pass is a clean hit — no re-eviction.
         entry3, hit3 = DerivationPipeline(
@@ -1336,7 +1356,7 @@ class TestPreGrowthPaletteEntryMigration:
 
 class TestRepointCurrentSymlinksPaletteArtifactSkip:
     """Seeder-level defense-in-depth (gt-2-1): per-artifact exists-or-symlink
-    check with skip+warn per missing artifact — now over the 6-name set."""
+    check with skip+warn per missing artifact — now over the 7-name set."""
 
     def test_missing_palette_artifacts_skip_with_warning(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -1360,11 +1380,12 @@ class TestRepointCurrentSymlinksPaletteArtifactSkip:
             "colors.adw.css",
             "colors.sequences",
             "colors.rasi",
+            "colors.kitty",
         ):
             assert missing not in names, f"{missing} must be skipped, never dangling"
-        assert sum("palette artifact missing" in r.message for r in caplog.records) == 5
+        assert sum("palette artifact missing" in r.message for r in caplog.records) == 6
 
-    def test_all_six_artifacts_repointed(self, tmp_path: Path) -> None:
+    def test_all_seven_artifacts_repointed(self, tmp_path: Path) -> None:
         seeder = CacheSeeder(tmp_path)
         ph = "b" * 64
         entry = tmp_path / "cache" / "palettes" / ph
@@ -1376,6 +1397,7 @@ class TestRepointCurrentSymlinksPaletteArtifactSkip:
             "colors.adw.css",
             "colors.sequences",
             "colors.rasi",
+            "colors.kitty",
         ):
             (entry / name).write_text(name)
         created = seeder.repoint_current_symlinks(
@@ -1393,4 +1415,5 @@ class TestRepointCurrentSymlinksPaletteArtifactSkip:
             "colors.adw.css",
             "colors.sequences",
             "colors.rasi",
+            "colors.kitty",
         }

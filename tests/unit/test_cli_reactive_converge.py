@@ -316,6 +316,32 @@ def test_unseeded_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == []
 
 
+def test_daemon_converge_excludes_terminal_reloader(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The daemon call site passes ``include_terminal=False`` to every
+    reloader-bearing step (no controlling tty → no /dev/tty failure noise),
+    while the CLI keeps the default True."""
+    _seed_state()
+    captured: dict[str, dict[str, object]] = {}
+
+    def _record(step: str) -> object:
+        def _inner(**kwargs: object) -> object:
+            captured[step] = kwargs
+            return None
+
+        return _inner
+
+    monkeypatch.setattr(cli_main, "_run_check_inputs", lambda: None)
+    monkeypatch.setattr(cli_main, "_run_regenerate_stale", _record("regenerate"))
+    monkeypatch.setattr(cli_main, "_run_reconcile", _record("reconcile"))
+    monkeypatch.setattr(cli_main, "_run_converge", _record("declarative"))
+
+    cli_main._run_reactive_converge(observe_only=False)
+
+    assert captured["regenerate"]["include_terminal"] is False
+    assert captured["reconcile"]["include_terminal"] is False
+    assert captured["declarative"]["include_terminal"] is False
+
+
 def test_backstop_lives_under_state_root_and_is_not_watched() -> None:
     from runtime.adapters.converge_backstop import BACKSTOP_FILENAME, LastConvergedBackstop
     from runtime.adapters.watch_roots import enumerate_watch_roots

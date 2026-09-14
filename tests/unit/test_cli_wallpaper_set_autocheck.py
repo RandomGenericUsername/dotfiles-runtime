@@ -70,6 +70,7 @@ def _state() -> DesktopState:
                 colors_adw_css="e" * 64,
                 colors_sequences="f" * 64,
                 colors_rasi="a" * 64,
+                colors_kitty="a" * 64,
             ),
             generated_at=_now_z(),
         ),

@@ -53,7 +53,8 @@
             "colors.gtk.css",
             "colors.adw.css",
             "colors.sequences",
-            "colors.rasi"
+            "colors.rasi",
+            "colors.kitty"
           ],
           "properties": {
             "colors.yaml": { "type": "string" },
@@ -61,7 +62,8 @@
             "colors.gtk.css": { "type": "string" },
             "colors.adw.css": { "type": "string" },
             "colors.sequences": { "type": "string" },
-            "colors.rasi": { "type": "string" }
+            "colors.rasi": { "type": "string" },
+            "colors.kitty": { "type": "string" }
           }
         },
         "generated_at": { "type": "string" }

@@ -87,6 +87,7 @@ class _FakeCsg:
         (output_dir / "colors.adw.css").write_text("colors {}")
         (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         (output_dir / "colors.rasi").write_text("* { background: #000; }")
+        (output_dir / "colors.kitty").write_text("* { background: #000; }")
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -100,6 +101,7 @@ class _FakeCsg:
                 colors_adw_css=hash_file(output_dir / "colors.adw.css"),
                 colors_sequences=hash_file(output_dir / "colors.sequences"),
                 colors_rasi=hash_file(output_dir / "colors.rasi"),
+                colors_kitty=hash_file(output_dir / "colors.kitty"),
             ),
             generated_at=_now_z(),
         )
@@ -347,6 +349,7 @@ class TestReconcileHappyPath:
             "colors.adw.css",
             "colors.sequences",
             "colors.rasi",
+            "colors.kitty",
             "effects",
             "icons",
         }
@@ -359,6 +362,7 @@ class TestReconcileHappyPath:
         assert links["colors.adw.css"] == str(palette_dir / "colors.adw.css")
         assert links["colors.sequences"] == str(palette_dir / "colors.sequences")
         assert links["colors.rasi"] == str(palette_dir / "colors.rasi")
+        assert links["colors.kitty"] == str(palette_dir / "colors.kitty")
         assert links["effects"] == str(applied.state_root / "cache" / "effects" / loaded.effects.entry_hash)
         assert links["icons"] == str(applied.state_root / "cache" / "icons" / loaded.icons.entry_hash)
         assert sorted(p.name for p in result.repointed) == sorted(links)

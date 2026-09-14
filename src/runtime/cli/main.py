@@ -349,28 +349,41 @@ class _WallpaperSetResult:
     reconcile: ReconcileResult
 
 
-def _build_reloaders(state_root: Path) -> list[IDesktopReloader]:
-    """Build the deterministic four-consumer reloader list (AD-17).
+def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list[IDesktopReloader]:
+    """Build the deterministic desktop-consumer reloader list (AD-17).
 
     Shared by ``reconcile`` and ``wallpaper set`` so both commands reload
-    the IDENTICAL consumers in the same order: Hyprland (``hyprctl
+    the IDENTICAL consumers in the same pinned order: Hyprland (``hyprctl
     reload``), AGS (restart), Hyprpaper (per-monitor IPC from
-    ``current.json``), terminal palette (OSC from ``current/colors.sequences``).
+    ``current.json``), then the terminal palette (OSC from
+    ``current/colors.sequences``) when ``include_terminal`` is set, with the
+    kitty reloader (``SIGUSR1``) appended last.
+
+    ``include_terminal=False`` excludes ``TerminalColorApplier`` — the
+    daemon has no controlling tty, so the ``/dev/tty`` applier would surface
+    a failure on every converge. CLI runs keep it (they may run inside a
+    terminal).
     """
     from runtime.adapters.ags_reloader import AgsReloader
     from runtime.adapters.hyprland_reloader import HyprlandReloader
     from runtime.adapters.hyprpaper_reloader import HyprpaperReloader
+    from runtime.adapters.kitty_reloader import KittyReloader
     from runtime.adapters.terminal_color_applier import TerminalColorApplier
 
-    return [
+    reloaders: list[IDesktopReloader] = [
         HyprlandReloader(),
         AgsReloader(),
         HyprpaperReloader(state_root=state_root),
-        TerminalColorApplier(state_root=state_root),
     ]
+    if include_terminal:
+        reloaders.append(TerminalColorApplier(state_root=state_root))
+    reloaders.append(KittyReloader())
+    return reloaders
 
 
-def _run_wallpaper_set(image_path: Path, *, suppress_history: bool = False) -> _WallpaperSetResult:
+def _run_wallpaper_set(
+    image_path: Path, *, suppress_history: bool = False, include_terminal: bool = True
+) -> _WallpaperSetResult:
     """Compose and run ApplyWallpaperUseCase → ReconcileDesktopStateUseCase.
 
     The full ``wallpaper set`` pipeline (AD-12): apply derives the three
@@ -429,7 +442,7 @@ def _run_wallpaper_set(image_path: Path, *, suppress_history: bool = False) -> _
             state_root, consumer_spec=StaticConsumerPathSpec(), suppress_history=suppress_history
         ),
         mutex=FlockSeedMutex(state_root / ".seed.lock"),
-        reloaders=_build_reloaders(state_root),
+        reloaders=_build_reloaders(state_root, include_terminal=include_terminal),
     ).run(trigger="set")
 
     return _WallpaperSetResult(apply=apply_result, reconcile=reconcile_result)
@@ -595,7 +608,9 @@ def _append_inputs_check(summary: str, obj: dict[str, object]) -> str:
     return summary + "\ninputs: all layers fresh"
 
 
-def _run_reconcile(*, suppress_history: bool = False) -> ReconcileResult:
+def _run_reconcile(
+    *, suppress_history: bool = False, include_terminal: bool = True
+) -> ReconcileResult:
     """Compose and run ReconcileDesktopStateUseCase (reconcile command).
 
     Mirrors ``_run_wallpaper_set``'s wiring: resolve state_root /
@@ -632,7 +647,7 @@ def _run_reconcile(*, suppress_history: bool = False) -> ReconcileResult:
             state_root, consumer_spec=StaticConsumerPathSpec(), suppress_history=suppress_history
         ),
         mutex=FlockSeedMutex(state_root / ".seed.lock"),
-        reloaders=_build_reloaders(state_root),
+        reloaders=_build_reloaders(state_root, include_terminal=include_terminal),
     )
     return use_case.run()
 
@@ -810,7 +825,7 @@ def _run_reconcile_plan(
 
 
 def _run_regenerate_stale(
-    *, suppress_history: bool = False, reconcile: bool = True
+    *, suppress_history: bool = False, reconcile: bool = True, include_terminal: bool = True
 ) -> RegenerateResult:
     """Compose and run RegenerateStaleUseCase (reconcile --regenerate-stale).
 
@@ -885,7 +900,7 @@ def _run_regenerate_stale(
             state_root=state_root,
             seeder=seeder,
             mutex=mutex,
-            reloaders=_build_reloaders(state_root),
+            reloaders=_build_reloaders(state_root, include_terminal=include_terminal),
         ),
         mutex=mutex,
         state_root=state_root,
@@ -1267,7 +1282,7 @@ def _run_reactive_converge(
 
     def _declarative() -> object:
         try:
-            return _run_converge(suppress_history=True, allow_delete=False)
+            return _run_converge(suppress_history=True, allow_delete=False, include_terminal=False)
         except ValueError as exc:
             # Corrupt/symlinked intent is a logged recoverable skip, never a
             # crash-loop (AD-41); the other steps still converge.
@@ -1300,8 +1315,10 @@ def _run_reactive_converge(
         write_backstop=backstop.write,
         has_state=lambda: state_repo.load_current() is not None,
         check_inputs=_run_check_inputs,
-        regenerate_stale=lambda: _run_regenerate_stale(suppress_history=True, reconcile=False),
-        reconcile=lambda: _run_reconcile(suppress_history=True),
+        regenerate_stale=lambda: _run_regenerate_stale(
+            suppress_history=True, reconcile=False, include_terminal=False
+        ),
+        reconcile=lambda: _run_reconcile(suppress_history=True, include_terminal=False),
         declarative=_declarative,
         append_history=_append_reactive,
         prune=(
@@ -2106,7 +2123,7 @@ def _render_converge(
 
 
 def _run_converge(
-    *, suppress_history: bool = False, allow_delete: bool = True
+    *, suppress_history: bool = False, allow_delete: bool = True, include_terminal: bool = True
 ) -> ConvergenceReport | None:
     """Execute the declarative gap for plain ``reconcile`` (Story 4.5, AC 3).
 
@@ -2155,7 +2172,9 @@ def _run_converge(
     changeset = diff_states(desired, refresh_actual(), 5)
 
     def set_wallpaper(target: str) -> object:
-        res = _run_wallpaper_set(Path(target), suppress_history=suppress_history)
+        res = _run_wallpaper_set(
+            Path(target), suppress_history=suppress_history, include_terminal=include_terminal
+        )
         if res.reconcile.reload_failures:
             raise RuntimeError(f"reload failed for: {', '.join(res.reconcile.reload_failures)}")
         return res

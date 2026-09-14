@@ -87,6 +87,7 @@ class _FakeCsg:
         # pinned colors.sequences.j2 template + Jinja post-processing produce.
         (output_dir / "colors.sequences").write_bytes(_pinned_sequences_bytes())
         (output_dir / "colors.rasi").write_text("* { background: #000; }")
+        (output_dir / "colors.kitty").write_text("* { background: #000; }")
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -100,6 +101,7 @@ class _FakeCsg:
                 colors_adw_css=hash_file(output_dir / "colors.adw.css"),
                 colors_sequences=hash_file(output_dir / "colors.sequences"),
                 colors_rasi=hash_file(output_dir / "colors.rasi"),
+                colors_kitty=hash_file(output_dir / "colors.kitty"),
             ),
             generated_at=_now_z(),
         )

@@ -452,6 +452,7 @@ class ReconcileDesktopStateUseCase:
                 "colors.adw.css",
                 "colors.sequences",
                 "colors.rasi",
+                "colors.kitty",
             ):
                 expected[artifact] = "palette artifact missing from cache entry"
         if state.effects is not None:
@@ -494,6 +495,7 @@ class ReconcileDesktopStateUseCase:
                     "colors.adw.css",
                     "colors.sequences",
                     "colors.rasi",
+                    "colors.kitty",
                 }
             )
         if state.effects is not None:
@@ -554,6 +556,7 @@ class ReconcileDesktopStateUseCase:
                 "colors.adw.css",
                 "colors.sequences",
                 "colors.rasi",
+                "colors.kitty",
             ):
                 targets[artifact] = pal_dir / artifact
         if state.effects is not None:

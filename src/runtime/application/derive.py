@@ -245,6 +245,7 @@ PALETTE_ARTIFACT_NAMES: Final[tuple[str, ...]] = (
     "colors.adw.css",
     "colors.sequences",
     "colors.rasi",
+    "colors.kitty",
 )
 
 
@@ -373,6 +374,7 @@ class DerivationPipeline:
                     "colors.adw.css": generated.artifact_hashes["colors_adw_css"],
                     "colors.sequences": generated.artifact_hashes["colors_sequences"],
                     "colors.rasi": generated.artifact_hashes["colors_rasi"],
+                    "colors.kitty": generated.artifact_hashes["colors_kitty"],
                 },
                 generated_at=generated.generated_at,
             )

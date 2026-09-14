@@ -109,6 +109,7 @@ class _FakeCsg:
         (output_dir / "colors.adw.css").write_text("colors {}")
         (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         (output_dir / "colors.rasi").write_text("* { background: #000; }")
+        (output_dir / "colors.kitty").write_text("* { background: #000; }")
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -122,6 +123,7 @@ class _FakeCsg:
                 colors_adw_css=hash_file(output_dir / "colors.adw.css"),
                 colors_sequences=hash_file(output_dir / "colors.sequences"),
                 colors_rasi=hash_file(output_dir / "colors.rasi"),
+                colors_kitty=hash_file(output_dir / "colors.kitty"),
             ),
             generated_at=_now_z(),
         )
@@ -372,6 +374,7 @@ class TestApplyWallpaperHappyPath:
             "colors.adw.css",
             "colors.sequences",
             "colors.rasi",
+            "colors.kitty",
         }
         for name, h in pmeta["artifact_hashes"].items():
             assert h == hash_file(
@@ -827,6 +830,7 @@ class TestApplyWallpaperLostRenameRace:
                     "colors.adw.css",
                     "colors.sequences",
                     "colors.rasi",
+                    "colors.kitty",
                 ):
                     (target / name).write_text("winner")
                 (target / "meta.json").write_text(
@@ -846,6 +850,7 @@ class TestApplyWallpaperLostRenameRace:
                                     "colors.adw.css",
                                     "colors.sequences",
                                     "colors.rasi",
+                                    "colors.kitty",
                                 )
                             },
                             "generated_at": _now_z(),

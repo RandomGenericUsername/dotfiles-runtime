@@ -55,3 +55,10 @@ def _no_real_desktop_binaries(monkeypatch: pytest.MonkeyPatch) -> None:
         return resolved
 
     monkeypatch.setattr(shutil, "which", _guarded_which)
+
+    # KittyReloader's default pid source would `pgrep -x kitty` and SIGUSR1
+    # the developer's live kitty processes. Neutralise it by default; tests
+    # that exercise kitty signalling inject a pid_source/signaller.
+    from runtime.adapters import kitty_reloader
+
+    monkeypatch.setattr(kitty_reloader, "_default_pid_source", lambda: [])

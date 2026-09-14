@@ -36,6 +36,7 @@ PALETTE_FILES = (
     "colors.adw.css",
     "colors.sequences",
     "colors.rasi",
+    "colors.kitty",
 )
 
 
@@ -177,6 +178,7 @@ def _seed_state(state_root: Path) -> None:
                     "colors_adw_css": "e" * 64,
                     "colors_sequences": "e" * 64,
                     "colors_rasi": "e" * 64,
+                    "colors_kitty": "e" * 64,
                 },
                 generated_at=TS,
             ),

@@ -49,6 +49,7 @@ def _palette() -> PaletteEntry:
             colors_adw_css="e" * 64,
             colors_sequences="f" * 64,
             colors_rasi="a" * 64,
+            colors_kitty="a" * 64,
         ),
         generated_at=_now_z(),
     )
@@ -247,7 +248,7 @@ class TestWallpaperSetCompositionRootWiring:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The ``wallpaper set`` composition root constructs
-        ``ReconcileDesktopStateUseCase`` with the four reloaders and the
+        ``ReconcileDesktopStateUseCase`` with the five reloaders and the
         same ``state_root``, and runs it with trigger ``"set"`` (mirrors
         TestReconcileCompositionRootWiring in test_cli_reconcile.py)."""
         captured: dict[str, Any] = {}
@@ -285,6 +286,7 @@ class TestWallpaperSetCompositionRootWiring:
         from runtime.adapters.hyprpaper_reloader import HyprpaperReloader
         from runtime.adapters.itr_adapter import ItrAdapter
         from runtime.adapters.json_state_repository import JsonStateRepository
+        from runtime.adapters.kitty_reloader import KittyReloader
         from runtime.adapters.seeder import CacheSeeder
         from runtime.adapters.terminal_color_applier import TerminalColorApplier
         from runtime.adapters.weg_adapter import WegAdapter
@@ -308,6 +310,7 @@ class TestWallpaperSetCompositionRootWiring:
             AgsReloader,
             HyprpaperReloader,
             TerminalColorApplier,
+            KittyReloader,
         ]
         assert reloaders[2]._state_root == captured["reconcile_kwargs"]["state_root"]  # type: ignore[attr-defined]
         assert reloaders[3]._state_root == captured["reconcile_kwargs"]["state_root"]  # type: ignore[attr-defined]
