@@ -18,6 +18,7 @@ real time in the tests.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 
 from runtime.adapters.hashing import hash_file_bytes
@@ -56,6 +57,7 @@ class ClipboardController:
         config: IClipboardConfigReader,
         *,
         clock: Callable[[], float],
+        wall_clock: Callable[[], float] | None = None,
         ttl: float = DEFAULT_CLIPBOARD_TTL,
         renew_interval: float = DEFAULT_RENEW_INTERVAL,
     ) -> None:
@@ -68,6 +70,10 @@ class ClipboardController:
         self._store = store
         self._config = config
         self._clock = clock
+        #: Item timestamps are WALL-CLOCK (epoch seconds) so recency is stable
+        #: across reboots and renders as real relative time; ``clock`` stays
+        #: monotonic for lease cadence.
+        self._wall_clock: Callable[[], float] = time.time if wall_clock is None else wall_clock
         self._ttl = float(ttl)
         self._renew_interval = float(renew_interval)
         self._job_id: str | None = None
@@ -178,7 +184,7 @@ class ClipboardController:
                 logger.exception("clipboard: source read failed; continuing")
                 reading = None
             if reading is not None and self._state == "running":
-                handled = self.handle_reading(reading, current)
+                handled = self.handle_reading(reading)
         if self._state != "idle" and self._should_renew(current):
             if self._job_id is not None:
                 try:
@@ -188,9 +194,9 @@ class ClipboardController:
             self._last_renew = current
         return handled
 
-    def handle_reading(self, reading: ClipboardReading, now: float | None = None) -> bool:
+    def handle_reading(self, reading: ClipboardReading) -> bool:
         """Classify, store, evict, and publish one captured reading."""
-        timestamp = self._clock() if now is None else now
+        timestamp = self._wall_clock()
         digest = hash_file_bytes(reading.canonical_bytes())
         kind = classify(reading.mimetypes, reading.text)
         item = ClipboardItem(
