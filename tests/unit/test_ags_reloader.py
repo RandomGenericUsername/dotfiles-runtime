@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from runtime.adapters.ags_reloader import AgsReloader
+from runtime.adapters.ags_reloader import AgsAppProcess, AgsReloader, _instance_name_for_dir
 from runtime.ports.desktop_reloader import IDesktopReloader
 
 
@@ -47,7 +47,7 @@ class _SequenceProcess:
 
 class TestAgsReloaderSuccess:
     def test_reload_success_returns_true(self, ags_bin: Path) -> None:
-        reloader = AgsReloader(ags_path=ags_bin)
+        reloader = AgsReloader(ags_path=ags_bin, app_lister=lambda: ())
         fake = _FakeProcess(code=None)
         with (
             patch("runtime.adapters.ags_reloader.subprocess.run"),
@@ -57,7 +57,7 @@ class TestAgsReloaderSuccess:
             assert reloader.reload() is True
 
     def test_quit_invoked_with_ags_quit(self, ags_bin: Path) -> None:
-        reloader = AgsReloader(ags_path=ags_bin)
+        reloader = AgsReloader(ags_path=ags_bin, app_lister=lambda: ())
         fake = _FakeProcess(code=None)
         with (
             patch("runtime.adapters.ags_reloader.subprocess.run") as mock_run,
@@ -73,7 +73,7 @@ class TestAgsReloaderSuccess:
         )
 
     def test_run_spawned_detached(self, ags_bin: Path) -> None:
-        reloader = AgsReloader(ags_path=ags_bin)
+        reloader = AgsReloader(ags_path=ags_bin, app_lister=lambda: ())
         fake = _FakeProcess(code=None)
         with (
             patch("runtime.adapters.ags_reloader.subprocess.run"),
@@ -92,7 +92,7 @@ class TestAgsReloaderSuccess:
 
 class TestAgsReloaderFailure:
     def test_run_process_dies_within_window_returns_false(self, ags_bin: Path) -> None:
-        reloader = AgsReloader(ags_path=ags_bin)
+        reloader = AgsReloader(ags_path=ags_bin, app_lister=lambda: ())
         fake = _FakeProcess(code=1)
         with (
             patch("runtime.adapters.ags_reloader.subprocess.run"),
@@ -102,7 +102,7 @@ class TestAgsReloaderFailure:
             assert reloader.reload() is False
 
     def test_quit_failure_is_tolerated(self, ags_bin: Path) -> None:
-        reloader = AgsReloader(ags_path=ags_bin)
+        reloader = AgsReloader(ags_path=ags_bin, app_lister=lambda: ())
         mock_result = MagicMock()
         mock_result.returncode = 1
         mock_result.stderr = "no instance running"
@@ -119,7 +119,7 @@ class TestAgsReloaderFailure:
             mock_popen.assert_called_once()
 
     def test_quit_exception_is_tolerated(self, ags_bin: Path) -> None:
-        reloader = AgsReloader(ags_path=ags_bin)
+        reloader = AgsReloader(ags_path=ags_bin, app_lister=lambda: ())
         with (
             patch(
                 "runtime.adapters.ags_reloader.subprocess.run",
@@ -145,7 +145,7 @@ class TestAgsReloaderFailure:
         ],
     )
     def test_popen_exception_returns_false(self, ags_bin: Path, exc: Exception) -> None:
-        reloader = AgsReloader(ags_path=ags_bin)
+        reloader = AgsReloader(ags_path=ags_bin, app_lister=lambda: ())
         with (
             patch("runtime.adapters.ags_reloader.subprocess.run"),
             patch("runtime.adapters.ags_reloader.subprocess.Popen", side_effect=exc),
@@ -155,7 +155,7 @@ class TestAgsReloaderFailure:
 
 class TestAgsReloaderLiveness:
     def test_liveness_window_contract_is_pinned(self, ags_bin: Path) -> None:
-        reloader = AgsReloader(ags_path=ags_bin)
+        reloader = AgsReloader(ags_path=ags_bin, app_lister=lambda: ())
         fake = MagicMock()
         fake.poll.return_value = None
         with (
@@ -169,7 +169,7 @@ class TestAgsReloaderLiveness:
         assert fake.poll.call_count == 8
 
     def test_death_mid_window_returns_false(self, ags_bin: Path) -> None:
-        reloader = AgsReloader(ags_path=ags_bin)
+        reloader = AgsReloader(ags_path=ags_bin, app_lister=lambda: ())
         fake = _SequenceProcess([None, None, None, None, 1])
         with (
             patch("runtime.adapters.ags_reloader.subprocess.run"),
@@ -179,7 +179,7 @@ class TestAgsReloaderLiveness:
             assert reloader.reload() is False
 
     def test_death_on_final_poll_returns_false(self, ags_bin: Path) -> None:
-        reloader = AgsReloader(ags_path=ags_bin)
+        reloader = AgsReloader(ags_path=ags_bin, app_lister=lambda: ())
         fake = _SequenceProcess([None] * 7 + [1])
         with (
             patch("runtime.adapters.ags_reloader.subprocess.run"),
@@ -238,8 +238,117 @@ class TestAgsReloaderMissing:
 
 class TestAgsReloaderInterface:
     def test_implements_port(self, ags_bin: Path) -> None:
-        reloader = AgsReloader(ags_path=ags_bin)
+        reloader = AgsReloader(ags_path=ags_bin, app_lister=lambda: ())
         assert isinstance(reloader, IDesktopReloader)
+
+
+def _running_tool() -> list[AgsAppProcess]:
+    return [
+        AgsAppProcess(
+            pid=4242,
+            argv=(
+                "ags",
+                "run",
+                "-d",
+                "/home/u/.config/ags-hypr-pano",
+                "--log-file",
+                "/tmp/hp.log",
+            ),
+            config_dir=Path("/home/u/.config/ags-hypr-pano"),
+            instance="hypr-pano",
+        )
+    ]
+
+
+class TestAgsReloaderStandaloneTools:
+    """The palette reload must restart the standalone AGS consumers too."""
+
+    def test_reloads_running_tool_with_its_argv(self, ags_bin: Path) -> None:
+        reloader = AgsReloader(ags_path=ags_bin, app_lister=_running_tool)
+        fake = _FakeProcess(code=None)
+        with (
+            patch("runtime.adapters.ags_reloader.subprocess.run") as mock_run,
+            patch(
+                "runtime.adapters.ags_reloader.subprocess.Popen", return_value=fake
+            ) as mock_popen,
+            patch("runtime.adapters.ags_reloader.time.sleep"),
+        ):
+            assert reloader.reload() is True
+        # bar quit + tool quit
+        assert mock_run.call_count == 2
+        mock_run.assert_any_call(
+            [str(ags_bin), "quit"], capture_output=True, text=True, timeout=10
+        )
+        mock_run.assert_any_call(
+            [str(ags_bin), "quit", "-i", "hypr-pano"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        # bar run + tool relaunched with its captured argv
+        assert mock_popen.call_count == 2
+        mock_popen.assert_any_call(
+            [
+                "ags",
+                "run",
+                "-d",
+                "/home/u/.config/ags-hypr-pano",
+                "--log-file",
+                "/tmp/hp.log",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+    def test_skips_editor_dir(self, ags_bin: Path) -> None:
+        apps = [
+            AgsAppProcess(
+                pid=1,
+                argv=("ags", "run", "-d", "/home/u/.config/ags-icme"),
+                config_dir=Path("/home/u/.config/ags-icme"),
+                instance="icon-color-mapping-editor",
+            )
+        ]
+        reloader = AgsReloader(ags_path=ags_bin, app_lister=lambda: apps)
+        fake = _FakeProcess(code=None)
+        with (
+            patch("runtime.adapters.ags_reloader.subprocess.run") as mock_run,
+            patch(
+                "runtime.adapters.ags_reloader.subprocess.Popen", return_value=fake
+            ) as mock_popen,
+            patch("runtime.adapters.ags_reloader.time.sleep"),
+        ):
+            assert reloader.reload() is True
+        mock_run.assert_called_once_with(
+            [str(ags_bin), "quit"], capture_output=True, text=True, timeout=10
+        )
+        mock_popen.assert_called_once()
+
+    def test_tool_death_returns_false(self, ags_bin: Path) -> None:
+        reloader = AgsReloader(ags_path=ags_bin, app_lister=_running_tool)
+        bar = _FakeProcess(code=None)
+        tool = _FakeProcess(code=1)
+        with (
+            patch("runtime.adapters.ags_reloader.subprocess.run"),
+            patch("runtime.adapters.ags_reloader.subprocess.Popen", side_effect=[bar, tool]),
+            patch("runtime.adapters.ags_reloader.time.sleep"),
+        ):
+            assert reloader.reload() is False
+
+    def test_instance_name_read_from_app_tsx(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "ags-hypr-pano"
+        config_dir.mkdir()
+        (config_dir / "app.tsx").write_text(
+            'app.start({ instanceName: "hypr-pano", css: style })'
+        )
+        assert _instance_name_for_dir(config_dir) == "hypr-pano"
+
+    def test_instance_name_absent_returns_none(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "empty"
+        config_dir.mkdir()
+        assert _instance_name_for_dir(config_dir) is None
 
 
 def _now_z() -> str:

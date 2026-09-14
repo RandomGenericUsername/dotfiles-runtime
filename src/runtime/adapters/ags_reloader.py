@@ -1,36 +1,33 @@
-"""AGS restart reload adapter — restarts the AGS bar after a swap (AD-17, FR-6, R5).
+"""AGS restart reload adapter — restarts AGS consumers after a swap (AD-17, FR-6, R5).
 
 Implements ``IDesktopReloader``: after the swap repoints
 ``current/colors.gtk.css`` (through the ``~/.config/ags`` spine symlink to
-``colors.css``, applied at runtime via ``app.apply_css``), the adapter
-restarts the AGS process. AGS has NO native hot-reload (verified in the
-AGS source, ``cli/cmd/run.go:145`` ``// TODO: watch and restart``
-[ARCHITECTURE-SPINE.md:236]), so a restart is the only reload channel.
+``colors.css``, applied at runtime via ``app.apply_css``), AGS has NO native
+hot-reload (verified in the AGS source, ``cli/cmd/run.go:145`` ``// TODO: watch
+and restart`` [ARCHITECTURE-SPINE.md:236]), so a restart is the only reload
+channel. This includes the standalone AGS tools (``hypr-pano``, ``capture``,
+…) that also read the generated palette: each running instance is restarted
+with the argv it was launched with, so the palette change propagates exactly
+like it does for the bar.
 
-Restart = three steps: ``ags quit`` (tolerated failure — verified in the
-AGS source: a non-zero exit deterministically means no live instance,
-because the AGS CLI exits on the dbus ``ServiceUnknown`` error), a
-detached ``ags run`` (``Popen`` + ``start_new_session=True`` — the bar is
-a long-running foreground process and must never block ``reconcile``),
-then a liveness poll within a ≤ 2s grace window. A process still alive at
-the end of the window is reported as ``True``; death after the window is
-NOT detected (Phase-2 limitation: liveness is the strongest verification
-available without a daemon). Errors detected within the window are
-reported as ``False`` with a warning log; the reconcile use case collects
-the class name into ``ReconcileResult.reload_failures`` via the port —
-mirroring ``HyprlandReloader``. Missing ``ags`` in PATH is a surfaced
-failure, not a skip (spec-literal R5; same decision as the Hyprland
-adapter).
+The bar (default instance ``ags``, launched as a bare ``ags run``) is restarted
+unconditionally, mirroring the original Story 2.4 behavior. The standalone tool
+instances are discovered from ``/proc`` (their ``ags run -d <dir>`` argv), and
+only running ones are restarted; an instance whose config dir is in
+``skip_config_dirs`` is left alone (the editor ``ags-icme`` may hold unsaved
+state).
 
-Quit tolerance cannot produce a duplicate bar (verified in AGS/Astal
-source): if the old instance still owns the ``io.Astal.ags`` bus name when
-the new one spawns, the new instance exits immediately with
-``NAME_OCCUPIED`` (Astal ``application.vala``), which the liveness poll
-reports as a failure — never two bars.
+Restart per instance = quit (``ags quit -i <instance>``; tolerated failure —
+a non-zero exit deterministically means no live instance) + a detached
+``ags run`` (``Popen`` + ``start_new_session=True`` — never a blocking
+``run()``) + a liveness poll within a ≤ 2s grace window.
+
+Missing ``ags`` in PATH is a surfaced failure, not a skip (spec-literal R5;
+same decision as the Hyprland adapter).
 
 Binary resolution imports ``_resolve_via_which`` from ``hyprland_reloader``
-(adapters→adapters import — layering-green) for the bare-name ``PATH``
-lookup; the separator/executable-file branch structure mirrors
+(adapters→adapters import — layering-green) for the bare-name ``PATH`` lookup;
+the separator/executable-file branch structure mirrors
 ``hyprland_reloader._resolve_hyprctl``.
 """
 
@@ -38,8 +35,11 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import time
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from runtime.adapters.hyprland_reloader import _resolve_via_which
@@ -50,17 +50,15 @@ logger = logging.getLogger(__name__)
 _LIVENESS_POLLS = 8
 _LIVENESS_POLL_INTERVAL = 0.25
 
+#: Config-dir names never restarted automatically. The icon color mapping
+#: editor can hold unsaved edits; a wallpaper change must not discard them.
+DEFAULT_SKIP_CONFIG_DIRS: frozenset[str] = frozenset({"ags-icme"})
+
+_INSTANCE_NAME_RE = re.compile(r"""instanceName\s*:\s*["']([^"']+)["']""")
+
 
 def _resolve_ags(ags_path: Path | None) -> Path | None:
-    """Resolve the ``ags`` binary path.
-
-    When ``ags_path`` is ``None``, search ``PATH`` via ``shutil.which``
-    and verify executable access. When a path is explicitly provided,
-    mirror ``hyprland_reloader._resolve_hyprctl``'s branch structure: a
-    path containing separators is verified as an executable file, while a
-    bare name is resolved via ``shutil.which``. Any unresolvable input
-    yields ``None`` for fail-later behaviour.
-    """
+    """Resolve the ``ags`` binary path (mirrors ``hyprland_reloader``)."""
     if ags_path is not None:
         candidate = str(ags_path)
         if (
@@ -78,41 +76,128 @@ def _resolve_ags(ags_path: Path | None) -> Path | None:
     return _resolve_via_which("ags")
 
 
+@dataclass(frozen=True, slots=True)
+class AgsAppProcess:
+    """One running standalone AGS app (``ags run -d <dir>``)."""
+
+    pid: int
+    argv: tuple[str, ...]
+    config_dir: Path
+    instance: str
+
+
+def _instance_name_for_dir(config_dir: Path) -> str | None:
+    """Read ``instanceName`` from the app's ``app.tsx`` (None if absent)."""
+    try:
+        text = (config_dir / "app.tsx").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = _INSTANCE_NAME_RE.search(text)
+    return match.group(1) if match is not None else None
+
+
+def _discover_ags_apps() -> list[AgsAppProcess]:
+    """Enumerate running standalone AGS apps from ``/proc`` (bar excluded).
+
+    The bar runs as a bare ``ags run`` with no config dir; it is restarted
+    separately and never appears here.
+    """
+    apps: list[AgsAppProcess] = []
+    proc = Path("/proc")
+    try:
+        entries = list(proc.iterdir())
+    except OSError:
+        return apps
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        argv = tuple(part for part in raw.decode("utf-8", "replace").split("\0") if part)
+        if len(argv) < 2 or Path(argv[0]).name != "ags" or argv[1] != "run":
+            continue
+        config_dir: Path | None = None
+        for index, arg in enumerate(argv):
+            if arg in ("-d", "--directory") and index + 1 < len(argv):
+                config_dir = Path(argv[index + 1])
+                break
+        if config_dir is None:
+            continue
+        instance = _instance_name_for_dir(config_dir) or config_dir.name
+        apps.append(
+            AgsAppProcess(
+                pid=int(entry.name),
+                argv=argv,
+                config_dir=config_dir,
+                instance=instance,
+            )
+        )
+    return apps
+
+
 class AgsReloader(IDesktopReloader):
-    """Adapter that restarts the AGS process (quit → detached run → liveness).
+    """Restarts the bar and the standalone AGS consumers on a palette swap.
 
     Args:
         ags_path: explicit path to the ``ags`` binary. When ``None``,
             resolved via ``shutil.which("ags")``; if not found, the
             adapter stores ``None`` and ``reload()`` returns ``False``
             without spawning a subprocess (surfaced failure, not a skip).
+        app_lister: injectable discovery of running standalone apps
+            (defaults to a ``/proc`` scan) — tests inject a fake.
+        skip_config_dirs: config-dir names never restarted automatically.
     """
 
-    def __init__(self, ags_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        ags_path: Path | None = None,
+        *,
+        app_lister: Callable[[], Sequence[AgsAppProcess]] = _discover_ags_apps,
+        skip_config_dirs: frozenset[str] = DEFAULT_SKIP_CONFIG_DIRS,
+    ) -> None:
         self._ags_path: Path | None = _resolve_ags(ags_path)
+        self._app_lister = app_lister
+        self._skip_config_dirs = skip_config_dirs
 
     def reload(self) -> bool:
-        """Restart the AGS bar so it re-reads the palette fragment.
+        """Restart the bar and every running standalone AGS consumer.
 
         Returns:
-            True when the detached ``ags run`` process is still alive at
-            the end of the ≤ 2s liveness window; False on a missing
-            binary, a ``run`` spawn/verify failure, or any subprocess
-            error after quit. ``ags quit`` failure is tolerated and
-            logged, because a fresh instance is the goal.
+            True when the bar restarted (its detached process is still alive
+            at the end of the liveness window) AND every reloaded tool did
+            too; False on a missing binary or any restart failure.
         """
         if self._ags_path is None:
             logger.warning("ags not found in PATH; AGS reload skipped")
             return False
 
-        # Step A — quit the running instance. Tolerate failure: a non-zero
-        # exit deterministically means no live instance (the AGS CLI exits
-        # on the dbus ServiceUnknown error), so continuing cannot collide
-        # with a live bar; a zero exit means Quit was delivered and the old
-        # instance tears down asynchronously.
+        bar_ok = self._restart(self._ags_path, [], instance=None)
+
+        tools_ok = True
+        for app in self._app_lister():
+            if app.config_dir.name in self._skip_config_dirs:
+                logger.debug("ags: leaving %s running (skip list)", app.instance)
+                continue
+            if not self._restart(self._ags_path, list(app.argv), instance=app.instance):
+                tools_ok = False
+        return bar_ok and tools_ok
+
+    def _restart(
+        self,
+        ags_bin: Path,
+        argv: list[str],
+        *,
+        instance: str | None,
+    ) -> bool:
+        """Quit ``instance`` (bar when ``None``) then relaunch ``argv`` detached."""
+        quit_argv = [str(ags_bin), "quit"]
+        if instance is not None:
+            quit_argv += ["-i", instance]
         try:
             quit_result = subprocess.run(
-                [str(self._ags_path), "quit"],
+                quit_argv,
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -127,19 +212,14 @@ class AgsReloader(IDesktopReloader):
             logger.debug("ags quit failed; continuing with restart: %s", exc)
         else:
             if quit_result.returncode != 0:
-                logger.debug(
-                    "ags quit reports no live instance (exit %s); continuing",
-                    quit_result.returncode,
-                )
+                logger.debug("ags quit reports no live instance; continuing")
             else:
-                logger.debug("ags quit delivered; old instance teardown is asynchronous")
+                logger.debug("ags quit delivered; teardown is asynchronous")
 
-        # Step B — spawn a DETACHED `ags run` (never a blocking run():
-        # `ags run` IS the bar; it would hang reconcile forever).
-        # Step C — liveness verification within a ≤ 2s grace window.
+        run_argv = [str(ags_bin), "run"] if not argv else argv
         try:
             proc = subprocess.Popen(
-                [str(self._ags_path), "run"],
+                run_argv,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -148,7 +228,8 @@ class AgsReloader(IDesktopReloader):
             for poll_index in range(_LIVENESS_POLLS):
                 if proc.poll() is not None:
                     logger.warning(
-                        "AGS restart failed: process exited with code %s",
+                        "AGS restart failed for %s: process exited with code %s",
+                        instance or "bar",
                         proc.returncode,
                     )
                     return False
@@ -162,5 +243,5 @@ class AgsReloader(IDesktopReloader):
             OSError,
             ValueError,
         ) as exc:
-            logger.warning("AGS reload failed: %s", exc)
+            logger.warning("AGS reload failed for %s: %s", instance or "bar", exc)
             return False
