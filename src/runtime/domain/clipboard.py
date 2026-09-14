@@ -61,6 +61,9 @@ _CODE_LINE = re.compile(
     re.MULTILINE,
 )
 _CODE_MARKERS = ("=>", "::", "->", "!==", "===", ";\n", "{\n", "}\n")
+#: Assignment / literal patterns that read as code even without keywords
+#: (e.g. ``dict_a = {'apple': 1}``, ``x = foo(bar)``, ``items[0] = 1``).
+_CODE_ASSIGN = re.compile(r"^\s*[A-Za-z_][\w.\[\]'\"]*\s*=\s*\S", re.MULTILINE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,7 +179,14 @@ def _looks_like_code(text: str) -> bool:
     marked = sum(1 for line in lines if _CODE_LINE.match(line))
     if marked >= 2:
         return True
-    return marked >= 1 and any(marker in text for marker in _CODE_MARKERS)
+    if marked >= 1 and any(marker in text for marker in _CODE_MARKERS):
+        return True
+    # Assignments / literals (dict, list, kwargs) without language keywords.
+    if _CODE_ASSIGN.search(text):
+        return True
+    if "{" in text and "}" in text and (":" in text or "=" in text):
+        return True
+    return False
 
 
 def preview_for(text: str | None, kind: str) -> str:

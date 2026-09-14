@@ -44,6 +44,12 @@ class TestClassify:
         snippet = "const x = 1;\nfunction f() {\n  return x;\n}"
         assert classify(("text/plain",), snippet) == "code"
 
+    def test_python_dict_assignment_is_code(self) -> None:
+        assert classify(("text/plain",), "dict_a = {'apple': 1, 'banana': 2}") == "code"
+
+    def test_assignment_is_code(self) -> None:
+        assert classify(("text/plain",), "total = price * quantity") == "code"
+
     def test_empty_is_text(self) -> None:
         assert classify(("text/plain",), "") == "text"
         assert classify(("text/plain",), None) == "text"
