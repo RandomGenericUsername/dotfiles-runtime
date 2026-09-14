@@ -207,6 +207,40 @@ class TestReconcileCompositionRootWiring:
         assert "TerminalColorApplier" not in names
         assert names[-1] == KittyReloader.__name__
 
+    def test_composition_root_passes_spine_templates_dir_to_csg(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Regression: the CSG adapter must receive the spine-resolved
+        templates dir. Its own discovery walks up from ``__file__``, which only
+        finds the repo templates when the runtime runs from a checkout; the
+        installed uv tool (what the daemon executes) finds nothing, so a bare
+        ``CsgAdapter()`` makes every reactive converge die with ``CSG templates
+        dir not found: no default templates dir discovered``."""
+        spine = tmp_path / "spine"
+        templates_dir = spine / "config" / "color-scheme-generator" / "templates"
+        templates_dir.mkdir(parents=True)
+        (templates_dir / "colors.kitty.j2").write_text("background #000000\n")
+        monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(spine))
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+        captured: dict[str, Any] = {}
+
+        class _FakeUseCase:
+            def __init__(self, **kwargs: Any) -> None:
+                captured["csg"] = kwargs.get("csg")
+
+            def run(self) -> Any:
+                return _reconcile_result()
+
+        monkeypatch.setattr(
+            "runtime.application.reconcile.ReconcileDesktopStateUseCase", _FakeUseCase
+        )
+        cli_main._run_reconcile()
+
+        csg = captured["csg"]
+        assert csg is not None
+        assert csg._templates_dir == templates_dir.resolve()  # type: ignore[attr-defined]
+
     def test_build_reloaders_include_terminal_flag(self) -> None:
         from runtime.adapters.kitty_reloader import KittyReloader
         from runtime.adapters.terminal_color_applier import TerminalColorApplier

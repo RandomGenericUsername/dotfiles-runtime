@@ -244,6 +244,7 @@ def _run_seed_if_needed() -> None:
         from runtime.adapters.json_state_repository import JsonStateRepository
         from runtime.adapters.seeder import CacheSeeder
         from runtime.adapters.weg_adapter import WegAdapter
+        from runtime.application.derive import find_templates_dir
         from runtime.application.seed_cache import SeedCacheUseCase
         from runtime.ports.seed_mutex import SeedLockedError
         from runtime.ports.wallpaper_backend import IStaticWallpaperBackend, IVideoWallpaperBackend
@@ -254,7 +255,7 @@ def _run_seed_if_needed() -> None:
         )
 
         state_repo = JsonStateRepository(state_root=state_root)
-        csg = CsgAdapter()
+        csg = CsgAdapter(templates_dir=find_templates_dir(install_spine))
         weg = WegAdapter()
         itr = ItrAdapter()
         seeder = CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec())
@@ -415,11 +416,12 @@ def _run_wallpaper_set(
     from runtime.adapters.seeder import CacheSeeder
     from runtime.adapters.weg_adapter import WegAdapter
     from runtime.application.apply_wallpaper import ApplyWallpaperUseCase
+    from runtime.application.derive import find_templates_dir
     from runtime.application.reconcile import ReconcileDesktopStateUseCase
 
     apply_result = ApplyWallpaperUseCase(
         state_repo=JsonStateRepository(state_root=state_root),
-        csg=CsgAdapter(),
+        csg=CsgAdapter(templates_dir=find_templates_dir(install_spine)),
         weg=WegAdapter(),
         itr=ItrAdapter(),
         install_spine=install_spine,
@@ -433,7 +435,7 @@ def _run_wallpaper_set(
 
     reconcile_result = ReconcileDesktopStateUseCase(
         state_repo=JsonStateRepository(state_root=state_root),
-        csg=CsgAdapter(),
+        csg=CsgAdapter(templates_dir=find_templates_dir(install_spine)),
         weg=WegAdapter(),
         itr=ItrAdapter(),
         install_spine=install_spine,
@@ -634,11 +636,12 @@ def _run_reconcile(
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
     from runtime.adapters.weg_adapter import WegAdapter
+    from runtime.application.derive import find_templates_dir
     from runtime.application.reconcile import ReconcileDesktopStateUseCase
 
     use_case = ReconcileDesktopStateUseCase(
         state_repo=JsonStateRepository(state_root=state_root),
-        csg=CsgAdapter(),
+        csg=CsgAdapter(templates_dir=find_templates_dir(install_spine)),
         weg=WegAdapter(),
         itr=ItrAdapter(),
         install_spine=install_spine,
@@ -868,7 +871,8 @@ def _run_regenerate_stale(
         state_root, consumer_spec=StaticConsumerPathSpec(), suppress_history=suppress_history
     )
     mutex = FlockSeedMutex(state_root / ".seed.lock")
-    csg, weg, itr = CsgAdapter(), WegAdapter(), ItrAdapter()
+    csg = CsgAdapter(templates_dir=find_templates_dir(install_spine))
+    weg, itr = WegAdapter(), ItrAdapter()
     invalidation = InvalidationQueryAdapter(
         state_root=state_root,
         templates_dir=find_templates_dir(install_spine),
@@ -952,13 +956,15 @@ def _run_doctor_repair() -> RepairResult:
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
     from runtime.adapters.weg_adapter import WegAdapter
+    from runtime.application.derive import find_templates_dir
     from runtime.application.doctor import DoctorRepairUseCase, DoctorUseCase
     from runtime.application.reconcile import ReconcileDesktopStateUseCase
 
     state_repo = JsonStateRepository(state_root=state_root)
     seeder = CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec())
     mutex = FlockSeedMutex(state_root / ".seed.lock")
-    csg, weg, itr = CsgAdapter(), WegAdapter(), ItrAdapter()
+    csg = CsgAdapter(templates_dir=find_templates_dir(install_spine))
+    weg, itr = WegAdapter(), ItrAdapter()
     use_case = DoctorRepairUseCase(
         doctor=DoctorUseCase(
             state_repo=state_repo, state_root=state_root, install_spine=install_spine
