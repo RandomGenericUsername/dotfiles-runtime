@@ -54,11 +54,12 @@ class CaptureHost:
         clock: Callable[[], float],
         ttl: float = DEFAULT_CAPTURE_TTL,
         cadence: float = DEFAULT_CAPTURE_CADENCE,
+        duration: float = 0.0,
         stop_event: threading.Event | None = None,
     ) -> None:
         self._client = client
         self._controller = CaptureController(
-            client, recorder, clock=clock, ttl=ttl, cadence=cadence
+            client, recorder, clock=clock, ttl=ttl, cadence=cadence, duration=duration
         )
         self._stop_event = stop_event if stop_event is not None else threading.Event()
 
@@ -92,8 +93,19 @@ class CaptureHost:
         return self._controller.start()
 
     def tick(self) -> bool:
-        """Emit ``capture.state`` + renew the lease on a cadence boundary."""
-        return self._controller.tick()
+        """Emit ``capture.state`` + renew the lease on a cadence boundary.
+
+        A duration auto-stop ends the job inside the controller; the host
+        then asks the serving loop to exit so the process finalizes and
+        terminates exactly as after a manual stop.
+        """
+        job_id = self._controller.job_id
+        emitted = self._controller.tick()
+        if job_id is not None and self._controller.job_id is None:
+            # The tick ended the job (duration auto-stop; a manual Control
+            # stop already sets the event itself — this is idempotent).
+            self._stop_event.set()
+        return emitted
 
     def stop(self) -> None:
         """Stop the recorder and end the hub job (idempotent, never raises)."""

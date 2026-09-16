@@ -12,6 +12,12 @@ of completed segments) plus an injected monotonic clock. It is never read
 from a file or a shared wall clock (AD-40 "State vs polling"), so the bar
 and the controller cannot disagree through a stale state file.
 
+A finite ``duration`` (seconds, ``0`` = infinite) arms an auto-stop: the
+first ``tick`` at or past the deadline stops the recorder, finalizes the
+file, and reports completion exactly as a manual stop (same ``stop()``,
+same ``idle`` emit, same ``EndJob(0)``). Paused time never counts toward
+the deadline — only recorded elapsed does.
+
 ``capture.state`` is emitted on every transition AND at least once per
 ``cadence`` (default one second) while recording. The payload carries the
 contract fields ``state``/``elapsed_seconds`` plus an additive optional
@@ -57,16 +63,22 @@ class CaptureController:
         clock: Callable[[], float],
         ttl: float = DEFAULT_CAPTURE_TTL,
         cadence: float = DEFAULT_CAPTURE_CADENCE,
+        duration: float = 0.0,
     ) -> None:
         if ttl <= 0:
             raise ValueError(f"capture ttl must be > 0, got {ttl!r}")
         if cadence <= 0:
             raise ValueError(f"capture cadence must be > 0, got {cadence!r}")
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)):
+            raise ValueError(f"capture duration must be a number, got {duration!r}")
+        if duration < 0:
+            raise ValueError(f"capture duration must be >= 0, got {duration!r}")
         self._client = client
         self._recorder = recorder
         self._clock = clock
         self._ttl = float(ttl)
         self._cadence = float(cadence)
+        self._duration = float(duration)
         self._job_id: str | None = None
         self._state = "idle"
         self._accumulated = 0.0
@@ -84,6 +96,11 @@ class CaptureController:
     def job_id(self) -> str | None:
         """The hub-allocated job id while a recording is live."""
         return self._job_id
+
+    @property
+    def duration(self) -> float:
+        """Configured auto-stop deadline in seconds (``0.0`` = infinite)."""
+        return self._duration
 
     # ── Lifecycle ────────────────────────────────────────────────────
 
@@ -173,7 +190,10 @@ class CaptureController:
     def tick(self, now: float | None = None) -> bool:
         """Emit + renew if a cadence interval elapsed; return whether emitted.
 
-        Only ticks while recording. A failed publish/renew is contained: the
+        Only ticks while recording. A finite ``duration`` deadline is checked
+        first: on expiry the controller stops exactly like a manual stop
+        (recorder stopped, file finalized, ``idle`` emitted, job ended 0).
+        A failed publish/renew is contained: the
         at-most-once contract permits a dropped signal and the bar
         interpolates locally, so a transient hub failure never stops the
         recording (AD-41 recoverable flavor).
@@ -181,6 +201,9 @@ class CaptureController:
         current = self._clock() if now is None else now
         if self._state != _JOB_STARTED_STATE:
             return False
+        if self._duration > 0 and self._elapsed(current) >= self._duration:
+            self.stop()
+            return True
         if self._last_emit is not None and current - self._last_emit < self._cadence:
             return False
         self._publish_state(current)

@@ -81,11 +81,15 @@ class _FakeRecorder(IRecorderProcess):
 
 def _controller(
     clock: _Clock | None = None,
+    *,
+    duration: float = 0.0,
 ) -> tuple[CaptureController, _FakeClient, _FakeRecorder, _Clock]:
     clock = clock if clock is not None else _Clock()
     client = _FakeClient()
     recorder = _FakeRecorder()
-    controller = CaptureController(client, recorder, clock=clock, ttl=60.0, cadence=1.0)
+    controller = CaptureController(
+        client, recorder, clock=clock, ttl=60.0, cadence=1.0, duration=duration
+    )
     return controller, client, recorder, clock
 
 
@@ -171,6 +175,74 @@ class TestLifecycle:
             CaptureController(client, recorder, clock=_Clock(), ttl=0)
         with pytest.raises(ValueError, match="cadence"):
             CaptureController(client, recorder, clock=_Clock(), cadence=0)
+
+
+class TestDuration:
+    """Finite duration arms an auto-stop identical to a manual stop."""
+
+    def test_bad_duration_rejected(self) -> None:
+        client, recorder = _FakeClient(), _FakeRecorder()
+        with pytest.raises(ValueError, match="duration"):
+            CaptureController(client, recorder, clock=_Clock(), duration=-1)
+        with pytest.raises(ValueError, match="duration"):
+            CaptureController(client, recorder, clock=_Clock(), duration=True)
+
+    def test_zero_duration_is_infinite(self) -> None:
+        controller, client, recorder, clock = _controller(duration=0.0)
+        assert controller.duration == 0.0
+        controller.start()
+        clock.advance(3600.0)
+        assert controller.tick() is True  # cadence emit, no auto-stop
+        assert controller.state == "recording"
+        assert recorder.calls == ["start"]
+        assert client.ends == []
+
+    def test_expiry_stops_finalizes_and_reports_like_manual_stop(self) -> None:
+        controller, client, recorder, clock = _controller(duration=10.0)
+        controller.start()
+        clock.advance(9.0)
+        assert controller.tick() is True
+        assert controller.state == "recording"
+        clock.advance(1.0)
+        assert controller.tick() is True  # the auto-stop transition emits
+        assert controller.state == "idle"
+        assert recorder.calls == ["start", "stop"]
+        assert client.ends == [("job-1", 0)]
+        assert _last_state(client) == {
+            "state": "idle",
+            "elapsed_seconds": 10,
+            "job_id": "job-1",
+        }
+
+    def test_expiry_fires_before_the_next_cadence_boundary(self) -> None:
+        controller, _, recorder, clock = _controller(duration=10.0)
+        controller.start()
+        clock.advance(10.5)  # past deadline, cadence gate must not delay stop
+        assert controller.tick() is True
+        assert controller.state == "idle"
+        assert recorder.calls == ["start", "stop"]
+
+    def test_paused_time_does_not_count_toward_the_deadline(self) -> None:
+        controller, client, _, clock = _controller(duration=10.0)
+        controller.start()
+        clock.advance(9.0)
+        controller.pause()
+        clock.advance(100.0)  # paused: must not count
+        controller.resume()
+        assert controller.tick() is False  # elapsed 9 < 10, cadence gate holds
+        assert controller.state == "recording"
+        clock.advance(1.0)
+        assert controller.tick() is True  # elapsed 10: auto-stop
+        assert controller.state == "idle"
+        assert _last_state(client)["elapsed_seconds"] == 10
+
+    def test_no_auto_stop_once_idle(self) -> None:
+        controller, _, recorder, clock = _controller(duration=10.0)
+        controller.start()
+        controller.stop()
+        clock.advance(60.0)
+        assert controller.tick() is False
+        assert recorder.calls == ["start", "stop"]
 
 
 class TestRecorderStartFailure:

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import itertools
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -62,7 +63,7 @@ class _FakeRecorder(IRecorderProcess):
 
 
 class _Harness:
-    def __init__(self) -> None:
+    def __init__(self, *, duration: float = 0.0) -> None:
         self.clock = _Clock()
         self.sink = SignalSink()
         counter = itertools.count(1)
@@ -93,7 +94,12 @@ class _Harness:
         self.recorder = _FakeRecorder()
         self.client = InProcessJobClient(self.registry, self.service, control=self.channel)
         self.host = CaptureHost(
-            self.client, self.recorder, clock=self.clock, ttl=1000.0, cadence=1.0
+            self.client,
+            self.recorder,
+            clock=self.clock,
+            ttl=1000.0,
+            cadence=1.0,
+            duration=duration,
         )
 
     def signal_names(self) -> list[str]:
@@ -246,3 +252,125 @@ class TestRunCaptureHostHelper:
         names = [name for name, _, _ in h.emitted]
         assert "JobStarted" in names and "JobFinished" in names
         assert h.registry.active_jobs() == {}
+
+
+class _PumpEvent:
+    """A stop event whose blocking wait advances the fake clock (no threads).
+
+    Lets the runner's degraded cadence loop run deterministically: each
+    ``wait(cadence)`` moves fake time forward instead of sleeping real time.
+    """
+
+    def __init__(self, clock: _Clock) -> None:
+        self._clock = clock
+        self._flag = False
+
+    def set(self) -> None:
+        self._flag = True
+
+    def is_set(self) -> bool:
+        return self._flag
+
+    def wait(self, timeout: float | None = None) -> bool:
+        if not self._flag and timeout:
+            self._clock.advance(timeout)
+        return self._flag
+
+
+class TestDurationAutoStop:
+    def test_expiry_stops_recorder_and_reports_like_manual_stop(self) -> None:
+        """Host-level: the tick ends the job and asks the serve loop to exit."""
+        h = _Harness(duration=10.0)
+        job_id = h.host.start()
+        h.clock.advance(9.0)
+        assert h.host.tick() is True
+        assert h.host.state == "recording"
+        assert h.host.stop_requested() is False
+        h.clock.advance(1.0)
+        assert h.host.tick() is True  # auto-stop transition emits
+        assert h.host.state == "idle"
+        assert h.recorder.calls == ["start", "stop"]
+        assert h.received[-1] == {
+            "state": "idle",
+            "elapsed_seconds": 10,
+            "job_id": job_id,
+        }
+        h.service.flush()
+        assert ("JobFinished", "siu", (job_id, 0, 1)) in h.emitted
+        # The serve loop must exit on its own after an auto-stop.
+        assert h.host.stop_requested() is True
+        h.host.stop()  # idempotent: no second EndJob
+        h.service.flush()
+        assert h.signal_names().count("JobFinished") == 1
+
+    def test_runner_degraded_loop_auto_stops_without_a_bus(self) -> None:
+        """Runner-level: the degraded cadence pump fires the deadline."""
+        from runtime.cli.main import _run_capture_host
+
+        h = _Harness()
+        code = _run_capture_host(
+            command="gpu-screen-recorder -o out.mp4",
+            duration=2.5,
+            recorder=h.recorder,
+            client=h.client,
+            clock=h.clock,
+            stop_event=_PumpEvent(h.clock),  # type: ignore[arg-type]
+        )
+        h.service.flush()
+        assert code == 0
+        assert h.recorder.calls == ["start", "stop"]
+        assert h.registry.active_jobs() == {}
+
+    def test_runner_converts_gif_and_removes_intermediate(self, tmp_path: Path) -> None:
+        """Runner-level: the GIF stage runs after stop; success cleans up."""
+        from runtime.cli.main import _run_capture_host
+
+        h = _Harness()
+        intermediate = tmp_path / "rec.capture.mp4"
+        intermediate.write_text("fake-video")
+        converted: list[tuple[str, str, str]] = []
+        stop = threading.Event()
+        stop.set()
+        code = _run_capture_host(
+            command="gpu-screen-recorder -o rec.capture.mp4",
+            recorder=h.recorder,
+            client=h.client,
+            clock=h.clock,
+            stop_event=stop,
+            gif_input=str(intermediate),
+            gif_output=str(tmp_path / "rec.gif"),
+            gif_size="50",
+            gif_convert=lambda i, o, s: converted.append((i, o, s)),
+        )
+        assert code == 0
+        assert converted == [
+            (str(intermediate), str(tmp_path / "rec.gif"), "50")
+        ]
+        assert not intermediate.exists()
+
+    def test_runner_gif_failure_propagates_typed(self) -> None:
+        """A failed conversion raises loudly (typed encoder error)."""
+        from runtime.adapters.gif_converter import GifConversionError
+        from runtime.cli.main import _run_capture_host
+
+        h = _Harness()
+        stop = threading.Event()
+        stop.set()
+
+        def _boom(input_path: str, output_path: str, size: str) -> None:
+            raise GifConversionError("ffmpeg blew up")
+
+        with pytest.raises(GifConversionError, match="ffmpeg blew up"):
+            _run_capture_host(
+                command="gpu-screen-recorder -o rec.capture.mp4",
+                recorder=h.recorder,
+                client=h.client,
+                clock=h.clock,
+                stop_event=stop,
+                gif_input="rec.capture.mp4",
+                gif_output="rec.gif",
+                gif_size="original",
+                gif_convert=_boom,
+            )
+        # The recording itself still finalized before conversion failed.
+        assert h.recorder.calls == ["start", "stop"]

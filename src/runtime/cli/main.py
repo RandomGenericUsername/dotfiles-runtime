@@ -572,6 +572,13 @@ _CAPTURE_BACKEND_OPTION = typer.Option(
     "--backend",
     help="Recorder backend override (inferred from the executable when omitted)",
 )
+_CAPTURE_OUTPUT_PATH_OPTION = typer.Option(
+    None,
+    "--output-path",
+    help="Final output file the 'Recording saved' toast reports (the "
+    "capture-tool launcher threads its resolved path through here; the "
+    "GIF pipeline reports the converted .gif, not the intermediate)",
+)
 
 
 @wallpaper_app.command("set")
@@ -1754,14 +1761,74 @@ def _install_capture_stop_handlers(host: CaptureHost) -> Callable[[], None]:
     return _restore
 
 
+def _spawn_capture_notification(argv: list[str]) -> None:
+    """Fire a detached ``capture-tool notify …`` toast (fail-open, never raises).
+
+    The capture-tool backend owns the notification emission contract
+    (icon resolution, actions, urgencies); the resident host only routes the
+    finalize outcome to it. An absent binary (tests, minimal installs) is a
+    silent no-op. Module-level so tests can monkeypatch it.
+    """
+    import shutil
+    import subprocess
+
+    try:
+        binary = shutil.which("capture-tool")
+        if binary is None:
+            return
+        subprocess.Popen(
+            [binary, *argv],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        logger.warning("capture: notification spawn failed; continuing")
+
+
+def _notify_recording_saved(path: str, duration_s: float) -> None:
+    """Route a finalized recording to the capture backend's success toast."""
+    import os
+
+    size: int | None = None
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        size = None
+    argv = ["notify", "--kind", "recording-saved", "--path", path,
+            "--duration", str(max(0.0, float(duration_s)))]
+    if size is not None:
+        argv += ["--size", str(size)]
+    _spawn_capture_notification(argv)
+
+
+def _notify_capture_failed(message: str) -> None:
+    """Route a host failure to the capture backend's critical toast.
+
+    The backend categorizes the short card body itself (permission sniff,
+    typed kinds); the full message travels as details, never a traceback.
+    """
+    short = (message or "").strip().splitlines()[0].strip() if message else ""
+    argv = ["notify", "--kind", "failed", "--message", short or "Capture failed",
+            "--details", (message or "")[:2000]]
+    _spawn_capture_notification(argv)
+
+
 def _run_capture_host(
     *,
     command: str,
     backend: str | None = None,
+    duration: float = 0.0,
+    gif_input: str | None = None,
+    gif_output: str | None = None,
+    gif_size: str = "original",
+    output_path: str | None = None,
     recorder: IRecorderProcess | None = None,
     client: IControllableJobClient | None = None,
     clock: Callable[[], float] | None = None,
     stop_event: threading.Event | None = None,
+    gif_convert: Callable[[str, str, str], None] | None = None,
 ) -> int:
     """Run the resident capture host in the foreground (blocking, no polling).
 
@@ -1770,24 +1837,57 @@ def _run_capture_host(
     is a :class:`DbusJobClient`: ``BeginJob`` registers the job, its blocking
     ``serve`` loop drives ``tick`` (lease renew + >= 1/s ``capture.state``)
     and answers ``org.dotfiles.Job1.Control``; a validated ``stop`` (or a
-    SIGTERM/SIGINT) ends the loop and :meth:`CaptureHost.stop` finalizes the
-    recorder and ``EndJob``. With no daemon/bus the degraded local client
-    runs the same lifecycle but blocks on the stop event with no bus.
+    SIGTERM/SIGINT, or a finite ``duration`` expiring) ends the loop and
+    :meth:`CaptureHost.stop` finalizes the recorder and ``EndJob``. With no
+    daemon/bus the degraded local client runs the same lifecycle but pumps
+    the cadence itself (no bus receive loop exists to drive ``tick``);
+    SIGTERM/SIGINT still stops the recorder and exits 0.
 
-    Injectables (``recorder``/``client``/``clock``/``stop_event``) exist for
-    hermetic tests; the CLI passes none and installs signal handlers.
+    ``duration`` (seconds, ``0`` = infinite) arms the controller auto-stop:
+    on expiry the recorder is stopped, the file finalized, and completion
+    reported exactly like a manual stop. ``gif_input``/``gif_output``/
+    ``gif_size`` arm the GIF special pipeline: after the recorder stops,
+    the intermediate is converted to the final GIF via FFmpeg (``gif_size``
+    ``original``/``75``/``50``); the intermediate is removed on success and
+    left in place on failure. Conversion failures raise the typed
+    ``GifConversionError`` (plan §49 ``encoder_unavailable``).
+
+    Injectables (``recorder``/``client``/``clock``/``stop_event``/
+    ``gif_convert``) exist for hermetic tests; the CLI passes none and
+    installs signal handlers.
     """
     from runtime.adapters.dbus_job_client import DbusJobClient
+    from runtime.adapters.gif_converter import (
+        GIF_SIZE_SCALES,
+        convert_to_gif,
+    )
     from runtime.adapters.subprocess_recorder import SubprocessRecorder
+    from runtime.application.capture import DEFAULT_CAPTURE_CADENCE
     from runtime.application.capture_host import CaptureHost
 
+    if (
+        isinstance(duration, bool)
+        or not isinstance(duration, (int, float))
+        or duration < 0
+    ):
+        raise ValueError(f"capture duration must be >= 0 seconds, got {duration!r}")
+    if gif_output is not None and gif_input is None:
+        raise ValueError("capture --gif-output requires --gif-input")
+    if gif_size not in GIF_SIZE_SCALES:
+        raise ValueError(
+            f"unknown GIF size {gif_size!r}; known: {sorted(GIF_SIZE_SCALES)}"
+        )
     resolved_clock: Callable[[], float] = time.monotonic if clock is None else clock
     if recorder is None:
         recorder = SubprocessRecorder(shlex.split(command), backend=backend)
     if client is None:
         client = _build_capture_client()
-    host = CaptureHost(client, recorder, clock=resolved_clock, stop_event=stop_event)
+    host = CaptureHost(
+        client, recorder, clock=resolved_clock, duration=float(duration),
+        stop_event=stop_event,
+    )
     restore = _install_capture_stop_handlers(host) if stop_event is None else _noop
+    started_at = resolved_clock()
 
     def _drive_tick() -> None:
         host.tick()
@@ -1797,12 +1897,34 @@ def _run_capture_host(
         if isinstance(client, DbusJobClient):
             client.serve(host.stop_requested, tick=_drive_tick)
         else:
-            host.wait()
+            # Degraded arm: no bus receive loop drives tick, so pump the
+            # cadence here (lease renew is a local no-op; periodic state
+            # publish and duration auto-stop still apply).
+            while not host.stop_requested():
+                host.tick()
+                host.stop_event.wait(DEFAULT_CAPTURE_CADENCE)
     finally:
         host.stop()
         if isinstance(client, DbusJobClient):
             client.close()
         restore()
+    if gif_output is not None:
+        assert gif_input is not None  # validated above
+        convert = gif_convert if gif_convert is not None else convert_to_gif
+        convert(gif_input, gif_output, gif_size)
+        try:
+            Path(gif_input).unlink(missing_ok=True)
+        except OSError:
+            logger.warning(
+                "capture: could not remove GIF intermediate %s", gif_input
+            )
+    # Finalize toast (add-ags-notifd-notifications): the GIF pipeline reports
+    # the converted .gif, otherwise the launcher-threaded output path. Fires
+    # only when the launcher told us what to report — unit/integration runs
+    # that drive the host directly stay silent.
+    final_path = gif_output if gif_output is not None else output_path
+    if final_path is not None:
+        _notify_recording_saved(final_path, resolved_clock() - started_at)
     return 0
 
 
@@ -1810,6 +1932,27 @@ def _run_capture_host(
 def capture(
     command: str = _CAPTURE_COMMAND_OPTION,
     backend: str | None = _CAPTURE_BACKEND_OPTION,
+    duration: float = typer.Option(
+        0.0,
+        "--duration",
+        help="Auto-stop after N seconds and finalize (0 = record until stopped)",
+    ),
+    gif_input: str | None = typer.Option(
+        None,
+        "--gif-input",
+        help="Intermediate video the recorder wrote (GIF pipeline)",
+    ),
+    gif_output: str | None = typer.Option(
+        None,
+        "--gif-output",
+        help="Final GIF path (enables the FFmpeg conversion stage)",
+    ),
+    gif_size: str = typer.Option(
+        "original",
+        "--gif-size",
+        help="GIF output scale: original, 75, or 50",
+    ),
+    output_path: str | None = _CAPTURE_OUTPUT_PATH_OPTION,
 ) -> None:
     """Foreground resident capture host (Phase 5, AD-37/AD-38/AD-40).
 
@@ -1825,12 +1968,22 @@ def capture(
     SIGTERM/SIGINT stops the recorder and exits 0.
     """
     try:
-        _run_capture_host(command=command, backend=backend)
+        _run_capture_host(
+            command=command,
+            backend=backend,
+            duration=duration,
+            gif_input=gif_input,
+            gif_output=gif_output,
+            gif_size=gif_size,
+            output_path=output_path,
+        )
     except (ValueError, RuntimeError, OSError) as exc:
         logger.error("capture failed: %s", exc)
+        _notify_capture_failed(str(exc))
         raise typer.Exit(code=1) from None
     except Exception:
         logger.exception("capture failed unexpectedly")
+        _notify_capture_failed("Capture failed unexpectedly.")
         raise typer.Exit(code=1) from None
 
 
