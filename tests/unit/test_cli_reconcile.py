@@ -177,12 +177,12 @@ class TestReconcileCompositionRootWiring:
             HyprlandReloader,
             AgsReloader,
             HyprpaperReloader,
-            Gtk4AppReloader,
             TerminalColorApplier,
             KittyReloader,
         ]
+        assert not any(type(r) is Gtk4AppReloader for r in reloaders)
         assert reloaders[2]._state_root == captured["state_root"]  # type: ignore[attr-defined]
-        assert reloaders[4]._state_root == captured["state_root"]  # type: ignore[attr-defined]
+        assert reloaders[3]._state_root == captured["state_root"]  # type: ignore[attr-defined]
 
     def test_composition_root_excludes_terminal_when_disabled(
         self, monkeypatch: pytest.MonkeyPatch
@@ -244,6 +244,7 @@ class TestReconcileCompositionRootWiring:
         assert csg._templates_dir == templates_dir.resolve()  # type: ignore[attr-defined]
 
     def test_build_reloaders_include_terminal_flag(self) -> None:
+        from runtime.adapters.gtk4_app_reloader import Gtk4AppReloader
         from runtime.adapters.kitty_reloader import KittyReloader
         from runtime.adapters.terminal_color_applier import TerminalColorApplier
 
@@ -254,6 +255,8 @@ class TestReconcileCompositionRootWiring:
         assert type(with_terminal[-1]) is KittyReloader
         assert not any(type(r) is TerminalColorApplier for r in without_terminal)
         assert type(without_terminal[-1]) is KittyReloader
+        assert not any(type(r) is Gtk4AppReloader for r in with_terminal)
+        assert not any(type(r) is Gtk4AppReloader for r in without_terminal)
 
 
 class TestReconcileCliErrorMapping:

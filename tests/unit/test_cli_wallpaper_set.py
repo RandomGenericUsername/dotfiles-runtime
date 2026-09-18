@@ -411,12 +411,12 @@ class TestWallpaperSetCompositionRootWiring:
             HyprlandReloader,
             AgsReloader,
             HyprpaperReloader,
-            Gtk4AppReloader,
             TerminalColorApplier,
             KittyReloader,
         ]
+        assert not any(type(r) is Gtk4AppReloader for r in reloaders)
         assert reloaders[2]._state_root == captured["reconcile_kwargs"]["state_root"]  # type: ignore[attr-defined]
-        assert reloaders[4]._state_root == captured["reconcile_kwargs"]["state_root"]  # type: ignore[attr-defined]
+        assert reloaders[3]._state_root == captured["reconcile_kwargs"]["state_root"]  # type: ignore[attr-defined]
 
 
 class TestWallpaperSetContrastFlag:

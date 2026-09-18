@@ -86,6 +86,9 @@ app.add_typer(daemon_app, name="daemon")
 icons_app = typer.Typer(help="Icons commands")
 app.add_typer(icons_app, name="icons")
 
+gtk4_app = typer.Typer(help="GTK4 app reload commands")
+app.add_typer(gtk4_app, name="gtk4")
+
 logger = logging.getLogger(__name__)
 
 
@@ -352,6 +355,7 @@ def main_callback(
         "daemon",
         "capture",
         "clipboard",
+        "gtk4",
     ):
         return
     _run_seed_if_needed()
@@ -384,9 +388,13 @@ def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list
     Shared by ``reconcile`` and ``wallpaper set`` so both commands reload
     the IDENTICAL consumers in the same pinned order: Hyprland (``hyprctl
     reload``), AGS (restart), Hyprpaper (per-monitor IPC from
-    ``current.json``), Gtk4AppReloader (restart GTK4 apps), then the terminal
-    palette (OSC from ``current/colors.sequences``) when ``include_terminal``
-    is set, with the kitty reloader (``SIGUSR1``) appended last.
+    ``current.json``), then the terminal palette (OSC from
+    ``current/colors.sequences``) when ``include_terminal`` is set, with the
+    kitty reloader (``SIGUSR1``) appended last.
+
+    Event-driven consumers are NOT part of this synchronous chain: the
+    daemon-hosted GTK4 restart subscriber and ICME's live refresh act on
+    ``wallpaper.state done`` afterwards.
 
     ``include_terminal=False`` excludes ``TerminalColorApplier`` — the
     daemon has no controlling tty, so the ``/dev/tty`` applier would surface
@@ -394,7 +402,6 @@ def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list
     terminal).
     """
     from runtime.adapters.ags_reloader import AgsReloader
-    from runtime.adapters.gtk4_app_reloader import Gtk4AppReloader
     from runtime.adapters.hyprland_reloader import HyprlandReloader
     from runtime.adapters.hyprpaper_reloader import HyprpaperReloader
     from runtime.adapters.kitty_reloader import KittyReloader
@@ -404,7 +411,6 @@ def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list
         HyprlandReloader(),
         AgsReloader(),
         HyprpaperReloader(state_root=state_root),
-        Gtk4AppReloader(),
     ]
     if include_terminal:
         reloaders.append(TerminalColorApplier(state_root=state_root))
@@ -1118,6 +1124,59 @@ def icons_preference(
         f"(source: {resolved['source']})"
     )
     renderer.custom(CustomView(plain=summary, object=resolved, rich=summary))
+
+
+def _run_gtk4_restart() -> list[str]:
+    """Restart every allowlisted running GTK4 app; return the names restarted.
+
+    Manual/degraded-mode escape hatch (no daemon or hub required): reuses the
+    same allowlist-only, race-free restart primitive as the daemon-hosted
+    ``gtk4_app_subscriber``. Runs the primitive over exactly the apps it
+    discovered, so the reported names match the restart attempt.
+
+    Raises:
+        RuntimeError: when any discovered app fails to restart.
+    """
+    from runtime.adapters import gtk4_app_reloader
+
+    apps = gtk4_app_reloader._discover_gtk4_apps()
+    names = [app.app_name for app in apps]
+    if not gtk4_app_reloader.Gtk4AppReloader(app_lister=lambda: apps).reload():
+        raise RuntimeError(f"restart failed for: {', '.join(names) or 'unknown'}")
+    return names
+
+
+@gtk4_app.command("restart")
+def gtk4_restart(output_format: OutputFormat = _OUTPUT_FORMAT_OPTION) -> None:
+    """Restart allowlisted running GTK4 apps to pick up the active palette.
+
+    Escape hatch for degraded mode (daemon/hub absent) and manual recovery;
+    no hub is required. Uses the same restart primitive as the daemon-hosted
+    subscriber and exits non-zero when any restart fails.
+    """
+    renderer = create_renderer(output_format)
+    try:
+        names = _run_gtk4_restart()
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.error("gtk4 restart failed: %s", exc)
+        renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
+        raise typer.Exit(code=1) from None
+    except Exception:
+        logger.exception("gtk4 restart failed unexpectedly")
+        renderer.error(
+            ErrorView(
+                kind="UnexpectedError",
+                message="gtk4 restart failed unexpectedly; see logs",
+            )
+        )
+        raise typer.Exit(code=1) from None
+
+    summary = (
+        f"gtk4 restarted: {', '.join(names)}"
+        if names
+        else "gtk4: no allowlisted apps running; nothing to restart"
+    )
+    renderer.custom(CustomView(plain=summary, object={"restarted": names}, rich=summary))
 
 
 def _append_inputs_check(summary: str, obj: dict[str, object]) -> str:
