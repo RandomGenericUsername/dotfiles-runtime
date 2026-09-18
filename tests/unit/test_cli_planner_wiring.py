@@ -31,6 +31,10 @@ def _quiet_seed_hook(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
     # Phase 5: the intent document is relocated under $XDG_CONFIG_HOME.
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config-home"))
+    # The reconcile command publishes wallpaper.state; keep tests off the bus.
+    monkeypatch.setattr(
+        cli_main, "_build_wallpaper_client", lambda: SimpleNamespace(publish=lambda *a, **k: None)
+    )
 
 
 def _intent_path(tmp_path: Path) -> Path:
@@ -62,6 +66,7 @@ def _reconcile_result() -> SimpleNamespace:
         consumer_symlinks=[],
         cache_regenerated=[],
         reload_failures=[],
+        state=SimpleNamespace(wallpaper=SimpleNamespace(content_hash="ff" * 32)),
     )
 
 

@@ -41,13 +41,15 @@ palette:
 
 The restart primitive is the hardened ``Gtk4AppReloader`` (discovery via
 ``/proc`` + wait-for-exit then relaunch); it is injected via ``restart=`` so
-tests never spawn a process.
+tests never spawn a process. ``serve(stop_event)`` is the daemon's
+background-thread hosting entry point; ``run()`` stays the bounded test hook.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -451,6 +453,48 @@ class Gtk4AppSubscriber:
                 self.handle_signal(interface, member, tuple(message.body))
             except Exception:
                 logger.exception("gtk4: signal handling failed; continuing")
+
+    def serve(self, stop_event: threading.Event) -> None:
+        """Hosting entry point: blocking receive loop that exits when stopped.
+
+        The daemon runs this on a background thread with its own bus
+        connection. Every failure is logged and contained — a host thread must
+        never propagate into the daemon — and a failed initial connection
+        returns immediately, so the daemon degrades to "no automatic restart"
+        instead of crashing. ``stop_event`` is polled between receives
+        (200 ms), so host shutdown joins promptly; ``stop()`` afterwards wakes
+        a blocked receive.
+        """
+        try:
+            self.start()
+        except Exception:
+            logger.exception("gtk4: subscriber could not start; automatic restart disabled")
+            return
+        conn = self._conn
+        if conn is None:  # pragma: no cover - start() guarantees a connection
+            return
+        while not stop_event.is_set():
+            try:
+                message = conn.receive(timeout=0.2)
+            except TimeoutError:
+                continue
+            except OSError:
+                if not stop_event.is_set():
+                    logger.warning("gtk4: bus connection lost; subscriber stopping")
+                break
+            except Exception:
+                logger.exception("gtk4: subscriber receive failed; continuing")
+                continue
+            if message.header.message_type != MessageType.signal:
+                continue
+            fields = message.header.fields
+            interface = fields.get(HeaderFields.interface, "")
+            member = fields.get(HeaderFields.member, "")
+            try:
+                self.handle_signal(interface, member, tuple(message.body))
+            except Exception:
+                logger.exception("gtk4: signal handling failed; continuing")
+        self.stop()
 
     def stop(self) -> None:
         """Close the connection (idempotent, never raises)."""

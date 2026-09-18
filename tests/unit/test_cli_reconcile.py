@@ -292,3 +292,80 @@ class TestReconcileCliErrorMapping:
 
         assert result.exit_code == 1
         assert "unexpectedly" in result.output
+
+
+class _RecordingClient:
+    """Fake IJobClient recording ``wallpaper.state`` publishes."""
+
+    def __init__(self) -> None:
+        self.published: list[tuple[str, dict[str, object]]] = []
+
+    def publish(self, topic: str, payload: Any) -> None:
+        self.published.append((topic, dict(payload)))
+
+
+@pytest.fixture(autouse=True)
+def _no_bus_wallpaper_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unit tests stay off the bus; tests that assert clicks re-patch."""
+    monkeypatch.setattr(cli_main, "_build_wallpaper_client", _RecordingClient)
+
+
+class TestReconcilePublishCoverage:
+    def test_done_publishes_trigger_reconcile(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = _RecordingClient()
+        monkeypatch.setattr(cli_main, "_build_wallpaper_client", lambda: client)
+        _fake_composition(monkeypatch, lambda: _reconcile_result())
+
+        result = runner.invoke(app, ["reconcile"])
+
+        assert result.exit_code == 0
+        assert client.published == [
+            (
+                "wallpaper.state",
+                {"state": "applying", "wallpaper_hash": "", "trigger": "reconcile"},
+            ),
+            (
+                "wallpaper.state",
+                {"state": "done", "wallpaper_hash": "f" * 64, "trigger": "reconcile"},
+            ),
+        ]
+
+    def test_failure_publishes_error_trigger_reconcile(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = _RecordingClient()
+        monkeypatch.setattr(cli_main, "_build_wallpaper_client", lambda: client)
+
+        def _boom() -> Any:
+            raise RuntimeError("nothing to reconcile: no current state")
+
+        _fake_composition(monkeypatch, _boom)
+
+        result = runner.invoke(app, ["reconcile"])
+
+        assert result.exit_code == 1
+        assert client.published == [
+            (
+                "wallpaper.state",
+                {"state": "applying", "wallpaper_hash": "", "trigger": "reconcile"},
+            ),
+            (
+                "wallpaper.state",
+                {"state": "error", "wallpaper_hash": "", "trigger": "reconcile"},
+            ),
+        ]
+
+    def test_publish_failure_never_fails_the_command(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _BoomClient:
+            def publish(self, topic: str, payload: Any) -> None:
+                raise RuntimeError("bus down")
+
+        monkeypatch.setattr(cli_main, "_build_wallpaper_client", lambda: _BoomClient())
+        _fake_composition(monkeypatch, lambda: _reconcile_result())
+
+        result = runner.invoke(app, ["reconcile"])
+
+        assert result.exit_code == 0
+        assert "desktop reconciled" in result.output

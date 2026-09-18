@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
     from runtime.adapters.daemon_status import DaemonReport, DaemonStatusSnapshot
     from runtime.adapters.dbus_event_bus import HubService, SignalSink
+    from runtime.adapters.gtk4_app_subscriber import Gtk4AppSubscriber
     from runtime.adapters.systemd_notify import SystemdNotifier
     from runtime.application.apply_wallpaper import ApplyWallpaperResult
     from runtime.application.capture_host import CaptureHost
@@ -1783,6 +1784,7 @@ def _run_reactive_converge(
     observe_only: bool = True,
     source: str | None = None,
     prune_on_reactive: bool = False,
+    client: IJobClient | None = None,
 ) -> ReactiveConvergeResult:
     """Compose the daemon's reactive converge (P5-1-3, AD-35/AD-36/AD-42).
 
@@ -1810,6 +1812,10 @@ def _run_reactive_converge(
     runs exactly once after the declarative step and is audited with exactly
     one ``prune`` line whose counts equal the entries actually removed. The
     opt-in is a CLI flag / env var and never lives under a watched root.
+
+    ``client`` (tests) injects the ``wallpaper.state`` publisher used for the
+    ``done``/``trigger="reactive"`` emission; the daemon passes none and the
+    production client is built (D-Bus when the hub is owned, no-op otherwise).
     """
     from runtime.adapters.converge_backstop import LastConvergedBackstop
     from runtime.adapters.converge_inputs import compute_watch_input_hash
@@ -1889,6 +1895,25 @@ def _run_reactive_converge(
         input_hash=result.input_hash[:12],
         source=source or "event",
     )
+    # Publish coverage (trigger="reactive"): only a converge that actually ran
+    # changed the palette, so a no-op (unchanged/unseeded/observe-only) stays
+    # silent. The daemon's converge-on-start ("startup") is also skipped: the
+    # subscriber is not hosted yet, and the extra bus round trip would delay
+    # watch registration. Exactly one event per ran reactive converge; the
+    # inner composite steps publish none.
+    if result.ran and source != "startup":
+        try:
+            from runtime.adapters.dbus_job_client import DbusJobClient
+
+            if client is None:
+                client = _build_wallpaper_client()
+            current = state_repo.load_current()
+            done_hash = current.wallpaper.content_hash if current is not None else ""
+            _publish_wallpaper_state(client, "done", done_hash, "reactive")
+            if isinstance(client, DbusJobClient):
+                client.close()
+        except Exception:
+            logger.exception("reactive: wallpaper.state publish failed; continuing")
     return result
 
 
@@ -1909,6 +1934,31 @@ def _build_watch_source() -> IWatchSource | None:
         return None
 
 
+def _build_gtk4_subscriber() -> Gtk4AppSubscriber:
+    """Build the daemon's GTK4 restart consumer (its own bus connection).
+
+    The binding opens its connection only when its host thread runs, so this
+    is cheap and cannot fail; the daemon owns ``org.dotfiles.Events`` by the
+    time the thread starts, so hydration finds the hub.
+    """
+    from runtime.adapters.gtk4_app_subscriber import Gtk4AppSubscriber
+
+    return Gtk4AppSubscriber()
+
+
+def _serve_gtk4_subscriber(subscriber: Gtk4AppSubscriber, stop_event: threading.Event) -> None:
+    """Background thread target: run the consumer loop, containing failures.
+
+    The daemon must never crash because its subscriber did (AD-41); the
+    binding's own ``serve`` already logs connection/handler failures, and this
+    outer guard catches anything a test fake or a future binding raises.
+    """
+    try:
+        subscriber.serve(stop_event)
+    except Exception:
+        logger.exception("daemon: gtk4 subscriber thread terminated unexpectedly")
+
+
 def _run_daemon_run(
     owner: IBusNameOwner | None = None,
     registry: IJobRegistry | None = None,
@@ -1916,6 +1966,7 @@ def _run_daemon_run(
     converge: Callable[[WatchTrigger], None] | None = None,
     watch_source: IWatchSource | None = None,
     notifier: SystemdNotifier | None = None,
+    subscriber_factory: Callable[[], Gtk4AppSubscriber] | None = None,
 ) -> None:
     """Name-first daemon loop (P5-1-3: watch + reactive converge).
 
@@ -1945,17 +1996,23 @@ def _run_daemon_run(
        :class:`~runtime.adapters.watch_health.WatchHealthStore` so the
        daemon-independent ``inspect``/``doctor`` surface can report it. The
        main thread parks on the bus owner (no polling).
-    6. SIGTERM/SIGINT releases the name, stops the watch + watchdog threads,
-       sends ``STOPPING=1``, closes the source, and returns → exit 0.
+    6. **GTK4 subscriber** on a second dedicated thread (when a
+       ``subscriber_factory`` is injected): the hub consumer that restarts
+       the allowlisted GTK4 apps on a palette-affecting ``wallpaper.state
+       done``. It opens its own bus connection; a bus/hub absence is logged
+       and degrades to "no automatic restart" — it never crashes the daemon.
+    7. SIGTERM/SIGINT releases the name, stops the watch + subscriber +
+       watchdog threads, sends ``STOPPING=1``, closes the source, and
+       returns → exit 0.
 
     The daemon holds NO lock across a use-case call (AD-35): every use case
     acquires and releases ``.seed.lock``/``.history.lock`` internally and
     sequentially; the coordinator's callback never pre-holds one. The daemon
     never writes a watched root (AD-36).
 
-    Tests inject ``owner``/``converge``/``watch_source``/``notifier``; with
-    neither converge nor watch injected the loop is the P5-1-1 no-watch idle
-    (backward compatible).
+    Tests inject ``owner``/``converge``/``watch_source``/``notifier``/
+    ``subscriber_factory``; with neither converge nor watch nor subscriber
+    injected the loop is the P5-1-1 no-watch idle (backward compatible).
     """
     import threading
 
@@ -1996,8 +2053,11 @@ def _run_daemon_run(
         bus_owner = _build_bus_name_owner(service=service)
     restore_handlers = _install_release_handlers(bus_owner)
     stop_watch = threading.Event()
+    stop_subscriber = threading.Event()
     watchdog_stop = threading.Event()
     watcher: threading.Thread | None = None
+    subscriber: Gtk4AppSubscriber | None = None
+    subscriber_thread: threading.Thread | None = None
     watchdog_thread: threading.Thread | None = None
     try:
         try:
@@ -2052,10 +2112,26 @@ def _run_daemon_run(
                     daemon=True,
                 )
                 watcher.start()
+        if subscriber_factory is not None:
+            try:
+                subscriber = subscriber_factory()
+                subscriber_thread = threading.Thread(
+                    target=_serve_gtk4_subscriber,
+                    args=(subscriber, stop_subscriber),
+                    name="gtk4-subscriber",
+                    daemon=True,
+                )
+                subscriber_thread.start()
+                logger.info("daemon: hosting gtk4 app subscriber")
+            except Exception:
+                logger.exception(
+                    "daemon: could not start gtk4 subscriber; automatic restart disabled"
+                )
         logger.debug("daemon: hub epoch %s serving job + event surface", hub_registry.epoch)
         bus_owner.wait_until_terminated()
     finally:
         stop_watch.set()
+        stop_subscriber.set()
         watchdog_stop.set()
         # Close first: this wakes the real source's blocking select (stop
         # pipe + fd close) and the fake's blocking read, so the join returns
@@ -2067,6 +2143,13 @@ def _run_daemon_run(
                 logger.exception("daemon: closing watch source failed")
         if watcher is not None:
             watcher.join(timeout=5)
+        if subscriber is not None:
+            try:
+                subscriber.stop()
+            except Exception:
+                logger.exception("daemon: stopping gtk4 subscriber failed")
+        if subscriber_thread is not None:
+            subscriber_thread.join(timeout=5)
         if watchdog_thread is not None:
             watchdog_thread.join(timeout=5)
         notifier.stopping()
@@ -2134,7 +2217,11 @@ def daemon_run(
             return
 
     try:
-        _run_daemon_run(converge=_converge, watch_source=watch_source)
+        _run_daemon_run(
+            converge=_converge,
+            watch_source=watch_source,
+            subscriber_factory=_build_gtk4_subscriber,
+        )
     except (ValueError, RuntimeError, OSError) as exc:
         logger.error("daemon run failed: %s", exc)
         raise typer.Exit(code=1) from None
@@ -2704,6 +2791,11 @@ def reconcile(
     applies the Hyprpaper wallpaper IPC per monitor, and applies the
     terminal palette via OSC sequences via the reloaders wired in the
     composition root.
+
+    Emits ``wallpaper.state applying/done`` (or ``error``) with
+    ``trigger="reconcile"`` around the use case so event consumers see this
+    palette-affecting convergence; emission is informational and never fails
+    the command.
     """
     renderer = create_renderer(output_format)
     if (keep is not None or prune_pinned) and not plan:
@@ -2825,18 +2917,35 @@ def reconcile(
             )
         )
         return
+    # Publish coverage: a standalone palette-affecting reconcile is no longer
+    # silent to subscriber consumers. Same non-fatal discipline as
+    # ``_run_wallpaper_set`` — emission is informational and never fails the
+    # command; ``done`` is emitted only after the use case succeeds.
+    from runtime.adapters.dbus_job_client import DbusJobClient
+
+    client = _build_wallpaper_client()
+    pending_hash = ""
     try:
         from runtime.adapters.desired_state_reader import read_desired_state
+        from runtime.adapters.json_state_repository import JsonStateRepository
 
         # Pre-validate intent before ANY mutation (AC 4): a malformed file
         # must fail here, not after repoint + history append.
         read_desired_state(_resolve_desired_path())
+        try:
+            live = JsonStateRepository(state_root=_resolve_state_root()).load_current()
+        except (ValueError, RuntimeError, OSError):
+            live = None
+        pending_hash = live.wallpaper.content_hash if live is not None else ""
+        _publish_wallpaper_state(client, "applying", pending_hash, "reconcile")
         result = _run_reconcile()
     except (ValueError, RuntimeError, OSError) as exc:
+        _publish_wallpaper_state(client, "error", pending_hash, "reconcile")
         logger.error("reconcile failed: %s", exc)
         renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
         raise typer.Exit(code=1) from None
     except Exception:
+        _publish_wallpaper_state(client, "error", pending_hash, "reconcile")
         logger.exception("reconcile failed unexpectedly")
         renderer.error(
             ErrorView(
@@ -2845,6 +2954,9 @@ def reconcile(
             )
         )
         raise typer.Exit(code=1) from None
+    _publish_wallpaper_state(client, "done", result.state.wallpaper.content_hash, "reconcile")
+    if isinstance(client, DbusJobClient):
+        client.close()
 
     # Reload result (contract step 5): the wired reloaders populate
     # ReconcileResult.reload_failures; a non-empty list is surfaced and
