@@ -6,21 +6,38 @@ GTK4/libadwaita apps (power-options-gtk, hyprmod) have NO native hot-reload
 mechanism for CSS changes. This adapter discovers running instances via
 ``/proc`` scan and restarts them so they pick up the new color scheme.
 
-Discovery pattern mirrors ``AgsReloader``: scan ``/proc/[pid]/cmdline`` for
-target executable names (power-options-gtk, hyprmod). Restart pattern:
-kill → relaunch with original argv (detached, ``start_new_session=True``) →
-liveness poll (8 polls × 0.25s = 2s grace window).
+Restart-safety contract
+-----------------------
 
-Skip list provides safety for apps that should never be auto-restarted
-(e.g., apps with critical unsaved state). Matches AgsReloader's skip list
-pattern (ags-icme, ags-wallpaper-selector are excluded).
+- **Allowlist only.** Only ``TARGET_APPS`` (``power-options-gtk``, ``hyprmod``)
+  are ever discovered or restarted; arbitrary GTK4 apps are never wildcard-swept
+  in, so an app with genuine unsaved state is never at risk.
+- **Per-target state rationale.** ``power-options-gtk`` is a frontend for the
+  power-options daemon: changes apply to the daemon immediately, there is no
+  pending buffer, and reopening re-reads state. ``hyprmod`` persists to the
+  Hyprland config and applies via ``hyprctl``: state is on disk and reopening
+  re-reads it. The only thing a restart can lose is a half-typed field in an
+  open dialog — identical to the user closing the window.
+- **Graceful first, then escalate.** SIGTERM is the same shutdown path as the
+  user closing the window. The adapter waits (bounded poll of
+  ``_LIVENESS_POLLS`` × ``_LIVENESS_POLL_INTERVAL`` ≈ 2 s) for the old pid to
+  exit, escalating to SIGKILL only if the grace window elapses.
+- **Race-free handoff.** Relaunch (``Popen(..., start_new_session=True)``)
+  happens only after the old pid is gone. Both targets are single-instance
+  ``GApplication``s: starting the replacement while the dying old instance still
+  owns the session-bus name would forward activation to it and exit, silently
+  failing the restart.
+- **Opt-out and vacuous success.** ``skip_apps`` is the per-app opt-out; no
+  target running is a vacuous success.
+
+Discovery pattern mirrors ``AgsReloader``: scan ``/proc/[pid]/cmdline`` for
+target executable names (power-options-gtk, hyprmod).
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import re
 import subprocess
 import time
 from collections.abc import Callable, Sequence
@@ -86,6 +103,33 @@ def _discover_gtk4_apps() -> list[Gtk4AppProcess]:
     return apps
 
 
+def _wait_for_exit(
+    pid: int,
+    *,
+    polls: int = _LIVENESS_POLLS,
+    interval: float = _LIVENESS_POLL_INTERVAL,
+) -> bool:
+    """Poll until ``pid`` is gone or the bounded budget elapses.
+
+    Uses ``os.kill(pid, 0)`` as a liveness probe: it returns normally while the
+    process exists and raises ``ProcessLookupError`` once it has exited.
+
+    Returns:
+        True when the process is gone; False when it is still alive after the
+        poll budget.
+    """
+    for poll_index in range(polls):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            pass
+        if poll_index < polls - 1:
+            time.sleep(interval)
+    return False
+
+
 class Gtk4AppReloader(IDesktopReloader):
     """Restarts GTK4 apps (power-options-gtk, hyprmod) on a palette swap.
 
@@ -133,7 +177,7 @@ class Gtk4AppReloader(IDesktopReloader):
             True if the restart succeeded and the new process is still running
             after the liveness poll; False on any failure.
         """
-        # Kill existing process
+        # Graceful shutdown (SIGTERM) — equivalent to the user closing the window
         try:
             subprocess.run(
                 ["kill", str(app.pid)],
@@ -149,7 +193,36 @@ class Gtk4AppReloader(IDesktopReloader):
             ValueError,
         ) as exc:
             logger.debug("gtk4: kill failed for %s (pid %d): %s", app.app_name, app.pid, exc)
-            # Continue with relaunch attempt anyway
+            # Continue with the exit wait / relaunch attempt anyway
+
+        if not _wait_for_exit(app.pid):
+            logger.debug(
+                "gtk4: %s (pid %d) still alive after grace window; escalating to SIGKILL",
+                app.app_name,
+                app.pid,
+            )
+            try:
+                subprocess.run(
+                    ["kill", "-9", str(app.pid)],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+            except (
+                FileNotFoundError,
+                PermissionError,
+                subprocess.TimeoutExpired,
+                OSError,
+                ValueError,
+            ) as exc:
+                logger.debug("gtk4: SIGKILL failed for %s (pid %d): %s", app.app_name, app.pid, exc)
+            if not _wait_for_exit(app.pid):
+                logger.warning(
+                    "gtk4: %s (pid %d) still alive after SIGKILL; aborting restart",
+                    app.app_name,
+                    app.pid,
+                )
+                return False
 
         # Relaunch with original argv
         try:
