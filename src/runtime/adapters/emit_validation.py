@@ -168,6 +168,10 @@ TOPIC_SCHEMAS: dict[str, dict[str, Any]] = {
         "properties": {
             "state": {"type": "string", "enum": ["applying", "visible", "done", "error"]},
             "wallpaper_hash": {"type": "string"},
+            "trigger": {
+                "type": "string",
+                "enum": ["set", "regenerate", "reconcile", "reactive"],
+            },
         },
         "additionalProperties": True,
     },

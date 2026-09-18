@@ -238,8 +238,14 @@ class TestIconsRegenerateEmission:
         result = cli_main._run_icons_regenerate(client=_Client())  # type: ignore[arg-type]
 
         assert published == [
-            ("wallpaper.state", {"state": "applying", "wallpaper_hash": WH}),
-            ("wallpaper.state", {"state": "done", "wallpaper_hash": WH}),
+            (
+                "wallpaper.state",
+                {"state": "applying", "wallpaper_hash": WH, "trigger": "regenerate"},
+            ),
+            (
+                "wallpaper.state",
+                {"state": "done", "wallpaper_hash": WH, "trigger": "regenerate"},
+            ),
         ]
         assert captured["contrast"] == "auto"
         # AGS-only reload wiring: exactly one reloader, the AGS one.
@@ -265,7 +271,12 @@ class TestIconsRegenerateEmission:
         with pytest.raises(RuntimeError, match="nothing to regenerate"):
             cli_main._run_icons_regenerate(client=_Client())  # type: ignore[arg-type]
 
-        assert published == [("wallpaper.state", {"state": "error", "wallpaper_hash": ""})]
+        assert published == [
+            (
+                "wallpaper.state",
+                {"state": "error", "wallpaper_hash": "", "trigger": "regenerate"},
+            )
+        ]
         assert "contrast" not in captured  # use case never ran
 
     def test_busy_second_command_fails_without_visible(
@@ -291,8 +302,14 @@ class TestIconsRegenerateEmission:
                 cli_main._run_icons_regenerate(client=_Client())  # type: ignore[arg-type]
 
         assert published == [
-            ("wallpaper.state", {"state": "applying", "wallpaper_hash": WH}),
-            ("wallpaper.state", {"state": "error", "wallpaper_hash": ""}),
+            (
+                "wallpaper.state",
+                {"state": "applying", "wallpaper_hash": WH, "trigger": "regenerate"},
+            ),
+            (
+                "wallpaper.state",
+                {"state": "error", "wallpaper_hash": "", "trigger": "regenerate"},
+            ),
         ]
 
 

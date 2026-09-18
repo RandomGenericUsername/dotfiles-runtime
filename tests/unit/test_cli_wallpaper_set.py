@@ -716,9 +716,18 @@ class TestWallpaperStateEmission:
         result = cli_main._run_wallpaper_set(img, client=client)
 
         assert client.published == [
-            ("wallpaper.state", {"state": "applying", "wallpaper_hash": hash_file(img)}),
-            ("wallpaper.state", {"state": "visible", "wallpaper_hash": "f" * 64}),
-            ("wallpaper.state", {"state": "done", "wallpaper_hash": "f" * 64}),
+            (
+                "wallpaper.state",
+                {"state": "applying", "wallpaper_hash": hash_file(img), "trigger": "set"},
+            ),
+            (
+                "wallpaper.state",
+                {"state": "visible", "wallpaper_hash": "f" * 64, "trigger": "set"},
+            ),
+            (
+                "wallpaper.state",
+                {"state": "done", "wallpaper_hash": "f" * 64, "trigger": "set"},
+            ),
         ]
         # Phase timestamps are additive on the result (CLI --format json).
         assert result.visible_at.endswith("Z") and result.themed_at.endswith("Z")
@@ -745,9 +754,18 @@ class TestWallpaperStateEmission:
             cli_main._run_wallpaper_set(img, client=client)
 
         assert client.published == [
-            ("wallpaper.state", {"state": "applying", "wallpaper_hash": hash_file(img)}),
-            ("wallpaper.state", {"state": "visible", "wallpaper_hash": "f" * 64}),
-            ("wallpaper.state", {"state": "error", "wallpaper_hash": "f" * 64}),
+            (
+                "wallpaper.state",
+                {"state": "applying", "wallpaper_hash": hash_file(img), "trigger": "set"},
+            ),
+            (
+                "wallpaper.state",
+                {"state": "visible", "wallpaper_hash": "f" * 64, "trigger": "set"},
+            ),
+            (
+                "wallpaper.state",
+                {"state": "error", "wallpaper_hash": "f" * 64, "trigger": "set"},
+            ),
         ]
 
     def test_swap_failure_publishes_error_with_pending_hash_and_no_visible(
@@ -771,8 +789,14 @@ class TestWallpaperStateEmission:
             cli_main._run_wallpaper_set(img, client=client)
 
         assert client.published == [
-            ("wallpaper.state", {"state": "applying", "wallpaper_hash": hash_file(img)}),
-            ("wallpaper.state", {"state": "error", "wallpaper_hash": hash_file(img)}),
+            (
+                "wallpaper.state",
+                {"state": "applying", "wallpaper_hash": hash_file(img), "trigger": "set"},
+            ),
+            (
+                "wallpaper.state",
+                {"state": "error", "wallpaper_hash": hash_file(img), "trigger": "set"},
+            ),
         ]
 
     def test_missing_input_publishes_error_with_empty_hash(
@@ -791,8 +815,8 @@ class TestWallpaperStateEmission:
             cli_main._run_wallpaper_set(tmp_path / "missing.png", client=client)
 
         assert client.published == [
-            ("wallpaper.state", {"state": "applying", "wallpaper_hash": ""}),
-            ("wallpaper.state", {"state": "error", "wallpaper_hash": ""}),
+            ("wallpaper.state", {"state": "applying", "wallpaper_hash": "", "trigger": "set"}),
+            ("wallpaper.state", {"state": "error", "wallpaper_hash": "", "trigger": "set"}),
         ]
 
     def test_busy_second_set_fails_without_mutation(
@@ -820,8 +844,11 @@ class TestWallpaperStateEmission:
                 cli_main._run_wallpaper_set(img, client=client)
 
         assert client.published == [
-            ("wallpaper.state", {"state": "applying", "wallpaper_hash": hash_file(img)}),
-            ("wallpaper.state", {"state": "error", "wallpaper_hash": ""}),
+            (
+                "wallpaper.state",
+                {"state": "applying", "wallpaper_hash": hash_file(img), "trigger": "set"},
+            ),
+            ("wallpaper.state", {"state": "error", "wallpaper_hash": "", "trigger": "set"}),
         ]
         assert not (state_root / "current.json").exists()
         assert not (state_root / "history.jsonl").exists()

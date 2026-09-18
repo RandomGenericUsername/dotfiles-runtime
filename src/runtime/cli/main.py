@@ -443,16 +443,22 @@ def _build_wallpaper_client() -> IJobClient:
     return DbusJobClient()
 
 
-def _publish_wallpaper_state(client: IJobClient, state: str, wallpaper_hash: str) -> None:
+def _publish_wallpaper_state(
+    client: IJobClient, state: str, wallpaper_hash: str, trigger: str
+) -> None:
     """Publish one ``wallpaper.state`` transition; never fail the set.
 
     Emission is informational (AD-37: indicators, never control) — a hub
     failure must not turn a successful apply into a failed command, and a
     publish failure on the error path must not mask the original
-    exception.
+    exception. ``trigger`` names the palette-affecting operation
+    (``set``/``regenerate``/``reconcile``/``reactive``).
     """
     try:
-        client.publish(_WALLPAPER_STATE_TOPIC, {"state": state, "wallpaper_hash": wallpaper_hash})
+        client.publish(
+            _WALLPAPER_STATE_TOPIC,
+            {"state": state, "wallpaper_hash": wallpaper_hash, "trigger": trigger},
+        )
     except Exception:
         logger.exception("wallpaper: wallpaper.state publish failed; continuing")
 
@@ -547,7 +553,7 @@ def _run_wallpaper_set(
         pending_hash = hash_file(resolved) if resolved.is_file() else ""
     except OSError:
         pending_hash = ""
-    _publish_wallpaper_state(client, "applying", pending_hash)
+    _publish_wallpaper_state(client, "applying", pending_hash, "set")
 
     inner_mutex = PassThroughSeedMutex()
     templates_dir = find_templates_dir(install_spine)
@@ -648,22 +654,22 @@ def _run_wallpaper_set(
             live_hash = swap.wallpaper_hash
             swap_elapsed = time.monotonic() - swap_started
             visible_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-            _publish_wallpaper_state(client, "visible", live_hash)
+            _publish_wallpaper_state(client, "visible", live_hash, "set")
             themed_started = time.monotonic()
             apply_result, reconcile_result = _phase_themed(swap)
             theme_elapsed = time.monotonic() - themed_started
             themed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     except SeedLockedError as exc:
-        _publish_wallpaper_state(client, "error", "")
+        _publish_wallpaper_state(client, "error", "", "set")
         raise SeedLockedError(
             f"wallpaper set already in progress (lock held): {state_root / '.seed.lock'}"
         ) from exc
     except Exception:
         _publish_wallpaper_state(
-            client, "error", live_hash if live_hash is not None else pending_hash
+            client, "error", live_hash if live_hash is not None else pending_hash, "set"
         )
         raise
-    _publish_wallpaper_state(client, "done", reconcile_result.state.wallpaper.content_hash)
+    _publish_wallpaper_state(client, "done", reconcile_result.state.wallpaper.content_hash, "set")
     if isinstance(client, DbusJobClient):
         client.close()
 
@@ -886,16 +892,16 @@ def _run_icons_regenerate(
     try:
         live = JsonStateRepository(state_root).load_current()
     except (ValueError, RuntimeError, OSError):
-        _publish_wallpaper_state(client, "error", "")
+        _publish_wallpaper_state(client, "error", "", "regenerate")
         raise
     if live is None:
-        _publish_wallpaper_state(client, "error", "")
+        _publish_wallpaper_state(client, "error", "", "regenerate")
         raise RuntimeError(
             "nothing to regenerate: no runtime state recorded yet "
             "(run `dotfiles-runtime wallpaper set <img>` first)"
         )
     pending_hash = live.wallpaper.content_hash
-    _publish_wallpaper_state(client, "applying", pending_hash)
+    _publish_wallpaper_state(client, "applying", pending_hash, "regenerate")
 
     inner_mutex = PassThroughSeedMutex()
     templates_dir = find_templates_dir(install_spine)
@@ -915,16 +921,14 @@ def _run_icons_regenerate(
                 reloaders=[AgsReloader()],
             ).run(contrast=contrast)
     except SeedLockedError as exc:
-        _publish_wallpaper_state(client, "error", "")
+        _publish_wallpaper_state(client, "error", "", "regenerate")
         raise SeedLockedError(
             f"icons regenerate already in progress (lock held): {state_root / '.seed.lock'}"
         ) from exc
     except Exception:
-        _publish_wallpaper_state(
-            client, "error", pending_hash
-        )
+        _publish_wallpaper_state(client, "error", pending_hash, "regenerate")
         raise
-    _publish_wallpaper_state(client, "done", result.state.wallpaper.content_hash)
+    _publish_wallpaper_state(client, "done", result.state.wallpaper.content_hash, "regenerate")
     if isinstance(client, DbusJobClient):
         client.close()
     return result
