@@ -215,6 +215,16 @@ class _PassingAgsReloader:
         return True
 
 
+class _PassingGtk4AppReloader:
+    """Isolates the CLI from the real Gtk4AppReloader."""
+
+    def __init__(self, **_kwargs: object) -> None:
+        pass
+
+    def reload(self) -> bool:
+        return True
+
+
 class TestCliCrashRecoveryLogging:
     def test_reconcile_recovery_logs_stray_reverts(self, tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch) -> None:
         state_root = tmp_path / "dotfiles"
@@ -248,6 +258,10 @@ class TestCliCrashRecoveryLogging:
             "runtime.adapters.ags_reloader.AgsReloader",
             _PassingAgsReloader,
         )
+        monkeypatch.setattr(
+            "runtime.adapters.gtk4_app_reloader.Gtk4AppReloader",
+            _PassingGtk4AppReloader,
+        )
 
         with caplog.at_level(logging.INFO, logger="runtime.application.reconcile"):
             result = runner.invoke(app, ["reconcile"])
@@ -277,6 +291,10 @@ class TestCliCrashRecoveryLogging:
         monkeypatch.setattr(
             "runtime.adapters.ags_reloader.AgsReloader",
             _PassingAgsReloader,
+        )
+        monkeypatch.setattr(
+            "runtime.adapters.gtk4_app_reloader.Gtk4AppReloader",
+            _PassingGtk4AppReloader,
         )
 
         with caplog.at_level(logging.DEBUG, logger="runtime.application.reconcile"):

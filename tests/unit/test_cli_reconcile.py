@@ -165,6 +165,7 @@ class TestReconcileCompositionRootWiring:
         cli_main._run_reconcile()
 
         from runtime.adapters.ags_reloader import AgsReloader
+        from runtime.adapters.gtk4_app_reloader import Gtk4AppReloader
         from runtime.adapters.hyprland_reloader import HyprlandReloader
         from runtime.adapters.hyprpaper_reloader import HyprpaperReloader
         from runtime.adapters.kitty_reloader import KittyReloader
@@ -176,11 +177,12 @@ class TestReconcileCompositionRootWiring:
             HyprlandReloader,
             AgsReloader,
             HyprpaperReloader,
+            Gtk4AppReloader,
             TerminalColorApplier,
             KittyReloader,
         ]
         assert reloaders[2]._state_root == captured["state_root"]  # type: ignore[attr-defined]
-        assert reloaders[3]._state_root == captured["state_root"]  # type: ignore[attr-defined]
+        assert reloaders[4]._state_root == captured["state_root"]  # type: ignore[attr-defined]
 
     def test_composition_root_excludes_terminal_when_disabled(
         self, monkeypatch: pytest.MonkeyPatch
