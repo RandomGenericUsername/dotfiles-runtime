@@ -100,3 +100,25 @@ class FlockHistoryMutex(IHistoryMutex):
             blocking,
             lambda p: HistoryLockError(f"history lock acquire failed: {p}"),
         )
+
+
+class PassThroughSeedMutex(ISeedMutex):
+    """No-op seed mutex for use when the real mutex is already held.
+
+    The visible-first ``wallpaper set`` composition root holds ONE
+    ``FlockSeedMutex`` across BOTH phases (swap + derive/converge, D1):
+    re-acquiring the same flock file inside the composed use cases would
+    fail (non-blocking, same process) or deadlock (blocking), so the
+    inner use cases are wired with this pass-through — the outer hold is
+    the single serialization point. Never use outside an already-held
+    critical section.
+    """
+
+    def hold(self, blocking: bool = False) -> AbstractContextManager[None]:
+        return _pass_through()
+
+
+@contextmanager
+def _pass_through() -> Generator[None]:
+    """Yield immediately — the outer composition root owns the lock."""
+    yield

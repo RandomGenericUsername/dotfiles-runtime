@@ -9,6 +9,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from itertools import count as _count
@@ -41,6 +42,8 @@ if TYPE_CHECKING:
     from runtime.application.prune import PrunePlan
     from runtime.application.reconcile import ReconcileResult
     from runtime.application.regenerate import RegenerateResult
+    from runtime.application.regenerate_icons import RegenerateIconsResult
+    from runtime.application.swap_visible import SwapVisibleResult
     from runtime.application.verify_cache import VerifyCacheResult
     from runtime.application.watch import WatchTrigger
     from runtime.domain.hub import HubEvent
@@ -78,6 +81,9 @@ inspect_app.add_typer(cache_app, name="cache")
 
 daemon_app = typer.Typer(help="Reactive daemon commands (systemd ExecStart surface)")
 app.add_typer(daemon_app, name="daemon")
+
+icons_app = typer.Typer(help="Icons commands")
+app.add_typer(icons_app, name="icons")
 
 logger = logging.getLogger(__name__)
 
@@ -340,6 +346,7 @@ def main_callback(
     if ctx.invoked_subcommand in (
         "reconcile",
         "inspect",
+        "icons",
         "doctor",
         "daemon",
         "capture",
@@ -351,16 +358,23 @@ def main_callback(
 
 @dataclass(frozen=True, slots=True)
 class _WallpaperSetResult:
-    """Combined outcome of the ``wallpaper set`` apply→reconcile chain.
+    """Combined outcome of the ``wallpaper set`` visible-first chain.
 
     Keeps the apply's per-layer cache-hit descriptors (which layers were
     derived vs served from cache) alongside the reconcile's swap/reload
     data (``repointed``/``skipped``/``cache_regenerated``/
-    ``reload_failures``) so the CLI renders both coherently.
+    ``reload_failures``) so the CLI renders both coherently. The
+    additive ``visible_at``/``themed_at`` ISO timestamps and
+    ``swap_elapsed_s``/``theme_elapsed_s`` durations pin the two D1
+    phases for the ``--format json`` object and the human summary.
     """
 
     apply: ApplyWallpaperResult
     reconcile: ReconcileResult
+    visible_at: str = ""
+    themed_at: str = ""
+    swap_elapsed_s: float = 0.0
+    theme_elapsed_s: float = 0.0
 
 
 def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list[IDesktopReloader]:
@@ -395,10 +409,12 @@ def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list
     return reloaders
 
 
-#: Domain topic published around every ``wallpaper set`` (contract
-#: ``topics`` → ``wallpaper.state``): ``applying`` at set start,
-#: ``done``/``error`` at finish. Publish-only — the synchronous set
-#: registers no job lease; the hub's ``Emit`` needs no job.
+#: Domain topic published around every ``wallpaper set`` and every
+#: ``icons regenerate`` (contract ``topics`` → ``wallpaper.state``):
+#: ``applying`` at start, ``visible`` after the swap (set only — pixels
+#: never change on regenerate), ``done``/``error`` at finish.
+#: Publish-only — the synchronous commands register no job lease; the
+#: hub's ``Emit`` needs no job.
 _WALLPAPER_STATE_TOPIC = "wallpaper.state"
 
 
@@ -445,20 +461,37 @@ def _run_wallpaper_set(
     suppress_history: bool = False,
     include_terminal: bool = True,
     client: IJobClient | None = None,
+    contrast: str = "auto",
 ) -> _WallpaperSetResult:
-    """Compose and run ApplyWallpaperUseCase → ReconcileDesktopStateUseCase.
+    """Compose the visible-first ``wallpaper set`` pipeline (D1).
 
-    The full ``wallpaper set`` pipeline (AD-12): apply derives the three
-    layers, ensures cache entries, and persists ``current.json``; the
-    chained reconcile then performs the swap sequence (cache-ensure →
-    parent-first symlink repoint → ``current.json`` → ``history.jsonl``
-    with trigger ``"set"``) and reloads all four desktop consumers.
-    Composition-root-only orchestration: no application-layer
-    orchestrator merges the two use cases. Both passes are wired with
-    the SAME adapters and mutex as ``_run_seed_if_needed`` /
-    ``_run_reconcile`` — the mutex is the same flock file the seeder
-    uses, held sequentially by apply (load→save) then reconcile
-    (load→repoint→save), matching the AD-12 pipeline.
+    Phase functions (composition-root-only orchestration per AD-12 — no
+    application-layer orchestrator merges the use cases):
+
+    - ``_phase_visible``: ``SwapVisibleUseCase.run`` — validate → import
+      wallpaper → save wallpaper-only ``current.json`` → repoint ONLY
+      wallpaper symlinks → hyprpaper reload. Emits ``visible``.
+    - ``_phase_themed``: ``ApplyWallpaperUseCase.run`` (derivation-only:
+      takes the swap's imported wallpaper + hash, no re-import) then
+      ``ReconcileDesktopStateUseCase.run(trigger="set")`` — full repoint
+      → ``current.json`` → ``history.jsonl`` → reload all consumers.
+      Emits ``done``.
+
+    ONE state mutex (``FlockSeedMutex`` on ``.seed.lock``) is acquired
+    non-blocking up front and held across BOTH phases: a second set
+    arriving mid-flight fails busy (``SeedLockedError`` → non-zero exit,
+    no mutation, ``error`` event with an empty hash) instead of racing a
+    half-themed state. The composed use cases are wired with a
+    pass-through mutex — the outer hold is the single serialization
+    point. Both passes are wired with the SAME adapters as
+    ``_run_seed_if_needed`` / ``_run_reconcile``.
+
+    Events: ``applying`` at set start, ``visible`` after the swap,
+    ``done``/``error`` at finish. Post-visible failure semantics (D5): a
+    palette failure raises ``error`` carrying the LIVE hash (the new
+    wallpaper stays on screen, ``current.json`` holds it with a null
+    palette); effects/icons degrade gracefully to ``done`` per the
+    existing per-layer policy.
 
     ``suppress_history`` (Phase 5): the reactive converge composes this
     pipeline with a history-suppressing seeder so it writes no
@@ -469,8 +502,22 @@ def _run_wallpaper_set(
     ``wallpaper.state`` transitions; the CLI passes none and the
     production client is built (D-Bus when the daemon owns the hub
     name, no-op otherwise).
+
+    ``contrast`` (``icon-contrast-opt-out`` D2): ``"auto"`` follows the
+    stored per-wallpaper preference (default ON); ``"on"``/``"off"``
+    force the guard for this run AND persist the choice for the
+    governing wallpaper hash (D2a: a variant input persists to its
+    parent) BEFORE deriving. Resolution + persistence hook into
+    ``_phase_themed`` — orchestration stays in this CLI root per AD-12.
     """
     from runtime.adapters.dbus_job_client import DbusJobClient
+    from runtime.domain.icon_contrast_policy import CONTRAST_FLAGS
+
+    if contrast not in CONTRAST_FLAGS:
+        raise ValueError(
+            f"invalid contrast flag: {contrast!r} "
+            f"(expected one of {', '.join(CONTRAST_FLAGS)})"
+        )
 
     state_root = _resolve_state_root()
     install_spine = _resolve_install_spine()
@@ -479,9 +526,10 @@ def _run_wallpaper_set(
 
     from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
     from runtime.adapters.csg_adapter import CsgAdapter
-    from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+    from runtime.adapters.flock_seed_mutex import FlockSeedMutex, PassThroughSeedMutex
     from runtime.adapters.hashing import hash_file
     from runtime.adapters.hyprland_monitor_source import HyprlandMonitorSource
+    from runtime.adapters.hyprpaper_reloader import HyprpaperReloader
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
@@ -489,6 +537,8 @@ def _run_wallpaper_set(
     from runtime.application.apply_wallpaper import ApplyWallpaperUseCase
     from runtime.application.derive import find_templates_dir
     from runtime.application.reconcile import ReconcileDesktopStateUseCase
+    from runtime.application.swap_visible import SwapVisibleUseCase
+    from runtime.domain.models import SeedLockedError
 
     try:
         resolved = image_path.expanduser().resolve()
@@ -496,26 +546,59 @@ def _run_wallpaper_set(
     except OSError:
         pending_hash = ""
     _publish_wallpaper_state(client, "applying", pending_hash)
-    try:
-        apply_result = ApplyWallpaperUseCase(
+
+    inner_mutex = PassThroughSeedMutex()
+    templates_dir = find_templates_dir(install_spine)
+
+    def _phase_visible() -> SwapVisibleResult:
+        """Phase 1 (D1): import → wallpaper-only persist → repoint → reload."""
+        return SwapVisibleUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
-            csg=CsgAdapter(templates_dir=find_templates_dir(install_spine)),
-            weg=WegAdapter(),
-            itr=ItrAdapter(),
-            install_spine=install_spine,
             state_root=state_root,
             seeder=CacheSeeder(
                 state_root,
                 consumer_spec=StaticConsumerPathSpec(),
                 suppress_history=suppress_history,
             ),
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=inner_mutex,
+            hyprpaper=HyprpaperReloader(state_root=state_root),
             monitor_source=HyprlandMonitorSource(),
         ).run(image_path)
 
-        reconcile_result = ReconcileDesktopStateUseCase(
+    def _phase_themed(
+        swap: SwapVisibleResult,
+    ) -> tuple[ApplyWallpaperResult, ReconcileResult]:
+        """Phase 2 (D1): derive (no re-import) → converge → history → reload."""
+        from runtime.adapters.icon_contrast_prefs_store import (
+            governing_wallpaper_hash,
+            resolve_contrast,
+            store_path,
+            write_pref,
+        )
+
+        prefs_file = store_path(state_root)
+        governing = governing_wallpaper_hash(
+            image_path.expanduser().resolve(),
+            state_root,
+            fallback_hash=swap.wallpaper_hash,
+        )
+        if contrast == "auto":
+            contrast_enabled, contrast_source = resolve_contrast(
+                flag="auto", governing_hash=governing, store_file=prefs_file
+            )
+        else:
+            contrast_enabled, contrast_source = (contrast == "on"), "flag"
+            try:
+                write_pref(prefs_file, governing, contrast_enabled)
+            except OSError as exc:
+                logger.warning(
+                    "wallpaper set: contrast pref persist failed (%s); "
+                    "continuing with the forced value",
+                    exc,
+                )
+        apply_result = ApplyWallpaperUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
-            csg=CsgAdapter(templates_dir=find_templates_dir(install_spine)),
+            csg=CsgAdapter(templates_dir=templates_dir),
             weg=WegAdapter(),
             itr=ItrAdapter(),
             install_spine=install_spine,
@@ -525,17 +608,71 @@ def _run_wallpaper_set(
                 consumer_spec=StaticConsumerPathSpec(),
                 suppress_history=suppress_history,
             ),
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=inner_mutex,
+            monitor_source=HyprlandMonitorSource(),
+        ).run(
+            image_path,
+            wallpaper_hash=swap.wallpaper_hash,
+            contrast_enabled=contrast_enabled,
+            contrast_source=contrast_source,
+        )
+
+        reconcile_result = ReconcileDesktopStateUseCase(
+            state_repo=JsonStateRepository(state_root=state_root),
+            csg=CsgAdapter(templates_dir=templates_dir),
+            weg=WegAdapter(),
+            itr=ItrAdapter(),
+            install_spine=install_spine,
+            state_root=state_root,
+            seeder=CacheSeeder(
+                state_root,
+                consumer_spec=StaticConsumerPathSpec(),
+                suppress_history=suppress_history,
+            ),
+            mutex=inner_mutex,
             reloaders=_build_reloaders(state_root, include_terminal=include_terminal),
-        ).run(trigger="set")
+        ).run(
+            trigger="set",
+            contrast_enabled=contrast_enabled,
+            contrast_source=contrast_source,
+        )
+        return apply_result, reconcile_result
+
+    live_hash: str | None = None
+    try:
+        with FlockSeedMutex(state_root / ".seed.lock").hold(blocking=False):
+            swap_started = time.monotonic()
+            swap = _phase_visible()
+            live_hash = swap.wallpaper_hash
+            swap_elapsed = time.monotonic() - swap_started
+            visible_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            _publish_wallpaper_state(client, "visible", live_hash)
+            themed_started = time.monotonic()
+            apply_result, reconcile_result = _phase_themed(swap)
+            theme_elapsed = time.monotonic() - themed_started
+            themed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    except SeedLockedError as exc:
+        _publish_wallpaper_state(client, "error", "")
+        raise SeedLockedError(
+            f"wallpaper set already in progress (lock held): {state_root / '.seed.lock'}"
+        ) from exc
     except Exception:
-        _publish_wallpaper_state(client, "error", pending_hash)
+        _publish_wallpaper_state(
+            client, "error", live_hash if live_hash is not None else pending_hash
+        )
         raise
     _publish_wallpaper_state(client, "done", reconcile_result.state.wallpaper.content_hash)
     if isinstance(client, DbusJobClient):
         client.close()
 
-    return _WallpaperSetResult(apply=apply_result, reconcile=reconcile_result)
+    return _WallpaperSetResult(
+        apply=apply_result,
+        reconcile=reconcile_result,
+        visible_at=visible_at,
+        themed_at=themed_at,
+        swap_elapsed_s=swap_elapsed,
+        theme_elapsed_s=theme_elapsed,
+    )
 
 
 @app.command(help="Show the installed package version")
@@ -585,21 +722,31 @@ _CAPTURE_OUTPUT_PATH_OPTION = typer.Option(
 def wallpaper_set(
     image_path: Path = _IMAGE_PATH_ARG,
     output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
+    contrast: str = typer.Option(
+        "auto",
+        "--contrast",
+        help="Icon-contrast guard policy: 'auto' follows the stored per-wallpaper "
+        "preference (default ON); 'on'/'off' force the guard for this run and "
+        "persist the choice for the wallpaper.",
+    ),
 ) -> None:
     """Derive, cache, swap, reload, and persist state for a wallpaper.
 
-    The full end-to-end pipeline in one synchronous command (AD-12):
-    apply derives the palette/effects/icons layers, ensures cache
-    entries (zero tool invocations on cache hits), and writes
-    ``current.json``; the chained reconcile then repoints the
-    ``current/`` symlinks atomically, appends a ``history.jsonl`` line
-    (trigger ``"set"``), and reloads all four desktop consumers
-    (Hyprland, AGS, Hyprpaper, terminal palette). Reload failures are
-    surfaced per consumer and exit non-zero (R5).
+    The full end-to-end pipeline in one synchronous command (AD-12,
+    visible-first D1): the swap phase imports the wallpaper, persists a
+    wallpaper-only ``current.json``, repoints the wallpaper symlinks and
+    reloads hyprpaper immediately; the themed phase then derives the
+    palette/effects/icons layers, ensures cache entries (zero tool
+    invocations on cache hits), and writes the full ``current.json``;
+    the chained converge repoints the ``current/`` symlinks atomically,
+    appends a ``history.jsonl`` line (trigger ``"set"``), and reloads
+    all four desktop consumers (Hyprland, AGS, Hyprpaper, terminal
+    palette). Reload failures are surfaced per consumer and exit
+    non-zero (R5).
     """
     renderer = create_renderer(output_format)
     try:
-        result = _run_wallpaper_set(image_path)
+        result = _run_wallpaper_set(image_path, contrast=contrast)
     except (ValueError, RuntimeError, OSError) as exc:
         logger.error("wallpaper set failed: %s", exc)
         renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
@@ -654,12 +801,15 @@ def wallpaper_set(
             if result.reconcile.consumer_symlinks
             else ""
         )
+        + f"\nvisible in {result.swap_elapsed_s:.1f}s · themed in {result.theme_elapsed_s:.1f}s"
     )
     obj: dict[str, object] = {
         "wallpaper": state.wallpaper.content_hash,
         "palette": state.palette.entry_hash if state.palette else None,
         "effects": state.effects.entry_hash if state.effects else None,
         "icons": state.icons.entry_hash if state.icons else None,
+        "visible_at": result.visible_at,
+        "themed_at": result.themed_at,
         "cache_hits": {
             "palette": result.apply.cache_hit_palette,
             "effects": result.apply.cache_hit_effects,
@@ -676,6 +826,291 @@ def wallpaper_set(
     }
     summary = _append_inputs_check(summary, obj)
     renderer.custom(CustomView(plain=summary, object=obj, rich=summary))
+
+
+def _run_icons_regenerate(
+    *,
+    contrast: str = "auto",
+    client: IJobClient | None = None,
+) -> RegenerateIconsResult:
+    """Compose the icons-only ``icons regenerate`` pipeline (D3).
+
+    The GUI's live-toggle path: re-derives ONLY the icons layer from the
+    CURRENT palette under the resolved contrast policy, repoints the
+    ``current/icons`` symlink (+ spine consumer pointers), appends one
+    ``history.jsonl`` line (trigger ``"regenerate"``), and reloads AGS
+    only — wallpaper/palette/effects bytes are never touched (no
+    flicker), pixels are never re-set.
+
+    Same outer-mutex pattern as :func:`_run_wallpaper_set`: ONE state
+    mutex (``FlockSeedMutex``) acquired non-blocking up front and held
+    across the use case (wired with a pass-through mutex inside); a
+    second command arriving mid-flight fails busy (``SeedLockedError``
+    → non-zero exit, ``error`` event with an empty hash).
+
+    Events: ``applying`` at start, ``done``/``error`` at finish on
+    ``wallpaper.state`` — never ``visible``. Absent/corrupt
+    ``current.json`` fails loud before mutating anything (cache,
+    symlinks, and history untouched).
+
+    ``client`` (tests): an injected :class:`IJobClient` recording the
+    transitions; the CLI passes none and the production client is built.
+    """
+    from runtime.adapters.ags_reloader import AgsReloader
+    from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
+    from runtime.adapters.csg_adapter import CsgAdapter
+    from runtime.adapters.dbus_job_client import DbusJobClient
+    from runtime.adapters.flock_seed_mutex import FlockSeedMutex, PassThroughSeedMutex
+    from runtime.adapters.itr_adapter import ItrAdapter
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.adapters.seeder import CacheSeeder
+    from runtime.adapters.weg_adapter import WegAdapter
+    from runtime.application.derive import find_templates_dir
+    from runtime.application.regenerate_icons import RegenerateIconsUseCase
+    from runtime.domain.icon_contrast_policy import CONTRAST_FLAGS
+    from runtime.domain.models import SeedLockedError
+
+    if contrast not in CONTRAST_FLAGS:
+        raise ValueError(
+            f"invalid contrast flag: {contrast!r} "
+            f"(expected one of {', '.join(CONTRAST_FLAGS)})"
+        )
+
+    state_root = _resolve_state_root()
+    install_spine = _resolve_install_spine()
+    if client is None:
+        client = _build_wallpaper_client()
+
+    try:
+        live = JsonStateRepository(state_root).load_current()
+    except (ValueError, RuntimeError, OSError):
+        _publish_wallpaper_state(client, "error", "")
+        raise
+    if live is None:
+        _publish_wallpaper_state(client, "error", "")
+        raise RuntimeError(
+            "nothing to regenerate: no runtime state recorded yet "
+            "(run `dotfiles-runtime wallpaper set <img>` first)"
+        )
+    pending_hash = live.wallpaper.content_hash
+    _publish_wallpaper_state(client, "applying", pending_hash)
+
+    inner_mutex = PassThroughSeedMutex()
+    templates_dir = find_templates_dir(install_spine)
+    try:
+        with FlockSeedMutex(state_root / ".seed.lock").hold(blocking=False):
+            result = RegenerateIconsUseCase(
+                state_repo=JsonStateRepository(state_root=state_root),
+                csg=CsgAdapter(templates_dir=templates_dir),
+                weg=WegAdapter(),
+                itr=ItrAdapter(),
+                install_spine=install_spine,
+                state_root=state_root,
+                seeder=CacheSeeder(
+                    state_root, consumer_spec=StaticConsumerPathSpec()
+                ),
+                mutex=inner_mutex,
+                reloaders=[AgsReloader()],
+            ).run(contrast=contrast)
+    except SeedLockedError as exc:
+        _publish_wallpaper_state(client, "error", "")
+        raise SeedLockedError(
+            f"icons regenerate already in progress (lock held): {state_root / '.seed.lock'}"
+        ) from exc
+    except Exception:
+        _publish_wallpaper_state(
+            client, "error", pending_hash
+        )
+        raise
+    _publish_wallpaper_state(client, "done", result.state.wallpaper.content_hash)
+    if isinstance(client, DbusJobClient):
+        client.close()
+    return result
+
+
+@icons_app.command("regenerate")
+def icons_regenerate(
+    output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
+    contrast: str = typer.Option(
+        "auto",
+        "--contrast",
+        help="Icon-contrast guard policy: 'auto' follows the stored per-wallpaper "
+        "preference (default ON); 'on'/'off' force the guard for this run and "
+        "persist the choice for the live wallpaper.",
+    ),
+) -> None:
+    """Re-render ONLY the icons layer from the live palette and reconverge.
+
+    The live-toggle path (D3): resolves the contrast policy for the live
+    wallpaper (explicit flag > stored preference > default ON), re-derives
+    icons from the current palette, repoints ``current/icons``, appends a
+    ``history.jsonl`` line (trigger ``"regenerate"``), and reloads AGS
+    only. Wallpaper pixels, palette, and effects are untouched (no
+    flicker). Fails loud when no state has been recorded yet.
+    """
+    renderer = create_renderer(output_format)
+    try:
+        result = _run_icons_regenerate(contrast=contrast)
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.error("icons regenerate failed: %s", exc)
+        renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
+        raise typer.Exit(code=1) from None
+    except Exception:
+        logger.exception("icons regenerate failed unexpectedly")
+        renderer.error(
+            ErrorView(
+                kind="UnexpectedError",
+                message="icons regenerate failed unexpectedly; see logs",
+            )
+        )
+        raise typer.Exit(code=1) from None
+
+    if result.reload_failures:
+        failed = ", ".join(result.reload_failures)
+        logger.error("icons regenerate: reload failed for %s", failed)
+        renderer.error(
+            ErrorView(
+                kind="ReloadError",
+                message=f"reload failed for: {failed}",
+            )
+        )
+        raise typer.Exit(code=1) from None
+
+    guard_desc = "ON" if result.contrast_enabled else "OFF"
+    summary = (
+        f"icons regenerated: {result.icons.entry_hash[:12]}"
+        f" (contrast guard {guard_desc}, {result.contrast_source})"
+        f", {len(result.repointed)} symlink(s) repointed"
+        + (
+            f", {len(result.consumer_symlinks)} consumer link(s)"
+            if result.consumer_symlinks
+            else ""
+        )
+    )
+    renderer.custom(
+        CustomView(
+            plain=summary,
+            object={
+                "icons": result.icons.entry_hash,
+                "cache_hit": result.cache_hit,
+                "contrast_enabled": result.contrast_enabled,
+                "contrast_source": result.contrast_source,
+                "repointed": [str(p) for p in result.repointed],
+                "consumer_symlinks": [str(p) for p in result.consumer_symlinks],
+                "reload_failures": list(result.reload_failures),
+            },
+            rich=summary,
+        )
+    )
+
+
+def _run_icons_preference(
+    hash_arg: str | None, set_value: str | None
+) -> dict[str, object]:
+    """Resolve (and optionally persist) the contrast preference (D1b, D2a).
+
+    The GUI's exclusive store interface: show prints the resolved
+    ``{hash, enabled, source}`` for ``hash_arg`` (default: the LIVE
+    wallpaper's governing hash — a live variant resolves to its parent,
+    so one toggle governs the original and all its variants); ``--set``
+    persists the choice first, then the resolved value is returned (its
+    source is then ``"store"``). A missing store file is NOT an error
+    (all defaults). An absent/corrupt ``current.json`` fails loud, but
+    only when the default (live) hash is needed — an explicit HASH never
+    touches state.
+
+    Raises:
+        ValueError: on an invalid HASH, an invalid ``--set`` value, or a
+            corrupt ``current.json``.
+        RuntimeError: when the live hash is needed but no state exists.
+        OSError: when persisting ``--set`` fails.
+    """
+    from runtime.adapters.icon_contrast_prefs_store import (
+        governing_wallpaper_hash,
+        resolve_contrast,
+        store_path,
+        write_pref,
+    )
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.domain.icon_contrast_policy import is_wallpaper_hash
+
+    if set_value is not None and set_value not in ("on", "off"):
+        raise ValueError(
+            f"invalid --set value: {set_value!r} (expected 'on' or 'off')"
+        )
+    state_root = _resolve_state_root()
+    prefs_file = store_path(state_root)
+    if hash_arg is not None:
+        if not is_wallpaper_hash(hash_arg):
+            raise ValueError(
+                f"invalid wallpaper hash: {hash_arg!r} (expected 64 hex characters)"
+            )
+        target = hash_arg.lower()
+    else:
+        state = JsonStateRepository(state_root).load_current()
+        if state is None:
+            raise RuntimeError(
+                "no runtime state recorded yet "
+                "(run `dotfiles-runtime wallpaper set <img>` first or pass an explicit HASH)"
+            )
+        target = governing_wallpaper_hash(
+            Path(state.wallpaper.source_path),
+            state_root,
+            fallback_hash=state.wallpaper.content_hash,
+        )
+    if set_value is not None:
+        write_pref(prefs_file, target, set_value == "on")
+    enabled, source = resolve_contrast(
+        flag="auto", governing_hash=target, store_file=prefs_file
+    )
+    return {"hash": target, "enabled": enabled, "source": source}
+
+
+@icons_app.command("preference")
+def icons_preference(
+    wallpaper_hash: str | None = typer.Argument(
+        None,
+        help="Wallpaper content hash (64 hex). Defaults to the live wallpaper's "
+        "governing hash (a live variant resolves to its parent wallpaper).",
+    ),
+    set_value: str | None = typer.Option(
+        None,
+        "--set",
+        help="Persist the choice for the hash ('on' or 'off') and print the result.",
+    ),
+    output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
+) -> None:
+    """Show or persist the per-wallpaper icon-contrast preference.
+
+    Without ``--set``: prints the resolved ``{hash, enabled, source}``
+    (explicit flag n/a here — ``enabled`` follows store → default ON).
+    With ``--set on|off``: persists the choice, then prints the resolved
+    value. The GUI's sole store interface — it never writes the state
+    file directly.
+    """
+    renderer = create_renderer(output_format)
+    try:
+        resolved = _run_icons_preference(wallpaper_hash, set_value)
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.error("icons preference failed: %s", exc)
+        renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
+        raise typer.Exit(code=1) from None
+    except Exception:
+        logger.exception("icons preference failed unexpectedly")
+        renderer.error(
+            ErrorView(
+                kind="UnexpectedError",
+                message="icons preference failed unexpectedly; see logs",
+            )
+        )
+        raise typer.Exit(code=1) from None
+
+    enabled = bool(resolved["enabled"])
+    summary = (
+        f"icon contrast for {resolved['hash']}: {'on' if enabled else 'off'} "
+        f"(source: {resolved['source']})"
+    )
+    renderer.custom(CustomView(plain=summary, object=resolved, rich=summary))
 
 
 def _append_inputs_check(summary: str, obj: dict[str, object]) -> str:
@@ -1198,11 +1633,15 @@ def doctor(
     else:
         watch_desc = "watch health: ok"
     plain = f"{plain}; {watch_desc}"
+    icons_policy = _read_live_icons_policy()
+    if icons_policy is not None:
+        plain = f"{plain}; {_describe_icons_policy(icons_policy)}"
     renderer.custom(
         CustomView(
             plain=plain,
             object={
                 "clean": report.clean,
+                "icons_contrast": icons_policy,
                 "items": [
                     {
                         "name": item.name,
@@ -2568,6 +3007,34 @@ def _run_converge(
     ).run(changeset)
 
 
+def _read_live_icons_policy() -> dict[str, object] | None:
+    """Return the live icons entry's ``contrast.policy``, or ``None``.
+
+    Read-only projection for ``doctor`` wording (``inspect status``
+    carries the same data via ``InspectStatusResult.icons_contrast``).
+    Never raises: absent/corrupt state, null icons, or a pre-policy
+    entry all yield ``None`` (wording omitted, never guessed).
+    """
+    from runtime.adapters.icon_contrast_prefs_store import read_icons_policy
+    from runtime.adapters.json_state_repository import JsonStateRepository
+
+    state_root = _resolve_state_root()
+    try:
+        state = JsonStateRepository(state_root).load_current()
+    except (ValueError, RuntimeError, OSError):
+        return None
+    if state is None or state.icons is None:
+        return None
+    return read_icons_policy(state_root, state.icons.entry_hash)
+
+
+def _describe_icons_policy(policy: dict[str, object]) -> str:
+    """Render a ``contrast.policy`` dict as the inspect/doctor one-liner."""
+    from runtime.domain.icon_contrast_policy import describe
+
+    return describe(enabled=bool(policy["enabled"]), source=str(policy["source"]))
+
+
 def _run_inspect_status() -> InspectStatusResult:
     """Compose and run InspectStateUseCase (inspect status command).
 
@@ -2661,6 +3128,8 @@ def inspect_status(
         f" (palette {palette_desc}, effects {effects_desc}, icons {icons_desc})"
         f", {len(result.current_symlinks)} symlink(s) checked"
     )
+    if result.icons_contrast is not None:
+        summary = f"{summary}; {_describe_icons_policy(result.icons_contrast)}"
     renderer.custom(
         CustomView(
             plain=summary,
@@ -2671,6 +3140,7 @@ def inspect_status(
                 "palette": result.palette,
                 "effects": result.effects,
                 "icons": result.icons,
+                "icons_contrast": result.icons_contrast,
                 "applied_at": result.applied_at,
                 "current_symlinks": {
                     name: {"status": status.status, "target": status.target}

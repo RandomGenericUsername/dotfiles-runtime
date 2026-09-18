@@ -131,7 +131,13 @@ class ReconcileDesktopStateUseCase:
             install_spine=install_spine,
         )
 
-    def run(self, trigger: str = "reconcile") -> ReconcileResult:
+    def run(
+        self,
+        trigger: str = "reconcile",
+        *,
+        contrast_enabled: bool = True,
+        contrast_source: str = "default",
+    ) -> ReconcileResult:
         """Reconcile: entries → symlinks → current.json → history → reload.
 
         Args:
@@ -139,6 +145,13 @@ class ReconcileDesktopStateUseCase:
                 ``runtime.domain.history.HISTORY_TRIGGERS`` (the standalone
                 ``reconcile`` command keeps the default; the
                 ``wallpaper set`` capstone passes ``"set"``).
+            contrast_enabled: per-wallpaper icon-contrast policy, threaded
+                through from ``wallpaper set --contrast`` so a step-1
+                icons regeneration (miss after a degraded apply) honors
+                the same policy instead of falling back to default-ON.
+                Standalone callers keep the default (guard ON).
+            contrast_source: provenance of ``contrast_enabled``
+                (``"flag"``/``"store"``/``"default"``).
 
         Raises:
             ValueError: if ``trigger`` is not one of the pinned enum
@@ -172,7 +185,9 @@ class ReconcileDesktopStateUseCase:
         # Derivation (step 1) happens OUTSIDE the lock (staging is race-
         # safe; tool invocations stay parallel — same split as apply).
         regenerated: list[str] = []
-        palette, effects, icons = self._ensure_entries(state, regenerated)
+        palette, effects, icons = self._ensure_entries(
+            state, regenerated, contrast_enabled, contrast_source
+        )
         pre_lock_wallpaper_hash = state.wallpaper.content_hash
 
         # Re-read after derivation: state may have changed concurrently
@@ -188,7 +203,9 @@ class ReconcileDesktopStateUseCase:
             if state.wallpaper.content_hash != pre_lock_wallpaper_hash:
                 # Re-derive for the authoritative state inside the lock.
                 # This serializes tool invocations only on contention.
-                palette, effects, icons = self._ensure_entries(state, regenerated)
+                palette, effects, icons = self._ensure_entries(
+                    state, regenerated, contrast_enabled, contrast_source
+                )
             else:
                 # Re-validate palette/effects/icons hashes against reloaded
                 # state to catch stale derivation even when wallpaper hash
@@ -315,6 +332,8 @@ class ReconcileDesktopStateUseCase:
         self,
         state: DesktopState,
         regenerated: list[str],
+        contrast_enabled: bool = True,
+        contrast_source: str = "default",
     ) -> tuple[PaletteEntry | None, EffectsEntry | None, IconsEntry | None]:
         """Ensure every cache entry referenced by the state exists.
 
@@ -373,7 +392,11 @@ class ReconcileDesktopStateUseCase:
             and not cache_entry_path(self._state_root, "icons", icons.entry_hash).exists()
         ):
             try:
-                entry_i, _cache_hit = self._pipeline.ensure_icons(palette.entry_hash)
+                entry_i, _cache_hit = self._pipeline.ensure_icons(
+                    palette.entry_hash,
+                    contrast_enabled=contrast_enabled,
+                    contrast_source=contrast_source,
+                )
             except Exception as exc:
                 logger.warning("reconcile: icons regeneration failed; continuing: %s", exc)
                 icons = None

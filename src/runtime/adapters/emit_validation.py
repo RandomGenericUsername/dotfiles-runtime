@@ -166,7 +166,7 @@ TOPIC_SCHEMAS: dict[str, dict[str, Any]] = {
         "type": "object",
         "required": ["state", "wallpaper_hash"],
         "properties": {
-            "state": {"type": "string", "enum": ["applying", "done", "error"]},
+            "state": {"type": "string", "enum": ["applying", "visible", "done", "error"]},
             "wallpaper_hash": {"type": "string"},
         },
         "additionalProperties": True,

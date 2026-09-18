@@ -37,12 +37,10 @@ from pathlib import Path
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder
 from runtime.application.derive import DerivationPipeline
+from runtime.application.monitors import preserve_monitors
 from runtime.domain.models import (
-    DEFAULT_MONITOR,
-    BackendType,
     DesktopState,
     EffectsEntry,
-    FitMode,
     IconsEntry,
     MonitorWallpaperConfig,
     PaletteEntry,
@@ -80,7 +78,10 @@ class ApplyWallpaperUseCase:
     2. Load current state (fail-fast corrupt-state guard)
     3. Hash the wallpaper (sha256 of file bytes) and import it into the
        cache via the seeder (copy policy — the cache owns its bytes for
-       user-supplied files; content-verified; meta.json write-once)
+       user-supplied files; content-verified; meta.json write-once),
+       unless the caller passes a pre-imported ``wallpaper_hash`` (the
+       visible-first swap already imported it — derivation-only duty,
+       no re-import)
     4. Ensure palette (hard), effects and icons (graceful) cache entries
        via the shared ``DerivationPipeline`` — outside the mutex (staging
        is race-safe; tool invocations stay parallel)
@@ -123,7 +124,14 @@ class ApplyWallpaperUseCase:
             install_spine=install_spine,
         )
 
-    def run(self, image_path: Path) -> ApplyWallpaperResult:
+    def run(
+        self,
+        image_path: Path,
+        *,
+        wallpaper_hash: str | None = None,
+        contrast_enabled: bool = True,
+        contrast_source: str = "default",
+    ) -> ApplyWallpaperResult:
         """Apply a wallpaper: derive → cache → persist ``current.json``.
 
         Variant inputs (an image already living under
@@ -131,6 +139,24 @@ class ApplyWallpaperUseCase:
         promoted to wallpaper) skip the effects layer — feeding a
         derived artifact back into its own derivation is a loop — while
         palette and icons still derive from the variant's pixels.
+
+        Args:
+            image_path: user-supplied wallpaper file (validated, and used
+                for the persisted ``source_path`` in both paths).
+            wallpaper_hash: precomputed SHA-256 of the input. The
+                visible-first ``wallpaper set`` passes the hash the swap
+                phase already imported, so this derivation-only pass
+                performs NO re-import (the seeder import is idempotent,
+                but skipping it keeps phase 2 derivation-only by
+                construction). When ``None`` (standalone callers, tests)
+                the input is hashed and imported as before.
+            contrast_enabled: per-wallpaper icon-contrast policy for this
+                run (resolved by the composition root from ``--contrast``
+                + the prefs store). ``False`` renders the spine mappings
+                unchanged.
+            contrast_source: provenance of ``contrast_enabled``
+                (``"flag"``/``"store"``/``"default"``), recorded in the
+                icons entry ``contrast.policy``.
 
         Raises:
             ValueError: if the input path is missing, empty, or not a
@@ -147,11 +173,12 @@ class ApplyWallpaperUseCase:
         # section below (double-checked pattern).
         self._state_repo.load_current()
 
-        wallpaper_hash = hash_file(img)
+        if wallpaper_hash is None:
+            wallpaper_hash = hash_file(img)
 
-        # Wallpaper layer: import into the cache (copy policy — cache owns
-        # its bytes; idempotent, content-verified, meta.json write-once).
-        self._seeder.import_wallpaper(img, wallpaper_hash, source_mutable=True)
+            # Wallpaper layer: import into the cache (copy policy — cache owns
+            # its bytes; idempotent, content-verified, meta.json write-once).
+            self._seeder.import_wallpaper(img, wallpaper_hash, source_mutable=True)
 
         # Palette (hard dependency): failure aborts the apply — save()
         # happens only after all layers succeed/degrade, so current.json
@@ -177,7 +204,11 @@ class ApplyWallpaperUseCase:
         icons: IconsEntry | None = None
         cache_hit_icons = False
         try:
-            icons, cache_hit_icons = self._pipeline.ensure_icons(palette.entry_hash)
+            icons, cache_hit_icons = self._pipeline.ensure_icons(
+                palette.entry_hash,
+                contrast_enabled=contrast_enabled,
+                contrast_source=contrast_source,
+            )
         except Exception as exc:
             logger.warning("apply: icon rendering failed; continuing: %s", exc)
 
@@ -256,64 +287,14 @@ class ApplyWallpaperUseCase:
     ) -> dict[str, MonitorWallpaperConfig]:
         """Preserve existing monitor configs, reconciled against live outputs.
 
-        When live detection (the injected ``IMonitorSource``) returns a
-        non-empty set, that set is AUTHORITATIVE for monitor names: an
-        entry whose name still exists keeps its per-monitor backend/fit/
-        mpv settings (AD-18: never silently reset a user's config) and
-        only ``source_hash`` updates; a detected name with no stored
-        entry (new or RENAMED output) gets a default ``hyprpaper``/``cover``
-        entry; a stored name no longer detected (stale — e.g. an output
-        renamed by the compositor, which made ``hyprctl hyprpaper
-        wallpaper <stale>,…`` fail "Invalid monitor" forever) is dropped.
-
-        When detection is unavailable or empty (headless/CI), the stored
-        set is preserved as-is (no detection to trust), and when
-        ``existing`` is None or has no monitors the legacy
-        ``DEFAULT_MONITOR`` default applies.
+        Thin wrapper over the shared :func:`preserve_monitors
+        <runtime.application.monitors.preserve_monitors>` helper (AD-18;
+        shared with ``SwapVisibleUseCase``): live detection from the
+        injected ``IMonitorSource`` is authoritative for monitor names
+        when non-empty, stored configs are kept otherwise. See the helper
+        for the full contract.
         """
         detected = (
             self._monitor_source.detect_monitors() if self._monitor_source is not None else []
         )
-        if existing is not None and existing.monitors:
-            if not detected:
-                return {
-                    name: MonitorWallpaperConfig(
-                        backend=cfg.backend,
-                        source_hash=wallpaper_hash,
-                        fit_mode=cfg.fit_mode,
-                        mpv_options=cfg.mpv_options,
-                        ipc_socket=cfg.ipc_socket,
-                    )
-                    for name, cfg in existing.monitors.items()
-                }
-            rebuilt: dict[str, MonitorWallpaperConfig] = {}
-            for name in detected:
-                cfg = existing.monitors.get(name)
-                if cfg is not None:
-                    rebuilt[name] = MonitorWallpaperConfig(
-                        backend=cfg.backend,
-                        source_hash=wallpaper_hash,
-                        fit_mode=cfg.fit_mode,
-                        mpv_options=cfg.mpv_options,
-                        ipc_socket=cfg.ipc_socket,
-                    )
-                else:
-                    rebuilt[name] = MonitorWallpaperConfig(
-                        backend=BackendType.hyprpaper,
-                        source_hash=wallpaper_hash,
-                        fit_mode=FitMode.cover,
-                        mpv_options=None,
-                        ipc_socket=None,
-                    )
-            return rebuilt
-        names = detected or [DEFAULT_MONITOR]
-        return {
-            name: MonitorWallpaperConfig(
-                backend=BackendType.hyprpaper,
-                source_hash=wallpaper_hash,
-                fit_mode=FitMode.cover,
-                mpv_options=None,
-                ipc_socket=None,
-            )
-            for name in names
-        }
+        return preserve_monitors(existing, wallpaper_hash, detected)

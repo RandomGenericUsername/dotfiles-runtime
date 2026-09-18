@@ -53,6 +53,7 @@ import fastjsonschema
 
 from runtime.adapters.cache import CACHE_LAYERS, cache_entry_path
 from runtime.adapters.contract_schemas import history_validator
+from runtime.adapters.icon_contrast_prefs_store import read_icons_policy
 from runtime.domain.history import HistoryTrigger
 from runtime.domain.models import (
     DEFAULT_MONITOR,
@@ -140,6 +141,15 @@ class InspectStatusResult:
     applied_at: str
     current_symlinks: dict[str, LinkStatus]
     consumer_pointers: dict[str, LinkStatus] = field(default_factory=dict)
+    icons_contrast: dict[str, object] | None = None
+    """Live icons entry's ``contrast.policy`` (``{source, enabled}``).
+
+    Additive traceability for the per-wallpaper opt-out
+    (``icon-contrast-opt-out`` D4): ``None`` when the icons layer is
+    null, the entry is unreadable, or the entry predates the policy
+    field (old entries stay valid) — the CLI omits the wording instead
+    of guessing.
+    """
 
 
 class InspectStateUseCase:
@@ -207,16 +217,22 @@ class InspectStateUseCase:
                 self._install_spine, self._consumer_spec
             )
 
+        icons_entry_hash = state.icons.entry_hash if state.icons else None
         return InspectStatusResult(
             wallpaper=state.wallpaper.content_hash,
             wallpaper_source_path=state.wallpaper.source_path,
             monitors=monitors,
             palette=state.palette.entry_hash if state.palette else None,
             effects=state.effects.entry_hash if state.effects else None,
-            icons=state.icons.entry_hash if state.icons else None,
+            icons=icons_entry_hash,
             applied_at=state.applied_at,
             current_symlinks=current_symlinks,
             consumer_pointers=consumer_pointers,
+            icons_contrast=(
+                read_icons_policy(self._state_root, icons_entry_hash)
+                if icons_entry_hash is not None
+                else None
+            ),
         )
 
     # ------------------------------------------------------------------

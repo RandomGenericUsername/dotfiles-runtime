@@ -112,7 +112,40 @@
         "input_templates_hash": { "type": "string" },
         "input_mappings_hash": { "type": "string" },
         "artifact_hashes": { "$ref": "#/definitions/artifactHashes" },
-        "generated_at": { "type": "string" }
+        "generated_at": { "type": "string" },
+        "contrast": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "backdrop_source": { "type": "string" },
+            "threshold": { "type": "number" },
+            "policy": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [ "source", "enabled" ],
+              "properties": {
+                "source": { "type": "string", "enum": [ "flag", "store", "default" ] },
+                "enabled": { "type": "boolean" }
+              }
+            },
+            "decisions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [ "group", "placeholder", "from", "to", "ratio_before", "ratio_after" ],
+                "properties": {
+                  "group": { "type": "string" },
+                  "placeholder": { "type": "string" },
+                  "from": { "type": "string" },
+                  "to": { "type": "string" },
+                  "ratio_before": { "type": "number" },
+                  "ratio_after": { "type": "number" }
+                }
+              }
+            }
+          }
+        }
       }
     }
   }

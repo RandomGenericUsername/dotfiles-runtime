@@ -128,7 +128,7 @@ def _install(
     set_result: Any | Exception,
     check: _CheckSpy,
 ) -> None:
-    def _run_set(image_path: Path) -> Any:
+    def _run_set(image_path: Path, **kwargs: Any) -> Any:
         if isinstance(set_result, Exception):
             raise set_result
         return set_result

@@ -8,6 +8,7 @@ dependencies = [
     "cli-output",
     "fastjsonschema>=2.20",
     "jeepney>=0.9.0",
+    "Pillow>=10,<12",
 ]
 
 [project.scripts]
