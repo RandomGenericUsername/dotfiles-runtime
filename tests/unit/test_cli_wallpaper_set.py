@@ -282,6 +282,7 @@ class TestWallpaperSetCompositionRootWiring:
         from runtime.adapters.ags_reloader import AgsReloader
         from runtime.adapters.csg_adapter import CsgAdapter
         from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+        from runtime.adapters.gtk4_app_reloader import Gtk4AppReloader
         from runtime.adapters.hyprland_reloader import HyprlandReloader
         from runtime.adapters.hyprpaper_reloader import HyprpaperReloader
         from runtime.adapters.itr_adapter import ItrAdapter
@@ -309,11 +310,12 @@ class TestWallpaperSetCompositionRootWiring:
             HyprlandReloader,
             AgsReloader,
             HyprpaperReloader,
+            Gtk4AppReloader,
             TerminalColorApplier,
             KittyReloader,
         ]
         assert reloaders[2]._state_root == captured["reconcile_kwargs"]["state_root"]  # type: ignore[attr-defined]
-        assert reloaders[3]._state_root == captured["reconcile_kwargs"]["state_root"]  # type: ignore[attr-defined]
+        assert reloaders[4]._state_root == captured["reconcile_kwargs"]["state_root"]  # type: ignore[attr-defined]
 
 
 class TestWallpaperSetCliErrorMapping:

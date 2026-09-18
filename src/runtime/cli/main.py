@@ -369,9 +369,9 @@ def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list
     Shared by ``reconcile`` and ``wallpaper set`` so both commands reload
     the IDENTICAL consumers in the same pinned order: Hyprland (``hyprctl
     reload``), AGS (restart), Hyprpaper (per-monitor IPC from
-    ``current.json``), then the terminal palette (OSC from
-    ``current/colors.sequences``) when ``include_terminal`` is set, with the
-    kitty reloader (``SIGUSR1``) appended last.
+    ``current.json``), Gtk4AppReloader (restart GTK4 apps), then the terminal
+    palette (OSC from ``current/colors.sequences``) when ``include_terminal``
+    is set, with the kitty reloader (``SIGUSR1``) appended last.
 
     ``include_terminal=False`` excludes ``TerminalColorApplier`` — the
     daemon has no controlling tty, so the ``/dev/tty`` applier would surface
@@ -379,6 +379,7 @@ def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list
     terminal).
     """
     from runtime.adapters.ags_reloader import AgsReloader
+    from runtime.adapters.gtk4_app_reloader import Gtk4AppReloader
     from runtime.adapters.hyprland_reloader import HyprlandReloader
     from runtime.adapters.hyprpaper_reloader import HyprpaperReloader
     from runtime.adapters.kitty_reloader import KittyReloader
@@ -388,6 +389,7 @@ def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list
         HyprlandReloader(),
         AgsReloader(),
         HyprpaperReloader(state_root=state_root),
+        Gtk4AppReloader(),
     ]
     if include_terminal:
         reloaders.append(TerminalColorApplier(state_root=state_root))
