@@ -31,13 +31,16 @@ Restart-safety contract
   target running is a vacuous success.
 
 Discovery pattern mirrors ``AgsReloader``: scan ``/proc/[pid]/cmdline`` for
-target executable names (power-options-gtk, hyprmod).
+target app names. Both direct binaries (``power-options-gtk``) and
+interpreter-wrapped scripts (``hyprmod`` is a Python script, so its cmdline is
+``python /usr/bin/hyprmod``) are resolved from the argv shape.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import time
 from collections.abc import Callable, Sequence
@@ -68,17 +71,73 @@ class Gtk4AppProcess:
     app_name: str
 
 
-def _discover_gtk4_apps() -> list[Gtk4AppProcess]:
+#: Basenames that identify a Python interpreter (``python``, ``python3``,
+#: ``python3.14``, ``python3.14.1``, ...).
+_PYTHON_INTERPRETER = re.compile(r"(python|python3|python\d+(\.\d+)*)")
+
+
+def _resolve_python_target(tokens: Sequence[str]) -> str | None:
+    """Resolve a TARGET_APPS name from the tokens after a Python interpreter.
+
+    Handles ``python -m hyprmod`` (module name) and
+    ``python /usr/bin/hyprmod`` (script basename). Only the interpreter's
+    immediate module/script position is inspected — never arbitrary argv — so
+    ``bash -c 'hyprmod'`` / ``rg hyprmod`` cannot false-positive.
+    """
+    if not tokens:
+        return None
+    first = tokens[0]
+    if first == "-m":
+        if len(tokens) < 2:
+            return None
+        candidate = tokens[1].split(".")[0]
+    else:
+        candidate = Path(first).name
+    return candidate if candidate in TARGET_APPS else None
+
+
+def _resolve_app_name(argv: tuple[str, ...]) -> str | None:
+    """Resolve an allowlisted app name from a process ``argv``.
+
+    Resolution (precision over recall — no arbitrary-position scanning):
+
+    - direct binary: ``argv[0]`` basename is a target (``power-options-gtk``);
+    - interpreter-wrapped: ``argv[0]`` basename is a Python interpreter
+      (``python``/``python3``/``python3.14``/...), so the target is resolved
+      from the next token (``python /usr/bin/hyprmod`` or
+      ``python -m hyprmod``);
+    - ``/usr/bin/env python ...``: the Python interpreter is located after
+      ``env`` and the same rule applied.
+
+    Returns the matching ``TARGET_APPS`` name, else ``None``. The caller keeps
+    the original full ``argv`` for relaunch.
+    """
+    if not argv:
+        return None
+    head = Path(argv[0]).name
+    if head in TARGET_APPS:
+        return head
+    if _PYTHON_INTERPRETER.fullmatch(head):
+        return _resolve_python_target(argv[1:])
+    if head == "env":
+        for index in range(1, len(argv)):
+            if _PYTHON_INTERPRETER.fullmatch(Path(argv[index]).name):
+                return _resolve_python_target(argv[index + 1 :])
+    return None
+
+
+def _discover_gtk4_apps(proc_root: Path = Path("/proc")) -> list[Gtk4AppProcess]:
     """Enumerate running GTK4 app processes from ``/proc``.
 
-    Scans ``/proc/[pid]/cmdline`` for processes whose executable basename
-    matches ``TARGET_APPS``. Each discovered process is recorded with its pid,
-    full argv, and app name.
+    Scans ``/proc/[pid]/cmdline`` and resolves each process to an allowlisted
+    app via :func:`_resolve_app_name` — direct binaries (``power-options-gtk``)
+    and interpreter-wrapped scripts (``hyprmod`` as ``python /usr/bin/hyprmod``)
+    alike. Each discovered process is recorded with its pid, full original
+    argv, and app name.
     """
     apps: list[Gtk4AppProcess] = []
-    proc = Path("/proc")
     try:
-        entries = list(proc.iterdir())
+        entries = list(proc_root.iterdir())
     except OSError:
         return apps
     for entry in entries:
@@ -91,13 +150,13 @@ def _discover_gtk4_apps() -> list[Gtk4AppProcess]:
         argv = tuple(part for part in raw.decode("utf-8", "replace").split("\0") if part)
         if not argv:
             continue
-        exe_name = Path(argv[0]).name
-        if exe_name in TARGET_APPS:
+        app_name = _resolve_app_name(argv)
+        if app_name is not None:
             apps.append(
                 Gtk4AppProcess(
                     pid=int(entry.name),
                     argv=argv,
-                    app_name=exe_name,
+                    app_name=app_name,
                 )
             )
     return apps
@@ -166,7 +225,11 @@ class Gtk4AppReloader(IDesktopReloader):
             if app.app_name in self._skip_apps:
                 logger.debug("gtk4: leaving %s running (skip list)", app.app_name)
                 continue
-            if not self._restart(app):
+            logger.info("gtk4: restarting %s (pid %d)", app.app_name, app.pid)
+            if self._restart(app):
+                logger.info("gtk4: restarted %s", app.app_name)
+            else:
+                logger.info("gtk4: restart failed for %s (pid %d)", app.app_name, app.pid)
                 all_ok = False
         return all_ok
 

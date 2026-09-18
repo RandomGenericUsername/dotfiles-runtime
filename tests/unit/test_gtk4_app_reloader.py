@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 from runtime.adapters.gtk4_app_reloader import (
@@ -11,8 +12,40 @@ from runtime.adapters.gtk4_app_reloader import (
     Gtk4AppProcess,
     Gtk4AppReloader,
     _discover_gtk4_apps,
+    _resolve_app_name,
     _wait_for_exit,
 )
+
+
+class TestResolveAppName:
+    def test_direct_binary(self) -> None:
+        assert _resolve_app_name(("power-options-gtk",)) == "power-options-gtk"
+
+    def test_python_script_regression_case(self) -> None:
+        """hyprmod runs as ``python /usr/bin/hyprmod`` (THE E2E regression)."""
+        assert _resolve_app_name(("/usr/bin/python", "/usr/bin/hyprmod")) == "hyprmod"
+
+    def test_python_versioned_script_with_args(self) -> None:
+        argv = ("/usr/bin/python3.14", "/usr/bin/hyprmod", "--flag")
+        assert _resolve_app_name(argv) == "hyprmod"
+
+    def test_python_dash_m_module(self) -> None:
+        assert _resolve_app_name(("python", "-m", "hyprmod")) == "hyprmod"
+
+    def test_env_wrapped_python_script(self) -> None:
+        assert _resolve_app_name(("/usr/bin/env", "python", "/usr/bin/hyprmod")) == "hyprmod"
+
+    def test_other_python_script_is_none(self) -> None:
+        assert _resolve_app_name(("python", "some_other_script.py")) is None
+
+    def test_bash_c_payload_is_none(self) -> None:
+        assert _resolve_app_name(("bash", "-c", "hyprmod")) is None
+
+    def test_grep_like_argv_is_none(self) -> None:
+        assert _resolve_app_name(("rg", "hyprmod")) is None
+
+    def test_bare_shell_is_none(self) -> None:
+        assert _resolve_app_name(("/bin/sh",)) is None
 
 
 def _fake_app_lister(apps: list[Gtk4AppProcess]) -> Callable[[], list[Gtk4AppProcess]]:
@@ -104,12 +137,27 @@ class TestDiscoverGtk4Apps:
         result = _discover_gtk4_apps()
         assert isinstance(result, list)
 
-    def test_discovery_filters_non_digit_entries(self) -> None:
+    def test_discovery_filters_non_digit_entries(self, tmp_path: Path) -> None:
         """Discovery skips /proc entries that are not numeric (self, etc.)."""
-        # Test that the function properly filters /proc entries
-        # This would require mocking /proc structure
-        result = _discover_gtk4_apps()
-        assert isinstance(result, list)
+        (tmp_path / "self").mkdir()
+        assert _discover_gtk4_apps(tmp_path) == []
+
+    def test_discovery_resolves_interpreter_wrapped_app(self, tmp_path: Path) -> None:
+        """A Python-script target is discovered and its original argv preserved."""
+        entry = tmp_path / "4321"
+        entry.mkdir()
+        (entry / "cmdline").write_bytes(b"/usr/bin/python\0/usr/bin/hyprmod\0")
+        apps = _discover_gtk4_apps(tmp_path)
+        assert [(a.pid, a.app_name, a.argv) for a in apps] == [
+            (4321, "hyprmod", ("/usr/bin/python", "/usr/bin/hyprmod"))
+        ]
+
+    def test_discovery_ignores_non_target_python_script(self, tmp_path: Path) -> None:
+        """A non-target Python script is not swept in by the interpreter rule."""
+        entry = tmp_path / "9999"
+        entry.mkdir()
+        (entry / "cmdline").write_bytes(b"/usr/bin/python\0/usr/bin/other-tool\0")
+        assert _discover_gtk4_apps(tmp_path) == []
 
 
 class TestWaitForExit:
