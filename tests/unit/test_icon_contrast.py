@@ -75,6 +75,7 @@ def test_constants() -> None:
         "power-menu",
         "email-client",
         "wallpaper-selector",
+        "settings",
     }
 
 

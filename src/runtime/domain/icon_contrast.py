@@ -29,6 +29,7 @@ BAR_GROUPS: Final[tuple[str, ...]] = (
     "power-menu",
     "email-client",
     "wallpaper-selector",
+    "settings",
 )
 
 #: Placeholders eligible for retargeting (D5). Literals (``#…``),
