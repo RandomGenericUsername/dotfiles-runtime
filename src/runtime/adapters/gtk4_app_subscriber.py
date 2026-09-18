@@ -1,11 +1,12 @@
 """GTK4 app consumer binding — restarts GTK4 apps on palette-affecting swaps.
 
 The GTK4 restart is hosted where the hub lives (the daemon) as a THIN
-CONSUMER of the ``org.dotfiles.Events1`` surface. Like the bar binding, it
-does **not** import the runtime core: contract constants are read from
-``contracts/event-contract.json`` at import time (never from
-``runtime.domain`` / ``runtime.ports``) and the session-bus transport is
-jeepney directly.
+CONSUMER of the ``org.dotfiles.Events1`` surface. Contract constants are
+sourced from the runtime's embedded, conformance-pinned tables
+(``runtime.adapters.dbus_event_bus`` / ``runtime.ports.bus_name_owner`` /
+``runtime.domain.hub``) rather than the repo-root ``contracts/`` directory,
+which is not shipped in the installed tool environment; the session-bus
+transport is jeepney directly.
 
 Protocol this binding implements (``contracts/event-contract.json``
 `delivery`):
@@ -52,14 +53,16 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Mapping
-from pathlib import Path
 from typing import Any
 
 from jeepney import DBusAddress, HeaderFields, MessageType, new_method_call
 from jeepney.bus_messages import message_bus
 from jeepney.io.blocking import DBusConnection, open_dbus_connection
 
+from runtime.adapters.dbus_event_bus import INTERFACE, OBJECT_PATH, SIGNALS
 from runtime.adapters.gtk4_app_reloader import Gtk4AppReloader
+from runtime.domain.hub import KNOWN_TOPICS
+from runtime.ports.bus_name_owner import BUS_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -88,48 +91,13 @@ __all__ = [
 RestartAction = Callable[[], bool]
 
 
-# ── Contract constants (read from the machine definition, not prose) ──────
-
-
-def _find_contract() -> Path:
-    """Walk up from this file for ``contracts/event-contract.json``.
-
-    Robust to repo move / alternate checkout depth; fails loud (an
-    installed-only layout without the contract cannot bind the surface).
-    """
-    start = Path(__file__).resolve()
-    for parent in start.parents:
-        candidate = parent / "contracts" / "event-contract.json"
-        if candidate.is_file():
-            return candidate
-    raise RuntimeError(f"contracts/event-contract.json not found above {start}")
-
-
-_CONTRACT: dict[str, Any] = json.loads(_find_contract().read_text(encoding="utf-8"))
-
-#: Versionless well-known bus name.
-BUS_NAME: str = _CONTRACT["well_known_name"]
-
-#: Object path serving the hub.
-OBJECT_PATH: str = _CONTRACT["object_path"]
-
-#: Versioned interface (version in the interface name only).
-INTERFACE: str = _CONTRACT["interface"]
-
-#: Every topic the contract advertises (the hub never emits off-table ones).
-KNOWN_TOPICS: tuple[str, ...] = tuple(_CONTRACT["topics"])
-
-
-def _signal_args(name: str) -> tuple[tuple[str, str], ...]:
-    """Parse a contract signal's ``["arg:type", ...]`` into ordered pairs."""
-    args: list[tuple[str, str]] = []
-    for spec in _CONTRACT["signals"][name]:
-        arg, separator, signature = spec.partition(":")
-        if not separator:  # pragma: no cover - contract JSON is pinned upstream
-            raise RuntimeError(f"malformed signal arg spec {spec!r} for {name}")
-        args.append((arg, signature))
-    return tuple(args)
-
+# ── Contract constants (embedded per side, pinned executably; AD-44) ──────
+#
+# ``BUS_NAME``/``INTERFACE``/``OBJECT_PATH``/``KNOWN_TOPICS``/``SIGNALS`` are
+# imported from the runtime's embedded tables — the same ones ``dbus_event_bus``
+# serves — and kept equal to the contract by ``test_dbus_conformance``. The
+# repo-root ``contracts/`` directory is not shipped in the installed tool wheel,
+# so reading it at import time would abort the daemon's subscriber there.
 
 #: The signal carrying a tool-specific domain event.
 DOMAIN_EVENT_SIGNAL: str = "DomainEvent"
@@ -144,7 +112,7 @@ HYDRATION_METHOD: str = "GetTopicState"
 HANDLED_SIGNALS: tuple[str, ...] = (DOMAIN_EVENT_SIGNAL, RESTART_SIGNAL)
 
 #: Ordered members of ``DomainEvent`` (contract-exact).
-DOMAIN_EVENT_ARGS: tuple[tuple[str, str], ...] = _signal_args(DOMAIN_EVENT_SIGNAL)
+DOMAIN_EVENT_ARGS: tuple[tuple[str, str], ...] = SIGNALS[DOMAIN_EVENT_SIGNAL]
 
 #: Reserved hydration members owned by the hub.
 RESERVED_EPOCH: str = "_epoch"

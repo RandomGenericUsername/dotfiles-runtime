@@ -16,9 +16,11 @@ from unittest.mock import patch
 import pytest
 from jeepney import DBusAddress, HeaderFields, Message, new_method_return, new_signal
 
+from runtime.adapters import dbus_event_bus
 from runtime.adapters import gtk4_app_subscriber as gs
 from runtime.adapters.gtk4_app_reloader import Gtk4AppReloader
 from runtime.adapters.gtk4_app_subscriber import Gtk4AppSubscriber
+from runtime.domain import hub as hub_module
 
 
 def _variant(value: object) -> tuple[str, object]:
@@ -113,6 +115,27 @@ def _deliver(
         "DomainEvent",
         _domain_event(gs.WALLPAPER_TOPIC, seq, epoch, payload),
     )
+
+
+class TestEmbeddedContractConstants:
+    """Import must not depend on the repo-root ``contracts/`` directory.
+
+    The installed tool wheel ships only the ``runtime`` package; sourcing the
+    binding's constants from the module's embedded, conformance-pinned tables
+    is what lets the daemon host it there (AD-44).
+    """
+
+    def test_constants_are_the_embedded_hub_tables(self) -> None:
+        assert gs.OBJECT_PATH == dbus_event_bus.OBJECT_PATH
+        assert gs.INTERFACE == dbus_event_bus.INTERFACE
+        assert gs.BUS_NAME == "org.dotfiles.Events"
+        assert gs.KNOWN_TOPICS == hub_module.KNOWN_TOPICS
+        assert gs.DOMAIN_EVENT_ARGS == dbus_event_bus.SIGNALS["DomainEvent"]
+
+    def test_no_repo_root_contract_lookup_survives(self) -> None:
+        assert not hasattr(gs, "_find_contract")
+        assert not hasattr(gs, "_CONTRACT")
+        assert not hasattr(gs, "_signal_args")
 
 
 class TestSubscribeBeforeRead:
