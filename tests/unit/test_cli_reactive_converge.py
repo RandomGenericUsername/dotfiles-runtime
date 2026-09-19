@@ -356,3 +356,66 @@ def test_backstop_lives_under_state_root_and_is_not_watched() -> None:
     }
     assert str(state_root / BACKSTOP_FILENAME) not in watched
     assert not any(str(state_root) in path for path in watched)
+
+
+class _RecordingClient:
+    """Fake IJobClient recording ``wallpaper.state`` publishes."""
+
+    def __init__(self) -> None:
+        self.published: list[tuple[str, dict[str, object]]] = []
+
+    def publish(self, topic: str, payload: object) -> None:
+        self.published.append((topic, dict(payload)))  # type: ignore[arg-type]
+
+
+@pytest.fixture(autouse=True)
+def _no_bus_wallpaper_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli_main, "_build_wallpaper_client", _RecordingClient)
+
+
+class TestReactivePublishCoverage:
+    def test_ran_converge_publishes_done_reactive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _seed_state()
+        calls: list[str] = []
+        _fake_composite(monkeypatch, calls)
+        client = _RecordingClient()
+
+        result = cli_main._run_reactive_converge(
+            observe_only=False, prune_on_reactive=True, client=client
+        )
+
+        assert result.ran is True
+        assert client.published == [
+            (
+                "wallpaper.state",
+                {"state": "done", "wallpaper_hash": "ab" * 32, "trigger": "reactive"},
+            )
+        ]
+
+    def test_noop_converge_does_not_double_publish(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _seed_state()
+        calls: list[str] = []
+        _fake_composite(monkeypatch, calls)
+        client = _RecordingClient()
+
+        cli_main._run_reactive_converge(observe_only=False, client=client)
+        after_first = len(client.published)
+        result = cli_main._run_reactive_converge(observe_only=False, client=client)
+
+        assert result.ran is False
+        assert len(client.published) == after_first == 1
+
+    def test_observe_only_publishes_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _seed_state()
+        calls: list[str] = []
+        _fake_composite(monkeypatch, calls)
+        client = _RecordingClient()
+
+        result = cli_main._run_reactive_converge(observe_only=True, client=client)
+
+        assert result.ran is False
+        assert client.published == []

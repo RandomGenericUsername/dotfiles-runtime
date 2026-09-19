@@ -200,7 +200,8 @@ def test_embedded_schema_table_matches_contract_topics(repo_root: Path) -> None:
         payload = entry["payload"]
         assert isinstance(payload, dict)
         schema = TOPIC_SCHEMAS[topic]
-        assert sorted(schema["required"]) == sorted(payload)
+        optional = set(entry.get("optional", []))
+        assert sorted(schema["required"]) == sorted(set(payload) - optional)
         for field, sig in payload.items():
             assert schema["properties"][field]["type"] == sig_to_json_type[sig], field
         for field, values in entry.get("enum", {}).items():

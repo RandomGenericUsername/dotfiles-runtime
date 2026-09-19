@@ -17,9 +17,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from jeepney import DBusAddress, Message, new_method_return, new_signal
 from typer.testing import CliRunner
 
 import runtime.cli.main as cli_main
+from runtime.adapters.gtk4_app_subscriber import Gtk4AppSubscriber
 from runtime.cli.main import app
 from runtime.domain.models import (
     BusNameContentionError,
@@ -74,6 +76,22 @@ def _isolated_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config-home"))
     monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(tmp_path / "install"))
+
+
+class _NoopHostedSubscriber:
+    """Bounded stand-in so CLI-invoking tests never open a real bus."""
+
+    def serve(self, stop_event: threading.Event) -> None:
+        stop_event.wait()
+
+    def stop(self) -> None:
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _no_real_gtk4_subscriber(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the daemon CLI tests hermetic (no subscriber thread, no bus)."""
+    monkeypatch.setattr(cli_main, "_build_gtk4_subscriber", lambda: _NoopHostedSubscriber())
 
 
 def _state_root(tmp_path: Path) -> Path:
@@ -565,3 +583,165 @@ class TestWatchHealthPersistence:
         assert record.degraded is True
         assert record.failed_roots == ("/spine/x",)
         assert record.last_error == "ENOSPC"
+
+
+class _HostedSubscriber:
+    """Lifecycle-recording fake host (blocks ``serve`` until stopped)."""
+
+    def __init__(self) -> None:
+        self.serving = threading.Event()
+        self.returned = threading.Event()
+        self.stop_calls = 0
+
+    def serve(self, stop_event: threading.Event) -> None:
+        self.serving.set()
+        stop_event.wait()
+        self.returned.set()
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+
+
+class _ScriptedConn:
+    """Minimal jeepney-shaped connection for the hosted-subscriber integration."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.closed = False
+        self.inbox: list[Message] = []
+
+    def send_and_get_reply(self, message: object, timeout: float | None = None) -> object:
+        from jeepney import HeaderFields
+
+        member = message.header.fields.get(HeaderFields.member, "")  # type: ignore[attr-defined]
+        self.calls.append(member)
+        if member == "AddMatch":
+            return new_method_return(message, None, ())  # type: ignore[arg-type]
+        if member == "GetTopicState":
+            encoded = {"_epoch": ("u", 1), "_seq": ("u", 0)}
+            return new_method_return(message, "a{sv}", (encoded,))  # type: ignore[arg-type]
+        raise AssertionError(f"unexpected bus call: {member}")
+
+    def receive(self, *, timeout: float | None = None) -> Message:
+        if self.inbox:
+            return self.inbox.pop(0)
+        time.sleep(0.005)
+        raise TimeoutError
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _RestartSpy:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self) -> bool:
+        self.calls += 1
+        return True
+
+
+class _RecordingSubscriber(Gtk4AppSubscriber):
+    """Signals when a delivered event has been fully handled."""
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self.handled = threading.Event()
+
+    def handle_signal(self, interface: str, member: str, body: tuple[object, ...]) -> None:
+        super().handle_signal(interface, member, body)
+        self.handled.set()
+
+
+def _domain_signal(trigger: str) -> Message:
+    from runtime.adapters import gtk4_app_subscriber as gs
+
+    signal = new_signal(
+        DBusAddress(gs.OBJECT_PATH, interface=gs.INTERFACE),
+        "DomainEvent",
+        "ssuua{sv}",
+        (
+            gs.WALLPAPER_TOPIC,
+            ":1.5",
+            1,
+            1,
+            {"state": ("s", "done"), "trigger": ("s", trigger)},
+        ),
+    )
+    return Message.from_buffer(signal.serialise(serial=2))
+
+
+class TestGtk4SubscriberHosting:
+    def test_subscriber_thread_starts_and_stops_cleanly(self) -> None:
+        owner = _FakeOwner()
+        subscriber = _HostedSubscriber()
+
+        def _watchdog() -> None:
+            assert subscriber.serving.wait(timeout=5)
+            owner.stop()
+
+        threading.Thread(target=_watchdog, daemon=True).start()
+        cli_main._run_daemon_run(owner=owner, subscriber_factory=lambda: subscriber)
+
+        assert subscriber.serving.is_set()
+        assert subscriber.returned.is_set()
+        assert subscriber.stop_calls >= 1
+        assert owner.releases >= 1
+
+    @pytest.mark.parametrize(
+        ("trigger", "expected"),
+        [("set", 1), ("reconcile", 1), ("reactive", 1), ("regenerate", 0)],
+    )
+    def test_trigger_gate_over_the_hosted_consumer(self, trigger: str, expected: int) -> None:
+        owner = _FakeOwner()
+        conn = _ScriptedConn()
+        spy = _RestartSpy()
+        subscriber = _RecordingSubscriber(connect=lambda: conn, restart=spy)
+        conn.inbox.append(_domain_signal(trigger))
+
+        def _watchdog() -> None:
+            assert subscriber.handled.wait(timeout=5)
+            owner.stop()
+
+        threading.Thread(target=_watchdog, daemon=True).start()
+        cli_main._run_daemon_run(owner=owner, subscriber_factory=lambda: subscriber)
+
+        assert spy.calls == expected
+        assert conn.closed is True
+
+    def test_subscriber_crash_does_not_stop_the_daemon(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        owner = _FakeOwner()
+
+        class _Exploding:
+            def serve(self, stop_event: threading.Event) -> None:
+                raise RuntimeError("subscriber exploded")
+
+            def stop(self) -> None:
+                return None
+
+        def _watchdog() -> None:
+            time.sleep(0.1)
+            owner.stop()
+
+        threading.Thread(target=_watchdog, daemon=True).start()
+        with caplog.at_level("ERROR", logger="runtime.cli.main"):
+            cli_main._run_daemon_run(owner=owner, subscriber_factory=_Exploding)
+
+        assert owner.releases >= 1
+        assert "gtk4 subscriber thread terminated unexpectedly" in caplog.text
+
+    def test_subscriber_factory_failure_is_contained(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        owner = _FakeOwner(immediate_stop=True)
+
+        def _factory() -> object:
+            raise RuntimeError("cannot build subscriber")
+
+        with caplog.at_level("ERROR", logger="runtime.cli.main"):
+            cli_main._run_daemon_run(owner=owner, subscriber_factory=_factory)
+
+        assert owner.releases >= 1
+        assert "could not start gtk4 subscriber" in caplog.text

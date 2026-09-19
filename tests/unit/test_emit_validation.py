@@ -107,6 +107,17 @@ class TestSchemas:
         validator, _ = _validator()
         validator.validate("icme.saved", {"path": "/a", "future": "x"}, ":1.1")
 
+    def test_wallpaper_state_trigger_is_optional_enum(self) -> None:
+        """``trigger`` is additive: old publishers (no trigger) stay valid,
+        known values are accepted, and an unknown value is rejected."""
+        validator, _ = _validator()
+        base = {"state": "done", "wallpaper_hash": "f" * 64}
+        validator.validate("wallpaper.state", base, ":1.1")
+        for trigger in ("set", "regenerate", "reconcile", "reactive"):
+            validator.validate("wallpaper.state", {**base, "trigger": trigger}, ":1.1")
+        with pytest.raises(PayloadTooLarge):
+            validator.validate("wallpaper.state", {**base, "trigger": "bogus"}, ":1.1")
+
     def test_reserved_members_rejected(self) -> None:
         validator, _ = _validator()
         with pytest.raises(PayloadTooLarge, match="_epoch"):
