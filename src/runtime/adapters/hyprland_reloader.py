@@ -1,9 +1,11 @@
-"""Hyprland reload adapter — invokes ``hyprctl reload`` (AD-17, FR-6, R5).
+"""Hyprland reload adapter — invokes ``hyprctl reload config-only`` (AD-17, FR-6, R5).
 
 Implements ``IDesktopReloader``: after the swap repoints
 ``current/colors.conf`` (through the ``~/.config/hypr`` spine symlink),
-the adapter triggers ``hyprctl reload`` so Hyprland re-reads the new
-palette. Failures are reported as ``False`` with warning logs; the
+the adapter triggers ``hyprctl reload config-only`` so Hyprland re-reads
+the new palette without reconfiguring monitors (preserves screencopy /
+PipeWire capture sessions owned by gpu-screen-recorder / wf-recorder).
+Failures are reported as ``False`` with warning logs; the
 reconcile use case collects them into ``ReconcileResult.reload_failures``.
 
 Binary resolution mirrors ``csg_adapter.py:135-163`` (path-separator
@@ -66,7 +68,7 @@ def _resolve_hyprctl(hyprctl_path: Path | None) -> Path | None:
 
 
 class HyprlandReloader(IDesktopReloader):
-    """Adapter that reloads Hyprland via ``hyprctl reload``.
+    """Adapter that reloads Hyprland via ``hyprctl reload config-only``.
 
     Args:
         hyprctl_path: explicit path to ``hyprctl`` binary. When ``None``,
@@ -82,8 +84,8 @@ class HyprlandReloader(IDesktopReloader):
         """Reload Hyprland configuration.
 
         Returns:
-            True on ``hyprctl reload`` exit 0; False on non-zero exit,
-            missing binary, timeout, or OS errors. Warnings are logged
+            True on ``hyprctl reload config-only`` exit 0; False on non-zero
+            exit, missing binary, timeout, or OS errors. Warnings are logged
             with stderr details where available.
         """
         if self._hyprctl_path is None:
@@ -91,7 +93,7 @@ class HyprlandReloader(IDesktopReloader):
             return False
         try:
             result = subprocess.run(
-                [str(self._hyprctl_path), "reload"],
+                [str(self._hyprctl_path), "reload", "config-only"],
                 capture_output=True,
                 text=True,
                 timeout=10,

@@ -58,10 +58,12 @@ class CaptureHost:
         stop_event: threading.Event | None = None,
     ) -> None:
         self._client = client
+        self._recorder = recorder
         self._controller = CaptureController(
             client, recorder, clock=clock, ttl=ttl, cadence=cadence, duration=duration
         )
         self._stop_event = stop_event if stop_event is not None else threading.Event()
+        self._failed: str | None = None
 
     # ── Observability ────────────────────────────────────────────────
 
@@ -107,11 +109,63 @@ class CaptureHost:
             self._stop_event.set()
         return emitted
 
-    def stop(self) -> None:
-        """Stop the recorder and end the hub job (idempotent, never raises)."""
+    def stop(self, exit_code: int = 0) -> None:
+        """Stop the recorder and end the hub job (idempotent, never raises).
+
+        A nonzero ``exit_code`` marks an abnormal end (recorder died
+        mid-job); the recorder release is still idempotent (a dead child
+        is a no-op) so the partial file is kept on disk. A recorder whose
+        release raises (e.g. a failed segment join) is contained — the
+        reason is recorded for the caller's finalize report.
+        """
         if self._controller.job_id is None:
             return
-        self._controller.stop()
+        try:
+            self._controller.stop(exit_code=exit_code)
+        except Exception as exc:
+            logger.exception("capture: recorder stop failed")
+            self.mark_failed(f"recorder finalize failed: {exc}")
+
+    @property
+    def failed(self) -> str | None:
+        """Failure reason when the recorder died unexpectedly, else None."""
+        return self._failed
+
+    def mark_failed(self, reason: str) -> None:
+        """Record an unexpected recorder death (idempotent, first wins)."""
+        if self._failed is None:
+            self._failed = reason
+
+    def check_health(self) -> bool:
+        """True while the owned recorder is capturing for a live job.
+
+        Call on every cadence tick before ``tick()``. A resilient recorder
+        (``SegmentingRecorder``) restarts its child transparently here and
+        still returns ``True``; a plain recorder whose child is gone is an
+        unexpected death — mark it failed and ask the serving loop to exit
+        so the host finalizes with a nonzero ``EndJob`` instead of
+        publishing ever-growing ``recording`` elapsed for a dead file.
+        """
+        if self._controller.job_id is None or self._stop_event.is_set():
+            return True
+        try:
+            alive = bool(self._recorder.ensure_alive())
+        except Exception:
+            logger.exception("capture: recorder health probe failed")
+            alive = False
+        if alive:
+            return True
+        status: int | None = None
+        try:
+            status = self._recorder.exit_status()
+        except Exception:
+            logger.exception("capture: recorder exit-status probe failed")
+        reason = "recorder exited unexpectedly"
+        if status is not None:
+            reason = f"{reason} (status {status})"
+        self.mark_failed(reason)
+        self._stop_event.set()
+        return False
 
     def request_stop(self) -> None:
         """Ask the serving loop to exit (signal handler / supervisor)."""

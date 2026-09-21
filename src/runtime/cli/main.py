@@ -2359,23 +2359,51 @@ def _spawn_capture_notification(argv: list[str]) -> None:
     (icon resolution, actions, urgencies); the resident host only routes the
     finalize outcome to it. An absent binary (tests, minimal installs) is a
     silent no-op. Module-level so tests can monkeypatch it.
+
+    The helper's output is captured to the capture-tool notify log rather
+    than discarded: it is the only post-mortem record of whether a finalize
+    toast was emitted (and why an action chip did nothing).
     """
     import shutil
     import subprocess
+    from typing import Any
 
     try:
         binary = shutil.which("capture-tool")
         if binary is None:
             return
-        subprocess.Popen(
-            [binary, *argv],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        handle: Any = subprocess.DEVNULL
+        try:
+            log_dir = _capture_state_dir() / "capture-tool"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            handle = open(log_dir / "notify.log", "a", encoding="utf-8")
+        except OSError:
+            handle = subprocess.DEVNULL
+        try:
+            subprocess.Popen(
+                [binary, *argv],
+                stdin=subprocess.DEVNULL,
+                stdout=handle,
+                stderr=handle,
+                start_new_session=True,
+            )
+        finally:
+            # The child owns its own descriptor; the parent must not hold the
+            # log open for the rest of the (long-lived) capture host.
+            if handle != subprocess.DEVNULL:
+                handle.close()
     except OSError:
         logger.warning("capture: notification spawn failed; continuing")
+
+
+def _capture_state_dir() -> Path:
+    """``$XDG_STATE_HOME`` (default ``~/.local/state``) as an absolute Path."""
+    import os
+
+    state = os.environ.get("XDG_STATE_HOME")
+    if state:
+        return Path(state)
+    return Path.home() / ".local" / "state"
 
 
 def _notify_recording_saved(path: str, duration_s: float) -> None:
@@ -2470,7 +2498,23 @@ def _run_capture_host(
         )
     resolved_clock: Callable[[], float] = time.monotonic if clock is None else clock
     if recorder is None:
-        recorder = SubprocessRecorder(shlex.split(command), backend=backend)
+        argv = shlex.split(command)
+        if output_path is not None and gif_output is None:
+            # Resilience (AD-37): a plain mp4 recording restarts the backend
+            # onto a fresh segment when it dies unexpectedly (a compositor
+            # output reset, memory pressure from a concurrent wallpaper
+            # derivation), then joins the segments on stop. The promised
+            # output path and every downstream contract are unchanged.
+            from runtime.adapters.segmenting_recorder import SegmentingRecorder
+
+            recorder = SegmentingRecorder(
+                output_path,
+                argv,
+                backend=backend,
+                recorder_factory=lambda cmd: SubprocessRecorder(cmd, backend=backend),
+            )
+        else:
+            recorder = SubprocessRecorder(argv, backend=backend)
     if client is None:
         client = _build_capture_client()
     host = CaptureHost(
@@ -2481,6 +2525,8 @@ def _run_capture_host(
     started_at = resolved_clock()
 
     def _drive_tick() -> None:
+        if not host.check_health():
+            return
         host.tick()
 
     try:
@@ -2492,10 +2538,15 @@ def _run_capture_host(
             # cadence here (lease renew is a local no-op; periodic state
             # publish and duration auto-stop still apply).
             while not host.stop_requested():
+                if not host.check_health():
+                    break
                 host.tick()
                 host.stop_event.wait(DEFAULT_CAPTURE_CADENCE)
     finally:
-        host.stop()
+        if host.failed is not None:
+            host.stop(exit_code=1)
+        else:
+            host.stop()
         if isinstance(client, DbusJobClient):
             client.close()
         restore()
@@ -2512,8 +2563,17 @@ def _run_capture_host(
     # Finalize toast (add-ags-notifd-notifications): the GIF pipeline reports
     # the converted .gif, otherwise the launcher-threaded output path. Fires
     # only when the launcher told us what to report — unit/integration runs
-    # that drive the host directly stay silent.
+    # that drive the host directly stay silent. An unexpected recorder death
+    # or a failed segment join reports a failure toast (partial file kept)
+    # instead of "saved".
     final_path = gif_output if gif_output is not None else output_path
+    concat_failed = getattr(recorder, "concat_ok", None) is False
+    if host.failed is not None or concat_failed:
+        detail = f"Recording interrupted: {host.failed or 'segment join failed'}."
+        if final_path is not None:
+            detail += f" Partial file kept at {final_path}."
+        _notify_capture_failed(detail)
+        return 1
     if final_path is not None:
         _notify_recording_saved(final_path, resolved_clock() - started_at)
     return 0

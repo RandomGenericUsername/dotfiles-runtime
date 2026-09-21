@@ -386,3 +386,24 @@ class TestControl:
         controller.stop()
         with pytest.raises(RuntimeError, match="unknown capture job"):
             controller.control(job_id, "pause")
+
+
+class TestStopExitCode:
+    def test_stop_defaults_to_zero(self) -> None:
+        controller, client, _, _ = _controller()
+        controller.start()
+        controller.stop()
+        assert client.ends == [("job-1", 0)]
+
+    def test_stop_nonzero_marks_abnormal_end(self) -> None:
+        controller, client, _, _ = _controller()
+        controller.start()
+        controller.stop(exit_code=1)
+        assert controller.state == "idle"
+        assert client.ends == [("job-1", 1)]
+
+    def test_stop_rejects_non_int_exit_code(self) -> None:
+        controller, _, _, _ = _controller()
+        controller.start()
+        with pytest.raises(ValueError, match="exit code must be an int"):
+            controller.stop(exit_code=True)  # type: ignore[arg-type]

@@ -333,3 +333,44 @@ class TestCaptureFinalizeNotification:
         assert result.exit_code == 1
         assert spawned and spawned[0][:3] == ["notify", "--kind", "failed"]
         assert "no recorder" in " ".join(spawned[0])
+
+    def test_unexpected_recorder_death_fails_honestly(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """A backend that dies after startup ends nonzero with a failure
+        toast — never a 'Recording saved' toast for a truncated file."""
+        import threading
+
+        spawned: list[list[str]] = []
+        monkeypatch.setattr(
+            cli_main,
+            "_spawn_capture_notification",
+            lambda argv: spawned.append(list(argv)),
+        )
+
+        class _DyingRecorder(_FakeNotifyRecorder):
+            def start(self) -> None:
+                super().start()
+                # Die right after startup grace: the first cadence tick
+                # must detect it instead of publishing growing elapsed.
+                self.calls.append("crashed")
+
+            def is_running(self) -> bool:
+                return "start" in self.calls and "crashed" not in self.calls
+
+        target = tmp_path / "partial.mp4"
+        target.write_bytes(b"partial")
+        code = cli_main._run_capture_host(
+            command="rec -o partial.mp4",
+            recorder=_DyingRecorder(),
+            client=_FakeNotifyClient(),
+            clock=_SequenceClock([1000.0, 1001.0, 1002.0]),
+            stop_event=threading.Event(),
+            output_path=str(target),
+        )
+        assert code == 1
+        assert len(spawned) == 1
+        argv = spawned[0]
+        assert argv[:3] == ["notify", "--kind", "failed"]
+        assert "interrupted" in " ".join(argv)
+        assert str(target) in " ".join(argv)

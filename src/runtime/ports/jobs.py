@@ -119,6 +119,25 @@ class IRecorderProcess(ABC):
     def is_running(self) -> bool:
         """True while the observed child is alive."""
 
+    def ensure_alive(self) -> bool:
+        """Return True when the recorder is capturing; restart if it can.
+
+        The default (a plain single child) is just :meth:`is_running`. A
+        resilient recorder may transparently restart the observed child and
+        still return ``True`` — the host's health check treats ``False`` as
+        an unexpected death. Overriding this (rather than ``is_running``)
+        keeps the pure liveness query side-effect-free.
+        """
+        return self.is_running()
+
+    def exit_status(self) -> int | None:
+        """Return the child's exit status once it has exited, else ``None``.
+
+        Diagnostics only: the host never branches on it, but the CLI surfaces
+        it when a recording ends abnormally (a negative value is a signal).
+        """
+        return None
+
 
 class ISpeedTestRunner(ABC):
     """One speed-test measurement (no network in tests)."""

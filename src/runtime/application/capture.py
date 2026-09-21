@@ -151,8 +151,15 @@ class CaptureController:
         self._state = _JOB_STARTED_STATE
         self._publish_state(now)
 
-    def stop(self) -> None:
-        """Stop the recorder, emit ``idle``, and end the hub job (exit 0)."""
+    def stop(self, exit_code: int = 0) -> None:
+        """Stop the recorder, emit ``idle``, and end the hub job.
+
+        ``exit_code`` (default 0) is the hub ``EndJob`` code: a nonzero
+        code marks an abnormal end (e.g. the recorder died mid-job) while
+        still releasing the recorder and the lease exactly once.
+        """
+        if isinstance(exit_code, bool) or not isinstance(exit_code, int):
+            raise ValueError(f"capture exit code must be an int, got {exit_code!r}")
         if self._state == "idle":
             raise RuntimeError("cannot stop capture: no active recording")
         now = self._clock()
@@ -164,7 +171,7 @@ class CaptureController:
         self._job_id = None
         if job_id is not None:
             try:
-                self._client.end(job_id, 0)
+                self._client.end(job_id, exit_code)
             except Exception:
                 logger.exception("capture: EndJob failed for %s; continuing", job_id)
 

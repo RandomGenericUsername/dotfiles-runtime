@@ -42,7 +42,7 @@ class TestHyprlandReloaderSuccess:
         ) as mock_run:
             reloader.reload()
             mock_run.assert_called_once_with(
-                [str(hyprctl_bin), "reload"],
+                [str(hyprctl_bin), "reload", "config-only"],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -62,7 +62,7 @@ class TestHyprlandReloaderFailure:
         reloader = HyprlandReloader(hyprctl_path=hyprctl_bin)
         with patch(
             "runtime.adapters.hyprland_reloader.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="hyprctl reload", timeout=10),
+            side_effect=subprocess.TimeoutExpired(cmd="hyprctl reload config-only", timeout=10),
         ):
             assert reloader.reload() is False
 

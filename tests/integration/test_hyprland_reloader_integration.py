@@ -132,7 +132,7 @@ def test_hyprland_reloader_integration_with_hyprctl_shim(
     shim.write_text(
         '#!/bin/sh\n'
         f'[ -n "$HYPRCTL_MARKER" ] && touch "$HYPRCTL_MARKER"\n'
-        'if [ "$1" = "reload" ]; then exit 0; fi\nexit 1\n'
+        'if [ "$1" = "reload" ] && [ "$2" = "config-only" ]; then exit 0; fi\nexit 1\n'
     )
     shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("HYPRCTL_MARKER", str(marker))
