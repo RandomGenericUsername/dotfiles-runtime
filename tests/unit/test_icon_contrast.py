@@ -76,6 +76,8 @@ def test_constants() -> None:
         "email-client",
         "wallpaper-selector",
         "settings",
+        "volume",
+        "microphone",
     }
 
 

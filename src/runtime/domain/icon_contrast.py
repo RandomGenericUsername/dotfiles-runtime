@@ -30,6 +30,11 @@ BAR_GROUPS: Final[tuple[str, ...]] = (
     "email-client",
     "wallpaper-selector",
     "settings",
+    # Audio bar indicators (add-pipewire-audio-control): the level-aware
+    # output glyph and the microphone indicator float over the wallpaper like
+    # every other bar icon, so they need the same light-wallpaper retarget.
+    "volume",
+    "microphone",
 )
 
 #: Placeholders eligible for retargeting (D5). Literals (``#…``),
