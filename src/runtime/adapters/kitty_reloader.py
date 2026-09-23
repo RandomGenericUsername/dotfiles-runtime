@@ -8,7 +8,7 @@ included runtime palette) in the windows of the signalled process, so every
 OPEN kitty window follows the new palette — event-driven, no polling, no
 OSC/pty writes.
 
-R5 semantics (mirrors ``TerminalColorApplier``/``HyprpaperReloader``):
+R5 semantics (mirrors ``TerminalColorApplier``):
 - No kitty process is a VACUOUS SUCCESS (``True``) — a terminal may
   legitimately not be open.
 - A kitty process exists but signalling it fails (``OSError`` — e.g.

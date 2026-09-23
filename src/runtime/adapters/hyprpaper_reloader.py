@@ -1,9 +1,8 @@
-"""Hyprpaper wallpaper reload adapter — per-monitor IPC channel (AD-17, FR-6, R5).
+"""Hyprpaper wallpaper applier — per-monitor IPC channel (FR-6, R5).
 
-Implements ``IDesktopReloader``: after the swap repoints
-``current/wallpaper-<monitor>.png`` (AD-17 per-monitor consumer wiring),
-the adapter applies the VERIFIED hyprpaper wallpaper-change channel, once
-per monitor::
+Implements ``IWallpaperApplier``: after the runtime repoints
+``current/wallpaper-<monitor>.png``, the adapter applies the VERIFIED
+hyprpaper wallpaper-change channel once per monitor::
 
     hyprctl hyprpaper wallpaper <monitor>,<path>
 
@@ -47,12 +46,12 @@ COMMA anywhere in monitor or path truncates the parse and is
 unrepresentable. A space/comma-containing state_root would otherwise
 surface as an (opaque) invocation failure (known limitation).
 
-Naming note: this is the RELOADER (mirrors ``hyprland_reloader.py`` /
-``ags_reloader.py``). It is NOT the AD-18 ``IStaticWallpaperBackend``
-listed as ``hyprpaper_backend`` in the spine adapters manifest — that
-per-monitor backend hierarchy is future scope.
+Role note: wallpaper application is separate from palette/UI reloaders.
+This adapter is NOT the AD-18 ``IStaticWallpaperBackend`` listed as
+``hyprpaper_backend`` in the spine adapters manifest — that per-monitor
+backend hierarchy is future scope.
 
-Per-monitor enumeration is FS-authority (NFR-3): ``reload()`` scans
+Per-monitor enumeration is FS-authority (NFR-3): ``apply()`` scans
 ``state_root/current/wallpaper-*.png`` (sorted for determinism), derives
 ``monitor`` from the filename and applies the channel per monitor; the
 binary path comes from ``link.resolve()``. A dangling wallpaper symlink is
@@ -69,8 +68,8 @@ Wiring note: the composition root drives monitor names through
 ``current/wallpaper-*.png`` is named for actual outputs (e.g.
 ``eDP-1``). ``DEFAULT_MONITOR = "DP-1"`` remains only as the fallback
 when detection is unavailable (headless/CI); on such hosts hyprpaper
-rejects the monitor (``Invalid monitor``) and the reload surfaces
-``HyprpaperReloader`` as a failure — accepted R5-literal behavior. This
+rejects the monitor (``Invalid monitor``) and wallpaper application
+surfaces the applier as a failure — accepted R5-literal behavior. This
 adapter also probes only ``hyprctl`` presence, never hyprpaper liveness.
 
 Binary resolution imports ``_resolve_via_which`` from ``hyprland_reloader``
@@ -92,6 +91,7 @@ from pathlib import Path
 
 from runtime.adapters.hyprland_reloader import _resolve_via_which
 from runtime.ports.desktop_reloader import IDesktopReloader
+from runtime.ports.wallpaper_applier import IWallpaperApplier
 
 logger = logging.getLogger(__name__)
 
@@ -137,13 +137,13 @@ def _resolve_hyprctl(hyprctl_path: Path | None) -> Path | None:
     return _resolve_via_which("hyprctl")
 
 
-class HyprpaperReloader(IDesktopReloader):
-    """Adapter that applies the verified hyprpaper wallpaper IPC per monitor.
+class HyprpaperWallpaperApplier(IWallpaperApplier):
+    """Apply the verified hyprpaper wallpaper IPC per monitor.
 
     Args:
         hyprctl_path: explicit path to ``hyprctl``. When ``None``,
             resolved via ``shutil.which("hyprctl")``; if not found, the
-            adapter stores ``None`` and ``reload()`` returns ``False``
+            adapter stores ``None`` and ``apply()`` returns ``False``
             without spawning a subprocess (surfaced failure, not a skip).
         state_root: explicit runtime state root. When ``None``, resolved
             to ``$XDG_STATE_HOME/dotfiles`` (default ``~/.local/state/
@@ -155,7 +155,7 @@ class HyprpaperReloader(IDesktopReloader):
         self._hyprctl_path: Path | None = _resolve_hyprctl(hyprctl_path)
         self._state_root: Path = _resolve_state_root(state_root)
 
-    def reload(self) -> bool:
+    def apply(self) -> bool:
         """Apply the verified hyprpaper IPC once per seeded monitor.
 
         Returns:
@@ -219,3 +219,15 @@ class HyprpaperReloader(IDesktopReloader):
                 )
                 all_ok = False
         return all_ok
+
+
+class HyprpaperReloader(HyprpaperWallpaperApplier, IDesktopReloader):
+    """Compatibility adapter for integrations still using the old reloader API.
+
+    Runtime composition uses :class:`HyprpaperWallpaperApplier` as a distinct
+    wallpaper stage. This wrapper remains for callers that still invoke
+    ``reload()`` directly; it is never included in the palette/UI reload list.
+    """
+
+    def reload(self) -> bool:
+        return self.apply()

@@ -7,6 +7,7 @@ from runtime.ports.icon_renderer import IIconRenderer
 from runtime.ports.state_repository import IStateRepository
 from runtime.ports.wallpaper_backend import IStaticWallpaperBackend, IVideoWallpaperBackend
 from runtime.ports.wallpaper_backend_factory import IWallpaperBackendFactory
+from runtime.ports.wallpaper_applier import IWallpaperApplier
 
 __all__ = [
     "IColorSchemeGenerator",
@@ -19,4 +20,5 @@ __all__ = [
     "IStaticWallpaperBackend",
     "IVideoWallpaperBackend",
     "IWallpaperBackendFactory",
+    "IWallpaperApplier",
 ]

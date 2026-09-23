@@ -39,10 +39,10 @@ from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder
 from runtime.application.monitors import preserve_monitors
 from runtime.domain.models import DEFAULT_MONITOR, DesktopState, WallpaperEntry
-from runtime.ports.desktop_reloader import IDesktopReloader
 from runtime.ports.monitor_source import IMonitorSource
 from runtime.ports.seed_mutex import ISeedMutex
 from runtime.ports.state_repository import IStateRepository
+from runtime.ports.wallpaper_applier import IWallpaperApplier
 
 logger = logging.getLogger(__name__)
 
@@ -69,10 +69,10 @@ class SwapVisibleUseCase:
     4. Hold the state mutex (blocking) around the read-modify-write of
        ``current.json`` — monitors preserved with ``source_hash``
        updated (AD-18) via the shared ``preserve_monitors`` helper —
-       then repoint ONLY wallpaper symlinks and reload hyprpaper.
+       then repoint ONLY wallpaper symlinks and apply the wallpaper.
 
     Constructor receives ports, the injected ``CacheSeeder`` adapter, the
-    state mutex, and the hyprpaper reloader (dependency inversion).
+    state mutex, and the wallpaper applier (dependency inversion).
     """
 
     def __init__(
@@ -81,7 +81,7 @@ class SwapVisibleUseCase:
         state_root: Path,
         seeder: CacheSeeder,
         mutex: ISeedMutex,
-        hyprpaper: IDesktopReloader,
+        hyprpaper: IWallpaperApplier,
         monitor_source: IMonitorSource | None = None,
     ) -> None:
         self._state_repo = state_repo
@@ -98,7 +98,7 @@ class SwapVisibleUseCase:
             ValueError: if the input path is missing or not a regular
                 file; or propagated from a corrupt current.json
             RuntimeError: if the wallpaper cache entry is unusable, the
-                hyprpaper reload fails, or the cache holds content that
+                wallpaper application fails, or the cache holds content that
                 contradicts its hash
             OSError: on filesystem failures (unreadable input, etc.)
         """
@@ -151,11 +151,11 @@ class SwapVisibleUseCase:
             )
 
         try:
-            hyprpaper_ok = self._hyprpaper.reload()
+            hyprpaper_ok = self._hyprpaper.apply()
         except Exception as exc:
-            raise RuntimeError(f"visible swap failed: hyprpaper reload raised: {exc}") from exc
+            raise RuntimeError(f"visible swap failed: wallpaper apply raised: {exc}") from exc
         if not hyprpaper_ok:
-            raise RuntimeError("visible swap failed: hyprpaper reload reported failure")
+            raise RuntimeError("visible swap failed: wallpaper applier reported failure")
         return SwapVisibleResult(
             wallpaper_hash=wallpaper_hash,
             wallpaper_path=cached,

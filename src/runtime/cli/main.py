@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from runtime.domain.models import ChangeSet, DesktopState
     from runtime.ports.bus_name_owner import IBusNameOwner
     from runtime.ports.desktop_reloader import IDesktopReloader
+    from runtime.ports.wallpaper_applier import IWallpaperApplier
     from runtime.ports.event_bus import IJobRegistry
     from runtime.ports.jobs import (
         IControlChannel,
@@ -383,14 +384,12 @@ class _WallpaperSetResult:
 
 
 def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list[IDesktopReloader]:
-    """Build the deterministic desktop-consumer reloader list (AD-17).
+    """Build the deterministic palette/UI consumer reloader list (AD-17).
 
-    Shared by ``reconcile`` and ``wallpaper set`` so both commands reload
-    the IDENTICAL consumers in the same pinned order: Hyprland (``hyprctl
-    reload``), AGS (restart), Hyprpaper (per-monitor IPC from
-    ``current.json``), then the terminal palette (OSC from
-    ``current/colors.sequences``) when ``include_terminal`` is set, with the
-    kitty reloader (``SIGUSR1``) appended last.
+    Shared by ``reconcile`` and ``wallpaper set`` in the same pinned order:
+    Hyprland (``hyprctl reload``), AGS (restart), then the terminal palette
+    (OSC from ``current/colors.sequences``) when ``include_terminal`` is set,
+    with the kitty reloader (``SIGUSR1``) appended last.
 
     Event-driven consumers are NOT part of this synchronous chain: the
     daemon-hosted GTK4 restart subscriber and ICME's live refresh act on
@@ -403,19 +402,24 @@ def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list
     """
     from runtime.adapters.ags_reloader import AgsReloader
     from runtime.adapters.hyprland_reloader import HyprlandReloader
-    from runtime.adapters.hyprpaper_reloader import HyprpaperReloader
     from runtime.adapters.kitty_reloader import KittyReloader
     from runtime.adapters.terminal_color_applier import TerminalColorApplier
 
     reloaders: list[IDesktopReloader] = [
         HyprlandReloader(),
         AgsReloader(),
-        HyprpaperReloader(state_root=state_root),
     ]
     if include_terminal:
         reloaders.append(TerminalColorApplier(state_root=state_root))
     reloaders.append(KittyReloader())
     return reloaders
+
+
+def _build_wallpaper_applier(state_root: Path) -> IWallpaperApplier:
+    """Build Hyprpaper's distinct wallpaper-application actor."""
+    from runtime.adapters.hyprpaper_reloader import HyprpaperWallpaperApplier
+
+    return HyprpaperWallpaperApplier(state_root=state_root)
 
 
 #: Domain topic published around every ``wallpaper set`` and every
@@ -485,11 +489,12 @@ def _run_wallpaper_set(
 
     - ``_phase_visible``: ``SwapVisibleUseCase.run`` — validate → import
       wallpaper → save wallpaper-only ``current.json`` → repoint ONLY
-      wallpaper symlinks → hyprpaper reload. Emits ``visible``.
+      wallpaper symlinks → apply wallpaper. Emits ``visible``.
     - ``_phase_themed``: ``ApplyWallpaperUseCase.run`` (derivation-only:
       takes the swap's imported wallpaper + hash, no re-import) then
       ``ReconcileDesktopStateUseCase.run(trigger="set")`` — full repoint
-      → ``current.json`` → ``history.jsonl`` → reload all consumers.
+      → ``current.json`` → ``history.jsonl`` → palette/UI reloads. The
+      wallpaper stage is marked already applied.
       Emits ``done``.
 
     ONE state mutex (``FlockSeedMutex`` on ``.seed.lock``) is acquired
@@ -544,7 +549,6 @@ def _run_wallpaper_set(
     from runtime.adapters.flock_seed_mutex import FlockSeedMutex, PassThroughSeedMutex
     from runtime.adapters.hashing import hash_file
     from runtime.adapters.hyprland_monitor_source import HyprlandMonitorSource
-    from runtime.adapters.hyprpaper_reloader import HyprpaperReloader
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
@@ -566,7 +570,7 @@ def _run_wallpaper_set(
     templates_dir = find_templates_dir(install_spine)
 
     def _phase_visible() -> SwapVisibleResult:
-        """Phase 1 (D1): import → wallpaper-only persist → repoint → reload."""
+        """Phase 1 (D1): import → wallpaper-only persist → repoint → apply."""
         return SwapVisibleUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
             state_root=state_root,
@@ -576,7 +580,7 @@ def _run_wallpaper_set(
                 suppress_history=suppress_history,
             ),
             mutex=inner_mutex,
-            hyprpaper=HyprpaperReloader(state_root=state_root),
+            hyprpaper=_build_wallpaper_applier(state_root),
             monitor_source=HyprlandMonitorSource(),
         ).run(image_path)
 
@@ -650,6 +654,7 @@ def _run_wallpaper_set(
             trigger="set",
             contrast_enabled=contrast_enabled,
             contrast_source=contrast_source,
+            wallpaper_already_applied=True,
         )
         return apply_result, reconcile_result
 
@@ -750,14 +755,14 @@ def wallpaper_set(
     The full end-to-end pipeline in one synchronous command (AD-12,
     visible-first D1): the swap phase imports the wallpaper, persists a
     wallpaper-only ``current.json``, repoints the wallpaper symlinks and
-    reloads hyprpaper immediately; the themed phase then derives the
+    applies the wallpaper immediately; the themed phase then derives the
     palette/effects/icons layers, ensures cache entries (zero tool
     invocations on cache hits), and writes the full ``current.json``;
     the chained converge repoints the ``current/`` symlinks atomically,
-    appends a ``history.jsonl`` line (trigger ``"set"``), and reloads
-    all four desktop consumers (Hyprland, AGS, Hyprpaper, terminal
-    palette). Reload failures are surfaced per consumer and exit
-    non-zero (R5).
+    appends a ``history.jsonl`` line (trigger ``"set"``), skips the already
+    completed wallpaper stage, and reloads palette/UI consumers (Hyprland,
+    AGS, terminal palette, Kitty). Failures are surfaced and exit non-zero
+    (R5).
     """
     renderer = create_renderer(output_format)
     try:
@@ -776,13 +781,13 @@ def wallpaper_set(
         )
         raise typer.Exit(code=1) from None
 
-    # Reload result (contract step 5): the wired reloaders populate
-    # ReconcileResult.reload_failures; a non-empty list is surfaced and
+    # Apply/reload failures populate ReconcileResult.reload_failures; a
+    # non-empty list is surfaced and
     # exits non-zero per R5 (no daemon retry) — the exact pattern the
     # reconcile command uses.
     if result.reconcile.reload_failures:
         failed = ", ".join(result.reconcile.reload_failures)
-        logger.error("wallpaper set: reload failed for %s", failed)
+        logger.error("wallpaper set: apply/reload failed for %s", failed)
         renderer.error(
             ErrorView(
                 kind="ReloadError",
@@ -1247,6 +1252,7 @@ def _run_reconcile(
         ),
         mutex=FlockSeedMutex(state_root / ".seed.lock"),
         reloaders=_build_reloaders(state_root, include_terminal=include_terminal),
+        wallpaper_applier=_build_wallpaper_applier(state_root),
     )
     return use_case.run()
 
@@ -1501,6 +1507,7 @@ def _run_regenerate_stale(
             seeder=seeder,
             mutex=mutex,
             reloaders=_build_reloaders(state_root, include_terminal=include_terminal),
+            wallpaper_applier=_build_wallpaper_applier(state_root),
         ),
         mutex=mutex,
         state_root=state_root,
@@ -1576,6 +1583,7 @@ def _run_doctor_repair() -> RepairResult:
             seeder=seeder,
             mutex=mutex,
             reloaders=_build_reloaders(state_root),
+            wallpaper_applier=_build_wallpaper_applier(state_root),
         ),
         state_root=state_root,
         heal_history_tail=seeder.heal_torn_history_tail,
@@ -2906,10 +2914,9 @@ def reconcile(
     on miss), repoints current/ symlinks atomically, saves refreshed
     current.json, and appends a history.jsonl line with trigger "reconcile".
 
-    Desktop reload (contract step 5) restarts Hyprland, restarts AGS,
-    applies the Hyprpaper wallpaper IPC per monitor, and applies the
-    terminal palette via OSC sequences via the reloaders wired in the
-    composition root.
+    Reconcile applies the persisted wallpaper once, then restarts Hyprland
+    and AGS and updates terminal/Kitty palette state. Wallpaper application
+    is a distinct stage; only palette/UI consumers are in the reloader list.
 
     Emits ``wallpaper.state applying/done`` (or ``error``) with
     ``trigger="reconcile"`` around the use case so event consumers see this
@@ -3077,12 +3084,12 @@ def reconcile(
     if isinstance(client, DbusJobClient):
         client.close()
 
-    # Reload result (contract step 5): the wired reloaders populate
-    # ReconcileResult.reload_failures; a non-empty list is surfaced and
+    # Apply/reload failures populate ReconcileResult.reload_failures; a
+    # non-empty list is surfaced and
     # exits non-zero per AC 4 (no daemon retry).
     if result.reload_failures:
         failed = ", ".join(result.reload_failures)
-        logger.error("reconcile: reload failed for %s", failed)
+        logger.error("reconcile: apply/reload failed for %s", failed)
         renderer.error(
             ErrorView(
                 kind="ReloadError",

@@ -1,4 +1,4 @@
-"""Reconcile-desktop-state use case — the swap sequence (steps 1–5).
+"""Reconcile-desktop-state use case — converge state, apply wallpaper, reload consumers.
 
 Implements AD-1 (hexagonal), AD-2 (input changes invalidate), AD-5
 (state_root), AD-6 (swap symlinks lead), AD-14 (domain purity), AD-17
@@ -8,9 +8,8 @@ rendering).
 Scope boundary (Stories 2.1–2.3, 2.7):
 - Repoints ``current/`` symlinks to converge the desktop with
   ``current.json``, appends ``history.jsonl``, persists refreshed
-  ``current.json``, and triggers one reload per injected
-  ``IDesktopReloader`` (Hyprland is Story 2.3; AGS is Story 2.4;
-  Hyprpaper is Story 2.5; terminal is Story 2.6).
+  ``current.json``, applies wallpaper through ``IWallpaperApplier``, then
+  triggers one reload per injected palette/UI ``IDesktopReloader``.
 - ``wallpaper set`` (Story 2.7 capstone, shipped) chains this use case
   after ``ApplyWallpaperUseCase`` in the CLI composition root, passing
   the history trigger ``"set"``; the standalone ``reconcile`` command
@@ -24,7 +23,8 @@ Swap sequence order (shared-data-contract, non-negotiable):
 4. History: append one ``history.jsonl`` line (trigger ``"reconcile"``
    by default; ``wallpaper set`` passes ``"set"`` via ``run(trigger=...)``
    — the accepted values are ``runtime.domain.history.HISTORY_TRIGGERS``).
-5. Reload desktop consumers (fire-and-report, per injected reloader).
+5. Apply persisted wallpaper unless the caller already applied it.
+6. Reload palette/UI consumers (fire-and-report, per injected reloader).
 
 Derivation (step 1) runs OUTSIDE the lock (staging is race-safe;
 tool invocations stay parallel — same split ``ApplyWallpaperUseCase``
@@ -64,6 +64,7 @@ from runtime.ports.effects_generator import IEffectsGenerator
 from runtime.ports.icon_renderer import IIconRenderer
 from runtime.ports.seed_mutex import ISeedMutex
 from runtime.ports.state_repository import IStateRepository
+from runtime.ports.wallpaper_applier import IWallpaperApplier
 
 logger = logging.getLogger(__name__)
 
@@ -96,13 +97,14 @@ class ReconcileDesktopStateUseCase:
     5. Re-save ``current.json`` with refreshed ``applied_at``
     6. Append ``history.jsonl`` (trigger ``"reconcile"`` by default;
        ``wallpaper set`` passes ``"set"`` via ``run(trigger=...)``)
-    7. Reload desktop consumers (fire-and-report, per injected reloader)
+    7. Apply persisted wallpaper (unless the caller already applied it)
+    8. Reload palette/UI consumers (fire-and-report, per injected reloader)
 
     Constructor receives ports, the injected ``CacheSeeder`` adapter, the
-    state mutex, and ``IDesktopReloader`` instances (dependency inversion —
-    the use case wires no concrete adapters itself). Reload runs once per
-    injected reloader after history append (step 5 of the shared-data
-    contract), outside the lock.
+    state mutex, a wallpaper applier, and palette/UI ``IDesktopReloader``
+    instances (dependency inversion — the use case wires no concrete
+    adapters itself). Wallpaper application and consumer reloads run after
+    history append, outside the lock.
     """
 
     def __init__(
@@ -116,6 +118,7 @@ class ReconcileDesktopStateUseCase:
         seeder: CacheSeeder,
         mutex: ISeedMutex,
         reloaders: list[IDesktopReloader] | None = None,
+        wallpaper_applier: IWallpaperApplier | None = None,
     ) -> None:
         self._state_repo = state_repo
         self._state_root = state_root
@@ -123,6 +126,7 @@ class ReconcileDesktopStateUseCase:
         self._seeder = seeder
         self._mutex = mutex
         self._reloaders: list[IDesktopReloader] = list(reloaders) if reloaders is not None else []
+        self._wallpaper_applier = wallpaper_applier
         self._pipeline = DerivationPipeline(
             state_root=state_root,
             seeder=seeder,
@@ -138,6 +142,7 @@ class ReconcileDesktopStateUseCase:
         *,
         contrast_enabled: bool = True,
         contrast_source: str = "default",
+        wallpaper_already_applied: bool = False,
     ) -> ReconcileResult:
         """Reconcile: entries → symlinks → current.json → history → reload.
 
@@ -153,6 +158,9 @@ class ReconcileDesktopStateUseCase:
                 Standalone callers keep the default (guard ON).
             contrast_source: provenance of ``contrast_enabled``
                 (``"flag"``/``"store"``/``"default"``).
+            wallpaper_already_applied: skip only the wallpaper stage when a
+                caller such as visible-first wallpaper set has already
+                applied the authoritative wallpaper.
 
         Raises:
             ValueError: if ``trigger`` is not one of the pinned enum
@@ -305,8 +313,24 @@ class ReconcileDesktopStateUseCase:
             source_path=saved.wallpaper.source_path,
         )
 
-        # Step 5 — reload desktop consumers (outside lock, fire-and-report)
+        # Step 5 — apply the persisted wallpaper before reloading palette/UI
+        # consumers. wallpaper set has already done this during its visible
+        # phase and opts out of this one stage only.
         reload_failures: list[str] = []
+        if not wallpaper_already_applied and self._wallpaper_applier is not None:
+            try:
+                wallpaper_ok = self._wallpaper_applier.apply()
+            except Exception as exc:
+                logger.warning(
+                    "wallpaper apply failed for %s: %s",
+                    type(self._wallpaper_applier).__name__,
+                    exc,
+                )
+                wallpaper_ok = False
+            if not wallpaper_ok:
+                reload_failures.append(type(self._wallpaper_applier).__name__)
+
+        # Step 6 — reload palette/UI consumers (outside lock, fire-and-report)
         for reloader in self._reloaders:
             try:
                 ok = reloader.reload()
