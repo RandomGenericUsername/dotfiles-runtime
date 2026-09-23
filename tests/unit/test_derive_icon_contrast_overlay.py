@@ -312,6 +312,56 @@ class TestScopeGuard:
         meta = _meta(state_root, entry.entry_hash)
         assert {d["group"] for d in meta["contrast"]["decisions"]} == {"battery"}
 
+    def test_system_variant_pin_survives_light_group_flip(self, tmp_path: Path) -> None:
+        """add-system-icon-variants: a light palette retargets the BARE
+        ``volume`` group line, but ``system-*`` variant blocks (pin + output)
+        stay byte-identical in the overlay — the same structural exemption
+        proven for ``camera-accent`` above."""
+        spine = (
+            "volume:\n"
+            "  color_mappings:\n"
+            "    COLOR_FOREGROUND: foreground\n"
+            "  variants:\n"
+            "    - name: low\n"
+            "      template: volume/low/default/icon.svg\n"
+            "      output: volume-low.svg\n"
+            "    - name: system-low\n"
+            "      template: volume/low/default/icon.svg\n"
+            "      output: volume-system-low.svg\n"
+            "      color_mappings:\n"
+            "        COLOR_FOREGROUND: foreground\n"
+        )
+        # Light background with a BRIGHT foreground — the wash-out case the
+        # guard exists for (LIGHT_PALETTE's own dark foreground already
+        # clears the threshold and would never retarget).
+        light_bright_fg = LIGHT_PALETTE.replace(
+            'foreground: "#1a1a1a"', 'foreground: "#f4f4f4"'
+        )
+        pipeline, itr, state_root, _ = _setup(
+            tmp_path, palette_text=light_bright_fg, mappings_text=spine
+        )
+        entry, _ = pipeline.ensure_icons(PEH)
+
+        overlay_text = itr.seen_bytes[0].decode()
+        assert overlay_text != spine  # the guard DID write an overlay
+        # bare group line flipped (indent-4 group-level entry only)
+        assert "\n    COLOR_FOREGROUND: color0\n" in overlay_text
+        # system-* variant block byte-identical: pin + output unchanged
+        system_block = (
+            "    - name: system-low\n"
+            "      template: volume/low/default/icon.svg\n"
+            "      output: volume-system-low.svg\n"
+            "      color_mappings:\n"
+            "        COLOR_FOREGROUND: foreground\n"
+        )
+        assert system_block in overlay_text
+        # bare variant output also untouched (only the group line retargets)
+        assert "      output: volume-low.svg\n" in overlay_text
+        meta = _meta(state_root, entry.entry_hash)
+        assert {(d["group"], d["placeholder"]) for d in meta["contrast"]["decisions"]} == {
+            ("volume", "COLOR_FOREGROUND")
+        }
+
 
 class TestDeterminismAndNoop:
     def test_same_inputs_same_bytes_same_hash(self, tmp_path: Path) -> None:
