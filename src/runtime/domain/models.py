@@ -150,6 +150,7 @@ class MonitorWallpaperConfig:
     fit_mode: FitMode  # default: cover
     mpv_options: str | None  # mpv passthrough options string (only for mpvpaper)
     ipc_socket: str | None  # absolute path to mpv IPC socket (only for mpvpaper)
+    bar_backdrop: Literal["light", "dark"] | None = None  # sampled appearance; None when unknown
 
     def __post_init__(self) -> None:
         if self.backend != BackendType.mpvpaper:

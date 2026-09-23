@@ -35,7 +35,8 @@
             "enum": ["cover", "contain", "fill", "tile", "center", "stretch"]
           },
           "mpv_options": { "type": ["string", "null"] },
-          "ipc_socket": { "type": ["string", "null"] }
+          "ipc_socket": { "type": ["string", "null"] },
+          "bar_backdrop": { "type": ["string", "null"], "enum": ["light", "dark", null] }
         }
       }
     },

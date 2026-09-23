@@ -36,6 +36,7 @@ from pathlib import Path
 
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder
+from runtime.application.bar_backdrop import with_bar_backdrops
 from runtime.application.derive import DerivationPipeline
 from runtime.domain.models import (
     DEFAULT_MONITOR,
@@ -209,6 +210,12 @@ class SeedCacheUseCase:
                 mpv_options=None,
                 ipc_socket=None,
             )
+
+        monitors = with_bar_backdrops(
+            monitors,
+            self._state_root,
+            source_paths={wallpaper_hash: default_png},
+        )
 
         state = DesktopState(
             schema_version=2,

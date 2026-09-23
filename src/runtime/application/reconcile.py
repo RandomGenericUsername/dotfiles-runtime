@@ -48,6 +48,7 @@ from pathlib import Path
 from runtime.adapters.cache import cache_entry_path
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder, _repoint_symlink
+from runtime.application.bar_backdrop import with_bar_backdrops
 from runtime.application.derive import DerivationPipeline, ensure_palette_entry_complete
 from runtime.domain.history import HISTORY_TRIGGERS
 from runtime.domain.models import (
@@ -222,7 +223,7 @@ class ReconcileDesktopStateUseCase:
             state = DesktopState(
                 schema_version=2,
                 wallpaper=state.wallpaper,
-                monitors=state.monitors,
+                monitors=with_bar_backdrops(state.monitors, self._state_root),
                 palette=palette,
                 effects=effects,
                 icons=icons,

@@ -36,6 +36,7 @@ from pathlib import Path
 
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder
+from runtime.application.bar_backdrop import with_bar_backdrops
 from runtime.application.derive import DerivationPipeline
 from runtime.application.monitors import preserve_monitors
 from runtime.domain.models import (
@@ -233,7 +234,11 @@ class ApplyWallpaperUseCase:
             state = DesktopState(
                 schema_version=2,
                 wallpaper=wallpaper_entry,
-                monitors=self._build_monitors(existing, wallpaper_hash),
+                monitors=with_bar_backdrops(
+                    self._build_monitors(existing, wallpaper_hash),
+                    self._state_root,
+                    source_paths={wallpaper_hash: img},
+                ),
                 palette=palette,
                 effects=effects,
                 icons=icons,

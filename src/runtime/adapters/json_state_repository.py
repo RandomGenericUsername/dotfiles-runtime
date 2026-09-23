@@ -7,6 +7,9 @@ current.json schema (shared-data-contract, schema_version 2):
    palette: {...}|null, effects: {...}|null, icons: {...}|null,
    applied_at: <ISO-8601 UTC Z>}
 
+Monitor entries may include optional ``bar_backdrop`` (``light``, ``dark``,
+or ``null``); schema-version-2 files predating it remain valid.
+
 Atomicity contract (C4):
   Write to sibling tmp (current.json.tmp.<pid>-<8hex>) then os.replace.
   POSIX atomic on same filesystem. tmp cleaned in finally.
@@ -185,6 +188,7 @@ class JsonStateRepository(IStateRepository):
                 "fit_mode": cfg.fit_mode.value,
                 "mpv_options": cfg.mpv_options,
                 "ipc_socket": cfg.ipc_socket,
+                "bar_backdrop": cfg.bar_backdrop,
             }
 
         def _entry_projection(
@@ -236,6 +240,10 @@ class JsonStateRepository(IStateRepository):
             _validate_hex64(f"monitor {name!r}.source_hash", cfg["source_hash"])
             if cfg.get("fit_mode") not in FitMode.__members__.values():
                 raise ValueError(f"monitor {name!r} fit_mode invalid: {cfg.get('fit_mode')!r}")
+            if cfg.get("bar_backdrop") not in (None, "light", "dark"):
+                raise ValueError(
+                    f"monitor {name!r} bar_backdrop invalid: {cfg.get('bar_backdrop')!r}"
+                )
             # mpv_options/ipc_socket only for mpvpaper
             backend = BackendType(cfg["backend"])
             if backend != BackendType.mpvpaper:
@@ -344,6 +352,7 @@ class JsonStateRepository(IStateRepository):
                 fit_mode=fit_mode,
                 mpv_options=mpv_options,
                 ipc_socket=ipc_socket,
+                bar_backdrop=cfg.get("bar_backdrop"),
             )
 
         # palette/effects/icons projection reconstruction
