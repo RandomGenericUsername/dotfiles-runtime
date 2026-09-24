@@ -187,9 +187,7 @@ def _set_result(
 
 
 @pytest.fixture(autouse=True)
-def _quiet_seed_hook(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def _quiet_seed_hook(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Point first-run seeding at an empty spine so it skips quietly."""
     monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(tmp_path / "install"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
@@ -203,9 +201,7 @@ def _fake_composition(monkeypatch: pytest.MonkeyPatch, behavior: Any) -> None:
 
 
 class TestWallpaperSetCliSuccess:
-    def test_success_exits_zero_and_renders_summary(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_success_exits_zero_and_renders_summary(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _fake_composition(monkeypatch, lambda img: _set_result())
         result = runner.invoke(app, ["wallpaper", "set", "/img/wall.png"])
 
@@ -217,25 +213,17 @@ class TestWallpaperSetCliSuccess:
         assert "visible in" in result.output
         assert "themed in" in result.output
 
-    def test_cache_hits_reflected_in_summary(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        res = _set_result(
-            cache_hit_palette=True, cache_hit_effects=True, cache_hit_icons=True
-        )
+    def test_cache_hits_reflected_in_summary(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        res = _set_result(cache_hit_palette=True, cache_hit_effects=True, cache_hit_icons=True)
         _fake_composition(monkeypatch, lambda img: res)
         result = runner.invoke(app, ["wallpaper", "set", "/img/wall.png"])
 
         assert result.exit_code == 0
         assert "palette cache hit" in result.output
 
-    def test_json_format_renders_structured_object(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_json_format_renders_structured_object(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _fake_composition(monkeypatch, lambda img: _set_result())
-        result = runner.invoke(
-            app, ["wallpaper", "set", "/img/wall.png", "--format", "json"]
-        )
+        result = runner.invoke(app, ["wallpaper", "set", "/img/wall.png", "--format", "json"])
 
         assert result.exit_code == 0
         obj = json.loads(result.output)
@@ -275,12 +263,8 @@ class TestWallpaperSetCliSuccess:
 
 
 class TestWallpaperSetReloadFailureExit:
-    def test_reload_failures_maps_to_exit_1(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        res = _set_result(
-            reconcile=_reconcile_result(reload_failures=["HyprpaperReloader"])
-        )
+    def test_reload_failures_maps_to_exit_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        res = _set_result(reconcile=_reconcile_result(reload_failures=["HyprpaperReloader"]))
         _fake_composition(monkeypatch, lambda img: res)
         result = runner.invoke(app, ["wallpaper", "set", "/img/wall.png"])
 
@@ -320,6 +304,7 @@ class TestWallpaperSetCompositionRootWiring:
                 wallpaper_hash: str | None = None,
                 contrast_enabled: bool = True,
                 contrast_source: str = "default",
+                on_progress: Any = None,
             ) -> Any:
                 captured["apply_hash"] = wallpaper_hash
                 captured["apply_contrast"] = (contrast_enabled, contrast_source)
@@ -335,6 +320,7 @@ class TestWallpaperSetCompositionRootWiring:
                 *,
                 contrast_enabled: bool = True,
                 contrast_source: str = "default",
+                wallpaper_already_applied: bool = False,
             ) -> Any:
                 captured["trigger"] = trigger
                 captured["reconcile_contrast"] = (contrast_enabled, contrast_source)
@@ -366,7 +352,9 @@ class TestWallpaperSetCompositionRootWiring:
         from runtime.adapters.gtk4_app_reloader import Gtk4AppReloader
         from runtime.adapters.hyprland_monitor_source import HyprlandMonitorSource
         from runtime.adapters.hyprland_reloader import HyprlandReloader
-        from runtime.adapters.hyprpaper_reloader import HyprpaperReloader
+        from runtime.adapters.hyprpaper_reloader import (
+            HyprpaperWallpaperApplier,
+        )
         from runtime.adapters.itr_adapter import ItrAdapter
         from runtime.adapters.json_state_repository import JsonStateRepository
         from runtime.adapters.kitty_reloader import KittyReloader
@@ -402,7 +390,7 @@ class TestWallpaperSetCompositionRootWiring:
             assert isinstance(kwargs["csg"], CsgAdapter)
             assert isinstance(kwargs["weg"], WegAdapter)
             assert isinstance(kwargs["itr"], ItrAdapter)
-        assert isinstance(captured["swap_kwargs"]["hyprpaper"], HyprpaperReloader)
+        assert isinstance(captured["swap_kwargs"]["hyprpaper"], HyprpaperWallpaperApplier)
         assert isinstance(captured["swap_kwargs"]["monitor_source"], HyprlandMonitorSource)
         assert isinstance(captured["apply_kwargs"]["monitor_source"], HyprlandMonitorSource)
         reloaders = captured["reconcile_kwargs"]["reloaders"]
@@ -410,13 +398,11 @@ class TestWallpaperSetCompositionRootWiring:
         assert [type(r) for r in reloaders] == [
             HyprlandReloader,
             AgsReloader,
-            HyprpaperReloader,
             TerminalColorApplier,
             KittyReloader,
         ]
         assert not any(type(r) is Gtk4AppReloader for r in reloaders)
         assert reloaders[2]._state_root == captured["reconcile_kwargs"]["state_root"]  # type: ignore[attr-defined]
-        assert reloaders[3]._state_root == captured["reconcile_kwargs"]["state_root"]  # type: ignore[attr-defined]
 
 
 class TestWallpaperSetContrastFlag:
@@ -449,6 +435,7 @@ class TestWallpaperSetContrastFlag:
                 wallpaper_hash: str | None = None,
                 contrast_enabled: bool = True,
                 contrast_source: str = "default",
+                on_progress: Any = None,
             ) -> Any:
                 captured["apply"] = (contrast_enabled, contrast_source)
                 return _result()
@@ -463,13 +450,12 @@ class TestWallpaperSetContrastFlag:
                 *,
                 contrast_enabled: bool = True,
                 contrast_source: str = "default",
+                wallpaper_already_applied: bool = False,
             ) -> Any:
                 captured["reconcile"] = (contrast_enabled, contrast_source)
                 return _reconcile_result()
 
-        monkeypatch.setattr(
-            "runtime.application.swap_visible.SwapVisibleUseCase", _FakeSwapUseCase
-        )
+        monkeypatch.setattr("runtime.application.swap_visible.SwapVisibleUseCase", _FakeSwapUseCase)
         monkeypatch.setattr(
             "runtime.application.apply_wallpaper.ApplyWallpaperUseCase", _FakeApplyUseCase
         )
@@ -500,9 +486,7 @@ class TestWallpaperSetContrastFlag:
         assert captured["apply"] == (False, "flag")
         assert captured["reconcile"] == (False, "flag")
 
-    def test_on_persists_true(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_on_persists_true(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         import runtime.cli.main as cli_main
         from runtime.adapters.hashing import hash_file
         from runtime.adapters.icon_contrast_prefs_store import read_prefs
@@ -553,17 +537,13 @@ class TestWallpaperSetContrastFlag:
         assert captured["apply"] == (True, "default")
         assert not self._store_file(tmp_path).exists()
 
-    def test_invalid_flag_rejected_at_cli(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_invalid_flag_rejected_at_cli(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # No composition fake: validation fires before any FS/mutex work.
         result = runner.invoke(app, ["wallpaper", "set", "/img/wall.png", "--contrast", "x"])
         assert result.exit_code == 1
         assert "invalid contrast flag" in result.output
 
-    def test_cli_option_threads_into_composition(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_cli_option_threads_into_composition(self, monkeypatch: pytest.MonkeyPatch) -> None:
         seen: dict[str, Any] = {}
 
         def _run(image_path: Path, **kwargs: Any) -> Any:
@@ -578,9 +558,7 @@ class TestWallpaperSetContrastFlag:
 
 
 class TestWallpaperSetCliErrorMapping:
-    def test_value_error_maps_to_exit_1(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_value_error_maps_to_exit_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(img: Path) -> Any:
             raise ValueError("wallpaper image not found: /img/nope.png")
 
@@ -590,9 +568,7 @@ class TestWallpaperSetCliErrorMapping:
         assert result.exit_code == 1
         assert "wallpaper image not found" in result.output
 
-    def test_runtime_error_maps_to_exit_1(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_runtime_error_maps_to_exit_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(img: Path) -> Any:
             raise RuntimeError("palette apply failed: csg exploded")
 
@@ -612,9 +588,7 @@ class TestWallpaperSetCliErrorMapping:
         assert result.exit_code == 1
         assert "unreadable input" in result.output
 
-    def test_unexpected_exception_maps_to_exit_1(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_unexpected_exception_maps_to_exit_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(img: Path) -> Any:
             raise KeyError("surprise")
 
@@ -646,6 +620,7 @@ def _fake_set_use_cases(
     swap_result: Any = None,
     swap_error: Exception | None = None,
     reconcile_error: Exception | None = None,
+    reconcile_failures: list[str] | None = None,
 ) -> None:
     """Route the real ``_run_wallpaper_set`` through canned use cases."""
 
@@ -669,9 +644,14 @@ def _fake_set_use_cases(
             wallpaper_hash: str | None = None,
             contrast_enabled: bool = True,
             contrast_source: str = "default",
+            on_progress: Any = None,
         ) -> Any:
             if apply_error is not None:
                 raise apply_error
+            if on_progress is not None:
+                on_progress("palette_generated")
+                on_progress("preparing_appearance_assets")
+                on_progress("appearance_assets_ready")
             return apply_result
 
     class _FakeReconcileUseCase:
@@ -684,10 +664,11 @@ def _fake_set_use_cases(
             *,
             contrast_enabled: bool = True,
             contrast_source: str = "default",
+            wallpaper_already_applied: bool = False,
         ) -> Any:
             if reconcile_error is not None:
                 raise reconcile_error
-            return _reconcile_result()
+            return _reconcile_result(reload_failures=reconcile_failures)
 
     monkeypatch.setattr("runtime.application.swap_visible.SwapVisibleUseCase", _FakeSwapUseCase)
     monkeypatch.setattr(
@@ -718,20 +699,92 @@ class TestWallpaperStateEmission:
         assert client.published == [
             (
                 "wallpaper.state",
-                {"state": "applying", "wallpaper_hash": hash_file(img), "trigger": "set"},
+                {
+                    "state": "applying",
+                    "wallpaper_hash": hash_file(img),
+                    "trigger": "set",
+                    "stage": "setting_wallpaper",
+                },
             ),
             (
                 "wallpaper.state",
-                {"state": "visible", "wallpaper_hash": "f" * 64, "trigger": "set"},
+                {
+                    "state": "visible",
+                    "wallpaper_hash": "f" * 64,
+                    "trigger": "set",
+                    "stage": "generating_palette",
+                },
             ),
             (
                 "wallpaper.state",
-                {"state": "done", "wallpaper_hash": "f" * 64, "trigger": "set"},
+                {
+                    "state": "visible",
+                    "wallpaper_hash": "f" * 64,
+                    "trigger": "set",
+                    "stage": "palette_generated",
+                },
+            ),
+            (
+                "wallpaper.state",
+                {
+                    "state": "visible",
+                    "wallpaper_hash": "f" * 64,
+                    "trigger": "set",
+                    "stage": "preparing_appearance_assets",
+                },
+            ),
+            (
+                "wallpaper.state",
+                {
+                    "state": "visible",
+                    "wallpaper_hash": "f" * 64,
+                    "trigger": "set",
+                    "stage": "appearance_assets_ready",
+                },
+            ),
+            (
+                "wallpaper.state",
+                {
+                    "state": "visible",
+                    "wallpaper_hash": "f" * 64,
+                    "trigger": "set",
+                    "stage": "reconciling_consumers",
+                },
+            ),
+            (
+                "wallpaper.state",
+                {
+                    "state": "done",
+                    "wallpaper_hash": "f" * 64,
+                    "trigger": "set",
+                    "stage": "finished",
+                },
             ),
         ]
         # Phase timestamps are additive on the result (CLI --format json).
         assert result.visible_at.endswith("Z") and result.themed_at.endswith("Z")
         assert result.swap_elapsed_s >= 0.0 and result.theme_elapsed_s >= 0.0
+
+    def test_done_event_reports_consumer_reload_failures(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import runtime.cli.main as cli_main
+
+        img = tmp_path / "wall.png"
+        img.write_bytes(b"reload failure bytes")
+        _fake_set_use_cases(
+            monkeypatch,
+            apply_result=_result(),
+            reconcile_failures=["AgsReloader"],
+        )
+        client = _RecordingClient()
+
+        cli_main._run_wallpaper_set(img, client=client)
+
+        topic, payload = client.published[-1]
+        assert topic == "wallpaper.state"
+        assert payload["state"] == "done"
+        assert payload["reload_failures"] == ["AgsReloader"]
 
     def test_post_visible_palette_failure_publishes_error_with_live_hash(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -756,15 +809,30 @@ class TestWallpaperStateEmission:
         assert client.published == [
             (
                 "wallpaper.state",
-                {"state": "applying", "wallpaper_hash": hash_file(img), "trigger": "set"},
+                {
+                    "state": "applying",
+                    "wallpaper_hash": hash_file(img),
+                    "trigger": "set",
+                    "stage": "setting_wallpaper",
+                },
             ),
             (
                 "wallpaper.state",
-                {"state": "visible", "wallpaper_hash": "f" * 64, "trigger": "set"},
+                {
+                    "state": "visible",
+                    "wallpaper_hash": "f" * 64,
+                    "trigger": "set",
+                    "stage": "generating_palette",
+                },
             ),
             (
                 "wallpaper.state",
-                {"state": "error", "wallpaper_hash": "f" * 64, "trigger": "set"},
+                {
+                    "state": "error",
+                    "wallpaper_hash": "f" * 64,
+                    "trigger": "set",
+                    "stage": "generating_palette",
+                },
             ),
         ]
 
@@ -791,11 +859,21 @@ class TestWallpaperStateEmission:
         assert client.published == [
             (
                 "wallpaper.state",
-                {"state": "applying", "wallpaper_hash": hash_file(img), "trigger": "set"},
+                {
+                    "state": "applying",
+                    "wallpaper_hash": hash_file(img),
+                    "trigger": "set",
+                    "stage": "setting_wallpaper",
+                },
             ),
             (
                 "wallpaper.state",
-                {"state": "error", "wallpaper_hash": hash_file(img), "trigger": "set"},
+                {
+                    "state": "error",
+                    "wallpaper_hash": hash_file(img),
+                    "trigger": "set",
+                    "stage": "setting_wallpaper",
+                },
             ),
         ]
 
@@ -815,8 +893,24 @@ class TestWallpaperStateEmission:
             cli_main._run_wallpaper_set(tmp_path / "missing.png", client=client)
 
         assert client.published == [
-            ("wallpaper.state", {"state": "applying", "wallpaper_hash": "", "trigger": "set"}),
-            ("wallpaper.state", {"state": "error", "wallpaper_hash": "", "trigger": "set"}),
+            (
+                "wallpaper.state",
+                {
+                    "state": "applying",
+                    "wallpaper_hash": "",
+                    "trigger": "set",
+                    "stage": "setting_wallpaper",
+                },
+            ),
+            (
+                "wallpaper.state",
+                {
+                    "state": "error",
+                    "wallpaper_hash": "",
+                    "trigger": "set",
+                    "stage": "setting_wallpaper",
+                },
+            ),
         ]
 
     def test_busy_second_set_fails_without_mutation(
@@ -846,9 +940,22 @@ class TestWallpaperStateEmission:
         assert client.published == [
             (
                 "wallpaper.state",
-                {"state": "applying", "wallpaper_hash": hash_file(img), "trigger": "set"},
+                {
+                    "state": "applying",
+                    "wallpaper_hash": hash_file(img),
+                    "trigger": "set",
+                    "stage": "setting_wallpaper",
+                },
             ),
-            ("wallpaper.state", {"state": "error", "wallpaper_hash": "", "trigger": "set"}),
+            (
+                "wallpaper.state",
+                {
+                    "state": "error",
+                    "wallpaper_hash": "",
+                    "trigger": "set",
+                    "stage": "setting_wallpaper",
+                },
+            ),
         ]
         assert not (state_root / "current.json").exists()
         assert not (state_root / "history.jsonl").exists()

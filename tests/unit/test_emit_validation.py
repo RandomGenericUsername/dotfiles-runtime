@@ -118,6 +118,24 @@ class TestSchemas:
         with pytest.raises(PayloadTooLarge):
             validator.validate("wallpaper.state", {**base, "trigger": "bogus"}, ":1.1")
 
+    def test_wallpaper_state_stage_is_optional_enum(self) -> None:
+        validator, _ = _validator()
+        base = {"state": "visible", "wallpaper_hash": "f" * 64}
+        validator.validate("wallpaper.state", base, ":1.1")
+        validator.validate("wallpaper.state", {**base, "reload_failures": ["AgsReloader"]}, ":1.1")
+        for stage in (
+            "setting_wallpaper",
+            "generating_palette",
+            "palette_generated",
+            "preparing_appearance_assets",
+            "appearance_assets_ready",
+            "reconciling_consumers",
+            "finished",
+        ):
+            validator.validate("wallpaper.state", {**base, "stage": stage}, ":1.1")
+        with pytest.raises(PayloadTooLarge):
+            validator.validate("wallpaper.state", {**base, "stage": "made_up"}, ":1.1")
+
     def test_reserved_members_rejected(self) -> None:
         validator, _ = _validator()
         with pytest.raises(PayloadTooLarge, match="_epoch"):

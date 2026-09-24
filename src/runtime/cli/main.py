@@ -455,7 +455,13 @@ def _build_wallpaper_client() -> IJobClient:
 
 
 def _publish_wallpaper_state(
-    client: IJobClient, state: str, wallpaper_hash: str, trigger: str
+    client: IJobClient,
+    state: str,
+    wallpaper_hash: str,
+    trigger: str,
+    *,
+    stage: str | None = None,
+    reload_failures: list[str] | None = None,
 ) -> None:
     """Publish one ``wallpaper.state`` transition; never fail the set.
 
@@ -466,9 +472,18 @@ def _publish_wallpaper_state(
     (``set``/``regenerate``/``reconcile``/``reactive``).
     """
     try:
+        payload: dict[str, object] = {
+            "state": state,
+            "wallpaper_hash": wallpaper_hash,
+            "trigger": trigger,
+        }
+        if stage is not None:
+            payload["stage"] = stage
+        if reload_failures:
+            payload["reload_failures"] = reload_failures
         client.publish(
             _WALLPAPER_STATE_TOPIC,
-            {"state": state, "wallpaper_hash": wallpaper_hash, "trigger": trigger},
+            payload,
         )
     except Exception:
         logger.exception("wallpaper: wallpaper.state publish failed; continuing")
@@ -564,10 +579,11 @@ def _run_wallpaper_set(
         pending_hash = hash_file(resolved) if resolved.is_file() else ""
     except OSError:
         pending_hash = ""
-    _publish_wallpaper_state(client, "applying", pending_hash, "set")
+    _publish_wallpaper_state(client, "applying", pending_hash, "set", stage="setting_wallpaper")
 
     inner_mutex = PassThroughSeedMutex()
     templates_dir = find_templates_dir(install_spine)
+    current_stage = "setting_wallpaper"
 
     def _phase_visible() -> SwapVisibleResult:
         """Phase 1 (D1): import → wallpaper-only persist → repoint → apply."""
@@ -588,6 +604,13 @@ def _run_wallpaper_set(
         swap: SwapVisibleResult,
     ) -> tuple[ApplyWallpaperResult, ReconcileResult]:
         """Phase 2 (D1): derive (no re-import) → converge → history → reload."""
+        nonlocal current_stage
+
+        def publish_stage(stage: str) -> None:
+            nonlocal current_stage
+            current_stage = stage
+            _publish_wallpaper_state(client, "visible", swap.wallpaper_hash, "set", stage=stage)
+
         from runtime.adapters.icon_contrast_prefs_store import (
             governing_wallpaper_hash,
             resolve_contrast,
@@ -634,8 +657,10 @@ def _run_wallpaper_set(
             wallpaper_hash=swap.wallpaper_hash,
             contrast_enabled=contrast_enabled,
             contrast_source=contrast_source,
+            on_progress=publish_stage,
         )
 
+        publish_stage("reconciling_consumers")
         reconcile_result = ReconcileDesktopStateUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
             csg=CsgAdapter(templates_dir=templates_dir),
@@ -666,22 +691,34 @@ def _run_wallpaper_set(
             live_hash = swap.wallpaper_hash
             swap_elapsed = time.monotonic() - swap_started
             visible_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-            _publish_wallpaper_state(client, "visible", live_hash, "set")
+            current_stage = "generating_palette"
+            _publish_wallpaper_state(client, "visible", live_hash, "set", stage=current_stage)
             themed_started = time.monotonic()
             apply_result, reconcile_result = _phase_themed(swap)
             theme_elapsed = time.monotonic() - themed_started
             themed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     except SeedLockedError as exc:
-        _publish_wallpaper_state(client, "error", "", "set")
+        _publish_wallpaper_state(client, "error", "", "set", stage=current_stage)
         raise SeedLockedError(
             f"wallpaper set already in progress (lock held): {state_root / '.seed.lock'}"
         ) from exc
     except Exception:
         _publish_wallpaper_state(
-            client, "error", live_hash if live_hash is not None else pending_hash, "set"
+            client,
+            "error",
+            live_hash if live_hash is not None else pending_hash,
+            "set",
+            stage=current_stage,
         )
         raise
-    _publish_wallpaper_state(client, "done", reconcile_result.state.wallpaper.content_hash, "set")
+    _publish_wallpaper_state(
+        client,
+        "done",
+        reconcile_result.state.wallpaper.content_hash,
+        "set",
+        stage="finished",
+        reload_failures=reconcile_result.reload_failures,
+    )
     if isinstance(client, DbusJobClient):
         client.close()
 

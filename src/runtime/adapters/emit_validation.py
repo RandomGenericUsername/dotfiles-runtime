@@ -172,6 +172,22 @@ TOPIC_SCHEMAS: dict[str, dict[str, Any]] = {
                 "type": "string",
                 "enum": ["set", "regenerate", "reconcile", "reactive"],
             },
+            "stage": {
+                "type": "string",
+                "enum": [
+                    "setting_wallpaper",
+                    "generating_palette",
+                    "palette_generated",
+                    "preparing_appearance_assets",
+                    "appearance_assets_ready",
+                    "reconciling_consumers",
+                    "finished",
+                ],
+            },
+            "reload_failures": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
         },
         "additionalProperties": True,
     },

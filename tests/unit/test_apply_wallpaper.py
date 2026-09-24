@@ -290,6 +290,27 @@ class TestApplyWallpaperHappyPath:
         assert not result.cache_hit_icons
         assert len(repo.saved) == 1
 
+    def test_progress_callback_runs_after_palette_before_effects_and_icons(
+        self, tmp_path: Path
+    ) -> None:
+        _setup_spine(tmp_path / "install")
+        repo = _FakeStateRepo()
+        csg, weg, itr = _FakeCsg(), _FakeWeg(), _FakeItr()
+        use_case = _make_use_case(tmp_path, repo, csg=csg, weg=weg, itr=itr)
+        img = _img_in(tmp_path, "wall.png", b"progress boundary bytes")
+        seen: list[tuple[str, int, int, int]] = []
+
+        use_case.run(
+            img,
+            on_progress=lambda stage: seen.append((stage, csg.calls, weg.calls, itr.calls)),
+        )
+
+        assert seen == [
+            ("palette_generated", 1, 0, 0),
+            ("preparing_appearance_assets", 1, 0, 0),
+            ("appearance_assets_ready", 1, 1, 1),
+        ]
+
     def test_state_carries_real_hashes_and_absolute_source_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

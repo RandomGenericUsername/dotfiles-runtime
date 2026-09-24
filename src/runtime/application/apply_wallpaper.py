@@ -30,6 +30,7 @@ Architecture:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -132,6 +133,7 @@ class ApplyWallpaperUseCase:
         wallpaper_hash: str | None = None,
         contrast_enabled: bool = True,
         contrast_source: str = "default",
+        on_progress: Callable[[str], None] | None = None,
     ) -> ApplyWallpaperResult:
         """Apply a wallpaper: derive → cache → persist ``current.json``.
 
@@ -189,6 +191,12 @@ class ApplyWallpaperUseCase:
         except Exception as exc:
             raise RuntimeError(f"palette apply failed: {exc}") from exc
 
+        # Informational callback only: the CLI adapts this application-stage
+        # boundary to wallpaper.state. It never controls derivation or locking.
+        if on_progress is not None:
+            on_progress("palette_generated")
+            on_progress("preparing_appearance_assets")
+
         # Effects + icons (graceful degradation): entry None on failure,
         # current.json field null (history schema allows nulls). A variant
         # input (already a WEG artifact) skips effects derivation outright.
@@ -245,6 +253,9 @@ class ApplyWallpaperUseCase:
                 applied_at=now,
             )
             self._state_repo.save(state)
+
+        if on_progress is not None:
+            on_progress("appearance_assets_ready")
 
         return ApplyWallpaperResult(
             wallpaper_hash=wallpaper_hash,
