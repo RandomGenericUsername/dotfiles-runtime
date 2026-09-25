@@ -362,6 +362,71 @@ class TestScopeGuard:
             ("volume", "COLOR_FOREGROUND")
         }
 
+    def test_bluetooth_row_glyph_pins_survive_light_battery_flip(
+        self, tmp_path: Path
+    ) -> None:
+        """bluetooth-row-battery-signal: a light palette retargets the BARE
+        ``battery`` group line (the status bar's subject), while the panel's
+        ``system-battery-*`` variant block (pin + output) and the
+        guard-exempt ``settings-panel`` group's ``signal-*`` output stay
+        byte-identical in the overlay — the structural exemption proven for
+        ``camera-accent`` and ``volume-system-*``, extended to the Bluetooth
+        row's two icon sources."""
+        spine = (
+            "battery:\n"
+            "  color_mappings:\n"
+            "    COLOR_FOREGROUND: color15\n"
+            "  variants:\n"
+            "    - name: battery-100\n"
+            "      template: status-bar/battery/battery-100/default/icon.svg\n"
+            "      output: battery-100.svg\n"
+            "    - name: system-battery-100\n"
+            "      template: status-bar/battery/battery-100/default/icon.svg\n"
+            "      output: system-battery-100.svg\n"
+            "      color_mappings:\n"
+            "        COLOR_FOREGROUND: foreground\n"
+            "settings-panel:\n"
+            "  color_mappings:\n"
+            "    COLOR_FOREGROUND: foreground\n"
+            "  variants:\n"
+            "    - name: signal-good\n"
+            "      template: settings-panel/signal/good/default/icon.svg\n"
+            "      output: settings-panel-signal-good.svg\n"
+        )
+        pipeline, itr, state_root, _ = _setup(tmp_path, mappings_text=spine)
+        entry, _ = pipeline.ensure_icons(PEH)
+
+        overlay_text = itr.seen_bytes[0].decode()
+        assert overlay_text != spine  # the guard DID write an overlay
+        # bare battery group line flipped (indent-4 group-level entry only)
+        assert "\n    COLOR_FOREGROUND: color0\n" in overlay_text
+        # system-battery-* variant block byte-identical: pin + output unchanged
+        system_block = (
+            "    - name: system-battery-100\n"
+            "      template: status-bar/battery/battery-100/default/icon.svg\n"
+            "      output: system-battery-100.svg\n"
+            "      color_mappings:\n"
+            "        COLOR_FOREGROUND: foreground\n"
+        )
+        assert system_block in overlay_text
+        # bare variant output also untouched (only the group line retargets)
+        assert "      output: battery-100.svg\n" in overlay_text
+        # settings-panel is not a BAR_GROUP: its group pin is untouched
+        settings_group_block = overlay_text.split("settings-panel:")[1].split("variants:")[0]
+        assert "    COLOR_FOREGROUND: foreground\n" in settings_group_block
+        # settings-panel-signal-* output byte-identical
+        signal_block = (
+            "    - name: signal-good\n"
+            "      template: settings-panel/signal/good/default/icon.svg\n"
+            "      output: settings-panel-signal-good.svg\n"
+        )
+        assert signal_block in overlay_text
+        # only the battery group line is in scope
+        meta = _meta(state_root, entry.entry_hash)
+        assert {(d["group"], d["placeholder"]) for d in meta["contrast"]["decisions"]} == {
+            ("battery", "COLOR_FOREGROUND")
+        }
+
 
 class TestDeterminismAndNoop:
     def test_same_inputs_same_bytes_same_hash(self, tmp_path: Path) -> None:
