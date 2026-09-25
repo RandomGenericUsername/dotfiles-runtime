@@ -147,14 +147,17 @@ class TestReconcileCompositionRootWiring:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """AC 5 — the reconcile composition root wires Hyprland, AGS,
-        Hyprpaper, the terminal palette applier (each with the reconcile
-        ``state_root``), then the kitty reloader, in that order."""
+        the terminal palette applier (each with the reconcile
+        ``state_root``), then the kitty reloader, in that order, plus a
+        separate Hyprpaper wallpaper applier (wallpaper application is
+        its own stage, not a palette/UI reload)."""
         captured: dict[str, Any] = {}
 
         class _FakeUseCase:
             def __init__(self, **kwargs: Any) -> None:
                 captured["reloaders"] = kwargs.get("reloaders")
                 captured["state_root"] = kwargs.get("state_root")
+                captured["wallpaper_applier"] = kwargs.get("wallpaper_applier")
 
             def run(self) -> Any:
                 return _reconcile_result()
@@ -167,7 +170,7 @@ class TestReconcileCompositionRootWiring:
         from runtime.adapters.ags_reloader import AgsReloader
         from runtime.adapters.gtk4_app_reloader import Gtk4AppReloader
         from runtime.adapters.hyprland_reloader import HyprlandReloader
-        from runtime.adapters.hyprpaper_reloader import HyprpaperReloader
+        from runtime.adapters.hyprpaper_reloader import HyprpaperWallpaperApplier
         from runtime.adapters.kitty_reloader import KittyReloader
         from runtime.adapters.terminal_color_applier import TerminalColorApplier
 
@@ -176,13 +179,12 @@ class TestReconcileCompositionRootWiring:
         assert [type(r) for r in reloaders] == [
             HyprlandReloader,
             AgsReloader,
-            HyprpaperReloader,
             TerminalColorApplier,
             KittyReloader,
         ]
         assert not any(type(r) is Gtk4AppReloader for r in reloaders)
         assert reloaders[2]._state_root == captured["state_root"]  # type: ignore[attr-defined]
-        assert reloaders[3]._state_root == captured["state_root"]  # type: ignore[attr-defined]
+        assert type(captured["wallpaper_applier"]) is HyprpaperWallpaperApplier
 
     def test_composition_root_excludes_terminal_when_disabled(
         self, monkeypatch: pytest.MonkeyPatch

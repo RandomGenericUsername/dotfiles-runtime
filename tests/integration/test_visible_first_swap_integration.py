@@ -135,9 +135,12 @@ class _PassingHyprpaper:
     def __init__(self, invoked: list[str] | None = None) -> None:
         self.invoked = invoked if invoked is not None else []
 
-    def reload(self) -> bool:
+    def apply(self) -> bool:
         self.invoked.append("hyprpaper")
         return True
+
+    def reload(self) -> bool:
+        return self.apply()
 
 
 class _RecordingReloader:

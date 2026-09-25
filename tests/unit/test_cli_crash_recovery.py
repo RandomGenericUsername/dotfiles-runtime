@@ -162,7 +162,7 @@ def _prepare_state(tmp_path: Path, state_root: Path) -> Path:
 class _PassingHyprpaperReloader:
     """Isolates the CLI from the real hyprctl/hyprpaper session on this host.
 
-    The composition root wires a real ``HyprpaperReloader``, whose IPC
+    The composition root wires a real ``HyprpaperWallpaperApplier``, whose IPC
     invocation would reach the live desktop hyprpaper when a session is
     running; the crash-recovery tests must not touch it. The terminal
     palette applier (``_PassingTerminalColorApplier`` below) is isolated
@@ -173,6 +173,9 @@ class _PassingHyprpaperReloader:
 
     def __init__(self, **_kwargs: object) -> None:
         pass
+
+    def apply(self) -> bool:
+        return True
 
     def reload(self) -> bool:
         return True
@@ -243,7 +246,7 @@ class TestCliCrashRecoveryLogging:
         monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(install_spine))
         monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
         monkeypatch.setattr(
-            "runtime.adapters.hyprpaper_reloader.HyprpaperReloader",
+            "runtime.adapters.hyprpaper_reloader.HyprpaperWallpaperApplier",
             _PassingHyprpaperReloader,
         )
         monkeypatch.setattr(
@@ -277,7 +280,7 @@ class TestCliCrashRecoveryLogging:
         monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(install_spine))
         monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
         monkeypatch.setattr(
-            "runtime.adapters.hyprpaper_reloader.HyprpaperReloader",
+            "runtime.adapters.hyprpaper_reloader.HyprpaperWallpaperApplier",
             _PassingHyprpaperReloader,
         )
         monkeypatch.setattr(

@@ -572,6 +572,7 @@ class TestCapstoneGoldenSchema:
   "monitors": {
     "DP-1": {
       "backend": "hyprpaper",
+      "bar_backdrop": "dark",
       "fit_mode": "cover",
       "ipc_socket": null,
       "mpv_options": null,
@@ -617,10 +618,13 @@ class _PassingHostReloader:
 
 
 class _PassingStatefulReloader:
-    """Isolation stub for HyprpaperReloader/TerminalColorApplier (state_root kwarg)."""
+    """Isolation stub for HyprpaperWallpaperApplier/TerminalColorApplier (state_root kwarg)."""
 
     def __init__(self, **_kwargs: object) -> None:
         pass
+
+    def apply(self) -> bool:
+        return True
 
     def reload(self) -> bool:
         return True
@@ -680,7 +684,8 @@ class TestCapstoneCliExitCode:
         )
         monkeypatch.setattr("runtime.adapters.ags_reloader.AgsReloader", _PassingHostReloader)
         monkeypatch.setattr(
-            "runtime.adapters.hyprpaper_reloader.HyprpaperReloader", _PassingStatefulReloader
+            "runtime.adapters.hyprpaper_reloader.HyprpaperWallpaperApplier",
+            _PassingStatefulReloader,
         )
         monkeypatch.setattr(
             "runtime.adapters.terminal_color_applier.TerminalColorApplier",

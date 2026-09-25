@@ -63,18 +63,21 @@ class _FakeMutex:
 
 
 class _FakeHyprpaper:
-    """Fake hyprpaper reloader: records calls, canned result."""
+    """Fake wallpaper applier: records calls, canned result."""
 
     def __init__(self, *, ok: bool = True, fail: Exception | None = None) -> None:
         self.ok = ok
         self.fail = fail
         self.calls = 0
 
-    def reload(self) -> bool:
+    def apply(self) -> bool:
         self.calls += 1
         if self.fail is not None:
             raise self.fail
         return self.ok
+
+    def reload(self) -> bool:
+        return self.apply()
 
 
 class _FakeMonitorSource:
@@ -486,6 +489,7 @@ class TestConvergeCompositionRegression:
                 wallpaper_hash: str | None = None,
                 contrast_enabled: bool = True,
                 contrast_source: str = "default",
+                on_progress: Any | None = None,
             ) -> Any:
                 return SimpleNamespace(
                     wallpaper_hash="f" * 64,
@@ -504,9 +508,11 @@ class TestConvergeCompositionRegression:
                 *,
                 contrast_enabled: bool = True,
                 contrast_source: str = "default",
+                wallpaper_already_applied: bool = False,
             ) -> Any:
                 return SimpleNamespace(
-                    state=SimpleNamespace(wallpaper=SimpleNamespace(content_hash="f" * 64))
+                    state=SimpleNamespace(wallpaper=SimpleNamespace(content_hash="f" * 64)),
+                    reload_failures=[],
                 )
 
         monkeypatch.setattr("runtime.application.swap_visible.SwapVisibleUseCase", _FakeSwapUseCase)

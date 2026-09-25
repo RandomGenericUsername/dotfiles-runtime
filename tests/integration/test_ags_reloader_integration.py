@@ -175,7 +175,7 @@ def test_ags_reloader_integration_restart_with_shim(
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
 
     repo, state_root, install_spine = _make_applied(tmp_path)
-    reloader = AgsReloader(ags_path=shim)
+    reloader = AgsReloader(ags_path=shim, app_lister=lambda: [])
     use_case = ReconcileDesktopStateUseCase(
         state_repo=repo,
         csg=_FakeCsg(),  # type: ignore[arg-type]
