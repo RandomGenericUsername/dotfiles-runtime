@@ -465,6 +465,39 @@ class TestCacheSeederSymlinkRepoint:
             seeder.repoint_current_symlink("effects", target)
         assert list(tmp_path.glob("current/*.tmp.*")) == []
 
+    def test_repoint_prunes_stale_per_monitor_links(self, tmp_path: Path) -> None:
+        """A phantom monitor seeded headless (DP-1) must not survive a
+        live-detected repoint (eDP-1): the applier globs wallpaper-*.png,
+        so the leftover fails the whole swap."""
+        seeder = CacheSeeder(state_root=tmp_path)
+        target = self._make_target(tmp_path)
+        current_dir = tmp_path / "current"
+        current_dir.mkdir()
+        (current_dir / "wallpaper-DP-1.png").symlink_to(target)
+        created = seeder.repoint_current_symlinks(
+            wallpaper_target=target,
+            monitor_names=["eDP-1"],
+        )
+        assert not (current_dir / "wallpaper-DP-1.png").exists()
+        assert (current_dir / "wallpaper-eDP-1.png").readlink() == target
+        assert "wallpaper-eDP-1.png" in [p.name for p in created]
+
+    def test_repoint_leaves_real_files_alone(self, tmp_path: Path) -> None:
+        """A real file squatting on a stale per-monitor name is never
+        deleted — only symlinks are pruned."""
+        seeder = CacheSeeder(state_root=tmp_path)
+        target = self._make_target(tmp_path)
+        current_dir = tmp_path / "current"
+        current_dir.mkdir()
+        squatter = current_dir / "wallpaper-DP-1.png"
+        squatter.write_text("not a link")
+        seeder.repoint_current_symlinks(
+            wallpaper_target=target,
+            monitor_names=["eDP-1"],
+        )
+        assert squatter.is_file() and not squatter.is_symlink()
+        assert squatter.read_text() == "not a link"
+
 
 class TestCacheSeederAppendHistory:
     """CacheSeeder.append_history tests (AD-4)."""

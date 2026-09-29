@@ -625,6 +625,27 @@ class CacheSeeder:
             name = f"wallpaper-{monitor_name}.png"
             created.append(self.repoint_current_symlink(name, wallpaper_target))
 
+        # Prune stale per-monitor links (e.g. a DP-1 fallback seeded headless,
+        # superseded by live-detected eDP-1): the applier globs
+        # wallpaper-*.png, so a leftover phantom monitor fails the whole swap.
+        # Mirrors preserve_monitors' stale-drop promise at the symlink layer.
+        # Only symlinks are removed — a real file squatting on such a name is
+        # left alone and reported.
+        wanted = {f"wallpaper-{name}.png" for name in monitor_names}
+        current_dir = self._state_root / "current"
+        if current_dir.is_dir():
+            for stale in sorted(current_dir.glob("wallpaper-*.png")):
+                if stale.name in wanted:
+                    continue
+                if not stale.is_symlink():
+                    logger.warning(
+                        "seeding: stale wallpaper link name %s is a real file, left alone",
+                        stale,
+                    )
+                    continue
+                stale.unlink()
+                logger.info("seeding: pruned stale wallpaper link %s", stale.name)
+
         # Monitor-agnostic wallpaper alias (gt-4-2 follow-up): consumers that
         # don't know monitor names (wlogout background) read this one.
         if monitor_names:
