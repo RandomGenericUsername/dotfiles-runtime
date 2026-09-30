@@ -2,9 +2,14 @@
 
 The job allocates a hub job, reports progress, runs the injected runner
 (the real adapter shells the backend; tests inject a fake — no network),
-publishes ``speedtest.finished`` through the hub (AD-38), and ends the job.
-A failing measurement ends the job with a non-zero exit code and re-raises
-so the caller can surface it; it never leaves the job dangling.
+publishes the terminal ``speedtest.state`` through the hub (AD-38), and ends
+the job. A failing measurement ends the job with a non-zero exit code and
+re-raises so the caller can surface it; it never leaves the job dangling.
+
+Only the TERMINAL half of ``speedtest.state`` is emitted here. The
+``starting`` edge belongs to whoever schedules the run (the AGS speed-test
+service, which is also the only producer that knows the ``trigger``); this job
+runs to completion behind a supervisor, so it reports the settle alone.
 """
 
 from __future__ import annotations
@@ -20,7 +25,12 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SPEEDTEST_TTL = 120.0
 
-_RESULT_TOPIC = "speedtest.finished"
+_RESULT_TOPIC = "speedtest.state"
+
+#: The job is launched by a supervisor on a timer, never by a person and never
+#: by a link-up event, so the contract's ``trigger`` discriminator is pinned to
+#: ``scheduled``. ``starting``/``manual``/``connect`` come from the AGS service.
+_TRIGGER = "scheduled"
 
 
 class SpeedTestJob:
@@ -42,8 +52,9 @@ class SpeedTestJob:
     def run(self) -> SpeedTestResult:
         """Execute the job; return the measured result.
 
-        Emits exactly one ``speedtest.finished`` domain event with the
-        contract-typed ``down_mbps``/``up_mbps``/``latency_ms`` doubles.
+        Emits exactly one ``speedtest.state`` domain event with
+        ``state="done"``, the ``scheduled`` trigger, and the contract-typed
+        ``down_mbps``/``up_mbps``/``latency_ms`` doubles.
         """
         job_id = self._client.begin("speedtest", self._ttl)
         try:
@@ -52,6 +63,8 @@ class SpeedTestJob:
             self._client.publish(
                 _RESULT_TOPIC,
                 {
+                    "state": "done",
+                    "trigger": _TRIGGER,
                     "down_mbps": float(result.down_mbps),
                     "up_mbps": float(result.up_mbps),
                     "latency_ms": float(result.latency_ms),

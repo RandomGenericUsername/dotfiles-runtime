@@ -67,8 +67,14 @@ class TestSpeedTestJob:
         assert client.ends == [("job-9", 0)]
         assert client.published == [
             (
-                "speedtest.finished",
-                {"down_mbps": 100.0, "up_mbps": 50.0, "latency_ms": 12.5},
+                "speedtest.state",
+                {
+                    "state": "done",
+                    "trigger": "scheduled",
+                    "down_mbps": 100.0,
+                    "up_mbps": 50.0,
+                    "latency_ms": 12.5,
+                },
             )
         ]
 
@@ -77,7 +83,12 @@ class TestSpeedTestJob:
         runner = _FakeRunner(SpeedTestResult(down_mbps=1, up_mbps=2, latency_ms=3))  # type: ignore[arg-type]
         SpeedTestJob(client, runner).run()
         payload = client.published[0][1]
-        assert all(isinstance(value, float) for value in payload.values())
+        # Only the three MEASUREMENT members must be doubles; `state`/
+        # `trigger` are contract-typed strings and would fail this check.
+        assert all(
+            isinstance(payload[key], float)
+            for key in ("down_mbps", "up_mbps", "latency_ms")
+        )
 
     def test_measurement_failure_ends_nonzero_and_reraises(self) -> None:
         client = _FakeClient()

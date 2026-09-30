@@ -44,6 +44,7 @@ from runtime.adapters.emit_validation import (
 from runtime.adapters.emit_validation import (
     MAX_PAYLOAD_DEPTH as HUB_MAX_PAYLOAD_DEPTH,
 )
+from runtime.domain.hub import KNOWN_TOPICS
 from runtime.ports.bus_name_owner import BUS_NAME as PORT_BUS_NAME
 
 
@@ -185,6 +186,115 @@ def test_bar_constants_match_contract(repo_root: Path) -> None:
     assert [f"{arg}:{sig}" for arg, sig in bs.DOMAIN_EVENT_ARGS] == xml_signals[
         bs.DOMAIN_EVENT_SIGNAL
     ]
+
+
+# ── speedtest.state pinning (add-speedtest-notifications, task 0.2) ─────
+#
+# The wallpaper card reads a `stage` key the contract never pinned — TS is
+# AHEAD of the contract there. This block exists so the NEW keys are pinned
+# BEFORE any producer/consumer code is written, and so the same class of
+# drift cannot recur on `speedtest.state`. The `stage` gap is a pre-existing
+# discrepancy in another capability: recorded, deliberately NOT repaired here
+# (widening a change to fix another capability's contract is how changes stop
+# being reviewable). `_contract_payload_keys` is the shared extractor both legs
+# use, so a key added to the contract without a consumer is caught too.
+
+SPEEDTEST_STATE_TOPIC = "speedtest.state"
+
+#: Keys every publisher/consumer of `speedtest.state` must agree on.
+SPEEDTEST_STATE_REQUIRED = {"state", "trigger"}
+SPEEDTEST_STATE_ENUM_STATE = ["starting", "done", "error"]
+SPEEDTEST_STATE_ENUM_TRIGGER = ["scheduled", "manual", "connect"]
+
+
+def test_speedtest_state_contract_pins_keys_and_enums(repo_root: Path) -> None:
+    topic = _json(repo_root)["topics"][SPEEDTEST_STATE_TOPIC]
+    payload = topic["payload"]
+    assert SPEEDTEST_STATE_REQUIRED <= set(payload)
+    assert payload["state"] == "s"
+    assert payload["trigger"] == "s"
+    # The `done` payload's three measurements and the `error` payload's
+    # single-line reason are contract-typed, not free-form.
+    assert {payload[k] for k in ("down_mbps", "up_mbps", "latency_ms")} == {"d"}
+    assert payload["reason"] == "s"
+    assert list(topic["enum"]["state"]) == SPEEDTEST_STATE_ENUM_STATE
+    assert list(topic["enum"]["trigger"]) == SPEEDTEST_STATE_ENUM_TRIGGER
+    # `speedtest.finished` is SUPERSEDED, not extended: two topics meaning
+    # "a speed test happened" is the drift this change exists to avoid.
+    assert "speedtest.finished" not in _json(repo_root)["topics"]
+    assert SPEEDTEST_STATE_TOPIC in KNOWN_TOPICS
+    assert SPEEDTEST_STATE_TOPIC in bs.BAR_TOPICS
+
+
+def test_speedtest_state_embedded_schema_matches_contract(repo_root: Path) -> None:
+    """The hub's embedded validator schema mirrors the pinned keys/enums."""
+    from runtime.adapters.emit_validation import TOPIC_SCHEMAS
+
+    schema = TOPIC_SCHEMAS[SPEEDTEST_STATE_TOPIC]
+    assert set(schema["required"]) == SPEEDTEST_STATE_REQUIRED
+    props = schema["properties"]
+    assert props["state"]["enum"] == SPEEDTEST_STATE_ENUM_STATE
+    assert props["trigger"]["enum"] == SPEEDTEST_STATE_ENUM_TRIGGER
+    for key in ("down_mbps", "up_mbps", "latency_ms"):
+        assert props[key]["type"] == "number"
+    assert props["reason"]["type"] == "string"
+    # `state`/`trigger` carry the lifecycle; a `done` without the three
+    # doubles would render a result cell of "—", so the producer must always
+    # build them together. Asserted here as a producer-contract statement.
+    assert set(props) == set(_json(repo_root)["topics"][SPEEDTEST_STATE_TOPIC]["payload"])
+
+
+# ── TS-ahead scan: a payload key read in TypeScript but absent from the
+# contract is exactly the drift the wallpaper `stage` key already demonstrates.
+# The scanner is SELF-TESTED below (a drift gate that cannot fail is worse
+# than no gate), and it only applies to `speedtest.state` — extending it to
+# `wallpaper.state` would force this change to repair another capability.
+
+_TS_SCAN_ROOTS = (
+    Path("dotfiles") / "config" / "ags",
+    Path("src") / "gui-tools" / "notifications",
+)
+_TS_TOPIC_RE = re.compile(r'"speedtest\.state"|\'speedtest\.state\'')
+_TS_KEY_READ_RE = re.compile(r"""payload\[\s*["']([A-Za-z_][A-Za-z0-9_]*)["']\s*\]""")
+
+
+def _audit_speedtest_state_keys(text: str, contract_keys: set[str]) -> list[str]:
+    """Keys read off a speedtest payload that the contract does not pin.
+
+    Returns ``["key (file-context)"]`` style entries: the offending key plus
+    the offending line, so a failure names WHERE the unpinned read is.
+    """
+    if not _TS_TOPIC_RE.search(text):
+        return []  # not a speedtest-state file; another topic's keys are not ours
+    offenders: list[str] = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        for key in _TS_KEY_READ_RE.findall(line):
+            if key not in contract_keys:
+                offenders.append(f"line {lineno}: {key}")
+    return offenders
+
+
+def test_ts_speedtest_key_scanner_flags_drift_self_test() -> None:
+    pinned = {"state", "trigger"}
+    src = 'const TOPIC = "speedtest.state"\npayload["state"]\npayload["elapsed"]\n'
+    assert _audit_speedtest_state_keys(src, pinned) == ["line 3: elapsed"]
+    # A file that never names the topic is out of scope entirely.
+    assert _audit_speedtest_state_keys('payload["elapsed"]\n', pinned) == []
+
+
+def test_ts_speedtest_keys_are_all_pinned(repo_root: Path) -> None:
+    contract_keys = set(_json(repo_root)["topics"][SPEEDTEST_STATE_TOPIC]["payload"])
+    offenders: list[str] = []
+    for rel in _TS_SCAN_ROOTS:
+        root = repo_root / rel
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*")):
+            if path.suffix in _SHELL_SUFFIXES:
+                text = path.read_text(encoding="utf-8", errors="replace")
+                for bad in _audit_speedtest_state_keys(text, contract_keys):
+                    offenders.append(f"{path.relative_to(repo_root)}: {bad}")
+    assert offenders == []
 
 
 def test_consumer_and_hub_structural_caps_agree() -> None:

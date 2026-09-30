@@ -108,9 +108,9 @@ INTERFACE: str = _CONTRACT["interface"]
 KNOWN_TOPICS: tuple[str, ...] = tuple(_CONTRACT["topics"])
 
 #: Topics the bar renders: the recording indicator (``capture.state``) and
-#: speed-test results (``speedtest.finished``). ``icme.saved`` triggers
+#: speed-test results (``speedtest.state``). ``icme.saved`` triggers
 #: regeneration; it does not render on the bar (epics 5-3/5-4).
-BAR_TOPICS: tuple[str, ...] = ("capture.state", "speedtest.finished")
+BAR_TOPICS: tuple[str, ...] = ("capture.state", "speedtest.state")
 
 
 def _signal_args(name: str) -> tuple[tuple[str, str], ...]:

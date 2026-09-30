@@ -109,7 +109,7 @@ class TestSubscribeBeforeRead:
         sub, conn = _subscriber({"capture.state": {"_epoch": 4, "_seq": 7}})
         sub.start()
         assert sub.hydrated_pair("capture.state") == (4, 7)
-        assert sub.hydrated_pair("speedtest.finished") == (1, 0)
+        assert sub.hydrated_pair("speedtest.state") == (1, 0)
         assert sub.last_epoch == 4
         assert conn.calls.count("GetTopicState") == len(bs.BAR_TOPICS)
 

@@ -23,10 +23,10 @@ CAPTURE_STATES: frozenset[str] = frozenset({"idle", "recording", "paused"})
 
 @dataclass(frozen=True, slots=True)
 class SpeedTestResult:
-    """One speed-test measurement (wire: ``speedtest.finished`` payload).
+    """One speed-test measurement (wire: ``speedtest.state`` ``done`` payload).
 
     Fields mirror ``contracts/event-contract.json``
-    ``topics['speedtest.finished'].payload`` (``down_mbps``/``up_mbps``
+    ``topics['speedtest.state'].payload`` (``down_mbps``/``up_mbps``
     ``d``, ``latency_ms`` ``d``). They are floats by type so the emitted
     ``a{sv}`` variants encode as contract-typed doubles, never as an
     inferred ``x`` int.

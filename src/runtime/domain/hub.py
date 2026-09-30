@@ -60,7 +60,7 @@ KNOWN_TOPICS: frozenset[str] = frozenset(
     {
         "icme.saved",
         "capture.state",
-        "speedtest.finished",
+        "speedtest.state",
         "clipboard.update",
         "clipboard.state",
         "wallpaper.state",

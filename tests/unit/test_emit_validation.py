@@ -79,8 +79,14 @@ class TestSchemas:
         validator.validate("icme.saved", {"path": "/a/b"}, ":1.1")
         validator.validate("capture.state", _capture_payload(), ":1.1")
         validator.validate(
-            "speedtest.finished",
-            {"down_mbps": 1.5, "up_mbps": 2.5, "latency_ms": 3.5},
+            "speedtest.state",
+            {
+                "state": "done",
+                "trigger": "scheduled",
+                "down_mbps": 1.5,
+                "up_mbps": 2.5,
+                "latency_ms": 3.5,
+            },
             ":1.1",
         )
 
@@ -187,14 +193,26 @@ class TestSvCompatibility:
         validator, _ = _validator()
         with pytest.raises(PayloadTooLarge):
             validator.validate(
-                "speedtest.finished",
-                {"down_mbps": float("nan"), "up_mbps": 1.0, "latency_ms": 1.0},
+                "speedtest.state",
+                {
+                    "state": "done",
+                    "trigger": "scheduled",
+                    "down_mbps": float("nan"),
+                    "up_mbps": 1.0,
+                    "latency_ms": 1.0,
+                },
                 ":1.1",
             )
         with pytest.raises(PayloadTooLarge):
             validator.validate(
-                "speedtest.finished",
-                {"down_mbps": float("inf"), "up_mbps": 1.0, "latency_ms": 1.0},
+                "speedtest.state",
+                {
+                    "state": "done",
+                    "trigger": "scheduled",
+                    "down_mbps": float("inf"),
+                    "up_mbps": 1.0,
+                    "latency_ms": 1.0,
+                },
                 ":1.1",
             )
 

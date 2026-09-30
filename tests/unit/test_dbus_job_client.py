@@ -131,11 +131,19 @@ class TestCalls:
         conn = _FakeConn()
         client = _client(conn)
         client.publish(
-            "speedtest.finished",
-            {"down_mbps": 100.0, "up_mbps": 50.0, "latency_ms": 12.5},
+            "speedtest.state",
+            {
+                "state": "done",
+                "trigger": "scheduled",
+                "down_mbps": 100.0,
+                "up_mbps": 50.0,
+                "latency_ms": 12.5,
+            },
         )
         _, payload = _body(conn)
         assert payload == {
+            "state": ("s", "done"),
+            "trigger": ("s", "scheduled"),
             "down_mbps": ("d", 100.0),
             "up_mbps": ("d", 50.0),
             "latency_ms": ("d", 12.5),

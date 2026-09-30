@@ -377,7 +377,7 @@ class TestEmitDispatch:
 
     def test_get_topic_state_never_emitted(self) -> None:
         service, _, _, _ = self._emit_service()
-        _, (state,) = service.dispatch("GetTopicState", ("speedtest.finished",))
+        _, (state,) = service.dispatch("GetTopicState", ("speedtest.state",))
         assert state == {"_epoch": 3, "_seq": 0}
 
     def test_publish_binding_parity(self) -> None:
