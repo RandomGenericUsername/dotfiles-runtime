@@ -129,17 +129,20 @@ TOPIC_SCHEMAS: dict[str, dict[str, Any]] = {
         },
         "additionalProperties": True,
     },
-    # `state` + `trigger` are always present; the measurement doubles ride on
-    # `done` and `reason` on `error`. The contract's `optional` block lists
-    # which are conditionally required — a single JSON Schema cannot express
-    # "required iff state == done", and `additionalProperties` stays open so a
-    # future additive field is not a breaking change (see the module docstring).
+    # `state` + `trigger` are always present; the measurement doubles and the two
+    # context strings ride on `done`, `reason` on `error`. The contract's
+    # `optional` block lists which are conditionally required — a single JSON
+    # Schema cannot express "required iff state == done", and
+    # `additionalProperties` stays open so a future additive field is not a
+    # breaking change (see the module docstring).
     "speedtest.state": {
         "type": "object",
         "required": ["state", "trigger"],
         "properties": {
             "state": {"type": "string", "enum": ["starting", "done", "error"]},
             "trigger": {"type": "string", "enum": ["scheduled", "manual", "connect"]},
+            "ssid": {"type": "string"},
+            "server_name": {"type": "string"},
             "down_mbps": {"type": "number"},
             "up_mbps": {"type": "number"},
             "latency_ms": {"type": "number"},

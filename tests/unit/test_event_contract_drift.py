@@ -207,6 +207,16 @@ SPEEDTEST_STATE_ENUM_STATE = ["starting", "done", "error"]
 SPEEDTEST_STATE_ENUM_TRIGGER = ["scheduled", "manual", "connect"]
 
 
+#: The two CONTEXT members of a `done` payload — which network was measured and
+#: which server it was measured against. Present so a consumer can name what it
+#: measured rather than only that something happened. Typed as strings and
+#: allowed to be EMPTY (see the contract's `optional` + notes): a wired
+#: connection has no SSID and some backends report no server name, and an
+#: empty string is the honest value for "unavailable" — omitting the key would
+#: make "absent" indistinguishable from "the producer forgot".
+SPEEDTEST_STATE_CONTEXT = {"ssid": "s", "server_name": "s"}
+
+
 def test_speedtest_state_contract_pins_keys_and_enums(repo_root: Path) -> None:
     topic = _json(repo_root)["topics"][SPEEDTEST_STATE_TOPIC]
     payload = topic["payload"]
@@ -217,6 +227,11 @@ def test_speedtest_state_contract_pins_keys_and_enums(repo_root: Path) -> None:
     # single-line reason are contract-typed, not free-form.
     assert {payload[k] for k in ("down_mbps", "up_mbps", "latency_ms")} == {"d"}
     assert payload["reason"] == "s"
+    # The two context strings (R1) are pinned with their types, and listed as
+    # conditionally carried rather than required on every transition.
+    for key, signature in SPEEDTEST_STATE_CONTEXT.items():
+        assert payload[key] == signature
+    assert set(SPEEDTEST_STATE_CONTEXT) <= set(topic["optional"])
     assert list(topic["enum"]["state"]) == SPEEDTEST_STATE_ENUM_STATE
     assert list(topic["enum"]["trigger"]) == SPEEDTEST_STATE_ENUM_TRIGGER
     # `speedtest.finished` is SUPERSEDED, not extended: two topics meaning
@@ -238,6 +253,13 @@ def test_speedtest_state_embedded_schema_matches_contract(repo_root: Path) -> No
     for key in ("down_mbps", "up_mbps", "latency_ms"):
         assert props[key]["type"] == "number"
     assert props["reason"]["type"] == "string"
+    # The hub must ACCEPT the two context strings, not merely tolerate them as
+    # unknown additional properties: a validator missing them here would reject
+    # every `done` payload the producer now sends, and the rejection would look
+    # like a silent missing card rather than a schema failure.
+    for key in SPEEDTEST_STATE_CONTEXT:
+        assert props[key]["type"] == "string"
+        assert key in props
     # `state`/`trigger` carry the lifecycle; a `done` without the three
     # doubles would render a result cell of "—", so the producer must always
     # build them together. Asserted here as a producer-contract statement.
@@ -254,20 +276,61 @@ _TS_SCAN_ROOTS = (
     Path("dotfiles") / "config" / "ags",
     Path("src") / "gui-tools" / "notifications",
 )
-_TS_TOPIC_RE = re.compile(r'"speedtest\.state"|\'speedtest\.state\'')
+#: A file is IN SCOPE for this scan if it names the topic literal OR reaches the
+#: topic through the client module. Both are needed: the topic string lives in
+#: `speedtest-events.ts`, while `NotificationsWindow.tsx` imports the client and
+#: reads `payload["..."]` off the handler argument — so matching only the literal
+#: would skip the very file that reads the most keys. That bug shipped in the
+#: first version of this scan: it passed while covering nothing, which is
+#: precisely the "passes vacuously" failure the self-test exists to prevent, so
+#: the scope test below now pins BOTH routes as in-scope.
+_TS_TOPIC_RE = re.compile(r"speedtest\.state|speedtest-events")
 _TS_KEY_READ_RE = re.compile(r"""payload\[\s*["']([A-Za-z_][A-Za-z0-9_]*)["']\s*\]""")
+
+
+#: The handler that reads `speedtest.state` payloads. A file can legitimately
+#: consume SEVERAL topics: `NotificationsWindow.tsx` holds both
+#: `wallpaperUpdate` and `speedtestUpdate`, and the wallpaper side reads keys
+#: this leg must not judge (`stage` is the known pre-existing gap; see
+#: openspec/changes/add-speedtest-notifications/known-issues.md). So the scan is
+#: scoped to the SPEEDTEST handler's body, not to the file.
+_TS_HANDLER_RE = re.compile(r"^(\s*)(?:export\s+)?function\s+speedtestUpdate\b")
+_TS_FUNCTION_DECL_RE = re.compile(r"^(\s*)(?:export\s+)?function\s+\w+")
+
+
+def _speedtest_handler_span(text: str) -> tuple[int, int] | None:
+    """Line range of the `speedtestUpdate` body, or None when absent.
+
+    Ends at the next function declared at an indentation no deeper than the
+    handler's own — i.e. the next SIBLING declaration. Keying on a fixed indent
+    would be wrong in both directions: a helper declared at column 0 (a
+    module-level function in the same file) would not terminate the span and
+    its reads would be judged as speed-test keys, while a helper declared
+    deeper than the handler would truncate the span early and hide real reads.
+    """
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines) if _TS_HANDLER_RE.match(line)), None)
+    if start is None:
+        return None
+    base_indent = len(_TS_HANDLER_RE.match(lines[start]).group(1))  # type: ignore[union-attr]
+    for i in range(start + 1, len(lines)):
+        match = _TS_FUNCTION_DECL_RE.match(lines[i])
+        if match is not None and len(match.group(1)) <= base_indent:
+            return start, i
+    return start, len(lines)
 
 
 def _audit_speedtest_state_keys(text: str, contract_keys: set[str]) -> list[str]:
     """Keys read off a speedtest payload that the contract does not pin.
 
-    Returns ``["key (file-context)"]`` style entries: the offending key plus
-    the offending line, so a failure names WHERE the unpinned read is.
+    Returns ``["line N: key"]`` entries: the offending key plus its line, so a
+    failure names WHERE the unpinned read is.
     """
-    if not _TS_TOPIC_RE.search(text):
-        return []  # not a speedtest-state file; another topic's keys are not ours
+    span = _speedtest_handler_span(text)
+    if span is None:
+        return []  # this file has no speedtest handler; another topic's keys are not ours
     offenders: list[str] = []
-    for lineno, line in enumerate(text.splitlines(), start=1):
+    for lineno, line in enumerate(text.splitlines()[span[0] : span[1]], start=span[0] + 1):
         for key in _TS_KEY_READ_RE.findall(line):
             if key not in contract_keys:
                 offenders.append(f"line {lineno}: {key}")
@@ -276,10 +339,52 @@ def _audit_speedtest_state_keys(text: str, contract_keys: set[str]) -> list[str]
 
 def test_ts_speedtest_key_scanner_flags_drift_self_test() -> None:
     pinned = {"state", "trigger"}
-    src = 'const TOPIC = "speedtest.state"\npayload["state"]\npayload["elapsed"]\n'
-    assert _audit_speedtest_state_keys(src, pinned) == ["line 3: elapsed"]
-    # A file that never names the topic is out of scope entirely.
+    src = (
+        "function wallpaperUpdate() {\n"
+        '  payload["stage"]\n'
+        "}\n"
+        "function speedtestUpdate() {\n"
+        '  payload["state"]\n'
+        '  payload["elapsed"]\n'
+        "}\n"
+        "function after() {\n"
+        '  payload["elsewhere"]\n'
+        "}\n"
+    )
+    # Only the speed-test handler's reads are judged: `stage` is another
+    # capability's known gap and `elsewhere` is outside every handler.
+    assert _audit_speedtest_state_keys(src, pinned) == ["line 6: elapsed"]
+    # A file with no speed-test handler is out of scope entirely.
     assert _audit_speedtest_state_keys('payload["elapsed"]\n', pinned) == []
+
+
+def test_ts_speedtest_scan_scope_covers_the_importing_consumer(repo_root: Path) -> None:
+    """The scan must reach the file that IMPORTS the client, not only the one
+    holding the topic literal.
+
+    Regression guard. `NotificationsWindow.tsx` — the only file that reads the
+    speed-test payload keys — never contains `"speedtest.state"`; it imports
+    `speedtest-events`. A scope test keyed on the literal alone therefore
+    audited nothing while reporting success, which is the worst outcome a drift
+    gate can have.
+    """
+    window = (
+        repo_root / "src" / "gui-tools" / "notifications" / "ui" / "NotificationsWindow.tsx"
+    )
+    assert window.is_file()
+    text = window.read_text(encoding="utf-8")
+    assert "speedtest-events" in text, "consumer no longer imports the event client"
+    assert _speedtest_handler_span(text) is not None, (
+        "the speed-test handler disappeared — the scan would now audit nothing "
+        "and still report success"
+    )
+    # The span must actually CONTAIN the handler's body, not just its
+    # declaration line; a span that stopped at the first `}` would look in
+    # scope while reading nothing.
+    span = _speedtest_handler_span(text)
+    assert span is not None
+    body = "\n".join(text.splitlines()[span[0] : span[1]])
+    assert 'payload["ssid"]' in body, "handler span no longer covers the payload reads"
 
 
 def test_ts_speedtest_keys_are_all_pinned(repo_root: Path) -> None:
