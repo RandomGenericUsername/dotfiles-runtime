@@ -149,6 +149,9 @@ def _expected_targets(state_root: Path, state: DesktopState) -> dict[str, Path]:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
+            "colors.btop-minimal.theme",
+            "colors.btop-balanced.theme",
+            "colors.btop-full.theme",
         ):
             targets[artifact] = pal_dir / artifact
     if state.effects is not None:
@@ -263,6 +266,9 @@ class TestInspectSymlinkReflection:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
+            "colors.btop-minimal.theme",
+            "colors.btop-balanced.theme",
+            "colors.btop-full.theme",
             "effects",
             "icons",
         }

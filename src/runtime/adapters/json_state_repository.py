@@ -378,6 +378,9 @@ class JsonStateRepository(IStateRepository):
                     "colors_sequences": SENTINEL_HASH,
                     "colors_rasi": SENTINEL_HASH,
                     "colors_kitty": SENTINEL_HASH,
+                    "colors_btop_minimal": SENTINEL_HASH,
+                    "colors_btop_balanced": SENTINEL_HASH,
+                    "colors_btop_full": SENTINEL_HASH,
                 }
                 return PaletteEntry(
                     hash_algorithm="sha256",

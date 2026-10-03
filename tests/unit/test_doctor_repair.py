@@ -40,6 +40,22 @@ def _quiet_seed_hook(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
 
 
+#: meta.json artifact key -> PaletteArtifacts TypedDict field. Written out
+#: rather than derived by string surgery because the btop artifact names carry
+#: an embedded hyphen ("colors.btop-minimal.theme" -> "colors_btop_minimal").
+_ARTIFACT_KEY: dict[str, str] = {
+    "colors.yaml": "colors_yaml",
+    "colors.conf": "colors_conf",
+    "colors.gtk.css": "colors_gtk_css",
+    "colors.adw.css": "colors_adw_css",
+    "colors.sequences": "colors_sequences",
+    "colors.rasi": "colors_rasi",
+    "colors.kitty": "colors_kitty",
+    "colors.btop-minimal.theme": "colors_btop_minimal",
+    "colors.btop-balanced.theme": "colors_btop_balanced",
+    "colors.btop-full.theme": "colors_btop_full",
+}
+
 def _h(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -65,11 +81,14 @@ class _Csg:
             "colors.sequences": b"seq",
             "colors.rasi": b"rasi",
             "colors.kitty": b"kitty",
+            "colors.btop-minimal.theme": b"minimal",
+            "colors.btop-balanced.theme": b"balanced",
+            "colors.btop-full.theme": b"full",
         }
         hashes: dict[str, str] = {}
         for name, content in artifacts.items():
             (output_dir / name).write_bytes(content)
-            hashes[name.replace(".", "_").replace("-", "_")] = _h(content)
+            hashes[_ARTIFACT_KEY[name]] = _h(content)
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",

@@ -490,6 +490,9 @@ class CacheSeeder:
                 colors_sequences=artifact_hashes["colors.sequences"],
                 colors_rasi=artifact_hashes["colors.rasi"],
                 colors_kitty=artifact_hashes["colors.kitty"],
+                colors_btop_minimal=artifact_hashes["colors.btop-minimal.theme"],
+                colors_btop_balanced=artifact_hashes["colors.btop-balanced.theme"],
+                colors_btop_full=artifact_hashes["colors.btop-full.theme"],
             ),
             generated_at=meta["generated_at"],
         )
@@ -612,6 +615,9 @@ class CacheSeeder:
         - current/colors.sequences → cache/palettes/<ph>/colors.sequences
         - current/colors.rasi → cache/palettes/<ph>/colors.rasi
         - current/colors.kitty → cache/palettes/<ph>/colors.kitty
+        - current/colors.btop-minimal.theme → cache/palettes/<ph>/colors.btop-minimal.theme
+        - current/colors.btop-balanced.theme → cache/palettes/<ph>/colors.btop-balanced.theme
+        - current/colors.btop-full.theme → cache/palettes/<ph>/colors.btop-full.theme
         - current/effects/ → cache/effects/<eh>/
         - current/icons/ → cache/icons/<ih>/
 
@@ -662,6 +668,9 @@ class CacheSeeder:
                 "colors.sequences",
                 "colors.rasi",
                 "colors.kitty",
+                "colors.btop-minimal.theme",
+                "colors.btop-balanced.theme",
+                "colors.btop-full.theme",
             ):
                 target = palette_dir / artifact_name
                 # exists() follows symlinks — a dangling symlink at the target

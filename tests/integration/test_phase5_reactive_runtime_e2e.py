@@ -421,6 +421,9 @@ class _FakeCsg:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
+            "colors.btop-minimal.theme",
+            "colors.btop-balanced.theme",
+            "colors.btop-full.theme",
         ]
         for name in names:
             (output_dir / name).write_text("x")
@@ -438,6 +441,9 @@ class _FakeCsg:
                 colors_sequences=hash_file(output_dir / "colors.sequences"),
                 colors_rasi=hash_file(output_dir / "colors.rasi"),
                 colors_kitty=hash_file(output_dir / "colors.kitty"),
+                colors_btop_minimal=hash_file(output_dir / "colors.btop-minimal.theme"),
+                colors_btop_balanced=hash_file(output_dir / "colors.btop-balanced.theme"),
+                colors_btop_full=hash_file(output_dir / "colors.btop-full.theme"),
             ),
             generated_at="2026-01-01T00:00:00Z",
         )

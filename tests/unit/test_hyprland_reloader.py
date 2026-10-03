@@ -122,9 +122,7 @@ class TestHyprlandReloaderMissing:
         non_exec = tmp_path / "hyprctl"
         non_exec.write_text("#!/bin/sh\nexit 0\n")
         non_exec.chmod(0o644)
-        with patch(
-            "runtime.adapters.hyprland_reloader.shutil.which", return_value=str(non_exec)
-        ):
+        with patch("runtime.adapters.hyprland_reloader.shutil.which", return_value=str(non_exec)):
             reloader = HyprlandReloader(hyprctl_path=None)
         with patch("runtime.adapters.hyprland_reloader.subprocess.run") as mock_run:
             assert reloader.reload() is False
@@ -181,6 +179,10 @@ class TestReconcileReloadIntegration:
                 (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
                 (output_dir / "colors.rasi").write_text("* { background: #000; }")
                 (output_dir / "colors.kitty").write_text("* { background: #000; }")
+                for _btop in ("minimal", "balanced", "full"):
+                    (output_dir / f"colors.btop-{_btop}.theme").write_text(
+                        "theme[colors.main_bg]=#000000\n"
+                    )
                 return PaletteEntry(
                     hash_algorithm="sha256",
                     kind="palette",
@@ -195,6 +197,9 @@ class TestReconcileReloadIntegration:
                         colors_sequences=hash_file(output_dir / "colors.sequences"),
                         colors_rasi=hash_file(output_dir / "colors.rasi"),
                         colors_kitty=hash_file(output_dir / "colors.kitty"),
+                        colors_btop_minimal=hash_file(output_dir / "colors.btop-minimal.theme"),
+                        colors_btop_balanced=hash_file(output_dir / "colors.btop-balanced.theme"),
+                        colors_btop_full=hash_file(output_dir / "colors.btop-full.theme"),
                     ),
                     generated_at=_now_z(),
                 )
@@ -260,9 +265,7 @@ class TestReconcileReloadIntegration:
         itr_templates.mkdir(parents=True)
         (itr_templates / "terminal.svg").write_text("<svg/>")
         (install_spine / "icon-mappings").mkdir(parents=True, exist_ok=True)
-        (install_spine / "icon-mappings" / "icons.yaml").write_text(
-            "icons: {}\n"
-        )
+        (install_spine / "icon-mappings" / "icons.yaml").write_text("icons: {}\n")
 
         state_root = tmp_path / "state"
         repo = JsonStateRepository(state_root=state_root)
@@ -332,6 +335,10 @@ class TestReconcileReloadIntegration:
                 (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
                 (output_dir / "colors.rasi").write_text("* { background: #000; }")
                 (output_dir / "colors.kitty").write_text("* { background: #000; }")
+                for _btop in ("minimal", "balanced", "full"):
+                    (output_dir / f"colors.btop-{_btop}.theme").write_text(
+                        "theme[colors.main_bg]=#000000\n"
+                    )
                 return PaletteEntry(
                     hash_algorithm="sha256",
                     kind="palette",
@@ -346,6 +353,9 @@ class TestReconcileReloadIntegration:
                         colors_sequences=hash_file(output_dir / "colors.sequences"),
                         colors_rasi=hash_file(output_dir / "colors.rasi"),
                         colors_kitty=hash_file(output_dir / "colors.kitty"),
+                        colors_btop_minimal=hash_file(output_dir / "colors.btop-minimal.theme"),
+                        colors_btop_balanced=hash_file(output_dir / "colors.btop-balanced.theme"),
+                        colors_btop_full=hash_file(output_dir / "colors.btop-full.theme"),
                     ),
                     generated_at=_now_z(),
                 )
@@ -403,9 +413,7 @@ class TestReconcileReloadIntegration:
         itr_templates.mkdir(parents=True)
         (itr_templates / "terminal.svg").write_text("<svg/>")
         (install_spine / "icon-mappings").mkdir(parents=True, exist_ok=True)
-        (install_spine / "icon-mappings" / "icons.yaml").write_text(
-            "icons: {}\n"
-        )
+        (install_spine / "icon-mappings" / "icons.yaml").write_text("icons: {}\n")
         state_root = tmp_path / "state2"
         repo = JsonStateRepository(state_root=state_root)
         img = tmp_path / "wall2.png"

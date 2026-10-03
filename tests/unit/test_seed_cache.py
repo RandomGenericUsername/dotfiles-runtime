@@ -43,7 +43,7 @@ def test_palette_artifact_names_include_kitty() -> None:
     from runtime.application.derive import PALETTE_ARTIFACT_NAMES
 
     assert "colors.kitty" in PALETTE_ARTIFACT_NAMES
-    assert len(PALETTE_ARTIFACT_NAMES) == 7
+    assert len(PALETTE_ARTIFACT_NAMES) == 10
 
 
 def _make_wallpaper_hash() -> str:
@@ -118,6 +118,9 @@ class _FakeCsg:
         (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         (output_dir / "colors.rasi").write_text("* { background: #000; }")
         (output_dir / "colors.kitty").write_text("* { background: #000; }")
+        (output_dir / "colors.btop-minimal.theme").write_text("theme[colors.main_bg]=#000000\n")
+        (output_dir / "colors.btop-balanced.theme").write_text("theme[colors.main_bg]=#000000\n")
+        (output_dir / "colors.btop-full.theme").write_text("theme[colors.main_bg]=#000000\n")
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -132,6 +135,9 @@ class _FakeCsg:
                 colors_sequences=hash_file(output_dir / "colors.sequences"),
                 colors_rasi=hash_file(output_dir / "colors.rasi"),
                 colors_kitty=hash_file(output_dir / "colors.kitty"),
+                colors_btop_minimal=hash_file(output_dir / "colors.btop-minimal.theme"),
+                colors_btop_balanced=hash_file(output_dir / "colors.btop-balanced.theme"),
+                colors_btop_full=hash_file(output_dir / "colors.btop-full.theme"),
             ),
             generated_at=_now_z(),
         )
@@ -354,6 +360,9 @@ class TestCacheSeederWriteMeta:
                 "colors.sequences": "b" * 64,
                 "colors.rasi": "c" * 64,
                 "colors.kitty": "9" * 64,
+                "colors.btop-minimal.theme": "9" * 64,
+                "colors.btop-balanced.theme": "9" * 64,
+                "colors.btop-full.theme": "9" * 64,
             },
             generated_at="2026-01-01T00:00:00Z",
         )
@@ -652,6 +661,9 @@ class TestSeedCacheUseCaseRunsOnFirstRun:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
+            "colors.btop-minimal.theme",
+            "colors.btop-balanced.theme",
+            "colors.btop-full.theme",
         ):
             assert (palette_dir / name).is_file(), f"missing {name}"
         meta = json.loads((palette_dir / "meta.json").read_text())
@@ -671,6 +683,9 @@ class TestSeedCacheUseCaseRunsOnFirstRun:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
+            "colors.btop-minimal.theme",
+            "colors.btop-balanced.theme",
+            "colors.btop-full.theme",
         ):
             assert meta["artifact_hashes"][name] == hash_file(palette_dir / name)
         # effects/icons likewise carry real hashes
@@ -731,6 +746,9 @@ class TestSeedCacheUseCaseRunsOnFirstRun:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
+            "colors.btop-minimal.theme",
+            "colors.btop-balanced.theme",
+            "colors.btop-full.theme",
         ):
             link = current_dir / name
             assert link.is_symlink(), f"missing symlink {name}"
@@ -1221,6 +1239,9 @@ class TestPreGrowthPaletteEntryMigration:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
+            "colors.btop-minimal.theme",
+            "colors.btop-balanced.theme",
+            "colors.btop-full.theme",
         }
         for name in meta["artifact_hashes"]:
             assert (palette_dir / name).is_file(), f"missing regenerated artifact {name}"
@@ -1263,6 +1284,9 @@ class TestPreGrowthPaletteEntryMigration:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
+            "colors.btop-minimal.theme",
+            "colors.btop-balanced.theme",
+            "colors.btop-full.theme",
         }
         caplog.clear()
         with caplog.at_level(logging.INFO, logger="runtime.application.derive"):
@@ -1364,6 +1388,12 @@ class TestPreGrowthPaletteEntryMigration:
         assert hit is False
         assert entry2.entry_hash == ph
         assert (entry / "colors.kitty").is_file()
+        for name in (
+            "colors.btop-minimal.theme",
+            "colors.btop-balanced.theme",
+            "colors.btop-full.theme",
+        ):
+            assert (entry / name).is_file(), f"missing regenerated artifact {name}"
         meta = json.loads((entry / "meta.json").read_text())
         assert set(meta["artifact_hashes"]) == {
             "colors.yaml",
@@ -1373,6 +1403,9 @@ class TestPreGrowthPaletteEntryMigration:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
+            "colors.btop-minimal.theme",
+            "colors.btop-balanced.theme",
+            "colors.btop-full.theme",
         }
         # Second pass is a clean hit — no re-eviction.
         entry3, hit3 = DerivationPipeline(
@@ -1389,7 +1422,7 @@ class TestPreGrowthPaletteEntryMigration:
 
 class TestRepointCurrentSymlinksPaletteArtifactSkip:
     """Seeder-level defense-in-depth (gt-2-1): per-artifact exists-or-symlink
-    check with skip+warn per missing artifact — now over the 7-name set."""
+    check with skip+warn per missing artifact — now over the 10-name set."""
 
     def test_missing_palette_artifacts_skip_with_warning(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -1414,11 +1447,14 @@ class TestRepointCurrentSymlinksPaletteArtifactSkip:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
+            "colors.btop-minimal.theme",
+            "colors.btop-balanced.theme",
+            "colors.btop-full.theme",
         ):
             assert missing not in names, f"{missing} must be skipped, never dangling"
-        assert sum("palette artifact missing" in r.message for r in caplog.records) == 6
+        assert sum("palette artifact missing" in r.message for r in caplog.records) == 9
 
-    def test_all_seven_artifacts_repointed(self, tmp_path: Path) -> None:
+    def test_all_ten_artifacts_repointed(self, tmp_path: Path) -> None:
         seeder = CacheSeeder(tmp_path)
         ph = "b" * 64
         entry = tmp_path / "cache" / "palettes" / ph
@@ -1431,6 +1467,9 @@ class TestRepointCurrentSymlinksPaletteArtifactSkip:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
+            "colors.btop-minimal.theme",
+            "colors.btop-balanced.theme",
+            "colors.btop-full.theme",
         ):
             (entry / name).write_text(name)
         created = seeder.repoint_current_symlinks(
@@ -1449,4 +1488,7 @@ class TestRepointCurrentSymlinksPaletteArtifactSkip:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
+            "colors.btop-minimal.theme",
+            "colors.btop-balanced.theme",
+            "colors.btop-full.theme",
         }

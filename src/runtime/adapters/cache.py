@@ -129,7 +129,9 @@ def cache_entry_path(state_root: Path, layer: str, entry_hash: str) -> Path:
          artifact_hashes: {colors.yaml: "<h>", colors.conf: "<h>",
                            colors.gtk.css: "<h>", colors.adw.css: "<h>",
                            colors.sequences: "<h>", colors.rasi: "<h>",
-                           colors.kitty: "<h>"},
+                           colors.kitty: "<h>", colors.btop-minimal.theme: "<h>",
+                           colors.btop-balanced.theme: "<h>",
+                           colors.btop-full.theme: "<h>"},
          generated_at: "2026-08-29T00:00:00Z"}
 
     ``hash_algorithm`` MUST be ``HASH_ALGORITHM`` literal ``"sha256"``.

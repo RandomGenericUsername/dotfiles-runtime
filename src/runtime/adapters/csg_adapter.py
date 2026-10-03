@@ -295,6 +295,12 @@ class CsgAdapter(IColorSchemeGenerator):
             "rasi",
             "--format",
             "kitty",
+            "--format",
+            "btop-minimal.theme",
+            "--format",
+            "btop-balanced.theme",
+            "--format",
+            "btop-full.theme",
         ]
 
         # 8. Run subprocess with timeout, preserve stderr, handle missing binary
@@ -356,6 +362,9 @@ class CsgAdapter(IColorSchemeGenerator):
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
+            "colors.btop-minimal.theme",
+            "colors.btop-balanced.theme",
+            "colors.btop-full.theme",
         ):
             p = output_dir / name
             if not p.is_file():
@@ -373,6 +382,9 @@ class CsgAdapter(IColorSchemeGenerator):
                 colors_sequences=hash_file(output_dir / "colors.sequences"),
                 colors_rasi=hash_file(output_dir / "colors.rasi"),
                 colors_kitty=hash_file(output_dir / "colors.kitty"),
+                colors_btop_minimal=hash_file(output_dir / "colors.btop-minimal.theme"),
+                colors_btop_balanced=hash_file(output_dir / "colors.btop-balanced.theme"),
+                colors_btop_full=hash_file(output_dir / "colors.btop-full.theme"),
             )
         except (FileNotFoundError, PermissionError, IsADirectoryError, OSError) as exc:
             raise RuntimeError(f"cannot hash csg artifacts in {output_dir}: {exc}") from exc

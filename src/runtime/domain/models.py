@@ -56,6 +56,9 @@ class PaletteArtifacts(TypedDict):
     colors_sequences: str  # key: "colors.sequences"
     colors_rasi: str  # key: "colors.rasi"
     colors_kitty: str  # key: "colors.kitty"
+    colors_btop_minimal: str  # key: "colors.btop-minimal.theme"
+    colors_btop_balanced: str  # key: "colors.btop-balanced.theme"
+    colors_btop_full: str  # key: "colors.btop-full.theme"
 
 
 @dataclass(frozen=True, slots=True)

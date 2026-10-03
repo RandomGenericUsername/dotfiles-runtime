@@ -24,9 +24,10 @@ staging + load-on-race). Behavior contract locked by the seed test suite:
   apply wraps as ``palette apply failed:`` (palette hard dependency);
   effects/icons degrade gracefully per use case.
 - Migration (Story gt-2-1, AC 8): a palette entry is a valid cache hit
-  ONLY if its ``meta.json`` ``artifact_hashes`` carries all six artifact
-  names AND the six artifact files exist. An incomplete entry
-  (pre-growth partial: 3 legacy artifacts + old meta) is evicted
+  ONLY if its ``meta.json`` ``artifact_hashes`` carries every name in
+  ``PALETTE_ARTIFACT_NAMES`` AND every one of those artifact files exists.
+  An incomplete entry (any pre-growth partial, including the 3-, 6- and
+  7-artifact shapes) is evicted
   (``shutil.rmtree``, logged once) and regenerated through the normal
   staging path at the SAME ``<ph>`` — cache keys are unchanged, so
   eviction is what makes the write-once invariant yield exactly once,
@@ -296,6 +297,9 @@ PALETTE_ARTIFACT_NAMES: Final[tuple[str, ...]] = (
     "colors.sequences",
     "colors.rasi",
     "colors.kitty",
+    "colors.btop-minimal.theme",
+    "colors.btop-balanced.theme",
+    "colors.btop-full.theme",
 )
 
 
@@ -304,12 +308,13 @@ def ensure_palette_entry_complete(target: Path, seeder: CacheSeeder) -> bool:
 
     The migration mechanism (Story gt-2-1, AC 8): a palette entry dir
     existing at ``cache/palettes/<ph>/`` is a valid cache hit ONLY if its
-    co-located ``meta.json`` ``artifact_hashes`` carries ALL SIX artifact
-    names and the six artifact files exist (AD-3: meta.json is the
-    completeness oracle — never trust dir existence alone).
+    co-located ``meta.json`` ``artifact_hashes`` carries ALL TEN names in
+    ``PALETTE_ARTIFACT_NAMES`` and all ten artifact files exist (AD-3:
+    meta.json is the completeness oracle — never trust dir existence
+    alone).
 
-    An incomplete entry (a pre-growth partial: 3 legacy artifacts +
-    old-shape meta.json, or any future partial) is treated as a cache
+    An incomplete entry (a pre-growth partial: the 3-, 6- or 7-artifact
+    shape, or any future partial) is treated as a cache
     MISS: it is evicted (``shutil.rmtree``, ``ignore_errors=False`` — an
     OSError propagates to the caller's failure policy) so the SAME
     ``<ph>`` is regenerated through the normal staging path by the
@@ -733,6 +738,13 @@ class DerivationPipeline:
                     "colors.sequences": generated.artifact_hashes["colors_sequences"],
                     "colors.rasi": generated.artifact_hashes["colors_rasi"],
                     "colors.kitty": generated.artifact_hashes["colors_kitty"],
+                    "colors.btop-minimal.theme": generated.artifact_hashes[
+                        "colors_btop_minimal"
+                    ],
+                    "colors.btop-balanced.theme": generated.artifact_hashes[
+                        "colors_btop_balanced"
+                    ],
+                    "colors.btop-full.theme": generated.artifact_hashes["colors_btop_full"],
                 },
                 generated_at=generated.generated_at,
             )
