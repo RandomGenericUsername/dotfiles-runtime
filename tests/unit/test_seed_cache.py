@@ -992,32 +992,117 @@ class TestConsumerPointerSpec:
     GTK3 = "config/gtk-3.0/colors.css"
     GTK4 = "config/gtk-4.0/colors.css"
     ROFI = "config/rofi/colors.rasi"
+    # btop's three pointers (provision-btop-config). NOT a rename-on-link:
+    # the destination basename MUST equal the cache artifact name, because
+    # btop matches `color_theme` against the themes it discovered in its own
+    # theme dir by name (btop_theme.cpp:451-471).
+    BTOP = (
+        "config/btop/themes/colors.btop-minimal.theme",
+        "config/btop/themes/colors.btop-balanced.theme",
+        "config/btop/themes/colors.btop-full.theme",
+    )
+    BTOP_ARTIFACTS = (
+        "colors.btop-minimal.theme",
+        "colors.btop-balanced.theme",
+        "colors.btop-full.theme",
+    )
 
     @staticmethod
     def _provision_current(
         state_root: Path,
-        artifacts: tuple[str, ...] = ("colors.gtk.css", "colors.adw.css", "colors.rasi"),
+        artifacts: tuple[str, ...] = (
+            "colors.gtk.css",
+            "colors.adw.css",
+            "colors.rasi",
+            "colors.btop-minimal.theme",
+            "colors.btop-balanced.theme",
+            "colors.btop-full.theme",
+        ),
     ) -> None:
         current = state_root / "current"
         current.mkdir(parents=True, exist_ok=True)
         for name in artifacts:
             (current / name).write_text(f"/* {name} */\n")
 
-    def test_all_four_pointers_created_when_parents_exist(self, tmp_path: Path) -> None:
-        install_spine = tmp_path / "install"
+    @staticmethod
+    def _parents(install_spine: Path, *, btop: bool = False) -> None:
         for d in ("config/ags", "config/gtk-3.0", "config/gtk-4.0", "config/rofi"):
             (install_spine / d).mkdir(parents=True)
+        if btop:
+            (install_spine / "config" / "btop" / "themes").mkdir(parents=True)
+
+    def test_all_seven_pointers_created_when_parents_exist(self, tmp_path: Path) -> None:
+        install_spine = tmp_path / "install"
+        self._parents(install_spine, btop=True)
         self._provision_current(tmp_path)
         seeder = CacheSeeder(tmp_path)
 
         created = seeder.repoint_consumer_symlinks(install_spine, "p" * 64)
 
         current = tmp_path / "current"
-        assert [p.name for p in created] == ["colors.css"] * 3 + ["colors.rasi"]
+        assert [p.name for p in created] == (
+            ["colors.css"] * 3 + ["colors.rasi"] + list(self.BTOP_ARTIFACTS)
+        )
         assert os.readlink(install_spine / self.AGS) == str(current / "colors.gtk.css")
         assert os.readlink(install_spine / self.GTK3) == str(current / "colors.gtk.css")
         assert os.readlink(install_spine / self.GTK4) == str(current / "colors.adw.css")
         assert os.readlink(install_spine / self.ROFI) == str(current / "colors.rasi")
+        for rel, artifact in zip(self.BTOP, self.BTOP_ARTIFACTS, strict=True):
+            dest = install_spine / rel
+            assert dest.is_symlink()
+            assert os.readlink(dest) == str(current / artifact)
+            assert dest.name == artifact, (
+                "the btop pointer's basename must equal the cache artifact name "
+                "— btop resolves color_theme by matching that name"
+            )
+
+    def test_btop_pointers_skip_with_warning_when_spine_parent_absent(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """D4: the btop/themes/ spine dir is PROVISIONING's to create. Without
+        it the pointers are skipped + warned and — critically — the seeder
+        never mkdirs into the spine."""
+        install_spine = tmp_path / "install"
+        self._parents(install_spine)
+        self._provision_current(tmp_path)
+        seeder = CacheSeeder(tmp_path)
+
+        with caplog.at_level(logging.WARNING, logger="runtime.adapters.seeder"):
+            created = seeder.repoint_consumer_symlinks(install_spine, "p" * 64)
+
+        assert created == [
+            install_spine / self.AGS,
+            install_spine / self.GTK3,
+            install_spine / self.GTK4,
+            install_spine / self.ROFI,
+        ]
+        assert not (install_spine / "config" / "btop").exists(), (
+            "the seeder must NEVER mkdir into the install spine — the btop_config "
+            "role owns config/btop/themes/"
+        )
+        warnings = [r.message for r in caplog.records if "destination parent missing" in r.message]
+        assert len(warnings) == 3
+
+    def test_btop_pointers_skip_when_the_target_artifact_is_missing(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Per-pointer guard: a missing current/colors.btop-*.theme skips only
+        that pointer — never a dangling consumer link."""
+        install_spine = tmp_path / "install"
+        self._parents(install_spine, btop=True)
+        self._provision_current(
+            tmp_path, artifacts=("colors.gtk.css", "colors.adw.css", "colors.rasi")
+        )
+        seeder = CacheSeeder(tmp_path)
+
+        with caplog.at_level(logging.WARNING, logger="runtime.adapters.seeder"):
+            created = seeder.repoint_consumer_symlinks(install_spine, "p" * 64)
+
+        assert [p.name for p in created] == ["colors.css"] * 3 + ["colors.rasi"]
+        for rel in self.BTOP:
+            dest = install_spine / rel
+            assert not dest.exists() and not dest.is_symlink()
+        assert any("colors.btop-minimal.theme missing" in r.message for r in caplog.records)
 
     def test_gtk_pointers_skip_with_warning_when_parents_absent(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -1039,8 +1124,12 @@ class TestConsumerPointerSpec:
         assert not (install_spine / "config" / "gtk-3.0").exists()
         assert not (install_spine / "config" / "gtk-4.0").exists()
         assert not (install_spine / "config" / "rofi").exists()
+        assert not (install_spine / "config" / "btop").exists()
         parent_warnings = [r for r in caplog.records if "destination parent missing" in r.message]
-        assert len(parent_warnings) == 3
+        assert len(parent_warnings) == 6, (
+            "four parents absent (gtk-3.0, gtk-4.0, rofi, btop/themes) x ... "
+            "plus the two btop pointers whose parent is the same missing dir"
+        )
 
     def test_regular_file_at_dest_replaced_with_symlink(self, tmp_path: Path) -> None:
         install_spine = tmp_path / "install"
@@ -1062,8 +1151,7 @@ class TestConsumerPointerSpec:
         """Per-pointer guard (not all-or-nothing): missing colors.adw.css
         skips only the gtk-4.0 pointer — ags + gtk-3.0 still created."""
         install_spine = tmp_path / "install"
-        for d in ("config/ags", "config/gtk-3.0", "config/gtk-4.0", "config/rofi"):
-            (install_spine / d).mkdir(parents=True)
+        self._parents(install_spine, btop=True)
         self._provision_current(tmp_path, artifacts=("colors.gtk.css",))
         seeder = CacheSeeder(tmp_path)
 
@@ -1075,15 +1163,18 @@ class TestConsumerPointerSpec:
         assert not gtk4.exists() and not gtk4.is_symlink()
         rofi = install_spine / self.ROFI
         assert not rofi.exists() and not rofi.is_symlink()
+        for rel in self.BTOP:
+            dest = install_spine / rel
+            assert not dest.exists() and not dest.is_symlink()
         assert any("colors.adw.css missing" in r.message for r in caplog.records)
         assert any("colors.rasi missing" in r.message for r in caplog.records)
+        assert any("colors.btop-minimal.theme missing" in r.message for r in caplog.records)
 
     def test_null_palette_removes_all_existing_pointers(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         install_spine = tmp_path / "install"
-        for d in ("config/ags", "config/gtk-3.0", "config/gtk-4.0", "config/rofi"):
-            (install_spine / d).mkdir(parents=True)
+        self._parents(install_spine, btop=True)
         self._provision_current(tmp_path)
         seeder = CacheSeeder(tmp_path)
         seeder.repoint_consumer_symlinks(install_spine, "p" * 64)
@@ -1092,11 +1183,11 @@ class TestConsumerPointerSpec:
             created = seeder.repoint_consumer_symlinks(install_spine, None)
 
         assert created == []
-        for rel in (self.AGS, self.GTK3, self.GTK4, self.ROFI):
+        for rel in (self.AGS, self.GTK3, self.GTK4, self.ROFI, *self.BTOP):
             dest = install_spine / rel
             assert not dest.exists() and not dest.is_symlink()
         removals = [r for r in caplog.records if "palette layer is null" in r.message]
-        assert len(removals) == 4
+        assert len(removals) == 7
 
     def test_null_palette_missing_ok_no_crash(self, tmp_path: Path) -> None:
         """missing_ok: a null palette with NO existing pointers is clean."""
@@ -1110,8 +1201,7 @@ class TestConsumerPointerSpec:
 
     def test_rerun_idempotent_no_divergence(self, tmp_path: Path) -> None:
         install_spine = tmp_path / "install"
-        for d in ("config/ags", "config/gtk-3.0", "config/gtk-4.0", "config/rofi"):
-            (install_spine / d).mkdir(parents=True)
+        self._parents(install_spine, btop=True)
         self._provision_current(tmp_path)
         seeder = CacheSeeder(tmp_path)
         first = seeder.repoint_consumer_symlinks(install_spine, "p" * 64)
@@ -1124,6 +1214,9 @@ class TestConsumerPointerSpec:
             (self.GTK3, "colors.gtk.css"),
             (self.GTK4, "colors.adw.css"),
             (self.ROFI, "colors.rasi"),
+            (self.BTOP[0], "colors.btop-minimal.theme"),
+            (self.BTOP[1], "colors.btop-balanced.theme"),
+            (self.BTOP[2], "colors.btop-full.theme"),
         ):
             assert os.readlink(install_spine / rel) == str(tmp_path / "current" / target)
 

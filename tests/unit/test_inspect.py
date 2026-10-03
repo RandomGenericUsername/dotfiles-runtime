@@ -170,6 +170,19 @@ def _make_current_tree(state_root: Path, state: DesktopState) -> dict[str, Path]
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(b"data")
         (current_dir / name).symlink_to(target)
+    # The btop consumer pointers target these artifact names too
+    # (provision-btop-config). They are NOT part of the current-symlink
+    # projection above — only of the consumer-pointer one.
+    for name in (
+        "colors.btop-minimal.theme",
+        "colors.btop-balanced.theme",
+        "colors.btop-full.theme",
+    ):
+        artifact = state_root / "cache" / "palettes" / "p1" / name
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"data")
+        if not (current_dir / name).exists():
+            (current_dir / name).symlink_to(artifact)
     return targets
 
 
@@ -325,6 +338,11 @@ class TestInspectConsumerPointerProjection:
     GTK3 = "config/gtk-3.0/colors.css"
     GTK4 = "config/gtk-4.0/colors.css"
     ROFI = "config/rofi/colors.rasi"
+    BTOP = (
+        "config/btop/themes/colors.btop-minimal.theme",
+        "config/btop/themes/colors.btop-balanced.theme",
+        "config/btop/themes/colors.btop-full.theme",
+    )
 
     @staticmethod
     def _make_use_case(tmp_path: Path, state: DesktopState, *, with_spec: bool = True) -> Any:
@@ -354,15 +372,25 @@ class TestInspectConsumerPointerProjection:
         (install_spine / self.GTK3).symlink_to(tmp_path / "current" / "colors.gtk.css")
         (install_spine / self.GTK4).symlink_to(tmp_path / "current" / "colors.adw.css")
         (install_spine / self.ROFI).symlink_to(tmp_path / "current" / "colors.rasi")
+        (install_spine / "config" / "btop" / "themes").mkdir(parents=True)
+        for rel in self.BTOP:
+            (install_spine / rel).symlink_to(tmp_path / "current" / Path(rel).name)
 
         result = use_case.run()
 
-        assert set(result.consumer_pointers) == {self.AGS, self.GTK3, self.GTK4, self.ROFI}
+        assert set(result.consumer_pointers) == {
+            self.AGS,
+            self.GTK3,
+            self.GTK4,
+            self.ROFI,
+            *self.BTOP,
+        }
         expected_targets = {
             self.AGS: "colors.gtk.css",
             self.GTK3: "colors.gtk.css",
             self.GTK4: "colors.adw.css",
             self.ROFI: "colors.rasi",
+            **{rel: Path(rel).name for rel in self.BTOP},
         }
         for path, status in result.consumer_pointers.items():
             assert status.status == "ok"

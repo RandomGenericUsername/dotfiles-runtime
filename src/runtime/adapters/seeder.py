@@ -704,8 +704,9 @@ class CacheSeeder:
         returned by the injected :class:`IConsumerPathSpec` (the pinned
         ``StaticConsumerPathSpec`` table: ``config/ags/colors.css``,
         ``config/gtk-3.0/colors.css``, ``config/gtk-4.0/colors.css``,
-        ``config/rofi/colors.rasi``) — nothing else. The content lives in
-        ``cache/`` (runtime-owned); these paths are consumer pointers.
+        ``config/rofi/colors.rasi``, ``config/btop/themes/colors.btop-
+        {minimal,balanced,full}.theme``) — nothing else. The content lives
+        in ``cache/`` (runtime-owned); these paths are consumer pointers.
 
         - ``<install>/config/ags/colors.css`` → ``current/colors.gtk.css``
           (note the rename: cache artifact is ``colors.gtk.css``).
@@ -715,6 +716,16 @@ class CacheSeeder:
           ``current/colors.adw.css``.
         - ``<install>/config/rofi/colors.rasi`` →
           ``current/colors.rasi``.
+        - ``<install>/config/btop/themes/colors.btop-{minimal,balanced,
+          full}.theme`` → ``current/colors.btop-<difficulty>.theme``.
+          Unlike the four above these are NOT a rename-on-link: the
+          destination BASENAME must equal the cache artifact name, because
+          btop resolves its ``color_theme`` by matching that name against
+          the themes it discovered in its own theme dir (btop_theme.cpp:
+          451-471). ``~/.config/btop`` is a symlink into the spine
+          (config_links), and the spine's ``btop/themes/`` dir is created by
+          the provisioning ``btop_config`` role — the seeder never mkdirs
+          into the spine.
 
         Deliberately NOT covered: ``<install>/config/hypr/colors.conf``
         (the Hyprland config reads the runtime palette DIRECTLY at
