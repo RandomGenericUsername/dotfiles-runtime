@@ -55,9 +55,7 @@
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
-            "colors.btop-minimal.theme",
-            "colors.btop-balanced.theme",
-            "colors.btop-full.theme"
+            "colors.btop.theme"
           ],
           "properties": {
             "colors.yaml": { "type": "string" },
@@ -67,9 +65,7 @@
             "colors.sequences": { "type": "string" },
             "colors.rasi": { "type": "string" },
             "colors.kitty": { "type": "string" },
-            "colors.btop-minimal.theme": { "type": "string" },
-            "colors.btop-balanced.theme": { "type": "string" },
-            "colors.btop-full.theme": { "type": "string" }
+            "colors.btop.theme": { "type": "string" }
           }
         },
         "generated_at": { "type": "string" }

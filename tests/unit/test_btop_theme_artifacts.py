@@ -40,19 +40,13 @@ from runtime.application.inspect import InspectStateUseCase
 from runtime.application.reconcile import ReconcileDesktopStateUseCase
 from runtime.domain.models import DesktopState
 
-#: The three btop artifact filenames, in the order the spec lists them.
+#: The single btop artifact filename.
 BTOP_ARTIFACTS: tuple[str, ...] = (
-    "colors.btop-minimal.theme",
-    "colors.btop-balanced.theme",
-    "colors.btop-full.theme",
+    "colors.btop.theme",
 )
 
-#: The three PaletteArtifacts TypedDict field names.
-BTOP_FIELDS: tuple[str, ...] = (
-    "colors_btop_minimal",
-    "colors_btop_balanced",
-    "colors_btop_full",
-)
+#: The single PaletteArtifacts TypedDict field name.
+BTOP_FIELDS: tuple[str, ...] = ("colors_btop",)
 
 #: The seven artifacts that predate this change. An entry holding exactly
 #: these is "the pre-change shape" and must self-heal.
@@ -68,15 +62,15 @@ PRE_CHANGE_ARTIFACTS: tuple[str, ...] = (
 
 ALL_ARTIFACTS: tuple[str, ...] = PRE_CHANGE_ARTIFACTS + BTOP_ARTIFACTS
 
-assert len(ALL_ARTIFACTS) == 10
+assert len(ALL_ARTIFACTS) == 8
 
 
 def _artifact_key(name: str) -> str:
     """meta.json artifact key -> PaletteArtifacts TypedDict field.
 
     Written out rather than derived by string surgery because the btop names
-    carry an embedded hyphen (``colors.btop-minimal.theme`` ->
-    ``colors_btop_minimal``), not a leading ``colors.`` prefix.
+    carry an embedded hyphen (``colors.btop.theme`` ->
+    ``colors_btop``), not a leading ``colors.`` prefix.
     """
     return {
         "colors.yaml": "colors_yaml",
@@ -86,9 +80,7 @@ def _artifact_key(name: str) -> str:
         "colors.sequences": "colors_sequences",
         "colors.rasi": "colors_rasi",
         "colors.kitty": "colors_kitty",
-        "colors.btop-minimal.theme": "colors_btop_minimal",
-        "colors.btop-balanced.theme": "colors_btop_balanced",
-        "colors.btop-full.theme": "colors_btop_full",
+        "colors.btop.theme": "colors_btop",
     }[name]
 
 
@@ -103,12 +95,12 @@ def _populate_entry(entry: Path, names: tuple[str, ...]) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# 5.4 — the CSG invocation carries all three --format flags
+# 5.4 — the CSG invocation carries the --format flag
 # ---------------------------------------------------------------------------
 
 
 def _fake_csg_run(tmp_path: Path) -> MagicMock:
-    """subprocess.run stand-in that records argv and writes all ten outputs."""
+    """subprocess.run stand-in that records argv and writes all eight outputs."""
 
     def fake_run(
         args: list[str],
@@ -164,7 +156,7 @@ def _generate_and_capture_argv(
     return argv
 
 
-@pytest.mark.parametrize("fmt", ["btop-minimal.theme", "btop-balanced.theme", "btop-full.theme"])
+@pytest.mark.parametrize("fmt", ["btop.theme"])
 def test_csg_argv_requests_each_btop_format(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fmt: str
 ) -> None:
@@ -181,7 +173,7 @@ def test_csg_argv_requests_each_btop_format(
     assert ("--format", fmt) in pairs, f"--format {fmt} missing from CSG argv: {argv}"
 
 
-def test_csg_argv_requests_exactly_ten_formats(
+def test_csg_argv_requests_exactly_eight_formats(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The full requested set, asserted as an ordered format list."""
@@ -198,13 +190,11 @@ def test_csg_argv_requests_exactly_ten_formats(
         "sequences",
         "rasi",
         "kitty",
-        "btop-minimal.theme",
-        "btop-balanced.theme",
-        "btop-full.theme",
+        "btop.theme",
     ]
 
 
-def test_csg_adapter_hashes_the_three_btop_outputs(
+def test_csg_adapter_hashes_the_btop_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """1.3: the produced PaletteArtifacts carries real hashes for all three."""
@@ -227,7 +217,7 @@ def test_csg_adapter_fails_loud_when_a_btop_output_is_missing(
 ) -> None:
     """1.2: the existence assert covers the btop artifacts too.
 
-    A csg that silently stops emitting ``colors.btop-full.theme`` must fail the
+    A csg that silently stops emitting ``colors.btop.theme`` must fail the
     derivation, not produce an entry with a silently-missing hash.
     """
     from runtime.adapters.csg_adapter import CsgAdapter
@@ -240,7 +230,7 @@ def test_csg_adapter_fails_loud_when_a_btop_output_is_missing(
 
     def dropping_run(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         result = real_side_effect(args, **kwargs)
-        (Path(kwargs["env"]["COLORSCHEME__OUTPUT__DIRECTORY"]) / "colors.btop-full.theme").unlink()
+        (Path(kwargs["env"]["COLORSCHEME__OUTPUT__DIRECTORY"]) / "colors.btop.theme").unlink()
         return result
 
     monkeypatch.setattr(
@@ -267,7 +257,7 @@ def test_palette_artifact_names_contains_each_btop_artifact(name: str) -> None:
 
 def test_palette_artifact_names_is_exactly_the_ten_artifacts() -> None:
     assert set(PALETTE_ARTIFACT_NAMES) == set(ALL_ARTIFACTS)
-    assert len(PALETTE_ARTIFACT_NAMES) == 10
+    assert len(PALETTE_ARTIFACT_NAMES) == 8
 
 
 def test_btop_fields_exist_on_palette_artifacts_typeddict() -> None:
@@ -322,9 +312,9 @@ def test_load_palette_entry_reads_all_three_btop_fields(tmp_path: Path) -> None:
     )
 
     art = CacheSeeder(tmp_path).load_palette_entry(entry).artifact_hashes
-    assert art["colors_btop_minimal"] == hashes["colors.btop-minimal.theme"]
-    assert art["colors_btop_balanced"] == hashes["colors.btop-balanced.theme"]
-    assert art["colors_btop_full"] == hashes["colors.btop-full.theme"]
+    assert art["colors_btop"] == hashes["colors.btop.theme"]
+    assert art["colors_btop"] == hashes["colors.btop.theme"]
+    assert art["colors_btop"] == hashes["colors.btop.theme"]
 
 
 # ---------------------------------------------------------------------------
@@ -476,7 +466,7 @@ def test_missing_btop_source_is_skipped_with_a_warning_and_no_dangling_link(
     # dangling link found below is a palette artifact, not the wallpaper.
     seeder = CacheSeeder(tmp_path)
     entry = tmp_path / "cache" / "palettes" / ("b" * 64)
-    present = tuple(n for n in ALL_ARTIFACTS if n != "colors.btop-balanced.theme")
+    present = tuple(n for n in ALL_ARTIFACTS if n != "colors.btop.theme")
     _populate_entry(entry, present)
 
     with caplog.at_level(logging.WARNING, logger="runtime.adapters.seeder"):
@@ -487,9 +477,9 @@ def test_missing_btop_source_is_skipped_with_a_warning_and_no_dangling_link(
         )
 
     names = {p.name for p in created}
-    assert "colors.btop-balanced.theme" not in names
+    assert "colors.btop.theme" not in names
     current = tmp_path / "current"
-    skipped = current / "colors.btop-balanced.theme"
+    skipped = current / "colors.btop.theme"
     assert not skipped.exists()
     assert not skipped.is_symlink(), "a skipped artifact must leave no dangling symlink"
     for link in current.iterdir():
@@ -498,7 +488,7 @@ def test_missing_btop_source_is_skipped_with_a_warning_and_no_dangling_link(
 
     warnings = [r for r in caplog.records if "palette artifact missing" in r.getMessage()]
     assert len(warnings) == 1
-    assert "colors.btop-balanced.theme" in warnings[0].getMessage()
+    assert "colors.btop.theme" in warnings[0].getMessage()
 
 
 # ---------------------------------------------------------------------------

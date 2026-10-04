@@ -297,9 +297,7 @@ PALETTE_ARTIFACT_NAMES: Final[tuple[str, ...]] = (
     "colors.sequences",
     "colors.rasi",
     "colors.kitty",
-    "colors.btop-minimal.theme",
-    "colors.btop-balanced.theme",
-    "colors.btop-full.theme",
+    "colors.btop.theme",
 )
 
 
@@ -738,13 +736,7 @@ class DerivationPipeline:
                     "colors.sequences": generated.artifact_hashes["colors_sequences"],
                     "colors.rasi": generated.artifact_hashes["colors_rasi"],
                     "colors.kitty": generated.artifact_hashes["colors_kitty"],
-                    "colors.btop-minimal.theme": generated.artifact_hashes[
-                        "colors_btop_minimal"
-                    ],
-                    "colors.btop-balanced.theme": generated.artifact_hashes[
-                        "colors_btop_balanced"
-                    ],
-                    "colors.btop-full.theme": generated.artifact_hashes["colors_btop_full"],
+                    "colors.btop.theme": generated.artifact_hashes["colors_btop"],
                 },
                 generated_at=generated.generated_at,
             )

@@ -43,7 +43,7 @@ def test_palette_artifact_names_include_kitty() -> None:
     from runtime.application.derive import PALETTE_ARTIFACT_NAMES
 
     assert "colors.kitty" in PALETTE_ARTIFACT_NAMES
-    assert len(PALETTE_ARTIFACT_NAMES) == 10
+    assert len(PALETTE_ARTIFACT_NAMES) == 8
 
 
 def _make_wallpaper_hash() -> str:
@@ -118,9 +118,9 @@ class _FakeCsg:
         (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         (output_dir / "colors.rasi").write_text("* { background: #000; }")
         (output_dir / "colors.kitty").write_text("* { background: #000; }")
-        (output_dir / "colors.btop-minimal.theme").write_text("theme[colors.main_bg]=#000000\n")
-        (output_dir / "colors.btop-balanced.theme").write_text("theme[colors.main_bg]=#000000\n")
-        (output_dir / "colors.btop-full.theme").write_text("theme[colors.main_bg]=#000000\n")
+        (output_dir / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
+        (output_dir / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
+        (output_dir / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -135,9 +135,7 @@ class _FakeCsg:
                 colors_sequences=hash_file(output_dir / "colors.sequences"),
                 colors_rasi=hash_file(output_dir / "colors.rasi"),
                 colors_kitty=hash_file(output_dir / "colors.kitty"),
-                colors_btop_minimal=hash_file(output_dir / "colors.btop-minimal.theme"),
-                colors_btop_balanced=hash_file(output_dir / "colors.btop-balanced.theme"),
-                colors_btop_full=hash_file(output_dir / "colors.btop-full.theme"),
+                colors_btop=hash_file(output_dir / "colors.btop.theme"),
             ),
             generated_at=_now_z(),
         )
@@ -360,9 +358,9 @@ class TestCacheSeederWriteMeta:
                 "colors.sequences": "b" * 64,
                 "colors.rasi": "c" * 64,
                 "colors.kitty": "9" * 64,
-                "colors.btop-minimal.theme": "9" * 64,
-                "colors.btop-balanced.theme": "9" * 64,
-                "colors.btop-full.theme": "9" * 64,
+                "colors.btop.theme": "9" * 64,
+                "colors.btop.theme": "9" * 64,
+                "colors.btop.theme": "9" * 64,
             },
             generated_at="2026-01-01T00:00:00Z",
         )
@@ -661,9 +659,7 @@ class TestSeedCacheUseCaseRunsOnFirstRun:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
-            "colors.btop-minimal.theme",
-            "colors.btop-balanced.theme",
-            "colors.btop-full.theme",
+            "colors.btop.theme",
         ):
             assert (palette_dir / name).is_file(), f"missing {name}"
         meta = json.loads((palette_dir / "meta.json").read_text())
@@ -683,9 +679,7 @@ class TestSeedCacheUseCaseRunsOnFirstRun:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
-            "colors.btop-minimal.theme",
-            "colors.btop-balanced.theme",
-            "colors.btop-full.theme",
+            "colors.btop.theme",
         ):
             assert meta["artifact_hashes"][name] == hash_file(palette_dir / name)
         # effects/icons likewise carry real hashes
@@ -746,9 +740,7 @@ class TestSeedCacheUseCaseRunsOnFirstRun:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
-            "colors.btop-minimal.theme",
-            "colors.btop-balanced.theme",
-            "colors.btop-full.theme",
+            "colors.btop.theme",
         ):
             link = current_dir / name
             assert link.is_symlink(), f"missing symlink {name}"
@@ -1010,19 +1002,15 @@ class TestConsumerPointerSpec:
     GTK3 = "config/gtk-3.0/colors.css"
     GTK4 = "config/gtk-4.0/colors.css"
     ROFI = "config/rofi/colors.rasi"
-    # btop's three pointers (provision-btop-config). NOT a rename-on-link:
+    # btop's single pointer (provision-btop-config). NOT a rename-on-link:
     # the destination basename MUST equal the cache artifact name, because
     # btop matches `color_theme` against the themes it discovered in its own
     # theme dir by name (btop_theme.cpp:451-471).
     BTOP = (
-        "config/btop/themes/colors.btop-minimal.theme",
-        "config/btop/themes/colors.btop-balanced.theme",
-        "config/btop/themes/colors.btop-full.theme",
+        "config/btop/themes/colors.btop.theme",
     )
     BTOP_ARTIFACTS = (
-        "colors.btop-minimal.theme",
-        "colors.btop-balanced.theme",
-        "colors.btop-full.theme",
+        "colors.btop.theme",
     )
 
     @staticmethod
@@ -1032,9 +1020,7 @@ class TestConsumerPointerSpec:
             "colors.gtk.css",
             "colors.adw.css",
             "colors.rasi",
-            "colors.btop-minimal.theme",
-            "colors.btop-balanced.theme",
-            "colors.btop-full.theme",
+            "colors.btop.theme",
         ),
     ) -> None:
         current = state_root / "current"
@@ -1099,12 +1085,12 @@ class TestConsumerPointerSpec:
             "role owns config/btop/themes/"
         )
         warnings = [r.message for r in caplog.records if "destination parent missing" in r.message]
-        assert len(warnings) == 3
+        assert len(warnings) == 1
 
     def test_btop_pointers_skip_when_the_target_artifact_is_missing(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Per-pointer guard: a missing current/colors.btop-*.theme skips only
+        """Per-pointer guard: a missing current/colors.btop.theme skips only
         that pointer — never a dangling consumer link."""
         install_spine = tmp_path / "install"
         self._parents(install_spine, btop=True)
@@ -1120,7 +1106,7 @@ class TestConsumerPointerSpec:
         for rel in self.BTOP:
             dest = install_spine / rel
             assert not dest.exists() and not dest.is_symlink()
-        assert any("colors.btop-minimal.theme missing" in r.message for r in caplog.records)
+        assert any("colors.btop.theme missing" in r.message for r in caplog.records)
 
     def test_gtk_pointers_skip_with_warning_when_parents_absent(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -1144,9 +1130,9 @@ class TestConsumerPointerSpec:
         assert not (install_spine / "config" / "rofi").exists()
         assert not (install_spine / "config" / "btop").exists()
         parent_warnings = [r for r in caplog.records if "destination parent missing" in r.message]
-        assert len(parent_warnings) == 6, (
-            "four parents absent (gtk-3.0, gtk-4.0, rofi, btop/themes) x ... "
-            "plus the two btop pointers whose parent is the same missing dir"
+        assert len(parent_warnings) == 4, (
+            "four pointers whose destination parent is absent: gtk-3.0, gtk-4.0, "
+            "rofi, and the single btop pointer under config/btop/themes"
         )
 
     def test_regular_file_at_dest_replaced_with_symlink(self, tmp_path: Path) -> None:
@@ -1186,7 +1172,7 @@ class TestConsumerPointerSpec:
             assert not dest.exists() and not dest.is_symlink()
         assert any("colors.adw.css missing" in r.message for r in caplog.records)
         assert any("colors.rasi missing" in r.message for r in caplog.records)
-        assert any("colors.btop-minimal.theme missing" in r.message for r in caplog.records)
+        assert any("colors.btop.theme missing" in r.message for r in caplog.records)
 
     def test_null_palette_removes_all_existing_pointers(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -1205,7 +1191,7 @@ class TestConsumerPointerSpec:
             dest = install_spine / rel
             assert not dest.exists() and not dest.is_symlink()
         removals = [r for r in caplog.records if "palette layer is null" in r.message]
-        assert len(removals) == 7
+        assert len(removals) == 5
 
     def test_null_palette_missing_ok_no_crash(self, tmp_path: Path) -> None:
         """missing_ok: a null palette with NO existing pointers is clean."""
@@ -1232,9 +1218,7 @@ class TestConsumerPointerSpec:
             (self.GTK3, "colors.gtk.css"),
             (self.GTK4, "colors.adw.css"),
             (self.ROFI, "colors.rasi"),
-            (self.BTOP[0], "colors.btop-minimal.theme"),
-            (self.BTOP[1], "colors.btop-balanced.theme"),
-            (self.BTOP[2], "colors.btop-full.theme"),
+            (self.BTOP[0], "colors.btop.theme"),
         ):
             assert os.readlink(install_spine / rel) == str(tmp_path / "current" / target)
 
@@ -1332,9 +1316,7 @@ class TestPreGrowthPaletteEntryMigration:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
-            "colors.btop-minimal.theme",
-            "colors.btop-balanced.theme",
-            "colors.btop-full.theme",
+            "colors.btop.theme",
         }
         for name in meta["artifact_hashes"]:
             assert (palette_dir / name).is_file(), f"missing regenerated artifact {name}"
@@ -1377,9 +1359,7 @@ class TestPreGrowthPaletteEntryMigration:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
-            "colors.btop-minimal.theme",
-            "colors.btop-balanced.theme",
-            "colors.btop-full.theme",
+            "colors.btop.theme",
         }
         caplog.clear()
         with caplog.at_level(logging.INFO, logger="runtime.application.derive"):
@@ -1482,9 +1462,7 @@ class TestPreGrowthPaletteEntryMigration:
         assert entry2.entry_hash == ph
         assert (entry / "colors.kitty").is_file()
         for name in (
-            "colors.btop-minimal.theme",
-            "colors.btop-balanced.theme",
-            "colors.btop-full.theme",
+            "colors.btop.theme",
         ):
             assert (entry / name).is_file(), f"missing regenerated artifact {name}"
         meta = json.loads((entry / "meta.json").read_text())
@@ -1496,9 +1474,7 @@ class TestPreGrowthPaletteEntryMigration:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
-            "colors.btop-minimal.theme",
-            "colors.btop-balanced.theme",
-            "colors.btop-full.theme",
+            "colors.btop.theme",
         }
         # Second pass is a clean hit — no re-eviction.
         entry3, hit3 = DerivationPipeline(
@@ -1540,14 +1516,12 @@ class TestRepointCurrentSymlinksPaletteArtifactSkip:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
-            "colors.btop-minimal.theme",
-            "colors.btop-balanced.theme",
-            "colors.btop-full.theme",
+            "colors.btop.theme",
         ):
             assert missing not in names, f"{missing} must be skipped, never dangling"
-        assert sum("palette artifact missing" in r.message for r in caplog.records) == 9
+        assert sum("palette artifact missing" in r.message for r in caplog.records) == 7
 
-    def test_all_ten_artifacts_repointed(self, tmp_path: Path) -> None:
+    def test_all_eight_artifacts_repointed(self, tmp_path: Path) -> None:
         seeder = CacheSeeder(tmp_path)
         ph = "b" * 64
         entry = tmp_path / "cache" / "palettes" / ph
@@ -1560,9 +1534,7 @@ class TestRepointCurrentSymlinksPaletteArtifactSkip:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
-            "colors.btop-minimal.theme",
-            "colors.btop-balanced.theme",
-            "colors.btop-full.theme",
+            "colors.btop.theme",
         ):
             (entry / name).write_text(name)
         created = seeder.repoint_current_symlinks(
@@ -1581,7 +1553,5 @@ class TestRepointCurrentSymlinksPaletteArtifactSkip:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
-            "colors.btop-minimal.theme",
-            "colors.btop-balanced.theme",
-            "colors.btop-full.theme",
+            "colors.btop.theme",
         }

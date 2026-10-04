@@ -89,7 +89,7 @@ def _find_templates_dir() -> Path | None:
 
 @pytest.mark.xfail(
     reason=(
-        "Requires the installed csg binary to support the btop-minimal/"
+        "Requires the installed csg binary to support the btop theme "
         "balanced/full.theme formats — added by the sibling OpenSpec change "
         "add-csg-btop-theme-formats, which is CSG-side and not part of this "
         "runtime change. Non-strict: it flips to XPASS automatically once "
@@ -161,9 +161,7 @@ def test_csg_adapter_integration_real_binary(tmp_path: Path) -> None:
         "colors.sequences",
         "colors.rasi",
         "colors.kitty",
-        "colors.btop-minimal.theme",
-        "colors.btop-balanced.theme",
-        "colors.btop-full.theme",
+        "colors.btop.theme",
     ):
         p = output_dir / name
         assert p.is_file(), f"expected {name} in {output_dir}"
@@ -181,14 +179,14 @@ def test_csg_adapter_integration_real_binary(tmp_path: Path) -> None:
     assert entry.artifact_hashes["colors_sequences"] == hash_file(output_dir / "colors.sequences")
     assert entry.artifact_hashes["colors_rasi"] == hash_file(output_dir / "colors.rasi")
     assert entry.artifact_hashes["colors_kitty"] == hash_file(output_dir / "colors.kitty")
-    assert entry.artifact_hashes["colors_btop_minimal"] == hash_file(
-        output_dir / "colors.btop-minimal.theme"
+    assert entry.artifact_hashes["colors_btop"] == hash_file(
+        output_dir / "colors.btop.theme"
     )
-    assert entry.artifact_hashes["colors_btop_balanced"] == hash_file(
-        output_dir / "colors.btop-balanced.theme"
+    assert entry.artifact_hashes["colors_btop"] == hash_file(
+        output_dir / "colors.btop.theme"
     )
-    assert entry.artifact_hashes["colors_btop_full"] == hash_file(
-        output_dir / "colors.btop-full.theme"
+    assert entry.artifact_hashes["colors_btop"] == hash_file(
+        output_dir / "colors.btop.theme"
     )
     # Output dir under state_root/cache/palettes
     assert output_dir.is_dir()

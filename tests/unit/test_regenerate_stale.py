@@ -35,7 +35,7 @@ TS = "2026-09-10T00:00:00Z"
 
 #: meta.json artifact key -> PaletteArtifacts TypedDict field. Written out
 #: rather than derived by string surgery because the btop artifact names carry
-#: an embedded hyphen ("colors.btop-minimal.theme" -> "colors_btop_minimal").
+#: an embedded hyphen ("colors.btop.theme" -> "colors_btop").
 _ARTIFACT_KEY: dict[str, str] = {
     "colors.yaml": "colors_yaml",
     "colors.conf": "colors_conf",
@@ -44,9 +44,9 @@ _ARTIFACT_KEY: dict[str, str] = {
     "colors.sequences": "colors_sequences",
     "colors.rasi": "colors_rasi",
     "colors.kitty": "colors_kitty",
-    "colors.btop-minimal.theme": "colors_btop_minimal",
-    "colors.btop-balanced.theme": "colors_btop_balanced",
-    "colors.btop-full.theme": "colors_btop_full",
+    "colors.btop.theme": "colors_btop",
+    "colors.btop.theme": "colors_btop",
+    "colors.btop.theme": "colors_btop",
 }
 
 def _entries(
@@ -71,9 +71,9 @@ def _entries(
                 "colors.sequences": "e" * 64,
                 "colors.rasi": "e" * 64,
                 "colors.kitty": "e" * 64,
-                "colors.btop-minimal.theme": "e" * 64,
-                "colors.btop-balanced.theme": "e" * 64,
-                "colors.btop-full.theme": "e" * 64,
+                "colors.btop.theme": "e" * 64,
+                "colors.btop.theme": "e" * 64,
+                "colors.btop.theme": "e" * 64,
             },
             generated_at=TS,
         )
@@ -576,9 +576,9 @@ class TestRegenerateEndToEnd:
                     "colors.sequences": b"seq",
                     "colors.rasi": b"rasi",
                     "colors.kitty": b"kitty",
-                    "colors.btop-minimal.theme": b"minimal",
-                    "colors.btop-balanced.theme": b"balanced",
-                    "colors.btop-full.theme": b"full",
+                    "colors.btop.theme": b"minimal",
+                    "colors.btop.theme": b"balanced",
+                    "colors.btop.theme": b"full",
                 }
                 hashes = {}
                 for name, content in artifacts.items():

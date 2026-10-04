@@ -7,8 +7,8 @@ The table is contract data shared with ``shared-data-contract.md``
     gtk-3.0 → {install}/config/gtk-3.0/colors.css → current/colors.gtk.css
     gtk-4.0 → {install}/config/gtk-4.0/colors.css → current/colors.adw.css
     rofi    → {install}/config/rofi/colors.rasi   → current/colors.rasi
-    btop-minimal  → {install}/config/btop/themes/colors.btop-minimal.theme  →
-                    current/colors.btop-minimal.theme   (likewise balanced/full)
+    btop    → {install}/config/btop/themes/colors.btop.theme →
+                    current/colors.btop.theme
 
 Adding a consumer = ONE spec line + its ``@import`` — never adapter code.
 The ``config/gtk-{3,4}.0/`` spine dirs arrive in Story gt-3-1; until then
@@ -27,22 +27,23 @@ from runtime.ports.consumer_path_spec import IConsumerPathSpec
 
 
 class StaticConsumerPathSpec(IConsumerPathSpec):
-    """Module-default spec: the pinned 7-entry table + default rules."""
+    """Module-default spec: the pinned 5-entry table + default rules."""
 
     def consumer_pointers(self) -> tuple[ConsumerPointer, ...]:
         """Return the pinned table in contract order (ags, gtk-3.0, gtk-4.0,
-        rofi, btop-minimal, btop-balanced, btop-full).
+        rofi, btop).
 
-        The three btop pointers are NOT an @import-style rename: btop's
+        The btop pointer is NOT an @import-style rename: btop's
         ``Theme::setTheme`` (btop_theme.cpp:451-471) matches ``color_theme``
         only against themes it discovered while scanning its theme dirs at
         startup, so each generated theme must physically exist under
         ``$XDG_CONFIG_HOME/btop/themes`` — reachable here because
         ``~/.config/btop`` is a symlink into the spine (config_links). The
         path basename is therefore significant and must stay
-        ``colors.btop-<difficulty>.theme`` so the rendered ``color_theme =
-        "csg-minimal.theme"``... matched by filename against the discovered
-        entry.
+        ``colors.btop.theme`` so the rendered ``color_theme =
+        "colors.btop.theme"`` is matched by filename against the discovered
+        entry. A mismatch does not error — btop silently falls back to
+        ``Default_theme``.
         """
         return (
             ConsumerPointer(path="config/ags/colors.css", target="colors.gtk.css"),
@@ -50,16 +51,8 @@ class StaticConsumerPathSpec(IConsumerPathSpec):
             ConsumerPointer(path="config/gtk-4.0/colors.css", target="colors.adw.css"),
             ConsumerPointer(path="config/rofi/colors.rasi", target="colors.rasi"),
             ConsumerPointer(
-                path="config/btop/themes/colors.btop-minimal.theme",
-                target="colors.btop-minimal.theme",
-            ),
-            ConsumerPointer(
-                path="config/btop/themes/colors.btop-balanced.theme",
-                target="colors.btop-balanced.theme",
-            ),
-            ConsumerPointer(
-                path="config/btop/themes/colors.btop-full.theme",
-                target="colors.btop-full.theme",
+                path="config/btop/themes/colors.btop.theme",
+                target="colors.btop.theme",
             ),
         )
 

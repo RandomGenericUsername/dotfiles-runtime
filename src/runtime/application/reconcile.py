@@ -501,9 +501,7 @@ class ReconcileDesktopStateUseCase:
                 "colors.sequences",
                 "colors.rasi",
                 "colors.kitty",
-                "colors.btop-minimal.theme",
-                "colors.btop-balanced.theme",
-                "colors.btop-full.theme",
+                "colors.btop.theme",
             ):
                 expected[artifact] = "palette artifact missing from cache entry"
         if state.effects is not None:
@@ -547,9 +545,7 @@ class ReconcileDesktopStateUseCase:
                     "colors.sequences",
                     "colors.rasi",
                     "colors.kitty",
-                    "colors.btop-minimal.theme",
-                    "colors.btop-balanced.theme",
-                    "colors.btop-full.theme",
+                    "colors.btop.theme",
                 }
             )
         if state.effects is not None:
@@ -611,9 +607,7 @@ class ReconcileDesktopStateUseCase:
                 "colors.sequences",
                 "colors.rasi",
                 "colors.kitty",
-                "colors.btop-minimal.theme",
-                "colors.btop-balanced.theme",
-                "colors.btop-full.theme",
+                "colors.btop.theme",
             ):
                 targets[artifact] = pal_dir / artifact
         if state.effects is not None:

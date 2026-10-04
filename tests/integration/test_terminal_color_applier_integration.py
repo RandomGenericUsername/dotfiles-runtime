@@ -88,9 +88,9 @@ class _FakeCsg:
         (output_dir / "colors.sequences").write_bytes(_pinned_sequences_bytes())
         (output_dir / "colors.rasi").write_text("* { background: #000; }")
         (output_dir / "colors.kitty").write_text("* { background: #000; }")
-        (output_dir / "colors.btop-minimal.theme").write_text("theme[colors.main_bg]=#000000\n")
-        (output_dir / "colors.btop-balanced.theme").write_text("theme[colors.main_bg]=#000000\n")
-        (output_dir / "colors.btop-full.theme").write_text("theme[colors.main_bg]=#000000\n")
+        (output_dir / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
+        (output_dir / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
+        (output_dir / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -105,9 +105,7 @@ class _FakeCsg:
                 colors_sequences=hash_file(output_dir / "colors.sequences"),
                 colors_rasi=hash_file(output_dir / "colors.rasi"),
                 colors_kitty=hash_file(output_dir / "colors.kitty"),
-                colors_btop_minimal=hash_file(output_dir / "colors.btop-minimal.theme"),
-                colors_btop_balanced=hash_file(output_dir / "colors.btop-balanced.theme"),
-                colors_btop_full=hash_file(output_dir / "colors.btop-full.theme"),
+                colors_btop=hash_file(output_dir / "colors.btop.theme"),
             ),
             generated_at=_now_z(),
         )

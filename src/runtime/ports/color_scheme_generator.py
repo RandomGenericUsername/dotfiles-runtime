@@ -17,7 +17,6 @@ class IColorSchemeGenerator(ABC):
 
         Writes color scheme artifacts (colors.yaml, colors.conf, colors.gtk.css,
         colors.adw.css, colors.sequences, colors.rasi, colors.kitty,
-        colors.btop-minimal.theme, colors.btop-balanced.theme,
-        colors.btop-full.theme) into output_dir via env override. Returns the
+        colors.btop.theme) into output_dir via env override. Returns the
         PaletteEntry with artifact_hashes computed.
         """

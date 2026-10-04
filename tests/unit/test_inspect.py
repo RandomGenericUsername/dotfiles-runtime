@@ -149,9 +149,7 @@ def _expected_targets(state_root: Path, state: DesktopState) -> dict[str, Path]:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
-            "colors.btop-minimal.theme",
-            "colors.btop-balanced.theme",
-            "colors.btop-full.theme",
+            "colors.btop.theme",
         ):
             targets[artifact] = pal_dir / artifact
     if state.effects is not None:
@@ -177,9 +175,7 @@ def _make_current_tree(state_root: Path, state: DesktopState) -> dict[str, Path]
     # (provision-btop-config). They are NOT part of the current-symlink
     # projection above — only of the consumer-pointer one.
     for name in (
-        "colors.btop-minimal.theme",
-        "colors.btop-balanced.theme",
-        "colors.btop-full.theme",
+        "colors.btop.theme",
     ):
         artifact = state_root / "cache" / "palettes" / "p1" / name
         artifact.parent.mkdir(parents=True, exist_ok=True)
@@ -279,9 +275,7 @@ class TestInspectSymlinkReflection:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
-            "colors.btop-minimal.theme",
-            "colors.btop-balanced.theme",
-            "colors.btop-full.theme",
+            "colors.btop.theme",
             "effects",
             "icons",
         }
@@ -344,11 +338,7 @@ class TestInspectConsumerPointerProjection:
     GTK3 = "config/gtk-3.0/colors.css"
     GTK4 = "config/gtk-4.0/colors.css"
     ROFI = "config/rofi/colors.rasi"
-    BTOP = (
-        "config/btop/themes/colors.btop-minimal.theme",
-        "config/btop/themes/colors.btop-balanced.theme",
-        "config/btop/themes/colors.btop-full.theme",
-    )
+    BTOP = ("config/btop/themes/colors.btop.theme",)
 
     @staticmethod
     def _make_use_case(tmp_path: Path, state: DesktopState, *, with_spec: bool = True) -> Any:

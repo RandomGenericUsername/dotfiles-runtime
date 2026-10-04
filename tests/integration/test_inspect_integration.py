@@ -124,9 +124,7 @@ def _build_live_tree(state_root: Path, state: DesktopState) -> dict[str, Path]:
         "colors.sequences",
         "colors.rasi",
         "colors.kitty",
-        "colors.btop-minimal.theme",
-        "colors.btop-balanced.theme",
-        "colors.btop-full.theme",
+        "colors.btop.theme",
     ):
         targets[artifact] = pal_dir / artifact
     assert state.effects is not None
