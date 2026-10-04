@@ -78,6 +78,7 @@ def test_constants() -> None:
         "settings",
         "volume",
         "microphone",
+        "bluetooth",
     }
 
 

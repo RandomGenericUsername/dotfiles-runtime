@@ -35,6 +35,11 @@ BAR_GROUPS: Final[tuple[str, ...]] = (
     # every other bar icon, so they need the same light-wallpaper retarget.
     "volume",
     "microphone",
+    # Bluetooth bar indicator: floats over the wallpaper like every other bar
+    # glyph, so it needs the same light-wallpaper retarget. Its `bluetooth`
+    # group declares COLOR_FOREGROUND at GROUP level only (no variant-level
+    # pins), which is precisely what makes it eligible here.
+    "bluetooth",
 )
 
 #: Placeholders eligible for retargeting (D5). Literals (``#…``),
