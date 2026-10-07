@@ -180,6 +180,9 @@ class TestSaveAndLoadProjectionRoundtrip:
             "colors_sequences": SENTINEL_HASH,
             "colors_rasi": SENTINEL_HASH,
             "colors_kitty": SENTINEL_HASH,
+            "colors_btop": SENTINEL_HASH,
+            "colors_btop": SENTINEL_HASH,
+            "colors_btop": SENTINEL_HASH,
         }
 
     def test_roundtrip_with_mpvpaper_monitor(self, tmp_path: Path) -> None:

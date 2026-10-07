@@ -88,6 +88,9 @@ class _FakeCsg:
         (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         (output_dir / "colors.rasi").write_text("* { background: #000; }")
         (output_dir / "colors.kitty").write_text("* { background: #000; }")
+        (output_dir / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
+        (output_dir / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
+        (output_dir / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -102,6 +105,7 @@ class _FakeCsg:
                 colors_sequences=hash_file(output_dir / "colors.sequences"),
                 colors_rasi=hash_file(output_dir / "colors.rasi"),
                 colors_kitty=hash_file(output_dir / "colors.kitty"),
+                colors_btop=hash_file(output_dir / "colors.btop.theme"),
             ),
             generated_at=_now_z(),
         )
@@ -350,6 +354,7 @@ class TestReconcileHappyPath:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
+            "colors.btop.theme",
             "effects",
             "icons",
         }

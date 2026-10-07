@@ -401,6 +401,7 @@ def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list
     terminal).
     """
     from runtime.adapters.ags_reloader import AgsReloader
+    from runtime.adapters.btop_reloader import BtopReloader
     from runtime.adapters.hyprland_reloader import HyprlandReloader
     from runtime.adapters.kitty_reloader import KittyReloader
     from runtime.adapters.terminal_color_applier import TerminalColorApplier
@@ -412,6 +413,10 @@ def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list
     if include_terminal:
         reloaders.append(TerminalColorApplier(state_root=state_root))
     reloaders.append(KittyReloader())
+    # LAST: btop re-reads its theme from disk on SIGUSR2, so the consumer
+    # pointer must already have been repointed by the seeder. Mirrors the
+    # KittyReloader ordering constraint.
+    reloaders.append(BtopReloader())
     return reloaders
 
 

@@ -357,6 +357,7 @@ class TestWallpaperSetCompositionRootWiring:
         )
         from runtime.adapters.itr_adapter import ItrAdapter
         from runtime.adapters.json_state_repository import JsonStateRepository
+        from runtime.adapters.btop_reloader import BtopReloader
         from runtime.adapters.kitty_reloader import KittyReloader
         from runtime.adapters.seeder import CacheSeeder
         from runtime.adapters.terminal_color_applier import TerminalColorApplier
@@ -400,6 +401,7 @@ class TestWallpaperSetCompositionRootWiring:
             AgsReloader,
             TerminalColorApplier,
             KittyReloader,
+            BtopReloader,
         ]
         assert not any(type(r) is Gtk4AppReloader for r in reloaders)
         assert reloaders[2]._state_root == captured["reconcile_kwargs"]["state_root"]  # type: ignore[attr-defined]

@@ -33,6 +33,22 @@ NEW_IH = "ff" * 32
 TS = "2026-09-10T00:00:00Z"
 
 
+#: meta.json artifact key -> PaletteArtifacts TypedDict field. Written out
+#: rather than derived by string surgery because the btop artifact names carry
+#: an embedded hyphen ("colors.btop.theme" -> "colors_btop").
+_ARTIFACT_KEY: dict[str, str] = {
+    "colors.yaml": "colors_yaml",
+    "colors.conf": "colors_conf",
+    "colors.gtk.css": "colors_gtk_css",
+    "colors.adw.css": "colors_adw_css",
+    "colors.sequences": "colors_sequences",
+    "colors.rasi": "colors_rasi",
+    "colors.kitty": "colors_kitty",
+    "colors.btop.theme": "colors_btop",
+    "colors.btop.theme": "colors_btop",
+    "colors.btop.theme": "colors_btop",
+}
+
 def _entries(
     palette_hash: str | None = PH,
     effects_hash: str | None = EH,
@@ -55,6 +71,9 @@ def _entries(
                 "colors.sequences": "e" * 64,
                 "colors.rasi": "e" * 64,
                 "colors.kitty": "e" * 64,
+                "colors.btop.theme": "e" * 64,
+                "colors.btop.theme": "e" * 64,
+                "colors.btop.theme": "e" * 64,
             },
             generated_at=TS,
         )
@@ -557,11 +576,14 @@ class TestRegenerateEndToEnd:
                     "colors.sequences": b"seq",
                     "colors.rasi": b"rasi",
                     "colors.kitty": b"kitty",
+                    "colors.btop.theme": b"minimal",
+                    "colors.btop.theme": b"balanced",
+                    "colors.btop.theme": b"full",
                 }
                 hashes = {}
                 for name, content in artifacts.items():
                     (output_dir / name).write_bytes(content)
-                    hashes[name.replace(".", "_").replace("-", "_")] = _h(content)
+                    hashes[_ARTIFACT_KEY[name]] = _h(content)
                 return PaletteEntry(
                     hash_algorithm="sha256",
                     kind="palette",

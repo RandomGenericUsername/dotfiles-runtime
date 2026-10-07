@@ -40,6 +40,7 @@ PALETTE_LINK_NAMES: tuple[str, ...] = (
     "colors.sequences",
     "colors.rasi",
     "colors.kitty",
+    "colors.btop.theme",
 )
 
 

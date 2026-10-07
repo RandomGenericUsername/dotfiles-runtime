@@ -64,6 +64,9 @@ def _fake_success_factory() -> MagicMock:
         (out / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         (out / "colors.rasi").write_text("* { background: #000; }\n")
         (out / "colors.kitty").write_text("* { background: #000; }")
+        (out / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
+        (out / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
+        (out / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
         return subprocess.CompletedProcess(args, 0, "", "")
 
     return MagicMock(side_effect=fake_run)
@@ -128,8 +131,8 @@ def test_csg_generate_env_override_writes_to_output_dir(
     assert "-o" not in args_passed
     assert "--output" not in args_passed
     assert "--format" in args_passed
-    # Ensure all seven formats present
-    assert args_passed.count("--format") == 7
+    # Ensure all ten formats present
+    assert args_passed.count("--format") == 8
     assert args_passed[args_passed.index("--format") + 1] == "yaml"
     assert args_passed[args_passed.index("--format") + 3] == "conf"
     assert args_passed[args_passed.index("--format") + 5] == "gtk.css"
@@ -137,6 +140,9 @@ def test_csg_generate_env_override_writes_to_output_dir(
     assert args_passed[args_passed.index("--format") + 9] == "sequences"
     assert args_passed[args_passed.index("--format") + 11] == "rasi"
     assert args_passed[args_passed.index("--format") + 13] == "kitty"
+    # btop themes (add-runtime-btop-theme-artifacts) — asserted by value, not
+    # by offset, so appending a format later cannot silently shift this.
+    assert "btop.theme" in args_passed
     # Verify no staging leak
     cache_root = tmp_path / "state" / "cache"
     assert list(cache_root.glob(".staging-*")) == []
@@ -234,6 +240,9 @@ def test_csg_adapter_container_env_passthrough(
         (out / "colors.sequences").write_text("seq")
         (out / "colors.rasi").write_text("rasi")
         (out / "colors.kitty").write_text("* { background: #000; }")
+        (out / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
+        (out / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
+        (out / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake_run)
@@ -471,6 +480,9 @@ def test_csg_adapter_no_settings_toml_rewrite_even_on_container(
         (out / "colors.sequences").write_text("seq")
         (out / "colors.rasi").write_text("rasi")
         (out / "colors.kitty").write_text("* { background: #000; }")
+        (out / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
+        (out / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
+        (out / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake_container_run)

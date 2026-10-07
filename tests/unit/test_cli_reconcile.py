@@ -168,6 +168,7 @@ class TestReconcileCompositionRootWiring:
         cli_main._run_reconcile()
 
         from runtime.adapters.ags_reloader import AgsReloader
+        from runtime.adapters.btop_reloader import BtopReloader
         from runtime.adapters.gtk4_app_reloader import Gtk4AppReloader
         from runtime.adapters.hyprland_reloader import HyprlandReloader
         from runtime.adapters.hyprpaper_reloader import HyprpaperWallpaperApplier
@@ -181,6 +182,7 @@ class TestReconcileCompositionRootWiring:
             AgsReloader,
             TerminalColorApplier,
             KittyReloader,
+            BtopReloader,
         ]
         assert not any(type(r) is Gtk4AppReloader for r in reloaders)
         assert reloaders[2]._state_root == captured["state_root"]  # type: ignore[attr-defined]
@@ -205,11 +207,14 @@ class TestReconcileCompositionRootWiring:
         )
         cli_main._run_reconcile(include_terminal=False)
 
+        from runtime.adapters.btop_reloader import BtopReloader
         from runtime.adapters.kitty_reloader import KittyReloader
 
         names = [type(r).__name__ for r in captured["reloaders"]]
         assert "TerminalColorApplier" not in names
-        assert names[-1] == KittyReloader.__name__
+        # Kitty before Btop: both read the palette from disk, so the seeder
+        # must already have repointed the consumer pointers.
+        assert names[-2:] == [KittyReloader.__name__, BtopReloader.__name__]
 
     def test_composition_root_passes_spine_templates_dir_to_csg(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -246,6 +251,7 @@ class TestReconcileCompositionRootWiring:
         assert csg._templates_dir == templates_dir.resolve()  # type: ignore[attr-defined]
 
     def test_build_reloaders_include_terminal_flag(self) -> None:
+        from runtime.adapters.btop_reloader import BtopReloader
         from runtime.adapters.gtk4_app_reloader import Gtk4AppReloader
         from runtime.adapters.kitty_reloader import KittyReloader
         from runtime.adapters.terminal_color_applier import TerminalColorApplier
@@ -253,10 +259,11 @@ class TestReconcileCompositionRootWiring:
         with_terminal = cli_main._build_reloaders(Path("/tmp/state"), include_terminal=True)
         without_terminal = cli_main._build_reloaders(Path("/tmp/state"), include_terminal=False)
 
-        assert type(with_terminal[-2]) is TerminalColorApplier
-        assert type(with_terminal[-1]) is KittyReloader
+        assert type(with_terminal[-3]) is TerminalColorApplier
+        assert type(with_terminal[-2]) is KittyReloader
+        assert type(with_terminal[-1]) is BtopReloader
         assert not any(type(r) is TerminalColorApplier for r in without_terminal)
-        assert type(without_terminal[-1]) is KittyReloader
+        assert type(without_terminal[-1]) is BtopReloader
         assert not any(type(r) is Gtk4AppReloader for r in with_terminal)
         assert not any(type(r) is Gtk4AppReloader for r in without_terminal)
 

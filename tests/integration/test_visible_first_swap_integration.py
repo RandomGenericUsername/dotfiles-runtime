@@ -54,6 +54,7 @@ class _FakeCsg:
             "colors.sequences",
             "colors.rasi",
             "colors.kitty",
+            "colors.btop.theme",
         ):
             (output_dir / name).write_text(f"{name} content")
         return PaletteEntry(
@@ -70,6 +71,7 @@ class _FakeCsg:
                 colors_sequences=hash_file(output_dir / "colors.sequences"),
                 colors_rasi=hash_file(output_dir / "colors.rasi"),
                 colors_kitty=hash_file(output_dir / "colors.kitty"),
+                colors_btop=hash_file(output_dir / "colors.btop.theme"),
             ),
             generated_at=_now_z(),
         )

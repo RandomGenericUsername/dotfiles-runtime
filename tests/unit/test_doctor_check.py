@@ -37,6 +37,7 @@ PALETTE_FILES = (
     "colors.sequences",
     "colors.rasi",
     "colors.kitty",
+    "colors.btop.theme",
 )
 
 
@@ -179,6 +180,9 @@ def _seed_state(state_root: Path) -> None:
                     "colors_sequences": "e" * 64,
                     "colors_rasi": "e" * 64,
                     "colors_kitty": "e" * 64,
+                    "colors_btop": "e" * 64,
+                    "colors_btop": "e" * 64,
+                    "colors_btop": "e" * 64,
                 },
                 generated_at=TS,
             ),

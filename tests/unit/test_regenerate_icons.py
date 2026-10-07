@@ -129,6 +129,9 @@ def _setup(tmp_path: Path) -> dict[str, Any]:
             "colors.sequences": "0" * 64,
             "colors.rasi": "0" * 64,
             "colors.kitty": "0" * 64,
+            "colors.btop.theme": "0" * 64,
+            "colors.btop.theme": "0" * 64,
+            "colors.btop.theme": "0" * 64,
         },
     )
     wall_dir = state_root / "cache" / "wallpapers" / wallpaper_hash
