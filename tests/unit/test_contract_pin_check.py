@@ -34,6 +34,7 @@ SYNTHETIC_PIN = "deadbeef"
 SYNTHETIC_GENERATED = {
     "contract.py": b'"""synthetic generated binding"""\nVALUE = 1\n',
     "contract.ts": b"// synthetic generated binding\nexport const VALUE = 1;\n",
+    "events.schema.json": b'{"$defs": {"Topic_x": {"type": "object"}}}\n',
 }
 
 

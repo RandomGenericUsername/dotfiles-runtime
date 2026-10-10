@@ -21,6 +21,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
+from runtime.domain.contract_generated import EVENTS_TOPICS
 from runtime.domain.models import (
     JobEnded,
     NotControllable,
@@ -52,20 +53,12 @@ CONTROL_ALLOWLIST: Mapping[str, frozenset[str]] = {
     "clipboard": frozenset({"pause", "resume", "stop"}),
 }
 
-#: Topics the hub may carry (mirrors ``contracts/event-contract.json``
-#: `topics`; embedded constant, not I/O — same standing as
-#: ``CONTROL_ALLOWLIST``). Unknown topics are never auto-created
-#: (AD-44: the hub never advertises a topic absent from the contract).
-KNOWN_TOPICS: frozenset[str] = frozenset(
-    {
-        "icme.saved",
-        "capture.state",
-        "speedtest.state",
-        "clipboard.update",
-        "clipboard.state",
-        "wallpaper.state",
-    }
-)
+#: Topics the hub may carry — derived from the vendored generated contract
+#: bindings (:data:`runtime.domain.contract_generated.EVENTS_TOPICS`, the
+#: canonical ``contracts`` artifact), never a hand-embedded literal. Unknown
+#: topics are never auto-created (AD-44: the hub never advertises a topic
+#: absent from the contract).
+KNOWN_TOPICS: frozenset[str] = frozenset(topic.name for topic in EVENTS_TOPICS)
 
 
 @dataclass(frozen=True, slots=True)

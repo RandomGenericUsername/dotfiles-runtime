@@ -6,15 +6,15 @@ record (every ``seq`` a consumer can hydrate corresponds to a stored
 payload). Order: known-topic → sv-compatibility (+ reserved keys) →
 size → depth → schema → rate. Only accepted emits consume rate quota.
 
-- **Schema:** per-topic JSON Schemas embedded from
-  ``contracts/event-contract.json`` `topics` (AD-44 "embedded per side +
-  gated by a repo test" — the installed tool cannot read the repo
-  `contracts/` path, so embedding is mandatory), compiled once with
-  ``fastjsonschema`` (already declared, the R-4 engine — no new
-  dependency). ``additionalProperties`` stays open deliberately: an
-  additive optional field is non-breaking on ``Events1`` (AD-34), so the
-  hub must not reject future fields — it checks required presence, known
-  field types, and enums.
+- **Schema:** per-topic JSON Schemas derived from the VENDORED generated
+  contract bindings (``contracts/generated/events.schema.json`` at the pinned
+  commit; AD-44 — the installed tool cannot read the repo `contracts/` path, so
+  the bindings are vendored and pinned by ``make contract-pin-check``),
+  compiled once with ``fastjsonschema`` (already declared, the R-4 engine — no
+  new dependency). ``additionalProperties`` is opened deliberately: the
+  generated definition is closed, but an additive optional field is
+  non-breaking on ``Events1`` (AD-34), so the hub must not reject future fields
+  — it checks required presence, known field types, and enums.
 - **Size:** UTF-8 bytes of canonical JSON (``sort_keys``, compact
   separators) — deterministic across callers, transport-independent.
 - **Depth:** container nesting with the top-level dict at depth 1, cap 8.
@@ -51,6 +51,7 @@ import json
 import time
 from collections import deque
 from collections.abc import Callable, Mapping
+from importlib.resources import files
 from typing import Any
 
 import fastjsonschema
@@ -111,98 +112,49 @@ _I64_MAX = 2**63 - 1
 #: rejected in inbound payloads).
 _RESERVED_KEYS = frozenset({"_epoch", "_seq"})
 
-#: Embedded topic schemas (mirror ``contracts/event-contract.json``
-#: `topics`; pinned executable by the conformance tests).
-TOPIC_SCHEMAS: dict[str, dict[str, Any]] = {
-    "icme.saved": {
-        "type": "object",
-        "required": ["path"],
-        "properties": {"path": {"type": "string"}},
-        "additionalProperties": True,
-    },
-    "capture.state": {
-        "type": "object",
-        "required": ["state", "elapsed_seconds"],
-        "properties": {
-            "state": {"type": "string", "enum": ["idle", "recording", "paused"]},
-            "elapsed_seconds": {"type": "integer"},
-        },
-        "additionalProperties": True,
-    },
-    # `state` + `trigger` are always present; the measurement doubles and the two
-    # context strings ride on `done`, `reason` on `error`. The contract's
-    # `optional` block lists which are conditionally required — a single JSON
-    # Schema cannot express "required iff state == done", and
-    # `additionalProperties` stays open so a future additive field is not a
-    # breaking change (see the module docstring).
-    "speedtest.state": {
-        "type": "object",
-        "required": ["state", "trigger"],
-        "properties": {
-            "state": {"type": "string", "enum": ["starting", "done", "error"]},
-            "trigger": {"type": "string", "enum": ["scheduled", "manual", "connect"]},
-            "ssid": {"type": "string"},
-            "server_name": {"type": "string"},
-            "down_mbps": {"type": "number"},
-            "up_mbps": {"type": "number"},
-            "latency_ms": {"type": "number"},
-            "reason": {"type": "string"},
-        },
-        "additionalProperties": True,
-    },
-    "clipboard.update": {
-        "type": "object",
-        "required": ["type", "hash", "path", "preview"],
-        "properties": {
-            "type": {
-                "type": "string",
-                "enum": ["text", "image", "link", "code", "color", "emoji"],
-            },
-            "hash": {"type": "string"},
-            "path": {"type": "string"},
-            "preview": {"type": "string"},
-        },
-        "additionalProperties": True,
-    },
-    "clipboard.state": {
-        "type": "object",
-        "required": ["state", "job_id"],
-        "properties": {
-            "state": {"type": "string", "enum": ["idle", "running", "paused"]},
-            "job_id": {"type": "string"},
-        },
-        "additionalProperties": True,
-    },
-    "wallpaper.state": {
-        "type": "object",
-        "required": ["state", "wallpaper_hash"],
-        "properties": {
-            "state": {"type": "string", "enum": ["applying", "visible", "done", "error"]},
-            "wallpaper_hash": {"type": "string"},
-            "trigger": {
-                "type": "string",
-                "enum": ["set", "regenerate", "reconcile", "reactive"],
-            },
-            "stage": {
-                "type": "string",
-                "enum": [
-                    "setting_wallpaper",
-                    "generating_palette",
-                    "palette_generated",
-                    "preparing_appearance_assets",
-                    "appearance_assets_ready",
-                    "reconciling_consumers",
-                    "finished",
-                ],
-            },
-            "reload_failures": {
-                "type": "array",
-                "items": {"type": "string"},
-            },
-        },
-        "additionalProperties": True,
-    },
-}
+#: The vendored generated JSON Schema (``contracts/generated/events.schema.json``
+#: at the pinned commit, pinned by ``make contract-pin-check``). It carries one
+#: ``$defs/Topic_<mangled-topic>`` definition per contract topic.
+_GENERATED_SCHEMA_RESOURCE = "contract_generated.schema.json"
+
+
+def _load_generated_schema() -> dict[str, Any]:
+    """Load the vendored generated JSON Schema (I/O lives in the adapter layer)."""
+    resource = files("runtime.adapters").joinpath(_GENERATED_SCHEMA_RESOURCE)
+    schema: dict[str, Any] = json.loads(resource.read_text(encoding="utf-8"))
+    return schema
+
+
+def _topic_definition_name(topic: str) -> str:
+    """The generated ``$defs`` key for a topic (the ``.`` becomes ``_``)."""
+    return "Topic_" + topic.replace(".", "_")
+
+
+def _topic_schemas() -> dict[str, dict[str, Any]]:
+    """Per-topic validator schemas derived from the generated JSON Schema.
+
+    Required members, property types and enums are the generated ones exactly.
+    The generated definition is CLOSED (``additionalProperties: false``); the
+    hub deliberately OPENS it because an additive optional field is
+    non-breaking on ``Events1`` (AD-34) and the hub must not reject future
+    fields. A single JSON Schema cannot express the contract's "required iff
+    ``state == done``" condition, so the generated required set (the
+    always-present members) is the enforced one and the conditional members
+    ride as optional properties.
+    """
+    definitions: dict[str, dict[str, Any]] = _load_generated_schema()["$defs"]
+    schemas: dict[str, dict[str, Any]] = {}
+    for topic in KNOWN_TOPICS:
+        schema = dict(definitions[_topic_definition_name(topic)])
+        schema["additionalProperties"] = True
+        schemas[topic] = schema
+    return schemas
+
+
+#: Embedded topic schemas derived from the vendored generated bindings
+#: (canonical ``contracts`` artifact), pinned executably by the conformance
+#: tests.
+TOPIC_SCHEMAS: dict[str, dict[str, Any]] = _topic_schemas()
 
 
 def payload_size_bytes(payload: dict[str, object]) -> int:

@@ -2,7 +2,7 @@
 
 P5-1-2b-i published the 2a-owned job surface; P5-1-2b-ii-a added ``Emit``/
 ``GetTopicState``; P5-1-2b-ii-b adds the **signal + restart slice**:
-all five ``org.dotfiles.Events1`` signals are emitted from the
+all five ``Events1`` signals are emitted from the
 :class:`HubEvent` sink records the domain produces, and the hub subscribes
 to ``NameOwnerChanged`` on the well-known name to restart (epoch bump +
 fresh registry + ``JobsCleared`` first). The whole surface is pinned to
@@ -64,6 +64,24 @@ from jeepney.bus_messages import DBusNameFlags, message_bus
 from jeepney.io.blocking import DBusConnection, open_dbus_connection
 
 from runtime.adapters.emit_validation import EmitValidator, sv_variant_signature
+from runtime.domain.contract_generated import (
+    EVENTS_INTERFACE,
+    EVENTS_METHODS,
+    EVENTS_OBJECT_PATH,
+    EVENTS_SIGNALS,
+)
+from runtime.domain.contract_generated import (
+    JOB_INTERFACE as GENERATED_JOB_INTERFACE,
+)
+from runtime.domain.contract_generated import (
+    JOB_METHODS as GENERATED_JOB_METHODS,
+)
+from runtime.domain.contract_generated import (
+    JOB_OBJECT_PATH as GENERATED_JOB_OBJECT_PATH,
+)
+from runtime.domain.contract_generated import (
+    Method as GeneratedMethod,
+)
 from runtime.domain.hub import KNOWN_TOPICS, HubEvent
 from runtime.domain.models import (
     BusNameContentionError,
@@ -82,12 +100,13 @@ from runtime.ports.jobs import IControlChannel
 
 logger = logging.getLogger(__name__)
 
-#: Object path serving the hub (mirrors the contract XML; pinned by
-#: the conformance tests, not by prose).
-OBJECT_PATH = "/org/dotfiles/Events"
+#: Object path serving the hub — derived from the vendored generated contract
+#: bindings (canonical ``contracts`` artifact), never a hand-embedded literal.
+OBJECT_PATH = EVENTS_OBJECT_PATH
 
-#: Interface served (version in the name only, AD-34).
-INTERFACE = "org.dotfiles.Events1"
+#: Interface served (version in the name only, AD-34) — derived from the
+#: vendored generated bindings.
+INTERFACE = EVENTS_INTERFACE
 
 #: Peer interface answered minimally (liveness only).
 _PEER_INTERFACE = "org.freedesktop.DBus.Peer"
@@ -95,19 +114,49 @@ _PEER_INTERFACE = "org.freedesktop.DBus.Peer"
 #: Introspection interface answered from the generated XML.
 _INTROSPECT_INTERFACE = "org.freedesktop.DBus.Introspectable"
 
-#: The job-side control object path (5-4): served by a job on its own
-#: bus-attested unique name, called ONLY by the hub. Mirrors the contract
-#: XML ``Job`` node / JSON ``job_interface``.
-JOB_OBJECT_PATH = "/org/dotfiles/Job"
+def _method_table(
+    methods: tuple[GeneratedMethod, ...],
+) -> dict[str, dict[str, tuple[tuple[str, str], ...]]]:
+    """Adapt generated ``Method``/``Member`` records to the runtime's table shape.
 
-#: The job-side control interface (version in the name only, AD-34).
-JOB_INTERFACE = "org.dotfiles.Job1"
+    The generated bindings model a method as ``Method(name, in_args, out_args)``
+    with ``Member(name, dbus, py)`` records; the runtime's dispatch,
+    introspection and conformance tests all read the older
+    ``{name: {"in": ((arg, sig), ...), "out": (...)}}`` shape. This is the single
+    seam that converts the canonical binding into that shape.
+    """
+    return {
+        method.name: {
+            "in": tuple((arg.name, arg.dbus) for arg in method.in_args),
+            "out": tuple((arg.name, arg.dbus) for arg in method.out_args),
+        }
+        for method in methods
+    }
+
+
+def _signal_table(
+    signals: tuple[GeneratedMethod, ...],
+) -> dict[str, tuple[tuple[str, str], ...]]:
+    """Adapt generated signal ``Method`` records to ``{name: ((arg, sig), ...)}``."""
+    return {
+        signal.name: tuple((arg.name, arg.dbus) for arg in signal.out_args) for signal in signals
+    }
+
+
+#: The job-side control object path (5-4): served by a job on its own
+#: bus-attested unique name, called ONLY by the hub. Derived from the vendored
+#: generated bindings (canonical ``contracts`` artifact).
+JOB_OBJECT_PATH = GENERATED_JOB_OBJECT_PATH
+
+#: The job-side control interface (version in the name only, AD-34). Derived
+#: from the vendored generated bindings.
+JOB_INTERFACE = GENERATED_JOB_INTERFACE
 
 #: The single member a job serves: ``Control(action:s)`` void, failures via
-#: typed errors. Byte-matches ``contracts/event-contract.xml`` (Job node).
-JOB_METHODS: dict[str, dict[str, tuple[tuple[str, str], ...]]] = {
-    "Control": {"in": (("action", "s"),), "out": ()},
-}
+#: typed errors. Derived from the vendored generated bindings.
+JOB_METHODS: dict[str, dict[str, tuple[tuple[str, str], ...]]] = _method_table(
+    GENERATED_JOB_METHODS
+)
 
 #: Standard error for unbound members (anything outside METHODS).
 _UNKNOWN_METHOD = "org.freedesktop.DBus.Error.UnknownMethod"
@@ -146,38 +195,15 @@ _I32_MIN = -(2**31)
 _I32_MAX = 2**31 - 1
 
 #: The single source for the served surface: method → in/out args as
-#: (name, signature) in wire order. Byte-matches
-#: ``contracts/event-contract.xml`` (methods block); the conformance tests
-#: enforce it executable. 2b-ii adds Emit/GetTopicState here.
-METHODS: dict[str, dict[str, tuple[tuple[str, str], ...]]] = {
-    "BeginJob": {"in": (("kind", "s"), ("ttl", "u")), "out": (("job_id", "s"),)},
-    "RenewJob": {"in": (("job_id", "s"),), "out": ()},
-    "AdoptJob": {"in": (("job_id", "s"), ("pid", "u")), "out": ()},
-    "ReportProgress": {"in": (("job_id", "s"), ("fraction", "d")), "out": ()},
-    "EndJob": {"in": (("job_id", "s"), ("exit_code", "i")), "out": ()},
-    "Control": {"in": (("job_id", "s"), ("action", "s")), "out": ()},
-    "GetActiveJobs": {"in": (), "out": (("jobs", "a{ss}"),)},
-    "Emit": {"in": (("topic", "s"), ("payload", "a{sv}")), "out": ()},
-    "GetTopicState": {"in": (("topic", "s"),), "out": (("state", "a{sv}"),)},
-}
+#: (name, signature) in wire order — derived from the vendored generated
+#: contract bindings (canonical ``contracts`` artifact), never a hand-embedded
+#: literal. Dispatch, introspection and the conformance tests all read this.
+METHODS: dict[str, dict[str, tuple[tuple[str, str], ...]]] = _method_table(EVENTS_METHODS)
 
-#: The emitted signals: signal name → args as (name, signature) in wire
-#: order. Byte-matches ``contracts/event-contract.xml`` (signals block);
-#: the conformance tests enforce it executable. No signal carries ``pid``
-#: (``job_adopted`` has no wire representation and is dropped).
-SIGNALS: dict[str, tuple[tuple[str, str], ...]] = {
-    "JobStarted": (("job_id", "s"), ("kind", "s"), ("epoch", "u")),
-    "JobProgress": (("job_id", "s"), ("fraction", "d"), ("epoch", "u")),
-    "JobFinished": (("job_id", "s"), ("exit_code", "i"), ("epoch", "u")),
-    "DomainEvent": (
-        ("topic", "s"),
-        ("producer", "s"),
-        ("seq", "u"),
-        ("epoch", "u"),
-        ("payload", "a{sv}"),
-    ),
-    "JobsCleared": (("epoch", "u"),),
-}
+#: The emitted signals: signal name → args as (name, signature) in wire order —
+#: derived from the vendored generated contract bindings. No signal carries
+#: ``pid`` (``job_adopted`` has no wire representation and is dropped).
+SIGNALS: dict[str, tuple[tuple[str, str], ...]] = _signal_table(EVENTS_SIGNALS)
 
 
 def introspect_xml() -> str:

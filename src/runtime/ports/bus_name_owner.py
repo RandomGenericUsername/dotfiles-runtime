@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from runtime.domain.contract_generated import EVENTS_BUS_NAME
 from runtime.domain.models import BusNameContentionError, BusNameError, BusUnavailableError
 
 __all__ = [
@@ -23,8 +24,10 @@ __all__ = [
 ]
 
 #: The versionless well-known bus name (AD-34/C4); the interface stays
-#: ``org.dotfiles.Events1`` (version in the interface name only).
-BUS_NAME = "org.dotfiles.Events"
+#: ``org.dotfiles.Events1`` (version in the interface name only). Derived from
+#: the vendored generated contract bindings (canonical ``contracts`` artifact),
+#: never a hand-embedded literal.
+BUS_NAME = EVENTS_BUS_NAME
 
 
 class IBusNameOwner(ABC):

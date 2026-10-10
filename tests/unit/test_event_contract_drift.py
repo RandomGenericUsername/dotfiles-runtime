@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import re
 import xml.etree.ElementTree as ET
+from importlib.resources import files
 from pathlib import Path
 
 from runtime.adapters import bar_subscriber as bs
@@ -44,8 +45,53 @@ from runtime.adapters.emit_validation import (
 from runtime.adapters.emit_validation import (
     MAX_PAYLOAD_DEPTH as HUB_MAX_PAYLOAD_DEPTH,
 )
+from runtime.domain import contract_generated as generated
 from runtime.domain.hub import KNOWN_TOPICS
 from runtime.ports.bus_name_owner import BUS_NAME as PORT_BUS_NAME
+
+# ── The canonical source: the VENDORED generated bindings ────────────────
+#
+# REQ-004/AD-6: the `contracts` repo is canonical and generates the bindings
+# this runtime vendors (`runtime.domain.contract_generated`,
+# `runtime.adapters.contract_generated.schema.json`). After the repoint the
+# runtime's tables MUST equal those bindings — not the older repo-tree
+# `contracts/event-contract.{xml,json}` copy, which can lag the pin (it does
+# today for `wallpaper.state`'s `stage`/`reload_failures`). The vendored copies
+# are kept byte-identical to `contracts/generated/` by `make contract-pin-check`,
+# so pinning to them pins to the canonical contract.
+
+
+def _generated_methods() -> dict[str, dict[str, list[str]]]:
+    """Generated methods in the XML encoding's shape (empty directions omitted)."""
+    methods: dict[str, dict[str, list[str]]] = {}
+    for method in generated.EVENTS_METHODS:
+        entry: dict[str, list[str]] = {}
+        if method.in_args:
+            entry["in"] = [f"{a.name}:{a.dbus}" for a in method.in_args]
+        if method.out_args:
+            entry["out"] = [f"{a.name}:{a.dbus}" for a in method.out_args]
+        methods[method.name] = entry
+    return methods
+
+
+def _generated_signals() -> dict[str, list[str]]:
+    return {
+        signal.name: [f"{a.name}:{a.dbus}" for a in signal.out_args]
+        for signal in generated.EVENTS_SIGNALS
+    }
+
+
+def _generated_topic_names() -> set[str]:
+    return {topic.name for topic in generated.EVENTS_TOPICS}
+
+
+def _generated_topic_schema(topic: str) -> dict[str, object]:
+    """The generated ``$defs/Topic_<topic>`` definition (canonical)."""
+    resource = files("runtime.adapters").joinpath("contract_generated.schema.json")
+    schema = json.loads(resource.read_text(encoding="utf-8"))
+    definitions = schema["$defs"]
+    assert isinstance(definitions, dict)
+    return definitions["Topic_" + topic.replace(".", "_")]
 
 
 def _json(repo_root: Path) -> dict[str, object]:
@@ -104,12 +150,13 @@ def test_contract_xml_and_json_agree(repo_root: Path) -> None:
     assert _xml_signals(iface) == data["signals"]
 
 
-def test_hub_adapter_tables_match_contract(repo_root: Path) -> None:
-    """The served Python tables byte-match the contract on both encodings."""
-    iface = _xml_interface(repo_root)
-    data = _json(repo_root)
-    xml_methods = _xml_methods(iface)
-    xml_signals = _xml_signals(iface)
+def test_hub_adapter_tables_match_generated_bindings() -> None:
+    """The served Python tables derive from the vendored generated bindings.
+
+    The canonical source is `runtime.domain.contract_generated` (vendored from
+    `contracts/generated/contract.py`, pin-checked). The repo-tree
+    `contracts/event-contract.{xml,json}` copy is NOT the pin source here.
+    """
     table_methods: dict[str, dict[str, list[str]]] = {}
     for name, spec in METHODS.items():
         entry: dict[str, list[str]] = {}
@@ -118,72 +165,55 @@ def test_hub_adapter_tables_match_contract(repo_root: Path) -> None:
         if spec["out"]:
             entry["out"] = [f"{arg}:{sig}" for arg, sig in spec["out"]]
         table_methods[name] = entry
-    assert table_methods == xml_methods == data["methods"]
-    assert HUB_INTERFACE == data["interface"] == bs.INTERFACE
-    assert HUB_OBJECT_PATH == data["object_path"] == bs.OBJECT_PATH
+    assert table_methods == _generated_methods()
+    assert HUB_INTERFACE == generated.EVENTS_INTERFACE == bs.INTERFACE
+    assert HUB_OBJECT_PATH == generated.EVENTS_OBJECT_PATH == bs.OBJECT_PATH
     table_signals = {name: [f"{arg}:{sig}" for arg, sig in args] for name, args in SIGNALS.items()}
-    assert table_signals == xml_signals == data["signals"]
+    assert table_signals == _generated_signals()
 
 
-def test_job_control_interface_matches_contract(repo_root: Path) -> None:
-    """The job-side control constants/table match XML Job node + JSON block.
+def test_job_control_interface_matches_generated_bindings() -> None:
+    """The job-side control constants/table derive from the generated bindings.
 
-    Pins the 5-4 job interface on both sides of the contract: the hub's
-    ``DbusControlChannel`` constants and the job client's serving constants
-    must be the same values the XML/JSON declare.
+    Pins the 5-4 job interface on both sides: the hub's ``DbusControlChannel``
+    constants and the job client's serving constants must be the same values the
+    vendored generated bindings declare.
     """
-    data = _json(repo_root)
-    root = ET.parse(repo_root / "contracts" / "event-contract.xml").getroot()
-    job_node = root.find("node[@name='Job']")
-    assert job_node is not None, "Job node missing from the contract XML"
-    iface = _xml_interface(repo_root, JOB_INTERFACE)
-    job = data["job_interface"]
-    assert isinstance(job, dict)
+    assert JOB_INTERFACE == CLIENT_JOB_INTERFACE == generated.JOB_INTERFACE
+    assert JOB_OBJECT_PATH == CLIENT_JOB_OBJECT_PATH == generated.JOB_OBJECT_PATH
 
-    assert JOB_INTERFACE == CLIENT_JOB_INTERFACE == job["interface"]
-    assert JOB_OBJECT_PATH == CLIENT_JOB_OBJECT_PATH == job["object_path"]
-    assert f"{root.get('name')}/{job_node.get('name')}" == job["object_path"]
-
-    xml_methods = {
-        method.get("name"): {
-            "in": [
-                f"{a.get('name')}:{a.get('type')}"
-                for a in method.findall("arg")
-                if a.get("direction") == "in"
-            ]
-        }
-        for method in iface.findall("method")
+    generated_methods = {
+        method.name: {"in": [f"{a.name}:{a.dbus}" for a in method.in_args]}
+        for method in generated.JOB_METHODS
     }
     table = {
         name: {"in": [f"{arg}:{sig}" for arg, sig in spec["in"]]}
         for name, spec in JOB_METHODS.items()
     }
-    assert table == xml_methods == job["methods"]
+    assert table == generated_methods
 
 
-def test_port_bus_name_matches_contract(repo_root: Path) -> None:
-    assert PORT_BUS_NAME == _json(repo_root)["well_known_name"] == bs.BUS_NAME
+def test_port_bus_name_matches_generated_bindings() -> None:
+    assert PORT_BUS_NAME == generated.EVENTS_BUS_NAME == bs.BUS_NAME
 
 
-def test_bar_constants_match_contract(repo_root: Path) -> None:
-    """Every baked bar constant is derived from the machine definition."""
-    data = _json(repo_root)
-    iface = _xml_interface(repo_root)
-    xml_signals = _xml_signals(iface)
+def test_bar_constants_match_generated_bindings() -> None:
+    """Every baked bar constant derives from the vendored generated bindings."""
+    topic_names = _generated_topic_names()
+    signal_names = {method.name for method in generated.EVENTS_SIGNALS}
+    method_names = {method.name for method in generated.EVENTS_METHODS}
 
-    assert bs.BUS_NAME == data["well_known_name"]
-    assert bs.OBJECT_PATH == data["object_path"]
-    assert bs.INTERFACE == data["interface"]
-    assert list(bs.KNOWN_TOPICS) == list(data["topics"])
-    assert set(bs.BAR_TOPICS) <= set(data["topics"])
-    assert bs.RESTART_SIGNAL in data["signals"]
-    assert bs.DOMAIN_EVENT_SIGNAL in data["signals"]
+    assert bs.BUS_NAME == generated.EVENTS_BUS_NAME
+    assert bs.OBJECT_PATH == generated.EVENTS_OBJECT_PATH
+    assert bs.INTERFACE == generated.EVENTS_INTERFACE
+    assert set(bs.KNOWN_TOPICS) == topic_names
+    assert set(bs.BAR_TOPICS) <= topic_names
+    assert bs.RESTART_SIGNAL in signal_names
+    assert bs.DOMAIN_EVENT_SIGNAL in signal_names
     assert set(bs.HANDLED_SIGNALS) == {"DomainEvent", "JobsCleared"}
-    assert bs.HYDRATION_METHOD in data["methods"]
+    assert bs.HYDRATION_METHOD in method_names
 
-    expected_args = list(data["signals"][bs.DOMAIN_EVENT_SIGNAL])
-    assert [f"{arg}:{sig}" for arg, sig in bs.DOMAIN_EVENT_ARGS] == expected_args
-    assert [f"{arg}:{sig}" for arg, sig in bs.DOMAIN_EVENT_ARGS] == xml_signals[
+    assert [f"{arg}:{sig}" for arg, sig in bs.DOMAIN_EVENT_ARGS] == _generated_signals()[
         bs.DOMAIN_EVENT_SIGNAL
     ]
 
@@ -244,11 +274,16 @@ def test_speedtest_state_contract_pins_keys_and_enums(repo_root: Path) -> None:
     assert SPEEDTEST_STATE_TOPIC in bs.BAR_TOPICS
 
 
-def test_speedtest_state_embedded_schema_matches_contract(repo_root: Path) -> None:
-    """The hub's embedded validator schema mirrors the pinned keys/enums."""
+def test_speedtest_state_embedded_schema_matches_generated_bindings() -> None:
+    """The hub's validator schema derives from the generated topic definition."""
     from runtime.adapters.emit_validation import TOPIC_SCHEMAS
 
     schema = TOPIC_SCHEMAS[SPEEDTEST_STATE_TOPIC]
+    expected = dict(_generated_topic_schema(SPEEDTEST_STATE_TOPIC))
+    # The generated definition is closed; the hub opens it for additive fields.
+    expected["additionalProperties"] = True
+    assert schema == expected
+
     assert set(schema["required"]) == SPEEDTEST_STATE_REQUIRED
     props = schema["properties"]
     assert props["state"]["enum"] == SPEEDTEST_STATE_ENUM_STATE
@@ -263,10 +298,6 @@ def test_speedtest_state_embedded_schema_matches_contract(repo_root: Path) -> No
     for key in SPEEDTEST_STATE_CONTEXT:
         assert props[key]["type"] == "string"
         assert key in props
-    # `state`/`trigger` carry the lifecycle; a `done` without the three
-    # doubles would render a result cell of "—", so the producer must always
-    # build them together. Asserted here as a producer-contract statement.
-    assert set(props) == set(_json(repo_root)["topics"][SPEEDTEST_STATE_TOPIC]["payload"])
 
 
 # ── TS-ahead scan: a payload key read in TypeScript but absent from the

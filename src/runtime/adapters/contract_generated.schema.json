@@ -1,0 +1,966 @@
+{
+  "$defs": {
+    "MethodEnvelope": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "AdoptJob"
+              }
+            },
+            "required": [
+              "method"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/MethodIn_AdoptJob"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "BeginJob"
+              }
+            },
+            "required": [
+              "method"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/MethodIn_BeginJob"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "Control"
+              }
+            },
+            "required": [
+              "method"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/MethodIn_Control"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "Emit"
+              }
+            },
+            "required": [
+              "method"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/MethodIn_Emit"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "EndJob"
+              }
+            },
+            "required": [
+              "method"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/MethodIn_EndJob"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "GetActiveJobs"
+              }
+            },
+            "required": [
+              "method"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/MethodIn_GetActiveJobs"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "GetTopicState"
+              }
+            },
+            "required": [
+              "method"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/MethodIn_GetTopicState"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "RenewJob"
+              }
+            },
+            "required": [
+              "method"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/MethodIn_RenewJob"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "ReportProgress"
+              }
+            },
+            "required": [
+              "method"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/MethodIn_ReportProgress"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "args": {
+          "type": "object"
+        },
+        "method": {
+          "enum": [
+            "AdoptJob",
+            "BeginJob",
+            "Control",
+            "Emit",
+            "EndJob",
+            "GetActiveJobs",
+            "GetTopicState",
+            "RenewJob",
+            "ReportProgress"
+          ]
+        }
+      },
+      "required": [
+        "method",
+        "args"
+      ],
+      "type": "object"
+    },
+    "MethodIn_AdoptJob": {
+      "additionalProperties": false,
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "pid": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "job_id",
+        "pid"
+      ],
+      "type": "object"
+    },
+    "MethodIn_BeginJob": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "ttl": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "ttl"
+      ],
+      "type": "object"
+    },
+    "MethodIn_Control": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "job_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "job_id"
+      ],
+      "type": "object"
+    },
+    "MethodIn_Emit": {
+      "additionalProperties": false,
+      "properties": {
+        "payload": {
+          "type": "object"
+        },
+        "topic": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "payload",
+        "topic"
+      ],
+      "type": "object"
+    },
+    "MethodIn_EndJob": {
+      "additionalProperties": false,
+      "properties": {
+        "exit_code": {
+          "type": "integer"
+        },
+        "job_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "exit_code",
+        "job_id"
+      ],
+      "type": "object"
+    },
+    "MethodIn_GetActiveJobs": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "MethodIn_GetTopicState": {
+      "additionalProperties": false,
+      "properties": {
+        "topic": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "topic"
+      ],
+      "type": "object"
+    },
+    "MethodIn_RenewJob": {
+      "additionalProperties": false,
+      "properties": {
+        "job_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "type": "object"
+    },
+    "MethodIn_ReportProgress": {
+      "additionalProperties": false,
+      "properties": {
+        "fraction": {
+          "type": "number"
+        },
+        "job_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "fraction",
+        "job_id"
+      ],
+      "type": "object"
+    },
+    "MethodOut_AdoptJob": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "MethodOut_BeginJob": {
+      "additionalProperties": false,
+      "properties": {
+        "job_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "type": "object"
+    },
+    "MethodOut_Control": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "MethodOut_Emit": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "MethodOut_EndJob": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "MethodOut_GetActiveJobs": {
+      "additionalProperties": false,
+      "properties": {
+        "jobs": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "jobs"
+      ],
+      "type": "object"
+    },
+    "MethodOut_GetTopicState": {
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "object"
+    },
+    "MethodOut_RenewJob": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "MethodOut_ReportProgress": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "SignalEnvelope": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "signal": {
+                "const": "DomainEvent"
+              }
+            },
+            "required": [
+              "signal"
+            ]
+          },
+          "then": {
+            "properties": {
+              "members": {
+                "$ref": "#/$defs/Signal_DomainEvent"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "signal": {
+                "const": "JobFinished"
+              }
+            },
+            "required": [
+              "signal"
+            ]
+          },
+          "then": {
+            "properties": {
+              "members": {
+                "$ref": "#/$defs/Signal_JobFinished"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "signal": {
+                "const": "JobProgress"
+              }
+            },
+            "required": [
+              "signal"
+            ]
+          },
+          "then": {
+            "properties": {
+              "members": {
+                "$ref": "#/$defs/Signal_JobProgress"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "signal": {
+                "const": "JobStarted"
+              }
+            },
+            "required": [
+              "signal"
+            ]
+          },
+          "then": {
+            "properties": {
+              "members": {
+                "$ref": "#/$defs/Signal_JobStarted"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "signal": {
+                "const": "JobsCleared"
+              }
+            },
+            "required": [
+              "signal"
+            ]
+          },
+          "then": {
+            "properties": {
+              "members": {
+                "$ref": "#/$defs/Signal_JobsCleared"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "members": {
+          "type": "object"
+        },
+        "signal": {
+          "enum": [
+            "DomainEvent",
+            "JobFinished",
+            "JobProgress",
+            "JobStarted",
+            "JobsCleared"
+          ]
+        }
+      },
+      "required": [
+        "signal",
+        "members"
+      ],
+      "type": "object"
+    },
+    "Signal_DomainEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "epoch": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "payload": {
+          "type": "object"
+        },
+        "producer": {
+          "type": "string"
+        },
+        "seq": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "topic": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "epoch",
+        "payload",
+        "producer",
+        "seq",
+        "topic"
+      ],
+      "type": "object"
+    },
+    "Signal_JobFinished": {
+      "additionalProperties": false,
+      "properties": {
+        "epoch": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "exit_code": {
+          "type": "integer"
+        },
+        "job_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "epoch",
+        "exit_code",
+        "job_id"
+      ],
+      "type": "object"
+    },
+    "Signal_JobProgress": {
+      "additionalProperties": false,
+      "properties": {
+        "epoch": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "fraction": {
+          "type": "number"
+        },
+        "job_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "epoch",
+        "fraction",
+        "job_id"
+      ],
+      "type": "object"
+    },
+    "Signal_JobStarted": {
+      "additionalProperties": false,
+      "properties": {
+        "epoch": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "job_id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "epoch",
+        "job_id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "Signal_JobsCleared": {
+      "additionalProperties": false,
+      "properties": {
+        "epoch": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "epoch"
+      ],
+      "type": "object"
+    },
+    "TopicEnvelope": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "topic": {
+                "const": "capture.state"
+              }
+            },
+            "required": [
+              "topic"
+            ]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/Topic_capture_state"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "topic": {
+                "const": "clipboard.state"
+              }
+            },
+            "required": [
+              "topic"
+            ]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/Topic_clipboard_state"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "topic": {
+                "const": "clipboard.update"
+              }
+            },
+            "required": [
+              "topic"
+            ]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/Topic_clipboard_update"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "topic": {
+                "const": "icme.saved"
+              }
+            },
+            "required": [
+              "topic"
+            ]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/Topic_icme_saved"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "topic": {
+                "const": "speedtest.state"
+              }
+            },
+            "required": [
+              "topic"
+            ]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/Topic_speedtest_state"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "topic": {
+                "const": "wallpaper.state"
+              }
+            },
+            "required": [
+              "topic"
+            ]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/Topic_wallpaper_state"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "payload": {
+          "type": "object"
+        },
+        "producer": {
+          "type": "string"
+        },
+        "topic": {
+          "enum": [
+            "capture.state",
+            "clipboard.state",
+            "clipboard.update",
+            "icme.saved",
+            "speedtest.state",
+            "wallpaper.state"
+          ]
+        }
+      },
+      "required": [
+        "topic",
+        "producer",
+        "payload"
+      ],
+      "type": "object"
+    },
+    "Topic_capture_state": {
+      "additionalProperties": false,
+      "properties": {
+        "elapsed_seconds": {
+          "type": "integer"
+        },
+        "state": {
+          "enum": [
+            "idle",
+            "recording",
+            "paused"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "elapsed_seconds",
+        "state"
+      ],
+      "type": "object"
+    },
+    "Topic_clipboard_state": {
+      "additionalProperties": false,
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "idle",
+            "running",
+            "paused"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id",
+        "state"
+      ],
+      "type": "object"
+    },
+    "Topic_clipboard_update": {
+      "additionalProperties": false,
+      "properties": {
+        "hash": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "preview": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "text",
+            "image",
+            "link",
+            "code",
+            "color",
+            "emoji"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "hash",
+        "path",
+        "preview",
+        "type"
+      ],
+      "type": "object"
+    },
+    "Topic_icme_saved": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "Topic_speedtest_state": {
+      "additionalProperties": false,
+      "properties": {
+        "down_mbps": {
+          "type": "number"
+        },
+        "latency_ms": {
+          "type": "number"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "server_name": {
+          "type": "string"
+        },
+        "ssid": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "starting",
+            "done",
+            "error"
+          ],
+          "type": "string"
+        },
+        "trigger": {
+          "enum": [
+            "scheduled",
+            "manual",
+            "connect"
+          ],
+          "type": "string"
+        },
+        "up_mbps": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "state",
+        "trigger"
+      ],
+      "type": "object"
+    },
+    "Topic_wallpaper_state": {
+      "additionalProperties": false,
+      "properties": {
+        "reload_failures": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "stage": {
+          "enum": [
+            "setting_wallpaper",
+            "generating_palette",
+            "palette_generated",
+            "preparing_appearance_assets",
+            "appearance_assets_ready",
+            "reconciling_consumers",
+            "finished"
+          ],
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "applying",
+            "visible",
+            "done",
+            "error"
+          ],
+          "type": "string"
+        },
+        "trigger": {
+          "enum": [
+            "set",
+            "regenerate",
+            "reconcile",
+            "reactive"
+          ],
+          "type": "string"
+        },
+        "wallpaper_hash": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "wallpaper_hash"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://dotfiles.local/generated/events.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/SignalEnvelope"
+    },
+    {
+      "$ref": "#/$defs/MethodEnvelope"
+    },
+    {
+      "$ref": "#/$defs/TopicEnvelope"
+    }
+  ]
+}

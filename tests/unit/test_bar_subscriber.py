@@ -387,3 +387,33 @@ class TestReceiveLoop:
         sub.stop()
         assert conn.closed is True
         sub.stop()  # idempotent
+
+
+class TestEmbeddedContractConstants:
+    """Import must not depend on the repo-root ``contracts/`` directory.
+
+    The installed tool wheel ships only the ``runtime`` package; sourcing the
+    binding's constants from the vendored generated bindings is what lets the
+    daemon host it there (AD-44).
+    """
+
+    def test_constants_come_from_the_generated_bindings(self) -> None:
+        from runtime.domain import contract_generated as generated
+
+        assert bs.BUS_NAME == generated.EVENTS_BUS_NAME
+        assert bs.OBJECT_PATH == generated.EVENTS_OBJECT_PATH
+        assert bs.INTERFACE == generated.EVENTS_INTERFACE
+        assert set(bs.KNOWN_TOPICS) == {topic.name for topic in generated.EVENTS_TOPICS}
+        domain_event = next(
+            signal
+            for signal in generated.EVENTS_SIGNALS
+            if signal.name == bs.DOMAIN_EVENT_SIGNAL
+        )
+        assert bs.DOMAIN_EVENT_ARGS == tuple(
+            (arg.name, arg.dbus) for arg in domain_event.out_args
+        )
+
+    def test_no_repo_root_contract_lookup_survives(self) -> None:
+        assert not hasattr(bs, "_find_contract")
+        assert not hasattr(bs, "_CONTRACT")
+        assert not hasattr(bs, "_signal_args")

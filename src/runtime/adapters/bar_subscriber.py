@@ -1,11 +1,14 @@
 """Bar consumer binding — the bar's subscription to the hub event surface (5-2).
 
 P5-2: the bar is a THIN CONSUMER of the same ``org.dotfiles.Events1``
-names the hub serves (AD-34). It does **not** import the runtime core:
-contract constants are read from ``contracts/event-contract.json`` at
-import time (never from ``runtime.domain`` / ``runtime.ports``), and the
-session-bus transport is jeepney directly — the same library the hub
-adapter uses. Both worlds depend on the contract, never on each other.
+names the hub serves (AD-34). Contract constants are read from the
+VENDORED generated contract bindings
+(:mod:`runtime.domain.contract_generated` — pure data, pinned by
+``make contract-pin-check``), never from the repo-root ``contracts/``
+directory (which is not shipped in the installed wheel) and never from the
+runtime core's own logic; the session-bus transport is jeepney directly —
+the same library the hub adapter uses. Both worlds depend on the contract,
+never on each other.
 
 Protocol this binding implements (``contracts/event-contract.json``
 `delivery`):
@@ -40,12 +43,19 @@ import json
 import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
-from pathlib import Path
 from typing import Any
 
 from jeepney import DBusAddress, HeaderFields, MessageType, new_method_call
 from jeepney.bus_messages import message_bus
 from jeepney.io.blocking import DBusConnection, open_dbus_connection
+
+from runtime.domain.contract_generated import (
+    EVENTS_BUS_NAME,
+    EVENTS_INTERFACE,
+    EVENTS_OBJECT_PATH,
+    EVENTS_SIGNALS,
+    EVENTS_TOPICS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,53 +86,30 @@ TopicHandler = Callable[[str, Mapping[str, object]], None]
 RestartHandler = Callable[[int], None]
 
 
-# ── Contract constants (read from the machine definition, not prose) ──────
+# ── Contract constants (derived from the vendored generated bindings) ─────
 
+#: Versionless well-known bus name (AD-34/C4) — from the generated bindings.
+BUS_NAME: str = EVENTS_BUS_NAME
 
-def _find_contract() -> Path:
-    """Walk up from this file for ``contracts/event-contract.json``.
+#: Object path serving the hub — from the generated bindings.
+OBJECT_PATH: str = EVENTS_OBJECT_PATH
 
-    Robust to repo move / alternate checkout depth; fails loud (an
-    installed-only layout without the contract cannot bind the surface).
-    """
-    start = Path(__file__).resolve()
-    for parent in start.parents:
-        candidate = parent / "contracts" / "event-contract.json"
-        if candidate.is_file():
-            return candidate
-    raise RuntimeError(f"contracts/event-contract.json not found above {start}")
-
-
-_CONTRACT: dict[str, Any] = json.loads(_find_contract().read_text(encoding="utf-8"))
-
-#: Versionless well-known bus name (AD-34/C4).
-BUS_NAME: str = _CONTRACT["well_known_name"]
-
-#: Object path serving the hub.
-OBJECT_PATH: str = _CONTRACT["object_path"]
-
-#: Versioned interface (version in the interface name only).
-INTERFACE: str = _CONTRACT["interface"]
+#: Versioned interface (version in the interface name only) — generated.
+INTERFACE: str = EVENTS_INTERFACE
 
 #: Every topic the contract advertises (the hub never emits off-table ones).
-KNOWN_TOPICS: tuple[str, ...] = tuple(_CONTRACT["topics"])
+KNOWN_TOPICS: tuple[str, ...] = tuple(topic.name for topic in EVENTS_TOPICS)
+
+#: Generated signal name → ordered ``(arg, signature)`` members.
+_GENERATED_SIGNALS: dict[str, tuple[tuple[str, str], ...]] = {
+    signal.name: tuple((arg.name, arg.dbus) for arg in signal.out_args)
+    for signal in EVENTS_SIGNALS
+}
 
 #: Topics the bar renders: the recording indicator (``capture.state``) and
 #: speed-test results (``speedtest.state``). ``icme.saved`` triggers
 #: regeneration; it does not render on the bar (epics 5-3/5-4).
 BAR_TOPICS: tuple[str, ...] = ("capture.state", "speedtest.state")
-
-
-def _signal_args(name: str) -> tuple[tuple[str, str], ...]:
-    """Parse a contract signal's ``["arg:type", ...]`` into ordered pairs."""
-    args: list[tuple[str, str]] = []
-    for spec in _CONTRACT["signals"][name]:
-        arg, separator, signature = spec.partition(":")
-        if not separator:  # pragma: no cover - contract JSON is pinned upstream
-            raise RuntimeError(f"malformed signal arg spec {spec!r} for {name}")
-        args.append((arg, signature))
-    return tuple(args)
-
 
 #: The signal carrying a tool-specific domain event.
 DOMAIN_EVENT_SIGNAL: str = "DomainEvent"
@@ -136,8 +123,8 @@ HYDRATION_METHOD: str = "GetTopicState"
 #: Contract signals this consumer binds (drift-tested against the contract).
 HANDLED_SIGNALS: tuple[str, ...] = (DOMAIN_EVENT_SIGNAL, RESTART_SIGNAL)
 
-#: Ordered members of ``DomainEvent`` (contract-exact).
-DOMAIN_EVENT_ARGS: tuple[tuple[str, str], ...] = _signal_args(DOMAIN_EVENT_SIGNAL)
+#: Ordered members of ``DomainEvent`` (contract-exact) — generated.
+DOMAIN_EVENT_ARGS: tuple[tuple[str, str], ...] = _GENERATED_SIGNALS[DOMAIN_EVENT_SIGNAL]
 
 #: Reserved hydration members owned by the hub.
 RESERVED_EPOCH: str = "_epoch"
