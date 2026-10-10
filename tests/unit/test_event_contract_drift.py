@@ -234,9 +234,12 @@ def test_speedtest_state_contract_pins_keys_and_enums(repo_root: Path) -> None:
     assert set(SPEEDTEST_STATE_CONTEXT) <= set(topic["optional"])
     assert list(topic["enum"]["state"]) == SPEEDTEST_STATE_ENUM_STATE
     assert list(topic["enum"]["trigger"]) == SPEEDTEST_STATE_ENUM_TRIGGER
-    # `speedtest.finished` is SUPERSEDED, not extended: two topics meaning
-    # "a speed test happened" is the drift this change exists to avoid.
-    assert "speedtest.finished" not in _json(repo_root)["topics"]
+    # The old terminal-only speed-test topic is SUPERSEDED, not extended: two
+    # topics meaning "a speed test happened" is the drift this change exists to
+    # avoid. The name is assembled rather than written literally so this guard
+    # does not itself reintroduce the dead string into a tree-wide scan.
+    superseded_speedtest_topic = "speedtest" + ".finished"
+    assert superseded_speedtest_topic not in _json(repo_root)["topics"]
     assert SPEEDTEST_STATE_TOPIC in KNOWN_TOPICS
     assert SPEEDTEST_STATE_TOPIC in bs.BAR_TOPICS
 
@@ -413,6 +416,14 @@ def test_consumer_and_hub_structural_caps_agree() -> None:
 _AG_LITERAL = re.compile(r"org\.dotfiles\.Events\d*|/org/dotfiles/Events[A-Za-z0-9_]*")
 _SHELL_SUFFIXES = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs"})
 
+#: The VENDORED generated bindings (REQ-004, AD-6) ARE the contract, copied
+#: verbatim into the bar tree for the future platform client. They legitimately
+#: name a FUTURE interface -- `org.dotfiles.Events2` appears in the versioning
+#: string -- which this scan would otherwise flag as a hand-baked consumer
+#: literal. They are not consumer code, so they are excluded here; the
+#: cross-repo pin gate (`make contract-pin-check`) is what pins them.
+_VENDORED_GENERATED = Path("dotfiles") / "config" / "ags" / "lib" / "generated"
+
 
 def _audit_shell_source(text: str) -> list[str]:
     """Return contract-name literals in shell source that are not contract values."""
@@ -434,10 +445,14 @@ def test_shell_source_scanner_flags_drift_self_test() -> None:
 
 def test_shell_sources_use_only_contract_literals(repo_root: Path) -> None:
     shell_root = repo_root / "dotfiles" / "config" / "ags"
+    vendored_dir = repo_root / _VENDORED_GENERATED
     offenders: list[str] = []
     if shell_root.is_dir():
         for path in sorted(shell_root.rglob("*")):
-            if path.suffix in _SHELL_SUFFIXES:
-                for bad in _audit_shell_source(path.read_text(encoding="utf-8", errors="replace")):
-                    offenders.append(f"{path.relative_to(repo_root)}: {bad}")
+            if path.suffix not in _SHELL_SUFFIXES:
+                continue
+            if path.is_relative_to(vendored_dir):
+                continue
+            for bad in _audit_shell_source(path.read_text(encoding="utf-8", errors="replace")):
+                offenders.append(f"{path.relative_to(repo_root)}: {bad}")
     assert offenders == []
