@@ -266,6 +266,14 @@ def test_weg_adapter_timeout_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         adapter.generate(wallpaper, output_dir)
 
 
+def test_weg_adapter_default_timeout_covers_container_mode() -> None:
+    """Container mode runs ~20 ``podman run`` per wallpaper and is I/O heavy on
+    large inputs (an 8K run measured ~3m23s). The default must not be the old
+    local ``magick`` budget that would time out container mode."""
+    assert WegAdapter.DEFAULT_TIMEOUT >= 300
+    assert WegAdapter()._timeout == WegAdapter.DEFAULT_TIMEOUT
+
+
 # ---------------------------------------------------------------------------
 # 6. Raises on missing wallpaper before subprocess
 # ---------------------------------------------------------------------------

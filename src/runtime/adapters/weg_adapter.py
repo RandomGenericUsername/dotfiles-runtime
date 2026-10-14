@@ -181,9 +181,15 @@ class WegAdapter(IEffectsGenerator):
     (mirrors ``csg_adapter.py`` for layered cache).
     """
 
+    # Container mode runs one ``podman run`` per effect/preset/composite
+    # (~20 per wallpaper) and is I/O heavy on large inputs: an 8K input
+    # measured ~3m23s here. The default must leave headroom for that instead
+    # of the old local ``magick`` budget.
+    DEFAULT_TIMEOUT: int = 600
+
     def __init__(
         self,
-        timeout: int = 60,
+        timeout: int = DEFAULT_TIMEOUT,
         weg_bin: str | None = None,
         catalog_path: Path | None = None,
     ) -> None:
