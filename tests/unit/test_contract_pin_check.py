@@ -33,7 +33,6 @@ SYNTHETIC_PIN = "deadbeef"
 #: generated filename the gate's `VENDORED` table names.
 SYNTHETIC_GENERATED = {
     "contract.py": b'"""synthetic generated binding"""\nVALUE = 1\n',
-    "contract.ts": b"// synthetic generated binding\nexport const VALUE = 1;\n",
     "events.schema.json": b'{"$defs": {"Topic_x": {"type": "object"}}}\n',
 }
 
@@ -128,7 +127,10 @@ def test_gate_fails_when_a_contracts_artifact_is_missing(
 ) -> None:
     """A present contracts repo with an incomplete generated/ is a failure, not a skip."""
     synthetic_root, contracts_repo = _build_synthetic_tree(gate, tmp_path)
-    (contracts_repo / "generated" / "contract.ts").unlink()
+    # Unlink an artifact the gate still vendors (the TS binding moved to
+    # ags-apps, so `contract.ts` is no longer in the gate's VENDORED table).
+    _vendored_rel, generated_name, _header = gate.VENDORED[0]
+    (contracts_repo / "generated" / generated_name).unlink()
 
     result = _run_gate(repo_root / GATE_REL, synthetic_root, contracts_repo)
     assert result.returncode == 1, result.stdout + result.stderr
