@@ -12,9 +12,9 @@ Covers the layers the composition tests cannot reach in isolation:
 - Converge-composition regression (task 1.2): ``suppress_history``
   threads to all three seeders, and ``_run_converge`` still composes
   ``_run_wallpaper_set`` with the same parameters.
-- Consumer audit (task 2.2): the wallpaper selector treats ``visible``
-  as busy (no unlock, no crash) — scanned, never edited (other agents
-  own the GUI); Phase-5 consumers ignore the topic.
+- Consumer audit (task 2.2): the remaining in-repo consumers treat ``visible``
+  as busy/no-op (the selector GUI itself moved to the ``ags-apps`` unit and is
+  audited there).
 """
 
 from __future__ import annotations
@@ -599,45 +599,14 @@ class TestConvergeCompositionRegression:
 
 
 class TestVisibleConsumerAudit:
-    """Task 2.2: GUI + Phase-5 consumers treat ``visible`` as busy.
+    """Task 2.2: the remaining in-repo consumers treat ``visible`` as busy.
 
-    Scanned, never edited — the wallpaper selector is owned by another
-    agent (change boundary). These tests pin the safe behavior so a
-    future GUI edit cannot silently turn ``visible`` into an unlock.
+    The wallpaper selector's GUI audit (``onWallpaperEvent``) moved into the
+    `ags-apps` unit with the selector (ags-apps-bar-first slice 6), so this
+    repo can no longer scan that source. What stays here is the Phase-5
+    consumer audit: no in-repo handler may turn ``visible`` into an unlock or
+    special-case ``wallpaper.state``.
     """
-
-    def test_selector_event_handler_never_unlocks(self, repo_root: Path) -> None:
-        """``onWallpaperEvent`` keeps the selector busy across the WHOLE
-        set: ``applying`` and the new ``visible`` both hold the gate; only
-        ``done``/``error`` release it. Pins the change-C contract (the
-        selector is owned by the GUI workstream, scanned here, never
-        edited) so a future edit cannot silently turn ``visible`` into an
-        unlock."""
-        selector = (
-            repo_root
-            / "src"
-            / "gui-tools"
-            / "wallpaper-selector"
-            / "ui"
-            / "WallpaperSelectorWindow.tsx"
-        )
-        text = selector.read_text(encoding="utf-8")
-        start = text.index("function onWallpaperEvent")
-        handler_window = text[start : start + 1200]
-        # `visible` is handled explicitly and treated as busy.
-        assert '"visible"' in handler_window
-        # Every busy state sets eventBusy true; every terminal state clears it.
-        assert handler_window.count("eventBusy = true") >= 2  # applying + visible
-        assert handler_window.count("eventBusy = false") == 2  # done + error
-        # No unlock branch is reachable from applying/visible: the true
-        # assignments precede any done/error branch.
-        visible_idx = handler_window.index('"visible"')
-        first_false = handler_window.index("eventBusy = false")
-        assert visible_idx < first_false
-        # The gate combines the local in-flight flag with the event state.
-        assert "localApply || eventBusy" in text
-        # Re-entry is gated on both sources.
-        assert "if (localApply || eventBusy) return;" in text
 
     def test_bar_tracks_no_wallpaper_topic(self) -> None:
         """The bar renders capture/speedtest only — ``wallpaper.state``
