@@ -18,10 +18,13 @@ self-tested so it cannot silently pass a drifted literal.
 from __future__ import annotations
 
 import json
+import os
 import re
 import xml.etree.ElementTree as ET
 from importlib.resources import files
 from pathlib import Path
+
+import pytest
 
 from runtime.adapters import bar_subscriber as bs
 from runtime.adapters.dbus_event_bus import (
@@ -306,9 +309,23 @@ def test_speedtest_state_embedded_schema_matches_generated_bindings() -> None:
 # than no gate), and it only applies to `speedtest.state` — extending it to
 # `wallpaper.state` would force this change to repair another capability.
 
+#: The ags-apps monorepo checkout that now hosts the notification consumer
+#: (slice 4 moved src/gui-tools/notifications/ into the unit). Override with
+#: $AGS_APPS_REPO; mirror of test_compositor_configs_role's pattern. The
+#: checkout is external, so the scan includes it only when present.
+_AGS_APPS_REPO = Path(
+    os.environ.get("AGS_APPS_REPO", "/home/inumaki/Development/ags-apps")
+)
+
 _TS_SCAN_ROOTS = (
+    # The in-repo bar bridge (a dev/typecheck checkout; ABSENT after the
+    # ags-apps-bar-first retirement — kept so the scan still covers it if the
+    # bridge reappears).
     Path("dotfiles") / "config" / "ags",
-    Path("src") / "gui-tools" / "notifications",
+    # The notification consumer, which moved into the ags-apps unit (slice 4).
+    # It reads the most `speedtest.state` keys; scanning only the bar bridge
+    # would audit nothing.
+    _AGS_APPS_REPO / "notifications",
 )
 #: A file is IN SCOPE for this scan if it names the topic literal OR reaches the
 #: topic through the client module. Both are needed: the topic string lives in
@@ -398,16 +415,22 @@ def test_ts_speedtest_scan_scope_covers_the_importing_consumer(repo_root: Path) 
 
     Regression guard. `NotificationsWindow.tsx` — the only file that reads the
     speed-test payload keys — never contains `"speedtest.state"`; it imports
-    `speedtest-events`. A scope test keyed on the literal alone therefore
-    audited nothing while reporting success, which is the worst outcome a drift
-    gate can have.
+    the event client. A scope test keyed on the literal alone therefore audited
+    nothing while reporting success, which is the worst outcome a drift gate can
+    have.
+
+    The consumer moved into the ags-apps unit (slice 4), so the guard resolves
+    it from the unit checkout and SKIPS when that checkout is absent (CI), rather
+    than failing on a machine without a sibling ags-apps clone.
     """
-    window = (
-        repo_root / "src" / "gui-tools" / "notifications" / "ui" / "NotificationsWindow.tsx"
-    )
-    assert window.is_file()
+    window = _AGS_APPS_REPO / "notifications" / "ui" / "NotificationsWindow.tsx"
+    if not window.is_file():
+        pytest.skip(
+            f"ags-apps notifications consumer not found at {window} "
+            "(set AGS_APPS_REPO); the consumer moved into the unit"
+        )
     text = window.read_text(encoding="utf-8")
-    assert "speedtest-events" in text, "consumer no longer imports the event client"
+    assert "speedtest-events" in text, "consumer no longer reaches the event client"
     assert _speedtest_handler_span(text) is not None, (
         "the speed-test handler disappeared — the scan would now audit nothing "
         "and still report success"
@@ -425,14 +448,14 @@ def test_ts_speedtest_keys_are_all_pinned(repo_root: Path) -> None:
     contract_keys = set(_json(repo_root)["topics"][SPEEDTEST_STATE_TOPIC]["payload"])
     offenders: list[str] = []
     for rel in _TS_SCAN_ROOTS:
-        root = repo_root / rel
+        root = rel if rel.is_absolute() else repo_root / rel
         if not root.is_dir():
             continue
         for path in sorted(root.rglob("*")):
             if path.suffix in _SHELL_SUFFIXES:
                 text = path.read_text(encoding="utf-8", errors="replace")
                 for bad in _audit_speedtest_state_keys(text, contract_keys):
-                    offenders.append(f"{path.relative_to(repo_root)}: {bad}")
+                    offenders.append(f"{path}: {bad}")
     assert offenders == []
 
 
