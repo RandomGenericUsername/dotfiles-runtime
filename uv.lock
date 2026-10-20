@@ -87,19 +87,9 @@ source = { git = "https://github.com/RandomGenericUsername/contracts?tag=v0.1.0#
 [[package]]
 name = "cli-output"
 version = "0.1.0"
-source = { editable = "../shared/cli-output" }
+source = { git = "https://github.com/RandomGenericUsername/cli-output?tag=v0.1.0#ddae372786fd6053730133e82cf542a17e9a5ae5" }
 dependencies = [
     { name = "rich" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "rich", specifier = ">=13.0" }]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "pytest-cov", specifier = ">=7.0" },
-    { name = "ruff", specifier = ">=0.15.17" },
 ]
 
 [[package]]
@@ -134,7 +124,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cli-invocation-contract", git = "https://github.com/RandomGenericUsername/contracts?tag=v0.1.0" },
-    { name = "cli-output", editable = "../shared/cli-output" },
+    { name = "cli-output", git = "https://github.com/RandomGenericUsername/cli-output?tag=v0.1.0" },
     { name = "fastjsonschema", specifier = ">=2.20" },
     { name = "jeepney", specifier = ">=0.9.0" },
     { name = "pillow", specifier = ">=10,<12" },
