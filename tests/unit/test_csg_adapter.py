@@ -77,7 +77,7 @@ def _fake_success_factory() -> MagicMock:
 # ---------------------------------------------------------------------------
 
 
-def test_csg_generate_env_override_writes_to_output_dir(
+def test_csg_generate_writes_artifacts_and_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     wallpaper = _copy_wallpaper_fixture(tmp_path)
@@ -115,34 +115,10 @@ def test_csg_generate_env_override_writes_to_output_dir(
     assert (output_dir / "colors.sequences").is_file()
     assert (output_dir / "colors.rasi").is_file()
     assert (output_dir / "colors.kitty").is_file()
-    # Env keys literal, no -o flag
+    # The exact argv/env contract is asserted from the pinned record in
+    # tests/unit/test_cli_invocation_contract.py; this test keeps the
+    # adapter-specific entry/hash/artifact assertions.
     assert fake.call_count == 1
-    # Extract args and env from mock call
-    _, kwargs = fake.call_args
-    env_passed = kwargs.get("env") or fake.call_args.kwargs.get("env")
-    args_passed = kwargs.get("args") or (fake.call_args.args[0] if fake.call_args.args else None)
-    # Fallback: inspect via call_args
-    if args_passed is None:
-        args_passed = fake.call_args[0][0]
-    assert env_passed is not None
-    assert env_passed["COLORSCHEME__OUTPUT__DIRECTORY"] == str(output_dir)
-    assert env_passed["COLORSCHEME__OUTPUT__OVERWRITE"] == "true"
-    # Verify no -o / --output flag in args
-    assert "-o" not in args_passed
-    assert "--output" not in args_passed
-    assert "--format" in args_passed
-    # Ensure all ten formats present
-    assert args_passed.count("--format") == 8
-    assert args_passed[args_passed.index("--format") + 1] == "yaml"
-    assert args_passed[args_passed.index("--format") + 3] == "conf"
-    assert args_passed[args_passed.index("--format") + 5] == "gtk.css"
-    assert args_passed[args_passed.index("--format") + 7] == "adw.css"
-    assert args_passed[args_passed.index("--format") + 9] == "sequences"
-    assert args_passed[args_passed.index("--format") + 11] == "rasi"
-    assert args_passed[args_passed.index("--format") + 13] == "kitty"
-    # btop themes (add-runtime-btop-theme-artifacts) — asserted by value, not
-    # by offset, so appending a format later cannot silently shift this.
-    assert "btop.theme" in args_passed
     # Verify no staging leak
     cache_root = tmp_path / "state" / "cache"
     assert list(cache_root.glob(".staging-*")) == []

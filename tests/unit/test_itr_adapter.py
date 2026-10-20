@@ -83,7 +83,7 @@ def _fake_success_factory() -> MagicMock:
 # ---------------------------------------------------------------------------
 
 
-def test_itr_render_env_override_writes_to_output_dir(
+def test_itr_render_writes_artifacts_and_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     palette_hash = "a" * 64
@@ -116,20 +116,10 @@ def test_itr_render_env_override_writes_to_output_dir(
     assert (output_dir / "battery-0.svg").is_file()
     assert (output_dir / "wifi.svg").is_file()
     assert (output_dir / "subdir" / "nested.svg").is_file()
+    # The exact argv/env contract is asserted from the pinned record in
+    # tests/unit/test_cli_invocation_contract.py; this test keeps the
+    # adapter-specific entry/hash/artifact assertions.
     assert fake.call_count == 1
-    _, kwargs = fake.call_args
-    env_passed = kwargs.get("env")
-    args_passed = kwargs.get("args") or (fake.call_args.args[0] if fake.call_args.args else None)
-    if args_passed is None:
-        args_passed = fake.call_args[0][0]
-    assert env_passed is not None
-    assert env_passed["ICON_RENDERER__OUTPUT__OUTPUT_DIR"] == str(output_dir)
-    assert env_passed["ICON_RENDERER__COLOR_SCHEME__PATH"] == str(palette_entry / "colors.yaml")
-    assert "-o" not in args_passed
-    assert "--output" not in args_passed
-    assert "--output-dir" not in args_passed
-    assert "--color-scheme" not in args_passed
-    assert "render" in args_passed
     cache_root = tmp_path / "state" / "cache"
     assert list(cache_root.glob(".staging-*")) == []
 

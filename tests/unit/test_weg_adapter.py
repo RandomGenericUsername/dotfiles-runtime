@@ -74,7 +74,7 @@ def _fake_success_factory() -> MagicMock:
 # ---------------------------------------------------------------------------
 
 
-def test_weg_generate_env_override_writes_to_output_dir(
+def test_weg_generate_writes_artifacts_and_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     wallpaper = _copy_wallpaper_fixture(tmp_path)
@@ -103,20 +103,10 @@ def test_weg_generate_env_override_writes_to_output_dir(
     assert entry.artifact_hashes["negate.png"] == hash_file(output_dir / "negate.png")
     # Files exist
     assert (output_dir / "blur.png").is_file()
-    # Env keys literal, no -o flag
+    # The exact argv/env contract is asserted from the pinned record in
+    # tests/unit/test_cli_invocation_contract.py; this test keeps the
+    # adapter-specific entry/hash/artifact assertions.
     assert fake.call_count == 1
-    _, kwargs = fake.call_args
-    env_passed = kwargs.get("env") or fake.call_args.kwargs.get("env")
-    args_passed = kwargs.get("args") or (fake.call_args.args[0] if fake.call_args.args else None)
-    if args_passed is None:
-        args_passed = fake.call_args[0][0]
-    assert env_passed is not None
-    assert env_passed["WALLPAPER__OUTPUT__DIRECTORY"] == str(output_dir)
-    assert "-o" not in args_passed
-    assert "--output" not in args_passed
-    assert "batch" in args_passed
-    assert "all" in args_passed
-    assert str(wallpaper) in args_passed
     assert list((tmp_path / "state" / "cache").glob(".staging-*")) == []
 
 
