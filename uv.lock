@@ -80,6 +80,11 @@ wheels = [
 ]
 
 [[package]]
+name = "cli-invocation-contract"
+version = "0.1.0"
+source = { git = "https://github.com/RandomGenericUsername/contracts?tag=v0.1.0#48cf3cfed4b192b241505789409c4f282921c896" }
+
+[[package]]
 name = "cli-output"
 version = "0.1.0"
 source = { editable = "../shared/cli-output" }
@@ -91,7 +96,11 @@ dependencies = [
 requires-dist = [{ name = "rich", specifier = ">=13.0" }]
 
 [package.metadata.requires-dev]
-dev = [{ name = "ruff", specifier = ">=0.15.17" }]
+dev = [
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "pytest-cov", specifier = ">=7.0" },
+    { name = "ruff", specifier = ">=0.15.17" },
+]
 
 [[package]]
 name = "colorama"
@@ -107,6 +116,7 @@ name = "dotfiles-runtime"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cli-invocation-contract" },
     { name = "cli-output" },
     { name = "fastjsonschema" },
     { name = "jeepney" },
@@ -123,6 +133,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cli-invocation-contract", git = "https://github.com/RandomGenericUsername/contracts?tag=v0.1.0" },
     { name = "cli-output", editable = "../shared/cli-output" },
     { name = "fastjsonschema", specifier = ">=2.20" },
     { name = "jeepney", specifier = ">=0.9.0" },
