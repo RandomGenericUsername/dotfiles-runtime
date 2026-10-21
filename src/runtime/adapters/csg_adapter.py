@@ -51,31 +51,6 @@ if HASH_ALGORITHM != "sha256":  # pragma: no cover
 _EMPTY_DIR_HASH = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
-def _find_default_templates_dir() -> Path | None:
-    """Search repo for ``color_scheme_generator/defaults/templates``."""
-    for parent in Path(__file__).resolve().parents:
-        candidates = [
-            parent
-            / "src"
-            / "cli-tools"
-            / "color-scheme-generator"
-            / "src"
-            / "color_scheme_generator"
-            / "defaults"
-            / "templates",
-            parent / "src" / "cli-tools" / "color-scheme-generator" / "defaults" / "templates",
-        ]
-        for candidate in candidates:
-            try:
-                if candidate.is_dir():
-                    return candidate
-            except PermissionError:
-                # Permission denied — treat as not found but don't silently skip
-                # caller will get FileNotFoundError with permission context
-                continue
-    return None
-
-
 def _validate_csg_bin(csg_bin: str | None) -> str | None:
     if csg_bin is None:
         return None
@@ -175,8 +150,9 @@ class CsgAdapter(IColorSchemeGenerator):
             PaletteEntry with artifact_hashes + generated_at.
 
         Raises:
-            FileNotFoundError: if wallpaper_path missing or templates dir not found
-                or csg not on PATH.
+            FileNotFoundError: if wallpaper_path missing, templates_dir was not
+                supplied (it must be resolved from the provisioning spine by the
+                caller), or csg not on PATH.
             IsADirectoryError: if wallpaper_path is a directory.
             ValueError: if output_dir name does not match computed entry hash.
             RuntimeError: on non-zero csg exit with stderr truncated to 2 KiB.
@@ -214,13 +190,23 @@ class CsgAdapter(IColorSchemeGenerator):
         except (PermissionError, OSError) as exc:
             raise RuntimeError(f"cannot hash wallpaper_path {wallpaper_path}: {exc}") from exc
 
-        # 3. Resolve templates dir READ-ONLY and compute template_set_hash
+        # 3. Resolve templates dir READ-ONLY and compute template_set_hash.
+        # templates_dir is REQUIRED and must be resolved from the provisioning
+        # spine by the caller (``find_templates_dir(install_spine)``). There is no
+        # repo-relative discovery fallback: the in-tree csg checkout was retired
+        # with cli-tools-repos S5, so a discovered path would be dead on a
+        # provisioned host and divergent on a dev checkout. Failing here (not in
+        # __init__) keeps bare construction for ``is_available()`` legitimate.
+        # The error type matches the neighbouring "templates dir not found"
+        # failures: a missing input path, not a malformed argument value.
         templates_dir = self._templates_dir
         if templates_dir is None:
-            templates_dir = _find_default_templates_dir()
-        if templates_dir is None:
             raise FileNotFoundError(
-                "CSG templates dir not found: no default templates dir discovered"
+                "CSG templates dir not provided: CsgAdapter was constructed without "
+                "templates_dir. Resolve it from the provisioning spine "
+                "(runtime.application.derive.find_templates_dir(install_spine)) and pass "
+                "templates_dir=... to the caller's CsgAdapter construction; the retired "
+                "repo-relative discovery fallback has been removed."
             )
         if not templates_dir.exists():
             raise FileNotFoundError(f"CSG templates dir not found: {templates_dir}")

@@ -13,6 +13,7 @@ stale binary is skipped with a refresh instruction (same policy as the
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -51,40 +52,34 @@ def _csg_supports_artifact_set(csg_bin: str) -> bool:
         ).is_file()
 
 
-def _find_templates_dir() -> Path | None:
-    for parent in Path(__file__).resolve().parents:
-        candidate = (
-            parent
-            / "src"
-            / "cli-tools"
-            / "color-scheme-generator"
-            / "src"
-            / "color_scheme_generator"
-            / "defaults"
-            / "templates"
-        )
+def _resolve_templates_dir(csg_bin: str, dest: Path) -> Path | None:
+    """Resolve a templates dir for the ph precalc — never via a retired repo tree.
+
+    ``CsgAdapter`` no longer discovers templates itself: production resolves the
+    dir from the provisioning spine (``find_templates_dir(install_spine)``) and
+    passes it in. An integration run can point at one explicitly with
+    ``DOTFILES_CSG_TEMPLATES_DIR``; otherwise dump the on-PATH binary's own
+    bundled templates (the corpus it actually generates from) into ``dest``.
+    """
+    env_dir = os.environ.get("DOTFILES_CSG_TEMPLATES_DIR")
+    if env_dir:
+        candidate = Path(env_dir).expanduser()
         if candidate.is_dir():
             return candidate
-        alt = parent / "src" / "cli-tools" / "color-scheme-generator" / "defaults" / "templates"
-        if alt.is_dir():
-            return alt
-        # Walk from this file's ancestors up to repo root
-        # Also try relative to runtime src
-    # Fallback: search from repo root derived via runtime package location
-    for parent in Path(__file__).resolve().parents:
-        cand = (
-            parent
-            / "src"
-            / "cli-tools"
-            / "color-scheme-generator"
-            / "src"
-            / "color_scheme_generator"
-            / "defaults"
-            / "templates"
+    out = dest / "templates-dump"
+    try:
+        result = subprocess.run(
+            [csg_bin, "dump-templates", "-o", str(out)],
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
-        if cand.is_dir():
-            return cand
-    return None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    dumped = out / "templates"
+    return dumped if dumped.is_dir() else None
 
 
 @pytest.mark.xfail(
@@ -119,37 +114,16 @@ def test_csg_adapter_integration_real_binary(tmp_path: Path) -> None:
         # fallback minimal image via PIL-free helper not needed — pytest skip?
         pytest.skip("wallpaper fixture missing")
 
-    templates_dir = _find_templates_dir()
-    if templates_dir is None or not templates_dir.is_dir():
-        # Use default discovery via adapter; let adapter find it
-        templates_dir_for_hash = None
-        # Compute hash via adapter-discovered dir for ph precalc
-        # Instead, rely on adapter's internal discovery: we need ph for output_dir
-        # So we must find templates_dir to compute ph; skip if not found
-        pytest.skip(f"CSG templates dir not found: {templates_dir}")
-    else:
-        templates_dir_for_hash = templates_dir
+    templates_dir = _resolve_templates_dir(csg_bin, tmp_path)
+    if templates_dir is None:
+        pytest.skip("no templates_dir provided; discovery fallback removed")
 
     # Compute expected ph for output_dir validation
-    if templates_dir_for_hash is not None:
-        template_hash = canonical_hash_dir(templates_dir_for_hash)
-        wallpaper_hash = hash_file(wallpaper)
-        ph = palette_entry_hash(wallpaper_hash, template_hash)
-        output_dir = tmp_path / "state" / "cache" / "palettes" / ph
-        adapter = CsgAdapter(templates_dir=templates_dir_for_hash)
-    else:
-        # Let adapter discover — need to compute ph via adapter's discovered hash
-        # We instantiate adapter without templates_dir and compute via its helper
-        from runtime.adapters.csg_adapter import _find_default_templates_dir  # noqa: PLC0415
-
-        discovered = _find_default_templates_dir()
-        if discovered is None:
-            pytest.skip("no default templates dir discovered")
-        template_hash = canonical_hash_dir(discovered)
-        wallpaper_hash = hash_file(wallpaper)
-        ph = palette_entry_hash(wallpaper_hash, template_hash)
-        output_dir = tmp_path / "state" / "cache" / "palettes" / ph
-        adapter = CsgAdapter()
+    template_hash = canonical_hash_dir(templates_dir)
+    wallpaper_hash = hash_file(wallpaper)
+    ph = palette_entry_hash(wallpaper_hash, template_hash)
+    output_dir = tmp_path / "state" / "cache" / "palettes" / ph
+    adapter = CsgAdapter(templates_dir=templates_dir)
 
     entry = adapter.generate(wallpaper, output_dir)
 

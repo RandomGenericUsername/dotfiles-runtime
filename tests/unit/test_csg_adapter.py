@@ -473,3 +473,37 @@ def test_csg_adapter_no_settings_toml_rewrite_even_on_container(
     # Verify no -o/--output flag in args (not in env dict)
     assert "-o" not in captured_args
     assert "--output" not in captured_args
+
+
+# ---------------------------------------------------------------------------
+# 11. templates_dir is required — no repo-relative discovery fallback
+# ---------------------------------------------------------------------------
+
+
+def test_csg_adapter_generate_without_templates_dir_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bare ``CsgAdapter()`` must fail loudly instead of discovering templates.
+
+    The retired in-repo csg checkout is no longer searched: every production
+    caller resolves ``templates_dir`` from the provisioning spine
+    (``find_templates_dir(install_spine)``) and passes it in.
+    Construction stays side-effect-free so ``is_available()`` keeps working;
+    ``generate`` is where the missing requirement surfaces, and it must surface
+    before any subprocess spawn.
+    """
+    wallpaper = _copy_wallpaper_fixture(tmp_path)
+    output_dir = tmp_path / "state" / "cache" / "palettes" / ("a" * 64)
+
+    mock_run = MagicMock()
+    monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", mock_run)
+
+    adapter = CsgAdapter()  # deliberately no templates_dir
+    with pytest.raises(FileNotFoundError) as excinfo:
+        adapter.generate(wallpaper, output_dir)
+
+    message = str(excinfo.value)
+    assert "templates_dir" in message
+    assert "find_templates_dir" in message
+    mock_run.assert_not_called()
+    assert not output_dir.exists()
