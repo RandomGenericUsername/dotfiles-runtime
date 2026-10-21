@@ -199,19 +199,21 @@ def _detect_container_engine() -> str | None:
 
 
 def _csg_container_image_built(engine: str) -> bool:
-    image_name = "csg-pywal-podman:latest" if engine == "podman" else "csg-pywal-docker:latest"
+    # AD-7 (cli-tools-repos S6): the provisioning role builds csg's images at the
+    # PINNED repo tag (`csg-pywal-podman:v0.1.0`), never at `latest`. Probing for
+    # `:latest` would silently SKIP this case on every post-S6 host, so match the
+    # engine-qualified image name at ANY tag instead.
+    image_prefix = f"csg-pywal-{engine}:"
     try:
-        if engine == "podman":
-            result = subprocess.run(
-                [engine, "image", "exists", image_name], capture_output=True, timeout=30
-            )
-            return result.returncode == 0
-        else:
-            # docker image exists is non-standard; use inspect
-            result = subprocess.run(
-                [engine, "image", "inspect", image_name], capture_output=True, timeout=30
-            )
-            return result.returncode == 0
+        result = subprocess.run(
+            [engine, "images", "--format", "{{.Repository}}:{{.Tag}}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return False
+        return any(image_prefix in line for line in result.stdout.splitlines())
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return False
 
@@ -325,8 +327,8 @@ def csg_available() -> str:
     if not _csg_supports_artifact_set(csg):
         pytest.skip(
             "host csg binary predates ColorFormat.ADW_CSS (dump-templates lacks "
-            "colors.adw.css.j2) — refresh the install from "
-            "src/cli-tools/color-scheme-generator; adw.css/sequences determinism "
+            "colors.adw.css.j2) — refresh the pinned tool (uv tool install "
+            "--force <install>/cli-tools/csg/<tag>); adw.css/sequences determinism "
             "is not provable against this binary (environment staleness)"
         )
     return csg  # type: ignore[return-value]

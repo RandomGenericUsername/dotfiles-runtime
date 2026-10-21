@@ -101,10 +101,9 @@ def _find_default_effects_catalog() -> Path | None:
             except OSError:
                 continue
 
-    # No repo-ancestor fallback: the in-tree `src/cli-tools/
-    # wallpaper-effects-generator` tree was retired in cli-tools-repos S5
-    # (weg is consumed from its pinned repo), so there is no checkout inside
-    # this repo to search. A dev checkout is reached through the env override
+    # No repo-ancestor fallback: the in-tree weg package tree was retired in
+    # cli-tools-repos S5 (weg is consumed from its pinned repo), so there is no
+    # checkout inside this repo to search. A dev checkout is reached through the env override
     # or the XDG link above, both of which provisioning/automation set
     # explicitly.
     return None

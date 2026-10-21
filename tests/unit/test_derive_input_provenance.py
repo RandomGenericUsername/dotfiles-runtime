@@ -23,9 +23,10 @@ from runtime.domain.models import MissingDerivationInputError
 _KEYS = ("csg_templates", "weg_effects", "icon_templates", "icon_mappings")
 
 #: Inputs that still carry a dev-checkout candidate. `weg_effects` lost its
-#: repo candidate in cli-tools-repos S5 (the in-tree weg tree is retired and
-#: weg is consumed from its pinned repo), so the catalog is spine-only.
-_REPO_KEYS = ("csg_templates", "icon_templates", "icon_mappings")
+#: repo candidate in cli-tools-repos S5 and `csg_templates` in S6 (both CLIs are
+#: consumed from their pinned repos and their trees are retired here), so those
+#: two are spine-only.
+_REPO_KEYS = ("icon_templates", "icon_mappings")
 
 
 def _populate_spine(spine: Path) -> None:
@@ -43,7 +44,6 @@ def _populate_spine(spine: Path) -> None:
 
 def _populate_repo(repo: Path) -> None:
     dirs = [
-        "src/cli-tools/color-scheme-generator/src/color_scheme_generator/defaults/templates",
         "dotfiles/assets/icon-templates",
     ]
     for rel in dirs:
@@ -121,6 +121,19 @@ def test_weg_effects_has_no_repo_candidate_after_s5(
     assert resolve_input("weg_effects", tmp_path / "install") == (None, "missing")
 
 
+def test_csg_templates_has_no_repo_candidate_after_s6(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cli-tools-repos S6: the in-tree csg tree is retired, so the template
+    catalog must resolve from the spine only — even with the dev override set.
+    Provisioning copies the catalog from the pinned csg checkout into that
+    spine dir (roles/assets), so the spine is the only legitimate location."""
+    repo = tmp_path / "checkout"
+    _populate_repo(repo)
+    monkeypatch.setenv("DOTFILES_DEV_INPUTS_ROOT", str(repo))
+    assert resolve_input("csg_templates", tmp_path / "install") == (None, "missing")
+
+
 def test_dev_override_does_not_shadow_a_present_spine(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -149,8 +162,9 @@ def test_require_input_all_keys_raise_when_missing(key: str, tmp_path: Path) -> 
 
 
 def test_repo_shaped_ancestor_ignored_without_override(tmp_path: Path) -> None:
-    # The removed implicit walk searched install_spine.parents for src/cli-tools.
-    # With the override unset, a repo-shaped ancestor must NOT be read.
+    # The removed implicit walk searched install_spine.parents for an in-repo
+    # CLI package tree. With the override unset, a repo-shaped ancestor must NOT
+    # be read.
     repo = tmp_path / "checkout"
     _populate_repo(repo)
     spine = repo / "nested" / "install"  # `repo` is an ancestor of the spine

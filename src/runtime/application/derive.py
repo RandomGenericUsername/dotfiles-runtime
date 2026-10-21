@@ -156,20 +156,16 @@ def _input_candidates(
     return {
         "csg_templates": (
             [(install_spine / "config" / "color-scheme-generator" / "templates", _KIND_DIR)],
-            [
-                (
-                    Path(
-                        "src/cli-tools/color-scheme-generator/src/color_scheme_generator/defaults/templates"
-                    ),
-                    _KIND_DIR,
-                ),
-                (Path("src/cli-tools/color-scheme-generator/defaults/templates"), _KIND_DIR),
-            ],
+            # No repo candidate: the in-tree csg package tree was retired in
+            # cli-tools-repos S6 (csg is consumed from its pinned repo, and
+            # provisioning copies its templates from the checkout), so there is
+            # no checkout this repo can fall back to. The dev override still covers the asset
+            # inputs that remain repo-authored.
+            [],
         ),
         "weg_effects": (
             [(install_spine / "config" / "weg" / "effects.yaml", _KIND_FILE)],
-            # No repo candidate: the in-tree `src/cli-tools/
-            # wallpaper-effects-generator` tree was retired in
+            # No repo candidate: the in-tree weg package tree was retired in
             # cli-tools-repos S5 (weg is consumed from its pinned repo), so
             # there is no checkout to fall back to. The dev override still
             # covers the other three inputs; the catalog is spine-only.

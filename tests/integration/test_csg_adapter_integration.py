@@ -104,9 +104,10 @@ def test_csg_adapter_integration_real_binary(tmp_path: Path) -> None:
     if not _csg_supports_artifact_set(csg_bin):
         pytest.skip(
             "host csg binary predates the kitty/adw palette formats (dump-templates "
-            "lacks colors.kitty.j2 or colors.adw.css.j2) — refresh the install from "
-            "src/cli-tools/color-scheme-generator; the full palette set cannot be "
-            "produced by this binary (environment staleness, not a code defect)"
+            "lacks colors.kitty.j2 or colors.adw.css.j2) — refresh the pinned tool "
+            "(uv tool install --force <install>/cli-tools/csg/<tag>); the full "
+            "palette set cannot be produced by this binary (environment staleness, "
+            "not a code defect)"
         )
 
     # Reuse fixture wallpaper.png or create minimal one

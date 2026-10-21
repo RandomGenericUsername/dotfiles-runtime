@@ -26,10 +26,13 @@ Additional ports rule:
     must live in adapters/.
 
 Rule 5 (cross-package, §11 boundary):
-  - No source file may import any dotfiles-sibling package except cli_output.
-  - The forbidden set is: provisioning, core, infrastructure,
-    color_scheme_generator, wallpaper_effects_generator,
-    icon_templates_renderer, config_assembler_engine, oci_runtime.
+  - No source file may import another dotfiles-owned layer (provisioning, core,
+    infrastructure) — those are layers, not dependencies.
+  - The six extracted packages (cli_output, config_assembler_engine,
+    oci_runtime, icon_templates_renderer, wallpaper_effects_generator,
+    color_scheme_generator) are EXTERNAL pinned dependencies as of
+    cli-tools-repos S6, not dotfiles siblings, so they are no longer forbidden
+    roots: importing one is governed by the declared-dependency rule below.
   - Third-party imports must be declared dependencies of the package.
 
 The scanning logic uses only the standard library (ast, sys, pathlib, tomllib,
@@ -103,11 +106,6 @@ _FORBIDDEN_CROSS_PACKAGE = frozenset(
         "provisioning",
         "core",
         "infrastructure",
-        "color_scheme_generator",
-        "wallpaper_effects_generator",
-        "icon_templates_renderer",
-        "config_assembler_engine",
-        "oci_runtime",
     }
 )
 

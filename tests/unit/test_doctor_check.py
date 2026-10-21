@@ -539,11 +539,6 @@ def test_repo_sourced_input_is_not_clean(monkeypatch: pytest.MonkeyPatch, tmp_pa
     mappings = repo / "dotfiles/config/icon-template-color-scheme-mappings"
     mappings.mkdir(parents=True)
     (mappings / "icons.yaml").write_text("{}\n", encoding="utf-8")
-    templates = (
-        repo / "src/cli-tools/color-scheme-generator/src/color_scheme_generator/defaults/templates"
-    )
-    templates.mkdir(parents=True)
-    (templates / "t.j2").write_text("x", encoding="utf-8")
 
     monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(tmp_path / "empty-spine"))
     monkeypatch.setenv("DOTFILES_DEV_INPUTS_ROOT", str(repo))
