@@ -5,7 +5,8 @@ to output_dir and IconsEntry artifact_hashes match hash_file.
 
 Hermeticity: the mapping file, the palette and the output live under
 ``tmp_path``. Only the *template corpus* is real, taken from the icon-templates
-root (``dotfiles/assets/icon-templates`` or ``DOTFILES_ICON_TEMPLATES_DIR``).
+root (the provisioned spine's ``icon-templates``, or
+``DOTFILES_ICON_TEMPLATES_DIR`` pointing at an assets checkout).
 
 The mapping uses the real catalog group shape: ``variants[].template`` is
 resolved by ``itr`` against its templates root (``PathResolutionService``
@@ -33,8 +34,8 @@ from runtime.adapters.itr_adapter import ItrAdapter
 pytestmark = pytest.mark.integration
 
 #: Real catalog template, relative to the icon-templates root. Same spelling as
-#: the production mapping file (``dotfiles/config/icon-template-color-scheme-mappings/
-#: icons.yaml``), so ``itr`` resolves it inside its own templates root.
+#: the production mapping file (``icons/mappings/icons.yaml`` in the pinned
+#: ``dotfiles-assets`` repo), so ``itr`` resolves it inside its own templates root.
 _TEMPLATE_ROOT_GROUP = "status-bar/battery"
 
 #: Placeholder carried by the real battery templates.
@@ -75,12 +76,16 @@ def test_itr_adapter_integration_real_binary(
     if shutil.which("itr") is None:
         pytest.skip("itr not on PATH — integration requires itr binary")
 
-    # Resolve a real templates dir — env override (DOTFILES_ICON_TEMPLATES_DIR),
-    # else the checked-in dotfiles icon-template assets. No retired-tree walk:
-    # an absent input skips loudly instead of silently falling back.
+    # Resolve a real templates dir — the provisioned spine first (production
+    # source), then DOTFILES_ICON_TEMPLATES_DIR pointing at an assets checkout.
+    # No retired-tree walk: an absent input skips loudly instead of silently
+    # falling back.
     templates_dir = resolve_icon_templates_dir()
     if templates_dir is None:
-        pytest.skip("icon templates dir not provided; discovery fallback removed")
+        pytest.skip(
+            "icon templates dir not found: provision the spine (DOTFILES_INSTALL_SPINE "
+            "or XDG_DATA_HOME) or set DOTFILES_ICON_TEMPLATES_DIR to an assets checkout"
+        )
 
     missing = [
         rel

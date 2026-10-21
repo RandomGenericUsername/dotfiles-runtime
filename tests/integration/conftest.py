@@ -27,10 +27,11 @@ import pytest
 # input. These helpers resolve a real input explicitly and let the caller skip
 # *loudly*:
 #
-#   1. an explicit env override, or
-#   2. a real corpus — the pinned CLI's own bundled templates, or the live
-#      checked-in dotfiles asset — and
-#   3. otherwise ``None`` (the caller must ``pytest.skip`` with a clear reason).
+#   1. the PROVISIONED spine (``$DOTFILES_INSTALL_SPINE`` or
+#      ``$XDG_DATA_HOME/dotfiles``) — the production source (AD-13), or
+#   2. an explicit env override (an assets checkout), or
+#   3. a real corpus — the pinned CLI's own bundled templates — and
+#   4. otherwise ``None`` (the caller must ``pytest.skip`` with a clear reason).
 #
 # Never silently pass. Regression guard: ``tests/architecture/
 # test_no_retired_sources.py`` fails if any ``src/runtime`` source reintroduces a
@@ -39,8 +40,9 @@ import pytest
 # Env names:
 #   DOTFILES_CSG_TEMPLATES_DIR  — CSG palette templates dir (production resolves
 #                                 it from the spine: ``find_templates_dir``).
-#   DOTFILES_ICON_TEMPLATES_DIR — ITR icon templates dir (production resolves it
-#                                 from the spine: ``find_icon_templates``).
+#   DOTFILES_ICON_TEMPLATES_DIR — ITR icon templates dir, an assets checkout
+#                                 override (production resolves it from the
+#                                 spine: ``find_icon_templates``).
 CSG_TEMPLATES_DIR_ENV = "DOTFILES_CSG_TEMPLATES_DIR"
 ICON_TEMPLATES_DIR_ENV = "DOTFILES_ICON_TEMPLATES_DIR"
 
@@ -84,23 +86,39 @@ def resolve_csg_templates_dir(csg_bin: str, dest: Path) -> Path | None:
     return dumped if dumped.is_dir() else None
 
 
-def resolve_icon_templates_dir() -> Path | None:
-    """Resolve the ITR icon-templates dir — never via a retired repo tree.
+def _resolve_install_spine() -> Path | None:
+    """Resolve the provisioned install spine exactly as the runtime CLI does.
 
-    ITR templates are dotfiles-authored assets, not a CLI bundle. Production
-    resolves them from the install spine (``find_icon_templates``); the live
-    source of truth in this repo is the checked-in ``dotfiles/assets/
-    icon-templates`` tree (``ARCHITECTURE.md`` marks ``dotfiles/assets/`` live),
-    which is also the repo candidate the runtime consults when
-    ``DOTFILES_DEV_INPUTS_ROOT`` points at a checkout (``derive.py``
-    ``icon_templates``). A test can override with
-    ``DOTFILES_ICON_TEMPLATES_DIR``; otherwise the checked-in asset is used.
-    ``None`` means "not provided" — the caller must skip loudly.
+    ``$DOTFILES_INSTALL_SPINE`` (explicit override) else
+    ``$XDG_DATA_HOME/dotfiles`` (default ``~/.local/share/dotfiles``). ``None``
+    when the directory does not exist on this machine.
     """
+    explicit = os.environ.get("DOTFILES_INSTALL_SPINE")
+    if explicit:
+        candidate = Path(explicit).expanduser()
+    else:
+        xdg_data = Path(
+            os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share"
+        )
+        candidate = xdg_data / "dotfiles"
+    return candidate.resolve() if candidate.is_dir() else None
+
+
+def resolve_icon_templates_dir() -> Path | None:
+    """Resolve the ITR icon-templates dir — spine first, then an assets checkout.
+
+    ITR templates are assets: since S1 they ship in the pinned ``dotfiles-assets``
+    repo and deploy to ``<install>/icon-templates``. Production reads the spine
+    (``find_icon_templates``); a test may point at an assets checkout with
+    ``DOTFILES_ICON_TEMPLATES_DIR``. ``None`` means "not provided" — the caller
+    must skip loudly, never silently fall back to a retired repo tree.
+    """
+    spine = _resolve_install_spine()
+    if spine is not None and (spine / "icon-templates").is_dir():
+        return spine / "icon-templates"
     if (env_dir := _env_dir(ICON_TEMPLATES_DIR_ENV)) is not None:
         return env_dir
-    live = _REPO_ROOT / "dotfiles" / "assets" / "icon-templates"
-    return live if live.is_dir() else None
+    return None
 
 
 _REAL_DESKTOP_BINARIES = (

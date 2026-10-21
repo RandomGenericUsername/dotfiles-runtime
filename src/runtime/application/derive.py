@@ -118,8 +118,10 @@ from runtime.ports.icon_renderer import IIconRenderer
 logger = logging.getLogger(__name__)
 
 #: Explicit dev override (R-3, AD-43): when set, the runtime MAY resolve
-#: derivation inputs from a repo checkout instead of the install spine. Unset
-#: in production — resolution is spine-only and a missing input fails loud.
+#: derivation inputs from a checkout instead of the install spine. Since S1 the
+#: only inputs with a checkout candidate are the two assets-fed ones, so the
+#: value means "an assets checkout" (icons/ at its root). Unset in production —
+#: resolution is spine-only and a missing input fails loud.
 _DEV_INPUTS_ROOT_ENV = "DOTFILES_DEV_INPUTS_ROOT"
 
 _KIND_DIR = "dir"
@@ -176,7 +178,11 @@ def _input_candidates(
                 (install_spine / "icon-templates", _KIND_DIR),
                 (install_spine / "config" / "icon-templates-renderer" / "templates", _KIND_DIR),
             ],
-            [(Path("dotfiles/assets/icon-templates"), _KIND_DIR)],
+            # S1: the corpus is the pinned `dotfiles-assets` repo, so the dev
+            # root now means "an assets checkout" (icons/ at its root), not a
+            # composition-repo tree. The spine stays the production source
+            # (AD-13); this is opt-in via DOTFILES_DEV_INPUTS_ROOT and logged.
+            [(Path("icons/templates"), _KIND_DIR)],
         ),
         "icon_mappings": (
             [
@@ -185,11 +191,10 @@ def _input_candidates(
                 (install_spine / "config" / "icon-templates-renderer" / "icons.yaml", _KIND_FILE),
             ],
             [
-                (
-                    Path("dotfiles/config/icon-template-color-scheme-mappings/icons.yaml"),
-                    _KIND_FILE,
-                ),
-                (Path("dotfiles/config/icon-template-color-scheme-mappings"), _KIND_DIR),
+                # S1: assets-checkout-relative — icons.yaml is the single group
+                # map; defaults.yaml sits beside it as the vocabulary.
+                (Path("icons/mappings/icons.yaml"), _KIND_FILE),
+                (Path("icons/mappings"), _KIND_DIR),
             ],
         ),
     }

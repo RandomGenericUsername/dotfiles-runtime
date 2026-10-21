@@ -534,9 +534,11 @@ def test_missing_derivation_input_reported(monkeypatch: pytest.MonkeyPatch, tmp_
 def test_repo_sourced_input_is_not_clean(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """R-3/AD-43: a repo-sourced input (override set) dirties doctor — never passes as clean."""
     repo = tmp_path / "checkout"
-    (repo / "dotfiles/assets/icon-templates").mkdir(parents=True)
-    (repo / "dotfiles/assets/icon-templates/x.svg").write_text("<svg/>", encoding="utf-8")
-    mappings = repo / "dotfiles/config/icon-template-color-scheme-mappings"
+    # S1: the dev root is an ASSETS checkout (icons/ at its root).
+    templates = repo / "icons" / "templates"
+    templates.mkdir(parents=True)
+    (templates / "x.svg").write_text("<svg/>", encoding="utf-8")
+    mappings = repo / "icons" / "mappings"
     mappings.mkdir(parents=True)
     (mappings / "icons.yaml").write_text("{}\n", encoding="utf-8")
 

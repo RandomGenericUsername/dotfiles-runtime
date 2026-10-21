@@ -43,15 +43,17 @@ def _populate_spine(spine: Path) -> None:
 
 
 def _populate_repo(repo: Path) -> None:
+    # S1: the dev root is an ASSETS checkout, so the two assets-fed inputs are
+    # icons/-relative (the composition-repo trees were retired).
     dirs = [
-        "dotfiles/assets/icon-templates",
+        "icons/templates",
     ]
     for rel in dirs:
         d = repo / rel
         d.mkdir(parents=True, exist_ok=True)
         (d / "f").write_text("x", encoding="utf-8")
     files = [
-        "dotfiles/config/icon-template-color-scheme-mappings/icons.yaml",
+        "icons/mappings/icons.yaml",
     ]
     for rel in files:
         f = repo / rel
