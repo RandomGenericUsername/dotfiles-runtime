@@ -137,35 +137,13 @@ def test_csg_adapter_never_touches_settings_toml(
     ph = palette_entry_hash(hash_file(wallpaper), canonical_hash_dir(templates_dir))
     output_dir = tmp_path / "state" / "cache" / "palettes" / ph
 
-    # Check real provisioning settings.toml if it exists (AD-7: never edits)
-    # Fall back to tmp sentinel if real file not found — but now test proves
-    # adapter never touches the *actual* settings path, not just a tmp file.
-    candidates = [
-        Path(__file__).resolve().parents[4]
-        / "src"
-        / "cli-tools"
-        / "color-scheme-generator"
-        / "src"
-        / "color_scheme_generator"
-        / "defaults"
-        / "settings.toml",
-        Path(__file__).resolve().parents[3]
-        / "src"
-        / "cli-tools"
-        / "color-scheme-generator"
-        / "defaults"
-        / "settings.toml",
-    ]
-    real_settings = next((p for p in candidates if p.is_file()), None)
-    if real_settings is not None:
-        mtime_before = real_settings.stat().st_mtime_ns
-        content_before = real_settings.read_bytes()
-    else:
-        # No real settings — use tmp sentinel as fallback proof of no global write
-        real_settings = tmp_path / "settings.toml"
-        real_settings.write_text('[color_scheme]\nbackend = "custom"\n')
-        mtime_before = real_settings.stat().st_mtime_ns
-        content_before = real_settings.read_bytes()
+    # CSG settings live in the pinned tool's spine config, not in this repo
+    # (the in-repo csg tree was retired); there is no repo settings path to
+    # probe. Use a tmp sentinel and prove the adapter never rewrites it.
+    real_settings = tmp_path / "settings.toml"
+    real_settings.write_text('[color_scheme]\nbackend = "custom"\n')
+    mtime_before = real_settings.stat().st_mtime_ns
+    content_before = real_settings.read_bytes()
 
     fake = _fake_success_factory()
     monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake)
@@ -406,32 +384,13 @@ def test_csg_adapter_no_settings_toml_rewrite_even_on_container(
     ph = palette_entry_hash(hash_file(wallpaper), canonical_hash_dir(templates_dir))
     output_dir = tmp_path / "state" / "cache" / "palettes" / ph
 
-    candidates = [
-        Path(__file__).resolve().parents[4]
-        / "src"
-        / "cli-tools"
-        / "color-scheme-generator"
-        / "src"
-        / "color_scheme_generator"
-        / "defaults"
-        / "settings.toml",
-        Path(__file__).resolve().parents[3]
-        / "src"
-        / "cli-tools"
-        / "color-scheme-generator"
-        / "defaults"
-        / "settings.toml",
-    ]
-    real_settings = next((p for p in candidates if p.is_file()), None)
-    if real_settings is not None:
-        mtime = real_settings.stat().st_mtime_ns
-        content = real_settings.read_bytes()
-    else:
-        settings = tmp_path / "settings.toml"
-        settings.write_text("overwrite = false\n")
-        real_settings = settings
-        mtime = settings.stat().st_mtime_ns
-        content = settings.read_bytes()
+    # CSG settings live in the pinned tool's spine config, not in this repo
+    # (the in-repo csg tree was retired); use a tmp sentinel and prove the
+    # adapter never rewrites it even on the container path.
+    real_settings = tmp_path / "settings.toml"
+    real_settings.write_text("overwrite = false\n")
+    mtime = real_settings.stat().st_mtime_ns
+    content = real_settings.read_bytes()
 
     captured_env: dict[str, str] = {}
     captured_args: list[str] = []

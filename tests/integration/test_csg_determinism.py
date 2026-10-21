@@ -65,6 +65,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from conftest import resolve_csg_templates_dir
 
 
 class NondeterministicCSGError(AssertionError):
@@ -263,36 +264,6 @@ def _run_csg_generate(
     return subprocess.run(args, capture_output=True, text=True, env=run_env, timeout=timeout)
 
 
-def _default_templates_dir() -> Path | None:
-    """Resolve CSG bundled templates dir (package defaults, not spine)."""
-    # Matches color_scheme_generator.adapters.template_dir_resolver._DEFAULT_TEMPLATES_DIR
-    # We probe via repo tree search instead of ``csg info`` for speed.
-    return _find_csg_templates_dir()
-
-
-def _find_csg_templates_dir() -> Path | None:
-    """Search repo for ``color_scheme_generator/defaults/templates``."""
-    # Walk up from this test file to repo root
-    for parent in Path(__file__).resolve().parents:
-        candidate = (
-            parent
-            / "src"
-            / "cli-tools"
-            / "color-scheme-generator"
-            / "src"
-            / "color_scheme_generator"
-            / "defaults"
-            / "templates"
-        )
-        if candidate.is_dir():
-            return candidate
-        # alternative: installed package location via importlib?
-        alt = parent / "src" / "cli-tools" / "color-scheme-generator" / "defaults" / "templates"
-        if alt.is_dir():
-            return alt
-    return None
-
-
 def _csg_supports_artifact_set(csg_bin: str) -> bool:
     """True when the on-PATH csg bundles ``colors.adw.css.j2`` (gt-1-1 format).
 
@@ -360,7 +331,10 @@ class TestCsgDeterminism:
         wallpaper_hash = _sha256_file(image_path)
 
         # ── template-set hash (for memlog) — unified sentinel "no-dir" ──────
-        templates_dir = _find_csg_templates_dir()
+        # Same explicit resolution as the csg adapter integration test: env
+        # override, else the on-PATH binary's own dump-templates corpus. No
+        # retired-tree walk; absence is recorded as the "no-dir" sentinel.
+        templates_dir = resolve_csg_templates_dir(csg_available, tmp_path)
         if templates_dir and templates_dir.is_dir():
             template_hash = _hash_template_dir(templates_dir)
             templates_dir_str = str(templates_dir)

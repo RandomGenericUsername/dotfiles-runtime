@@ -310,9 +310,10 @@ def test_speedtest_state_embedded_schema_matches_generated_bindings() -> None:
 # `wallpaper.state` would force this change to repair another capability.
 
 #: The ags-apps monorepo checkout that now hosts the notification consumer
-#: (slice 4 moved src/gui-tools/notifications/ into the unit). Override with
-#: $AGS_APPS_REPO; mirror of test_compositor_configs_role's pattern. The
-#: checkout is external, so the scan includes it only when present.
+#: (slice 4 moved the notifications app out of the retired in-repo GUI tree
+#: into the unit). Override with $AGS_APPS_REPO; mirror of
+#: test_compositor_configs_role's pattern. The checkout is external, so the
+#: scan includes it only when present.
 _AGS_APPS_REPO = Path(
     os.environ.get("AGS_APPS_REPO", "/home/inumaki/Development/ags-apps")
 )

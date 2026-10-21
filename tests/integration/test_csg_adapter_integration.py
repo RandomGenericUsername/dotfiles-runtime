@@ -13,13 +13,13 @@ stale binary is skipped with a refresh instruction (same policy as the
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
 import pytest
+from conftest import resolve_csg_templates_dir
 
 from runtime.adapters.csg_adapter import CsgAdapter
 from runtime.adapters.hashing import canonical_hash_dir, hash_file, palette_entry_hash
@@ -50,36 +50,6 @@ def _csg_supports_artifact_set(csg_bin: str) -> bool:
         return (out / "templates" / "colors.adw.css.j2").is_file() and (
             out / "templates" / "colors.kitty.j2"
         ).is_file()
-
-
-def _resolve_templates_dir(csg_bin: str, dest: Path) -> Path | None:
-    """Resolve a templates dir for the ph precalc — never via a retired repo tree.
-
-    ``CsgAdapter`` no longer discovers templates itself: production resolves the
-    dir from the provisioning spine (``find_templates_dir(install_spine)``) and
-    passes it in. An integration run can point at one explicitly with
-    ``DOTFILES_CSG_TEMPLATES_DIR``; otherwise dump the on-PATH binary's own
-    bundled templates (the corpus it actually generates from) into ``dest``.
-    """
-    env_dir = os.environ.get("DOTFILES_CSG_TEMPLATES_DIR")
-    if env_dir:
-        candidate = Path(env_dir).expanduser()
-        if candidate.is_dir():
-            return candidate
-    out = dest / "templates-dump"
-    try:
-        result = subprocess.run(
-            [csg_bin, "dump-templates", "-o", str(out)],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    dumped = out / "templates"
-    return dumped if dumped.is_dir() else None
 
 
 @pytest.mark.xfail(
@@ -114,9 +84,9 @@ def test_csg_adapter_integration_real_binary(tmp_path: Path) -> None:
         # fallback minimal image via PIL-free helper not needed — pytest skip?
         pytest.skip("wallpaper fixture missing")
 
-    templates_dir = _resolve_templates_dir(csg_bin, tmp_path)
+    templates_dir = resolve_csg_templates_dir(csg_bin, tmp_path)
     if templates_dir is None:
-        pytest.skip("no templates_dir provided; discovery fallback removed")
+        pytest.skip("CSG templates dir not provided; discovery fallback removed")
 
     # Compute expected ph for output_dir validation
     template_hash = canonical_hash_dir(templates_dir)

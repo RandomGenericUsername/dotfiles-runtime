@@ -164,31 +164,13 @@ def test_itr_adapter_never_touches_settings_toml(
     )
     output_dir = tmp_path / "state" / "cache" / "icons" / ih
 
-    candidates = [
-        Path(__file__).resolve().parents[4]
-        / "src"
-        / "cli-tools"
-        / "icon-templates-renderer"
-        / "src"
-        / "icon_templates_renderer"
-        / "defaults"
-        / "settings.toml",
-        Path(__file__).resolve().parents[3]
-        / "src"
-        / "cli-tools"
-        / "icon-templates-renderer"
-        / "defaults"
-        / "settings.toml",
-    ]
-    real_settings = next((p for p in candidates if p.is_file()), None)
-    if real_settings is not None:
-        mtime_before = real_settings.stat().st_mtime_ns
-        content_before = real_settings.read_bytes()
-    else:
-        real_settings = tmp_path / "settings.toml"
-        real_settings.write_text('[output]\noutput_dir = "/tmp/itr"\n')
-        mtime_before = real_settings.stat().st_mtime_ns
-        content_before = real_settings.read_bytes()
+    # ITR settings live in the pinned tool's spine config, not in this repo
+    # (the in-repo itr tree was retired); there is no repo settings path to
+    # probe. Use a tmp sentinel and prove the adapter never rewrites it.
+    real_settings = tmp_path / "settings.toml"
+    real_settings.write_text('[output]\noutput_dir = "/tmp/itr"\n')
+    mtime_before = real_settings.stat().st_mtime_ns
+    content_before = real_settings.read_bytes()
 
     fake = _fake_success_factory()
     monkeypatch.setattr("runtime.adapters.itr_adapter.subprocess.run", fake)
@@ -472,32 +454,13 @@ def test_itr_adapter_no_settings_toml_rewrite_even_on_container(
     )
     output_dir = tmp_path / "state" / "cache" / "icons" / ih
 
-    candidates = [
-        Path(__file__).resolve().parents[4]
-        / "src"
-        / "cli-tools"
-        / "icon-templates-renderer"
-        / "src"
-        / "icon_templates_renderer"
-        / "defaults"
-        / "settings.toml",
-        Path(__file__).resolve().parents[3]
-        / "src"
-        / "cli-tools"
-        / "icon-templates-renderer"
-        / "defaults"
-        / "settings.toml",
-    ]
-    real_settings = next((p for p in candidates if p.is_file()), None)
-    if real_settings is not None:
-        mtime = real_settings.stat().st_mtime_ns
-        content = real_settings.read_bytes()
-    else:
-        settings = tmp_path / "settings.toml"
-        settings.write_text("overwrite = false\n")
-        real_settings = settings
-        mtime = settings.stat().st_mtime_ns
-        content = settings.read_bytes()
+    # ITR settings live in the pinned tool's spine config, not in this repo
+    # (the in-repo itr tree was retired); use a tmp sentinel and prove the
+    # adapter never rewrites it even on the container path.
+    real_settings = tmp_path / "settings.toml"
+    real_settings.write_text("overwrite = false\n")
+    mtime = real_settings.stat().st_mtime_ns
+    content = real_settings.read_bytes()
 
     captured_env: dict[str, str] = {}
     captured_args: list[str] = []
