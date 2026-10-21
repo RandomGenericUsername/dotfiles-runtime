@@ -1,7 +1,7 @@
 """Runtime adapter invocation conformance, driven by the contracts record.
 
 The expected argv/env come from ``cli_invocation_contract`` (pinned at
-``contracts v0.1.0``), never from literals repeated here. The three tests replace
+``contracts v0.2.0``), never from literals repeated here. The three tests replace
 the per-adapter literal assertions named in S1 §6.1 with one record-driven check
 per adapter.
 """
@@ -80,6 +80,14 @@ def _write_contract_artifacts(record: dict, output_dir: Path) -> None:
     (output_dir / f"artifact{artifacts['suffixes'][0]}").write_text("contract artifact\n")
 
 
+def _output_dir_key(record: dict) -> str:
+    """Return the env key the record maps to ``{output_dir}``."""
+    for key, value in record["env"]["injected"].items():
+        if value == "{output_dir}":
+            return key
+    raise AssertionError(f"{record['binary']}: record has no {{output_dir}} env key")
+
+
 def _recording_runner(record: dict) -> MagicMock:
     """Return a subprocess.run stand-in that records argv/env and writes artifacts."""
 
@@ -93,7 +101,7 @@ def _recording_runner(record: dict) -> MagicMock:
         **_kw: object,
     ) -> subprocess.CompletedProcess[str]:
         assert env is not None
-        output_dir = Path(env[record["env"]["required"][0]])
+        output_dir = Path(env[_output_dir_key(record)])
         _write_contract_artifacts(record, output_dir)
         return subprocess.CompletedProcess(args, 0, "", "")
 
@@ -137,6 +145,11 @@ def test_weg_invocation_matches_record(tmp_path: Path, monkeypatch: pytest.Monke
 
 def test_itr_invocation_matches_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     record = contract_record("itr")
+    # contracts v0.2.0: the render corpus is a required env input, so the
+    # record-driven assertion below cannot pass without the adapter forwarding
+    # the SAME dir it hashed into the entry hash.
+    assert "ICON_RENDERER__TEMPLATES__DIR" in record["env"]["required"]
+    assert record["env"]["injected"]["ICON_RENDERER__TEMPLATES__DIR"] == "{templates_dir}"
     palette_hash = "a" * 64
     templates_dir = _make_itr_templates_dir(tmp_path)
     mappings_file = _make_mappings_file(tmp_path)

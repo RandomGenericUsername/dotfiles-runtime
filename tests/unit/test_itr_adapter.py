@@ -237,12 +237,68 @@ def test_itr_adapter_container_env_passthrough(
 
     assert captured["ICON_RENDERER__OUTPUT__OUTPUT_DIR"] == str(output_dir)
     assert captured["ICON_RENDERER__COLOR_SCHEME__PATH"] == str(palette_entry / "colors.yaml")
+    assert captured["ICON_RENDERER__TEMPLATES__DIR"] == str(templates_dir)
     assert "ICON_RENDERER__OUTPUT__OUTPUT_DIR" not in os.environ
 
 
 # ---------------------------------------------------------------------------
-# 4. Raises on non-zero exit, preserves stderr
+# 3b. contracts v0.2.0: the render corpus is the corpus the entry hash covers
 # ---------------------------------------------------------------------------
+
+
+def test_itr_render_pins_templates_dir_to_the_hashed_corpus(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`ICON_RENDERER__TEMPLATES__DIR` is the record's required render input.
+
+    The adapter must forward the SAME dir it hashes into ``ih`` — the render
+    arg wins over the constructor default, and it wins over any host env
+    override (``build_env`` overrides the allowlisted host copy), so ``ih``
+    can never describe a corpus ``itr`` did not read.
+    """
+    palette_hash = "f" * 64
+    hashed_templates = _make_templates_dir(tmp_path)
+    other_templates = tmp_path / "other-templates"
+    other_templates.mkdir()
+    (other_templates / "unrelated.svg.j2").write_text("<svg></svg>\n")
+    mappings_path = _make_mappings_dir(tmp_path)
+    palette_entry = _create_palette_entry(tmp_path, palette_hash)
+    ih = icons_entry_hash(
+        palette_hash, canonical_hash_dir(hashed_templates), canonical_hash_dir(mappings_path)
+    )
+    output_dir = tmp_path / "state" / "cache" / "icons" / ih
+
+    # A host-level override must NOT reach itr: the adapter's literal wins.
+    monkeypatch.setenv("ICON_RENDERER__TEMPLATES__DIR", str(other_templates))
+
+    captured: dict[str, str] = {}
+
+    def fake_run(
+        args: list[str],
+        capture_output: bool = False,
+        text: bool = False,
+        env: dict[str, str] | None = None,
+        timeout: int | None = None,
+        errors: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:  # noqa: ARG001
+        assert env is not None
+        captured.update(env)
+        out = Path(env["ICON_RENDERER__OUTPUT__OUTPUT_DIR"])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "a.svg").write_text("<svg></svg>")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr("runtime.adapters.itr_adapter.subprocess.run", fake_run)
+
+    # Constructor default is `other_templates`; the render arg must still win.
+    adapter = ItrAdapter(
+        templates_dir=other_templates,
+        mappings_path=mappings_path,
+        palette_cache_dir=palette_entry,
+    )
+    adapter.render(palette_hash, hashed_templates, mappings_path, output_dir)
+
+    assert captured["ICON_RENDERER__TEMPLATES__DIR"] == str(hashed_templates)
 
 
 def test_itr_adapter_raises_on_non_zero_exit(

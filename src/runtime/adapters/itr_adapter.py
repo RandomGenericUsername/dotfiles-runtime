@@ -1,9 +1,13 @@
 """ITR adapter with env override (Story 1.9, AD-7).
 
-Directs ``itr render`` output via ``ICON_RENDERER__OUTPUT__OUTPUT_DIR``
-and palette input via ``ICON_RENDERER__COLOR_SCHEME__PATH`` env overrides
-into ``cache/icons/<ih>/`` without editing provisioning's
-``settings.toml``.
+Directs ``itr render`` output via ``ICON_RENDERER__OUTPUT__OUTPUT_DIR``,
+palette input via ``ICON_RENDERER__COLOR_SCHEME__PATH`` and the template
+corpus via ``ICON_RENDERER__TEMPLATES__DIR`` env overrides into
+``cache/icons/<ih>/`` without editing provisioning's ``settings.toml``.
+
+The templates override is what makes the entry hash honest: the dir hashed
+into ``ih`` is the dir ``itr`` renders from, so ``ih`` cannot cover a corpus
+the render did not read (contracts v0.2.0 requires the key).
 
 Container forwarding (AD-7 last sentence):
 ``itr`` runs in container mode (podman/docker via ``oci-runtime``):
@@ -400,10 +404,15 @@ class ItrAdapter(IIconRenderer):
             ) from exc
 
         # 7. Build env with literal double-underscore keys (AD-7)
+        # `ICON_RENDERER__TEMPLATES__DIR` is the contract's required key for the
+        # render corpus (contracts v0.2.0): pinning it to the SAME dir hashed
+        # into the entry hash above makes `itr` render from exactly the corpus
+        # `ih` covers, instead of whatever its own settings chain resolves.
         env = build_env(
             {
                 "ICON_RENDERER__OUTPUT__OUTPUT_DIR": str(output_dir),
                 "ICON_RENDERER__COLOR_SCHEME__PATH": str(colors_yaml_path),
+                "ICON_RENDERER__TEMPLATES__DIR": str(effective_templates),
             }
         )
 

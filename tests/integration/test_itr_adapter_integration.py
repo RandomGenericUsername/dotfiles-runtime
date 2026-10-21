@@ -8,17 +8,15 @@ Hermeticity: the mapping file, the palette and the output live under
 root (``dotfiles/assets/icon-templates`` or ``DOTFILES_ICON_TEMPLATES_DIR``).
 
 The mapping uses the real catalog group shape: ``variants[].template`` is
-resolved by ``itr`` against *its own* templates root (``PathResolutionService``
+resolved by ``itr`` against its templates root (``PathResolutionService``
 joins ``template_dir`` — default ``"."`` — under ``roots.template_root``,
 ``yaml_icon_config_loader.py:78,101``). ``ItrAdapter`` never passes
-``--template-dir`` and never sets ``ICON_RENDERER__TEMPLATES__DIR`` itself, so
-on a provisioned host ``itr`` renders from the settings chain's spine
-(``~/.config/itr/settings.toml`` ``[templates] dir``), which is a *different*
-input from the ``templates_dir`` the adapter hashes for the entry hash. This
-test closes that gap without touching production code: it exports
-``ICON_RENDERER__TEMPLATES__DIR`` for the subprocess (``ItrAdapter`` forwards
-allowlisted ``ICON_RENDERER__*`` host vars via ``build_env``), so ``itr``
-renders from exactly the corpus the adapter hashed.
+``--template-dir``, but it DOES export ``ICON_RENDERER__TEMPLATES__DIR`` for the
+subprocess (contracts v0.2.0 requires the key), pinned to the ``templates_dir``
+it hashed for the entry hash. On a provisioned host that is the spine's
+``icon-templates`` dir, i.e. the same corpus the settings chain renders into —
+and now the adapter enforces it instead of relying on both sides agreeing by
+provisioning. So ``itr`` renders from exactly the corpus the adapter hashed.
 """
 
 from __future__ import annotations
@@ -95,10 +93,9 @@ def test_itr_adapter_integration_real_binary(
             f"({', '.join(missing)}) — cannot exercise a real render"
         )
 
-    # Pin itr's own render root to the exact corpus we hash below, so the
-    # entry hash inputs and the rendered inputs cannot disagree.
-    monkeypatch.setenv("ICON_RENDERER__TEMPLATES__DIR", str(templates_dir))
-
+    # No env hand-off: the adapter pins itr's render root to the exact corpus
+    # it hashes below (`ICON_RENDERER__TEMPLATES__DIR`), so this test proves the
+    # production path — not a monkeypatched host env — keeps them equal.
     palette_hash = "a" * 64
     palette_entry = tmp_path / "state" / "cache" / "palettes" / palette_hash
     palette_entry.mkdir(parents=True, exist_ok=True)
