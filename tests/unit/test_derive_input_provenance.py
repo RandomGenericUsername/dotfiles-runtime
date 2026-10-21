@@ -22,6 +22,11 @@ from runtime.domain.models import MissingDerivationInputError
 
 _KEYS = ("csg_templates", "weg_effects", "icon_templates", "icon_mappings")
 
+#: Inputs that still carry a dev-checkout candidate. `weg_effects` lost its
+#: repo candidate in cli-tools-repos S5 (the in-tree weg tree is retired and
+#: weg is consumed from its pinned repo), so the catalog is spine-only.
+_REPO_KEYS = ("csg_templates", "icon_templates", "icon_mappings")
+
 
 def _populate_spine(spine: Path) -> None:
     (spine / "icon-templates").mkdir(parents=True)
@@ -46,7 +51,6 @@ def _populate_repo(repo: Path) -> None:
         d.mkdir(parents=True, exist_ok=True)
         (d / "f").write_text("x", encoding="utf-8")
     files = [
-        "src/cli-tools/wallpaper-effects-generator/src/wallpaper_effects_generator/defaults/effects.yaml",
         "dotfiles/config/icon-template-color-scheme-mappings/icons.yaml",
     ]
     for rel in files:
@@ -98,11 +102,23 @@ def test_dev_override_restores_repo_and_logs(
     derive_module._WARNED.clear()  # warnings are deduped per process
     spine = tmp_path / "install"  # empty
     with caplog.at_level(logging.WARNING):
-        for key in _KEYS:
+        for key in _REPO_KEYS:
             path, source = resolve_input(key, spine)
             assert source == "repo"
             assert path is not None
     assert any("dev checkout" in r.message for r in caplog.records)
+
+
+def test_weg_effects_has_no_repo_candidate_after_s5(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cli-tools-repos S5: the in-tree weg tree is retired, so the effects
+    catalog must resolve from the spine only — even with the dev override set
+    (a checkout in the repo no longer exists to search)."""
+    repo = tmp_path / "checkout"
+    _populate_repo(repo)
+    monkeypatch.setenv("DOTFILES_DEV_INPUTS_ROOT", str(repo))
+    assert resolve_input("weg_effects", tmp_path / "install") == (None, "missing")
 
 
 def test_dev_override_does_not_shadow_a_present_spine(

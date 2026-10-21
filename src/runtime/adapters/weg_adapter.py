@@ -66,9 +66,6 @@ def _find_default_effects_catalog() -> Path | None:
     ``~/.config/weg → <install>/config/weg``, so WEG's XDG strategy finds
     the project's catalog through the link. This function mirrors that
     same XDG path so the runtime's pre-computed ``eeh`` matches WEG's.
-
-    A repo-ancestor fallback is included for dev checkouts where neither
-    the symlink nor a nearby CWD parent has the catalog.
     """
     # 1) env override (WEG's EnvPathStrategy)
     env_path = os.environ.get("WALLPAPER_EFFECTS_CONFIG_FILE_PATH")
@@ -104,30 +101,12 @@ def _find_default_effects_catalog() -> Path | None:
             except OSError:
                 continue
 
-    # 4) repo ancestor fallback (dev checkouts)
-    for parent in Path(__file__).resolve().parents:
-        candidates = [
-            parent
-            / "src"
-            / "cli-tools"
-            / "wallpaper-effects-generator"
-            / "src"
-            / "wallpaper_effects_generator"
-            / "defaults"
-            / "effects.yaml",
-            parent
-            / "src"
-            / "cli-tools"
-            / "wallpaper-effects-generator"
-            / "defaults"
-            / "effects.yaml",
-        ]
-        for candidate in candidates:
-            try:
-                if candidate.is_file():
-                    return candidate
-            except OSError:
-                continue
+    # No repo-ancestor fallback: the in-tree `src/cli-tools/
+    # wallpaper-effects-generator` tree was retired in cli-tools-repos S5
+    # (weg is consumed from its pinned repo), so there is no checkout inside
+    # this repo to search. A dev checkout is reached through the env override
+    # or the XDG link above, both of which provisioning/automation set
+    # explicitly.
     return None
 
 

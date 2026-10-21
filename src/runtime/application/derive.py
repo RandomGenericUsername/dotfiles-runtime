@@ -168,18 +168,12 @@ def _input_candidates(
         ),
         "weg_effects": (
             [(install_spine / "config" / "weg" / "effects.yaml", _KIND_FILE)],
-            [
-                (
-                    Path(
-                        "src/cli-tools/wallpaper-effects-generator/src/wallpaper_effects_generator/defaults/effects.yaml"
-                    ),
-                    _KIND_FILE,
-                ),
-                (
-                    Path("src/cli-tools/wallpaper-effects-generator/defaults/effects.yaml"),
-                    _KIND_FILE,
-                ),
-            ],
+            # No repo candidate: the in-tree `src/cli-tools/
+            # wallpaper-effects-generator` tree was retired in
+            # cli-tools-repos S5 (weg is consumed from its pinned repo), so
+            # there is no checkout to fall back to. The dev override still
+            # covers the other three inputs; the catalog is spine-only.
+            [],
         ),
         "icon_templates": (
             [

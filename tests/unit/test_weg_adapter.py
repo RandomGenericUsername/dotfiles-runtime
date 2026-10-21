@@ -123,31 +123,10 @@ def test_weg_adapter_never_touches_settings_toml(
     eh = effects_entry_hash(hash_file(wallpaper), hash_file(catalog))
     output_dir = tmp_path / "state" / "cache" / "effects" / eh
 
-    candidates = [
-        Path(__file__).resolve().parents[4]
-        / "src"
-        / "cli-tools"
-        / "wallpaper-effects-generator"
-        / "src"
-        / "wallpaper_effects_generator"
-        / "defaults"
-        / "settings.toml",
-        Path(__file__).resolve().parents[3]
-        / "src"
-        / "cli-tools"
-        / "wallpaper-effects-generator"
-        / "defaults"
-        / "settings.toml",
-    ]
-    real_settings = next((p for p in candidates if p.is_file()), None)
-    if real_settings is not None:
-        mtime_before = real_settings.stat().st_mtime_ns
-        content_before = real_settings.read_bytes()
-    else:
-        real_settings = tmp_path / "settings.toml"
-        real_settings.write_text('[wallpaper]\nbackend = "magick"\n')
-        mtime_before = real_settings.stat().st_mtime_ns
-        content_before = real_settings.read_bytes()
+    real_settings = tmp_path / "settings.toml"
+    real_settings.write_text('[wallpaper]\nbackend = "magick"\n')
+    mtime_before = real_settings.stat().st_mtime_ns
+    content_before = real_settings.read_bytes()
 
     fake = _fake_success_factory()
     monkeypatch.setattr("runtime.adapters.weg_adapter.subprocess.run", fake)
@@ -370,30 +349,10 @@ def test_weg_adapter_no_settings_toml_rewrite_even_on_container(
     eh = effects_entry_hash(hash_file(wallpaper), hash_file(catalog))
     output_dir = tmp_path / "state" / "cache" / "effects" / eh
 
-    candidates = [
-        Path(__file__).resolve().parents[4]
-        / "src"
-        / "cli-tools"
-        / "wallpaper-effects-generator"
-        / "defaults"
-        / "settings.toml",
-        Path(__file__).resolve().parents[3]
-        / "src"
-        / "cli-tools"
-        / "wallpaper-effects-generator"
-        / "defaults"
-        / "settings.toml",
-    ]
-    real_settings = next((p for p in candidates if p.is_file()), None)
-    if real_settings is not None:
-        mtime = real_settings.stat().st_mtime_ns
-        content = real_settings.read_bytes()
-    else:
-        settings = tmp_path / "settings.toml"
-        settings.write_text("overwrite = false\n")
-        real_settings = settings
-        mtime = settings.stat().st_mtime_ns
-        content = settings.read_bytes()
+    real_settings = tmp_path / "settings.toml"
+    real_settings.write_text("overwrite = false\n")
+    mtime = real_settings.stat().st_mtime_ns
+    content = real_settings.read_bytes()
 
     captured_env: dict[str, str] = {}
     captured_args: list[str] = []

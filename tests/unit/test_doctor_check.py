@@ -544,11 +544,6 @@ def test_repo_sourced_input_is_not_clean(monkeypatch: pytest.MonkeyPatch, tmp_pa
     )
     templates.mkdir(parents=True)
     (templates / "t.j2").write_text("x", encoding="utf-8")
-    weg = (
-        repo / "src/cli-tools/wallpaper-effects-generator/src/wallpaper_effects_generator/defaults"
-    )
-    weg.mkdir(parents=True)
-    (weg / "effects.yaml").write_text("{}\n", encoding="utf-8")
 
     monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(tmp_path / "empty-spine"))
     monkeypatch.setenv("DOTFILES_DEV_INPUTS_ROOT", str(repo))
