@@ -34,7 +34,7 @@ import pytest
 #   4. otherwise ``None`` (the caller must ``pytest.skip`` with a clear reason).
 #
 # Never silently pass. Regression guard: ``tests/architecture/
-# test_no_retired_sources.py`` fails if any ``src/runtime`` source reintroduces a
+# test_no_retired_sources.py`` fails if any runtime source reintroduces a
 # retired-tree literal.
 #
 # Env names:
@@ -46,8 +46,16 @@ import pytest
 CSG_TEMPLATES_DIR_ENV = "DOTFILES_CSG_TEMPLATES_DIR"
 ICON_TEMPLATES_DIR_ENV = "DOTFILES_ICON_TEMPLATES_DIR"
 
-#: Worktree root: ``<root>/src/runtime/tests/integration/conftest.py``.
-_REPO_ROOT = Path(__file__).resolve().parents[4]
+#: Repo root, located by walking up for the conformance copies. Avoids a
+#: hardcoded depth so the suite survives the move out of the composition repo.
+def _find_repo_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "contracts" / "schemas" / "history.schema.json").is_file():
+            return parent
+    raise RuntimeError("could not locate repo root (contracts/schemas/... missing)")
+
+
+_REPO_ROOT = _find_repo_root()
 
 
 def _env_dir(name: str) -> Path | None:

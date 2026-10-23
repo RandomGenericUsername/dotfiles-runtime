@@ -92,7 +92,7 @@ def _validate_output_dir(output_dir: Path, expected_hash: str) -> None:
 class CsgAdapter(IColorSchemeGenerator):
     """Adapter that invokes ``csg generate`` via env override.
 
-    Location: ``src/runtime/src/runtime/adapters/csg_adapter.py``
+    Location: ``src/runtime/adapters/csg_adapter.py``
     (chosen over ``csg.py`` to avoid shadowing external
     ``color_scheme_generator`` package).
     """

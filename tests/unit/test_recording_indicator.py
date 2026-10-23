@@ -10,17 +10,29 @@ and the GJS bar widget (the poll loop was removed).
 from __future__ import annotations
 
 import ast
+import os
 from collections.abc import Callable, Mapping
 from pathlib import Path
+
+import pytest
 
 from runtime.application.indicator import IndicatorView, RecordingIndicator
 from runtime.ports.event_bus import IEventSubscriber
 
-_REPO_ROOT = Path(__file__).resolve().parents[4]
-_PY_HARNESS = (
-    _REPO_ROOT / "src" / "runtime" / "src" / "runtime" / "application" / "indicator.py"
-)
-_BAR_WIDGET = _REPO_ROOT / "dotfiles" / "config" / "ags" / "bar" / "widgets" / "recording.tsx"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_PY_HARNESS = _REPO_ROOT / "src" / "runtime" / "application" / "indicator.py"
+#: The bar widget is owned by `ags-apps`, not this repo. The invariant is still
+#: worth checking when a checkout is available; CI skips it with this reason.
+_BAR_WIDGET_ENV = "DOTFILES_AGS_BAR_WIDGET"
+
+
+def _bar_widget() -> Path | None:
+    raw = os.environ.get(_BAR_WIDGET_ENV)
+    candidates = [Path(raw).expanduser()] if raw else []
+    candidates.append(
+        _REPO_ROOT.parent / "ags-apps" / "bar" / "widgets" / "recording.tsx"
+    )
+    return next((path for path in candidates if path.is_file()), None)
 
 
 class _Clock:
@@ -107,7 +119,13 @@ class TestNoPollingInvariant:
         assert "status.json" not in source
 
     def test_bar_widget_has_no_poll_loop(self) -> None:
-        source = _BAR_WIDGET.read_text(encoding="utf-8")
+        widget = _bar_widget()
+        if widget is None:
+            pytest.skip(
+                f"bar widget not available; set {_BAR_WIDGET_ENV} to a "
+                "ags-apps/bar/widgets/recording.tsx checkout to run this check"
+            )
+        source = widget.read_text(encoding="utf-8")
         # The old indicator polled `capture-tool status` every 500ms.
         assert "spawn_command_line_sync" not in source
         assert 'execAsync(["capture-tool"' not in source

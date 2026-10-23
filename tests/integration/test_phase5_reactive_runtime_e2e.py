@@ -48,10 +48,16 @@ import pytest
 _RUNTIME_BIN = Path(sys.executable).with_name("dotfiles-runtime")
 _DBUS_DAEMON = shutil.which("dbus-daemon")
 
-pytestmark = pytest.mark.skipif(
-    _DBUS_DAEMON is None or not _RUNTIME_BIN.is_file() or not sys.platform.startswith("linux"),
-    reason="phase5 E2E needs dbus-daemon, the dotfiles-runtime script, and Linux/inotify",
-)
+pytestmark = [
+    # Real daemon + private bus + inotify: a developer proof, not a fast gate.
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        _DBUS_DAEMON is None
+        or not _RUNTIME_BIN.is_file()
+        or not sys.platform.startswith("linux"),
+        reason="phase5 E2E needs dbus-daemon, the dotfiles-runtime script, and Linux/inotify",
+    ),
+]
 
 _HUB_ADDRESS = "/org/dotfiles/Events"
 _HUB_NAME = "org.dotfiles.Events"

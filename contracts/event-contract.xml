@@ -1,0 +1,110 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!--
+  Single source of truth for the Phase-5 session-bus contract.
+
+  Object paths (children of /org/dotfiles):
+    /org/dotfiles/Events — served by the hub (`dotfiles-runtime daemon run`),
+        the sole owner of the well-known name org.dotfiles.Events.
+        interface org.dotfiles.Events1: the methods and signals below.
+    /org/dotfiles/Job — served by each job process on its own bus-attested
+        unique name; the job requests no well-known name. interface
+        org.dotfiles.Job1. The hub is the ONLY caller: it delegates a
+        validated Events1.Control(job_id, action) to the job as
+        Job1.Control(action) and returns success only on the job's ack.
+        Consumers keep calling Events1.Control; they never address Job1.
+
+  This XML is the parse target for BOTH the Python hub and the GJS/AGS
+  consumers; the JSON keeps topics/payload schemas/delivery semantics.
+-->
+<node name="/org/dotfiles">
+  <node name="Events">
+    <interface name="org.dotfiles.Events1">
+
+      <method name="Emit">
+        <arg name="topic" type="s" direction="in"/>
+        <arg name="payload" type="a{sv}" direction="in"/>
+      </method>
+
+      <method name="BeginJob">
+        <arg name="kind" type="s" direction="in"/>
+        <arg name="ttl" type="u" direction="in"/>
+        <arg name="job_id" type="s" direction="out"/>
+      </method>
+
+      <method name="RenewJob">
+        <arg name="job_id" type="s" direction="in"/>
+      </method>
+
+      <method name="AdoptJob">
+        <arg name="job_id" type="s" direction="in"/>
+        <arg name="pid" type="u" direction="in"/>
+      </method>
+
+      <method name="ReportProgress">
+        <arg name="job_id" type="s" direction="in"/>
+        <arg name="fraction" type="d" direction="in"/>
+      </method>
+
+      <method name="EndJob">
+        <arg name="job_id" type="s" direction="in"/>
+        <arg name="exit_code" type="i" direction="in"/>
+      </method>
+
+      <method name="Control">
+        <arg name="job_id" type="s" direction="in"/>
+        <arg name="action" type="s" direction="in"/>
+      </method>
+
+      <method name="GetActiveJobs">
+        <arg name="jobs" type="a{ss}" direction="out"/>
+      </method>
+
+      <method name="GetTopicState">
+        <arg name="topic" type="s" direction="in"/>
+        <arg name="state" type="a{sv}" direction="out"/>
+      </method>
+
+      <signal name="JobStarted">
+        <arg name="job_id" type="s"/>
+        <arg name="kind" type="s"/>
+        <arg name="epoch" type="u"/>
+      </signal>
+
+      <signal name="JobProgress">
+        <arg name="job_id" type="s"/>
+        <arg name="fraction" type="d"/>
+        <arg name="epoch" type="u"/>
+      </signal>
+
+      <signal name="JobFinished">
+        <arg name="job_id" type="s"/>
+        <arg name="exit_code" type="i"/>
+        <arg name="epoch" type="u"/>
+      </signal>
+
+      <signal name="DomainEvent">
+        <arg name="topic" type="s"/>
+        <arg name="producer" type="s"/>
+        <arg name="seq" type="u"/>
+        <arg name="epoch" type="u"/>
+        <arg name="payload" type="a{sv}"/>
+      </signal>
+
+      <signal name="JobsCleared">
+        <arg name="epoch" type="u"/>
+      </signal>
+
+    </interface>
+  </node>
+  <node name="Job">
+    <interface name="org.dotfiles.Job1">
+      <!-- Job-side control. Void: the job answers only on success; failures
+           cross as typed D-Bus errors (e.g. org.dotfiles.Job1.JobEnded,
+           ...NotControllable). Called by the hub, never by a UI. -->
+      <method name="Control">
+        <arg name="action" type="s" direction="in"/>
+      </method>
+    </interface>
+  </node>
+</node>

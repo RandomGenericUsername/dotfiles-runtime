@@ -32,7 +32,10 @@ class FitMode(StrEnum):
 
 
 class WallpaperEntryHashes(TypedDict, total=False):
-    """Artifact hashes for wallpaper entries (currently empty — wallpaper has no derived artifacts)."""
+    """Artifact hashes for wallpaper entries.
+
+    Currently empty: wallpaper has no derived artifacts.
+    """
 
 
 @dataclass(frozen=True, slots=True)

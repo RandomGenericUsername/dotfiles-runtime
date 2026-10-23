@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://dotfiles.local/schemas/last-converged.schema.json",
+  "title": "last-converged.json (version 1)",
+  "description": "Single machine-checkable definition of the persisted last-converged backstop record (AD-36/AD-44); the prose in converge_backstop.py is descriptive. An absent, corrupt, or unknown-version record is treated as changed, never fatal. `converged_at` is additive (P5-1-4): a pre-timestamp v1 record is still valid.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "input_hash"],
+  "properties": {
+    "version": { "const": 1 },
+    "input_hash": { "type": "string", "minLength": 1 },
+    "converged_at": { "type": "string", "minLength": 1 }
+  }
+}

@@ -1,0 +1,31 @@
+# deps / Python
+.venv/
+__pycache__/
+*.pyc
+# test / lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+# machine-specific integration artifact (timestamp, host template hash, engine state)
+tests/integration/.csg_determinism.json
+
+# build / release
+dist/
+build/
+*.egg-info/
+
+# env
+.env
+.env.local
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# openspec local
+openspec/worksets/
+
+# worktrees (ticket harness)
+.worktrees/

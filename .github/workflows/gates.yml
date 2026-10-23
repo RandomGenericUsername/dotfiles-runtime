@@ -1,0 +1,110 @@
+name: gates
+
+# One job per `make gates` member, so a failure names the gate that broke.
+# `make ci-gates-parity` (job `ci-gates-parity`) fails when this file's job set
+# and the Makefile's `GATES` set differ in either direction; CI-only jobs are
+# declared there with a reason. The Makefile is the authoritative list.
+#
+# On a tag push the same gates run and `release` attaches the sdist + wheel built
+# from that commit to the GitHub Release. Nothing is published to PyPI.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.9.22"
+          enable-cache: true
+      - run: make sync
+      - run: make test
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.9.22"
+          enable-cache: true
+      - run: make sync
+      - run: make lint
+
+  contracts-check:
+    name: contracts-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.9.22"
+          enable-cache: true
+      - run: make sync
+      - run: make contracts-check
+
+  hermetic:
+    name: hermetic
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.9.22"
+          enable-cache: true
+      - run: make sync
+      - run: make hermetic
+
+  lock-check:
+    name: lock-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.9.22"
+          enable-cache: true
+      - run: make lock-check
+
+  docs-check:
+    name: docs-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make docs-check
+
+  ci-gates-parity:
+    name: ci-gates-parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make ci-gates-parity
+
+  release:
+    name: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, lint, contracts-check, hermetic, lock-check, docs-check]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.9.22"
+          enable-cache: true
+      - run: make build
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+          fail_on_unmatched_files: true

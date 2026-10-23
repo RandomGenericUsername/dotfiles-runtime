@@ -51,7 +51,6 @@ if TYPE_CHECKING:
     from runtime.domain.models import ChangeSet, DesktopState
     from runtime.ports.bus_name_owner import IBusNameOwner
     from runtime.ports.desktop_reloader import IDesktopReloader
-    from runtime.ports.wallpaper_applier import IWallpaperApplier
     from runtime.ports.event_bus import IJobRegistry
     from runtime.ports.jobs import (
         IControlChannel,
@@ -59,6 +58,7 @@ if TYPE_CHECKING:
         IJobClient,
         IRecorderProcess,
     )
+    from runtime.ports.wallpaper_applier import IWallpaperApplier
     from runtime.ports.watch_source import IWatchSource
 
 app = typer.Typer(

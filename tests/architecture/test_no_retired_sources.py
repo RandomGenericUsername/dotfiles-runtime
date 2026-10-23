@@ -10,7 +10,7 @@ checkout on a dev machine. Such a fallback does not fail — it silently degrade
 coverage (skip / tmp fallback) and hides a missing input. This guard fails loud
 instead, listing every offender.
 
-Scope: production (``src/runtime/src/**/*.py``) *and* the test suite, because
+Scope: production (``src/runtime/**/*.py``) *and* the test suite, because
 the same retired-tree walk survived in tests after production was fixed
 (``test_csg_determinism`` / ``test_itr_adapter_integration`` /
 ``test_csg_adapter`` / ``test_itr_adapter``). The guard file itself is excluded —
@@ -29,7 +29,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-_RUNTIME_ROOT = Path(__file__).resolve().parents[2]  # src/runtime
+_RUNTIME_ROOT = Path(__file__).resolve().parents[2]  # repo root
 _SRC_ROOT = _RUNTIME_ROOT / "src" / "runtime"  # production package
 _TESTS_ROOT = _RUNTIME_ROOT / "tests"
 _GUARD_PATH = Path(__file__).resolve()

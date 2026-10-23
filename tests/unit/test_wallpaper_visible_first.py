@@ -618,6 +618,6 @@ class TestVisibleConsumerAudit:
     def test_daemon_converge_ignores_wallpaper_state(self, repo_root: Path) -> None:
         """The reactive converge observes inputs, not ``wallpaper.state``:
         no special-casing is needed for the new event."""
-        converge = repo_root / "src" / "runtime" / "src" / "runtime" / "application" / "converge.py"
+        converge = repo_root / "src" / "runtime" / "application" / "converge.py"
         assert "wallpaper.state" not in converge.read_text(encoding="utf-8")
         assert "visible" not in converge.read_text(encoding="utf-8")

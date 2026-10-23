@@ -1,0 +1,104 @@
+{
+  "bus": "session",
+  "well_known_name": "org.dotfiles.Events",
+  "owner": "dotfiles-runtime daemon run (the hub, sole emitter)",
+  "object_path": "/org/dotfiles/Events",
+  "interface": "org.dotfiles.Events1",
+  "versioning": {
+    "breaking": "removed | retyped | newly-required field -> org.dotfiles.Events2",
+    "non_breaking": "additive method | signal | topic | optional field stays on org.dotfiles.Events1",
+    "coexistence": "Events1 and Events2 may coexist on the bus under distinct interface names during migration"
+  },
+  "methods": {
+    "Emit": { "in": ["topic:s", "payload:a{sv}"] },
+    "BeginJob": { "in": ["kind:s", "ttl:u"], "out": ["job_id:s"] },
+    "RenewJob": { "in": ["job_id:s"] },
+    "AdoptJob": { "in": ["job_id:s", "pid:u"] },
+    "ReportProgress": { "in": ["job_id:s", "fraction:d"] },
+    "EndJob": { "in": ["job_id:s", "exit_code:i"] },
+    "Control": { "in": ["job_id:s", "action:s"] },
+    "GetActiveJobs": { "out": ["jobs:a{ss}"] },
+    "GetTopicState": { "in": ["topic:s"], "out": ["state:a{sv}"] }
+  },
+  "signals": {
+    "JobStarted": ["job_id:s", "kind:s", "epoch:u"],
+    "JobProgress": ["job_id:s", "fraction:d", "epoch:u"],
+    "JobFinished": ["job_id:s", "exit_code:i", "epoch:u"],
+    "DomainEvent": ["topic:s", "producer:s", "seq:u", "epoch:u", "payload:a{sv}"],
+    "JobsCleared": ["epoch:u"]
+  },
+  "job_lease": {
+    "renew_method": "RenewJob",
+    "expiry_exit_code": -1,
+    "adopt_method": "AdoptJob",
+    "control_method": "Control"
+  },
+  "job_interface": {
+    "interface": "org.dotfiles.Job1",
+    "object_path": "/org/dotfiles/Job",
+    "methods": {
+      "Control": { "in": ["action:s"] }
+    },
+    "served_by": "each job process on its own bus-attested unique name; the hub is the only caller and delegates org.dotfiles.Events1.Control(job_id, action) to it",
+    "delivery": "request/response: Events1.Control returns success only on the job ack; unreachable/dead/timed-out -> UnknownJob"
+  },
+  "errors": ["UnknownTopic", "PayloadTooLarge", "RateLimited", "UnknownJob", "JobEnded", "NotControllable"],
+  "delivery": {
+    "semantics": "at-most-once",
+    "ordering": "per-topic monotonic seq (u) within an epoch (u); epoch bumps and seq resets on every hub start",
+    "restart_signal": "JobsCleared(epoch) on first start and every restart; consumers also watch NameOwnerChanged on org.dotfiles.Events",
+    "hydration": "subscribe-then-read GetTopicState/GetActiveJobs; GetTopicState returns reserved _epoch (u) and _seq (u); drop signals whose (epoch, seq) is not greater than hydrated"
+  },
+  "validation": {
+    "identity": "none (trusted same-user session bus)",
+    "structural": ["schema", "max_payload_bytes", "max_payload_depth", "publish_rate", "known_topic_only"]
+  },
+  "topics": {
+    "icme.saved": {
+      "producer": "ICME",
+      "payload": { "path": "s" }
+    },
+    "capture.state": {
+      "producer": "capture controller",
+      "payload": { "state": "s", "elapsed_seconds": "x" },
+      "enum": { "state": ["idle", "recording", "paused"] },
+      "cadence": "on every transition and at least once per second while recording",
+      "notes": "the bar renders the pushed elapsed_seconds (may interpolate locally); it derives no time from a file or shared wall clock"
+    },
+    "speedtest.state": {
+      "producer": "speed-test service",
+      "payload": { "state": "s", "trigger": "s", "ssid": "s", "server_name": "s", "down_mbps": "d", "up_mbps": "d", "latency_ms": "d", "reason": "s" },
+      "optional": ["down_mbps", "up_mbps", "latency_ms", "reason", "ssid", "server_name"],
+      "enum": {
+        "state": ["starting", "done", "error"],
+        "trigger": ["scheduled", "manual", "connect"]
+      },
+      "cadence": "on transition: starting at run start, done/error at the single terminal settle (including watchdog abandonment)",
+      "notes": "SUPERSEDES speedtest.finished, which had no subscriber, so the widening is observationally free and there is exactly one way to say a speed test happened. state=starting carries only state+trigger; done additionally requires the three measurement doubles and the two context strings; error additionally requires a single-line reason, never a traceback. Exactly one done OR error is emitted per run. The progress bar is INDETERMINATE by construction: speedtest-cli --json returns one blob at the end, so no intermediate fraction exists to publish and any determinate value would be fabricated. trigger names the operation that started the run: scheduled = the interval timer, manual = the panel's Run now, connect = the run-on-connect watcher. ssid and server_name are the CONTEXT of a measurement, carried on done so the notification card can name what it measured; both MAY be empty strings when unavailable (no associated network, a backend that reports no server name) and a consumer MUST then fall back rather than render a blank. ssid is captured when the run STARTS, not when it settles: the run measured the network that was up at the time, and a link that changed mid-run would otherwise be mislabelled"
+    },
+    "clipboard.update": {
+      "producer": "clipboard controller",
+      "payload": { "type": "s", "hash": "s", "path": "s", "preview": "s" },
+      "enum": { "type": ["text", "image", "link", "code", "color", "emoji"] },
+      "notes": "path is the image file path for image items and empty otherwise; preview is a bounded text excerpt for text-like items and empty for images; never raw binary"
+    },
+    "clipboard.state": {
+      "producer": "clipboard controller",
+      "payload": { "state": "s", "job_id": "s" },
+      "enum": { "state": ["idle", "running", "paused"] },
+      "cadence": "on every transition (start, pause, resume, stop)",
+      "notes": "drives the overlay's incognito indicator and routes Control; job_id is the hub-allocated clipboard job"
+    },
+    "wallpaper.state": {
+      "producer": "dotfiles-runtime wallpaper set",
+      "payload": { "state": "s", "wallpaper_hash": "s", "trigger": "s" },
+      "optional": ["trigger"],
+      "enum": {
+        "state": ["applying", "visible", "done", "error"],
+        "trigger": ["set", "regenerate", "reconcile", "reactive"]
+      },
+      "cadence": "on transition: applying at set start, visible after the swap, done/error at finish",
+      "notes": "drives the wallpaper selector's progress indicator and LIVE refresh; publish-only, no job lease; wallpaper_hash is empty when the input never validated; visible means pixels swapped while theming is still in flight (busy — UI stays locked until done/error); done/error semantics unchanged; trigger is optional/additive (old publishers stay valid) and names the operation that produced the transition: set = wallpaper set, regenerate = icons regenerate, reconcile = standalone reconcile, reactive = daemon reactive converge"
+    }
+  }
+}

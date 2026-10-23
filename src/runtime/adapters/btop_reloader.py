@@ -137,6 +137,8 @@ class BtopReloader(IDesktopReloader):
             try:
                 self._signaller(pid, signal.SIGUSR2)
             except OSError as exc:
-                logger.warning("BtopReloader reload failed: cannot signal btop pid %s: %s", pid, exc)
+                logger.warning(
+                    "BtopReloader reload failed: cannot signal btop pid %s: %s", pid, exc
+                )
                 failed = True
         return not failed

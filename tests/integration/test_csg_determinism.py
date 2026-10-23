@@ -41,8 +41,8 @@ while actually ignoring the override.
 
 Re-run::
 
-    uv run --directory src/runtime pytest -k csg_determinism -v
-    cat src/runtime/tests/integration/.csg_determinism.json
+    uv run pytest -k csg_determinism -v
+    cat tests/integration/.csg_determinism.json
 
 Artifact ``.csg_determinism.json`` is dot-prefixed to avoid pytest collection.
 A ``skipped`` run (``deterministic: "skipped"``) is **not proven** — Stories

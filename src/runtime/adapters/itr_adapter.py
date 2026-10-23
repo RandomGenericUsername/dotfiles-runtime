@@ -97,7 +97,7 @@ def _validate_output_dir(output_dir: Path, expected_hash: str) -> None:
 class ItrAdapter(IIconRenderer):
     """Adapter that invokes ``itr render`` via env overrides.
 
-    Location: ``src/runtime/src/runtime/adapters/itr_adapter.py``
+    Location: ``src/runtime/adapters/itr_adapter.py``
     (mirrors ``csg_adapter.py``/``weg_adapter.py`` for layered cache).
     """
 

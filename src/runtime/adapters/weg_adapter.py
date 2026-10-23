@@ -155,7 +155,7 @@ def _validate_output_dir(output_dir: Path, expected_hash: str) -> None:
 class WegAdapter(IEffectsGenerator):
     """Adapter that invokes ``weg batch all`` via env override.
 
-    Location: ``src/runtime/src/runtime/adapters/weg_adapter.py``
+    Location: ``src/runtime/adapters/weg_adapter.py``
     (mirrors ``csg_adapter.py`` for layered cache).
     """
 

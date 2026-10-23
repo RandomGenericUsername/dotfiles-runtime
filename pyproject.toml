@@ -2,6 +2,9 @@
 name = "dotfiles-runtime"
 version = "0.1.0"
 description = "Runtime engine for the dotfiles system — wallpaper, state, history, cache"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.14"
 dependencies = [
     "typer>=0.12",
@@ -10,6 +13,9 @@ dependencies = [
     "fastjsonschema>=2.20",
     "jeepney>=0.9.0",
     "Pillow>=10,<12",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
 ]
 
 [project.scripts]
@@ -22,6 +28,20 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/runtime"]
 
+# The harness trees (.agents/, _bmad/, .opencode/, openspec/, tickets/, .github/)
+# are not release content. The event-contract conformance copies under
+# `contracts/` are test material, not runtime data: the package embeds the
+# generated binding and schemas it consumes at runtime.
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "pyproject.toml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "src/runtime",
+    "tests",
+]
+
 [tool.uv.sources]
 cli-output = { git = "https://github.com/RandomGenericUsername/cli-output", tag = "v0.1.0" }
 cli-invocation-contract = { git = "https://github.com/RandomGenericUsername/contracts", tag = "v0.2.0" }
@@ -29,6 +49,9 @@ cli-invocation-contract = { git = "https://github.com/RandomGenericUsername/cont
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "."]
+markers = [
+    "integration: test needs a real installed CLI or a provisioned desktop spine",
+]
 
 [tool.ruff]
 target-version = "py314"
@@ -37,6 +60,13 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B"]
 ignore = ["B905"]
+
+[tool.ruff.lint.per-file-ignores]
+# Generated, vendored from the `contracts` repo; `make contracts-check` and
+# `scripts/contract-pin-check.py` own its content, never a lint autofix.
+"src/runtime/domain/contract_generated.py" = ["E501", "I001"]
+# Typer's public API is `param: T = typer.Option(...)`; B008 is the framework shape.
+"src/runtime/cli/main.py" = ["B008"]
 
 [tool.ruff.format]
 quote-style = "double"
