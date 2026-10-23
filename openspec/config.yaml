@@ -1,0 +1,30 @@
+schema: spec-driven
+
+# Project context (optional)
+# Add only constraints that should guide OpenSpec artifacts and workflows.
+# Include constraints an agent cannot infer by reading the code.
+# Keep general project documentation and discoverable codebase facts out.
+context: |
+  dotfiles-runtime is the host-side runtime of the dotfiles desktop, extracted from dotfiles-v3
+  as its own immutable-tag repo. It owns the wallpaper apply/derive/reconcile chain, the
+  content-addressed cache, state/history, the D-Bus daemon and the clipboard watcher. It consumes
+  cli-output and cli-invocation-contract by git tag; it never imports the provisioning engine, the
+  three CLIs (csg/weg/itr) or any AGS app. It reads the installed spine only, with
+  DOTFILES_DEV_INPUTS_ROOT as the explicit development override. The composition repo
+  (dotfiles-v3) installs this repo from a pinned {name, repo, tag} entry and runs it; this repo
+  authors no composition manifest and no Ansible role. Repo contract in AGENTS.md (CLAUDE.md
+  symlinks there) applies to all artifacts.
+
+# Per-artifact rules (optional)
+rules:
+  proposal:
+    - "Every claim carries Evidence (file path + lines, commit SHA, URL + quote, or prototype command + observed output) and a one-command Verify step; mark Evidence MISSING rather than stating unproven claims as fact."
+    - "Always state what is out of scope."
+  specs:
+    - "Each requirement states its acceptance check (command to run + expected result)."
+    - "Cite the source of each requirement (prior-art path, user statement, or prototype output)."
+  design:
+    - "Include a verification plan - what prototype or test validates each key decision, with exact commands."
+    - "No component without an evidence-backed reason to exist."
+  tasks:
+    - "Each task ends with an observable check (command + expected output); break tasks into chunks of max 2 hours."
