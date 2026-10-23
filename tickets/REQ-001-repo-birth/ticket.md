@@ -2,7 +2,7 @@
 id: REQ-001
 title: "Birth dotfiles-runtime as its own mu-strict repo"
 kind: requirement
-status: in-progress
+status: done
 lane: 3
 links:
   openspec: repo-birth
@@ -45,7 +45,7 @@ and embeds the state schemas, so the conformance copy has no other consumer in `
 - [x] A fresh clone passes `make sync && make gates && make build`; `make hermetic` is green with
   empty `HOME`/`XDG_*`; `make ci-gates-parity` prints `PASS`.
 - [x] `openspec validate --all --strict` exits 0.
-- [ ] Annotated `v0.1.0` is cut only after the gates and the public repo exist; a published tag is
+- [x] Annotated `v0.1.0` is cut only after the gates and the public repo exist; a published tag is
   never moved.
 
 ## Local birth evidence
@@ -66,10 +66,22 @@ All commands run from the repo root unless a path is named.
 | Packaging | `make build` | `dotfiles_runtime-0.1.0-py3-none-any.whl` + `.tar.gz`; wheel carries `runtime/adapters/CONTRACT_PIN`, the embedded schemas and `contract_generated.py` |
 | Sdist scope | `tar tzf dist/dotfiles_runtime-0.1.0.tar.gz` | harness trees absent; `src/runtime`, `tests`, `README`, `CHANGELOG`, `LICENSE` present |
 
-Pending (external actions, this ticket stays `in-progress` until they land): create the public
-GitHub repo `RandomGenericUsername/dotfiles-runtime`, push `main`, confirm the first CI run, then
-tag annotated `v0.1.0` and confirm the Release artifacts. The `dotfiles-v3` consumer rewire and
-`src/runtime/` deletion are a separate ticket in that repo (destructive-last).
+## Closeout
+
+| Claim | Command | Result |
+| --- | --- | --- |
+| Repo is public | `gh repo view RandomGenericUsername/dotfiles-runtime --json visibility --jq .visibility` | `PUBLIC` |
+| `main` CI green | `gh run view 39998199933 --json status,conclusion,event` | `completed` / `success` / `push` |
+| Tag CI green incl. release | `gh run view 39998378028 --json status,conclusion,event` | `completed` / `success` / `push`; all six gates + `release` succeeded |
+| Annotated tag | `git rev-parse v0.1.0`; `git rev-parse 'v0.1.0^{commit}'`; `git cat-file -t v0.1.0` | `4d8190a5c8f27ab6a640c9a1dba69aef9562dd4d`; `b38e450f0627b8e0f35c749ed70b956d5abe2850`; `tag` |
+| Tag anonymously fetchable | `GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote https://github.com/RandomGenericUsername/dotfiles-runtime 'refs/tags/v0.1.0'` | one line, `4d8190a… refs/tags/v0.1.0` |
+| Release carries both artifacts | `gh release view v0.1.0 --json assets --jq '.assets[].name'` | `dotfiles_runtime-0.1.0-py3-none-any.whl`, `dotfiles_runtime-0.1.0.tar.gz` |
+| OpenSpec archived | `openspec validate --all --strict` | `spec/repo-harness` valid; change archived as `2026-10-23-repo-birth` |
+
+The `dotfiles-v3` consumer rewire and `src/runtime/` deletion are a separate ticket in that repo
+(destructive-last): change `cli-tools.yaml` from `source: src/runtime` to `{repo, tag}`, add the
+runtime to `verify`, move/retire the runtime-only gates, delete `src/runtime/` and its vendored
+`contracts/` copy, then prove `make deploy-coverage`, `make gates-ci`, and a fresh bootstrap/verify.
 
 ## Out of scope
 
