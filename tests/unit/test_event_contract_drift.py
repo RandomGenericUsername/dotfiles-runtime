@@ -315,7 +315,7 @@ def test_speedtest_state_embedded_schema_matches_generated_bindings() -> None:
 #: test_compositor_configs_role's pattern. The checkout is external, so the
 #: scan includes it only when present.
 _AGS_APPS_REPO = Path(
-    os.environ.get("AGS_APPS_REPO", "/home/inumaki/Development/ags-apps")
+    os.environ.get("AGS_APPS_REPO", "/home/inumaki/Development/dotfiles/ags-apps")
 )
 
 _TS_SCAN_ROOTS = (
