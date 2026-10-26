@@ -2,7 +2,7 @@
 id: BUG-003
 title: "icon-contrast prefs: the loader rejects its own canonical file at 4+ entries"
 kind: bug
-status: in-progress
+status: done
 lane: 1
 severity: low
 links:
@@ -205,6 +205,20 @@ four-entry boundary, so this survived.
   CHANGELOG bump. `v0.2.2` is held until the user decides whether BUG-004
   (already in `main`/`v0.2.1`) is kept or reverted.
 
+### Merge / release pending (2026-10-26)
+
+- Merged `ticket/BUG-003-icon-contrast-prefs-malformed` into `main` as merge
+  commit `a259fe8` (parents `ad9a61c` and `9f8412f`).
+- `make gates` on the merged `main` → exit 0; `2151 passed, 2 skipped,
+  21 deselected`; `lint`, `contracts-check`, `hermetic`, `lock-check` and
+  `docs-check` green. Log: `/tmp/opencode/bug003-gates-merged.txt`.
+- Live file sha256 stayed
+  `19bb2f4d08c540a8c923078d43cedfa4c0690092a344b71f1a6e86f12582a508`
+  across the whole session; no migration, reset or host-file edit.
+- **No release was cut.** `v0.2.2` remains held until the user decides whether
+  BUG-004 (already in `main`/`v0.2.1`) is kept or reverted; this ticket makes
+  no tag, version, CHANGELOG or GitHub-release change.
+
 ### Migration / reset decision
 
 **No migration or reset for this defect.** The live document is already the
@@ -218,15 +232,15 @@ on the next `write_pref`, but that is a separate improvement, not this fix.
 
 ## Acceptance
 
-- [ ] The current live file parses to four `True` prefs with no warning
+- [x] The current live file parses to four `True` prefs with no warning
       (read-only proof; sha256 unchanged).
-- [ ] `parse(serialize(...))` round-trips `0/1/2/3/4/5/10` entries and mixed
+- [x] `parse(serialize(...))` round-trips `0/1/2/3/4/5/10` entries and mixed
       values.
-- [ ] `write_pref` four (and ten) times remains readable; no rollback to `{}`.
-- [ ] Truly malformed shapes still return `{}` + a warning, and the existing
+- [x] `write_pref` four (and ten) times remains readable; no rollback to `{}`.
+- [x] Truly malformed shapes still return `{}` + a warning, and the existing
       negative tests stay green.
-- [ ] `make gates` green on the merged ticket branch.
-- [ ] The live `~/.local/state/dotfiles/icon-contrast.json` was not edited by
+- [x] `make gates` green on the merged ticket branch.
+- [x] The live `~/.local/state/dotfiles/icon-contrast.json` was not edited by
       the triage or implementation session.
 
 ## Scope / constraints
