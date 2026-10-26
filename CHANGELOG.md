@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.2
+
+The icon-contrast prefs reader accepts its own canonical document at any entry
+count (BUG-003).
+
+- `parse` now treats a remainder of only separators/whitespace as valid after
+  removing the `"<hex>": true|false` entries, so a canonical version-1
+  document with four or more prefs round-trips instead of falling back to
+  defaults. Truly malformed documents still return `{}` with a warning.
+- Regression coverage pins `0/1/2/3/4/5/10`-entry `parse(serialize(...))`
+  round-trips, mixed values, the canonical four-entry shape as an inline
+  fixture (not a host read), and `write_pref` ×4/×5/×10 read-back.
+- BUG-004's btop-theme-studio skip is retained: a wallpaper change leaves the
+  studio running so unsaved edits are not lost. Live refresh and
+  pending-aware semantics remain `EPIC-002`/`REQ-010` work, not part of this
+  release.
+- Includes BUG-002 (csg timeout/cleanup), released in v0.2.1; no further
+  changes to it in this release.
+
 ## 0.2.1
 
 A csg timeout is a bounded, clean failure that cannot discard a complete
