@@ -290,7 +290,9 @@ class TestCrashSafety:
         img.write_bytes(b"resume bytes")
         swap = _run_swap(state_root, install_spine, img)
 
-        # The next set re-derives the missing layers (cold palette here).
+        # The next set re-derives the missing effects/icons layers; the
+        # palette was already prepared+persisted by the swap phase (cache hit),
+        # so csg is not invoked again (BUG-001).
         csg, weg, itr = _FakeCsg(), _FakeWeg(), _FakeItr()
         apply_result, reconcile_result = _run_themed(
             state_root,
@@ -302,7 +304,7 @@ class TestCrashSafety:
             itr=itr,
         )
 
-        assert (csg.calls, weg.calls, itr.calls) == (1, 1, 1)
+        assert (csg.calls, weg.calls, itr.calls) == (0, 1, 1)
         assert apply_result.state.palette is not None
         assert reconcile_result.state.palette is not None
         lines = (state_root / "history.jsonl").read_text().splitlines()

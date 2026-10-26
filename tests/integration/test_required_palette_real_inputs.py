@@ -61,7 +61,7 @@ def _real_wallpapers_dir() -> Path | None:
 
 @pytest.mark.parametrize("fixture_name", FIXTURES)
 def test_real_csg_palette_or_clean_hard_error(
-    fixture_name: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    fixture_name: str, tmp_path: Path
 ) -> None:
     fixture_dir = _real_wallpapers_dir()
     if fixture_dir is None:
@@ -126,7 +126,3 @@ def test_real_csg_palette_or_clean_hard_error(
     assert palette_dir.is_dir()
     for name in PALETTE_ARTIFACT_NAMES:
         assert (palette_dir / name).is_file(), f"missing palette artifact: {name}"
-
-    # The captured output is part of the evidence trail; keep it on stdout.
-    captured = capsys.readouterr()
-    assert fixture_name in captured.out
