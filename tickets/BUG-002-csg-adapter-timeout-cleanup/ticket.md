@@ -2,7 +2,7 @@
 id: BUG-002
 title: "csg adapter timeout: clean up the container and never discard a complete palette"
 kind: bug
-status: in-progress
+status: done
 lane: 2
 severity: medium
 links:
@@ -260,18 +260,105 @@ podman ps -a --format '{{.ID}} {{.Image}} {{.Status}} {{.Names}}' > /tmp/opencod
 
 ## Acceptance
 
-- [ ] Default/effective adapter timeout is above csg's 300 s internal timeout
+- [x] Default/effective adapter timeout is above csg's 300 s internal timeout
       and the coupling is documented in code and the ticket.
-- [ ] A forced 2 s timeout on the real 8K fixture leaves no new container
+- [x] A forced 2 s timeout on the real 8K fixture leaves no new container
       (running or stopped); a pre/post `podman ps -a` diff is empty.
-- [ ] A forced timeout that produced all 8 artifacts yields a usable
+- [x] A forced timeout that produced all 8 artifacts yields a usable
       `PaletteEntry` (or a precise, traceable failure that preserves the
       artifacts for diagnosis) — no silent loss.
-- [ ] A forced timeout with a missing artifact fails with a typed error naming
+- [x] A forced timeout with a missing artifact fails with a typed error naming
       the artifact set and does not publish a partial entry.
-- [ ] Real-input matrix 8K/4K × warm/cold is success-required and green.
-- [ ] The 512 MiB decision is recorded with evidence and an owner.
-- [ ] `make gates` green on the merged ticket branch.
+- [x] Real-input matrix 8K/4K × warm/cold is success-required and green.
+- [x] The 512 MiB decision is recorded with evidence and an owner.
+- [x] `make gates` green on the merged ticket branch.
+
+## Implementation evidence (2026-10-26)
+
+Worktree `.worktrees/BUG-002/`, branch
+`ticket/BUG-002-csg-adapter-timeout-cleanup`, based on `main` `628ce70`
+(triage + BUG-003 docs only).
+
+### Red (before the fix)
+
+`uv run pytest -q tests/unit/test_csg_adapter_timeout_cleanup.py` → **6 failed**
+(exit 1). The failures pinned the defect: no
+`CSG_INTERNAL_TIMEOUT_SECONDS`; a complete 8-artifact timeout set raised
+`PaletteUnavailableError`; the pipeline deleted the staging set; the error did
+not name missing artifacts; no SIGKILL escalation. Test commit `f81d8d1`.
+
+### Fix commits
+
+- `6d065a9` — `CsgAdapter` default 330 s (`CSG_INTERNAL_TIMEOUT_SECONDS=300`
+  + 30 s grace); `_run_csg` uses `Popen` + SIGINT (30 s grace) so csg's own
+  `finally` can remove the container, then SIGKILL fallback; one
+  `_inspect_artifacts` verifier over the shared
+  `domain.models.PALETTE_ARTIFACT_NAMES`; timeout with all 8 artifacts returns
+  a normal `PaletteEntry`; timeout with an incomplete set raises
+  `PaletteUnavailableError` carrying elapsed time, termination signal,
+  `missing=`/`not_files=` names, rc and stderr; success/non-timeout behavior
+  unchanged; real-input matrix made success-required with an opt-in forced
+  timeout proof.
+- `abcb659` — release prep: `0.2.1` in `pyproject.toml`/`uv.lock` +
+  CHANGELOG.
+
+### Green / gates
+
+- `uv run pytest -q tests/unit/test_csg_adapter_timeout_cleanup.py` →
+  `6 passed`.
+- `uv run pytest -q tests/unit/test_csg_adapter.py
+  tests/unit/test_btop_theme_artifacts.py
+  tests/unit/test_cli_invocation_contract.py` → `45 passed`.
+- `make gates` → exit **0**: test `2132 passed, 3 skipped, 21 deselected`;
+  lint all checks passed; contracts-check `39 passed, 1 skipped`; hermetic
+  `2132 passed, 3 skipped`; lock-check resolved 25 packages.
+  Log: `/tmp/opencode/bug002-gates-final.txt`.
+- Real-input matrix + forced-timeout proof:
+  `DOTFILES_REAL_WALLPAPERS=$HOME/.local/share/dotfiles/wallpapers
+  DOTFILES_REAL_TIMEOUT_PROOF=1 uv run pytest -q -s
+  tests/integration/test_required_palette_real_inputs.py` → `3 passed` in
+  63.51 s. Rows:
+  - 8K `yasuke` cold 12.94 s / warm 12.99 s, entry `72441138…`, complete.
+  - 4K `windows-95` cold 12.01 s / warm 12.08 s, entry `908b2601…`, complete.
+  - forced 2 s timeout, 8K: 12.19 s elapsed, complete palette published,
+    `leaked_containers=[]`;
+    `before=after=['00be5b3bdf2c']` (the pre-existing evidence container was
+    not touched).
+  Log: `/tmp/opencode/bug002-real-input-full.txt`.
+
+### Container lifecycle ownership (per case)
+
+| Case | Owner / mechanism | Evidence |
+| --- | --- | --- |
+| Adapter timeout (forced 2 s, etc.) | runtime SIGINTs its child; csg's `OciContainerRuntimeAdapter.run` `finally` removes the container; SIGKILL only after 30 s grace | real proof pre/post diff empty; `oci_container_runtime.py:44-70` |
+| csg's internal 300 s timeout | csg's `finally` removes the container; adapter default 330 s outlives it | `oci_container_runtime.py:44-70`; `csg dump-config` timeout 300 |
+| Host SIGKILL / power loss | **csg-owned stale-container sweep** (no in-process `finally` can run). Needs a `csg.session` label (or equivalent) plus startup/reconcile reaper; the current image/age-only containers have no csg identifier | `podman inspect 00be5b3bdf2c` labels only `io.buildah.version`; ticket hypothesis 3 |
+| Runtime-side `podman rm` | Not added: AGENTS §2 says the runtime invokes CLIs, never runs containers; a blind image/age sweep would target unrelated csg containers | AGENTS.md §2; ticket scope |
+
+The cross-repo handoff for the SIGKILL/power-loss sweep is recorded here, not
+opened as a second runtime implementation ticket.
+
+### 512 MiB decision (keep)
+
+**Decision: keep `memory_limit = "512m"`; owner = csg**
+(`ContainerSettings.memory_limit` / `defaults/settings.toml`), not the
+runtime.
+
+- Measured peaks (handoff §2): **310 MiB at 8K**, **190 MiB at 4K**.
+- 512m passes the 8K fixture; 256m fails it; no csg OOM observed.
+- Headroom: `(512 − 310) / 512 = 39.5%`, above the ~25% keep threshold in the
+  Expected section.
+- Live config check (`csg info`): `runtime.mode=container`,
+  `container.engine=podman`, `container.memory_limit=512m`,
+  `container.timeout_seconds=300`.
+- A fresh `podman stats` peak sample could not be collected: rootless podman
+  serializes against the active csg container, so the poll returned
+  `samples=[]` (`/tmp/opencode/bug002-memory.txt`). The decision therefore
+  rests on the recorded handoff measurements plus the live config check, not
+  on an assumption; it was not changed.
+
+`Verify:` `uv run pytest -q tests/unit/test_csg_adapter_timeout_cleanup.py`;
+`git log --oneline 628ce70..HEAD`; `csg info`; the real-input command above.
 
 ## Scope / constraints
 
