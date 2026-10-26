@@ -29,6 +29,15 @@ class TestParseSerializeRoundtrip:
         prefs = {H1: True, "c" * 64: False}
         assert parse(serialize(prefs)) == prefs
 
+    @pytest.mark.parametrize("count", [0, 1, 2, 3, 4, 5, 10])
+    def test_roundtrip_any_entry_count(self, count: int) -> None:
+        prefs = {f"{i:064x}": i % 2 == 0 for i in range(count)}
+        assert parse(serialize(prefs)) == prefs
+
+    def test_roundtrip_normalizes_uppercase_keys(self) -> None:
+        prefs = {f"{i:064X}": i % 2 == 0 for i in range(5)}
+        assert parse(serialize(prefs)) == {key.lower(): value for key, value in prefs.items()}
+
     def test_serialize_sorts_keys_and_ends_with_newline(self) -> None:
         text = serialize({"f" * 64: True, "0" * 64: False})
         assert text.endswith("\n")
@@ -53,6 +62,8 @@ class TestParseRejectsMalformed:
             '{"version": 2, "prefs": {}}',  # unknown version
             '{"version": 1, "prefs": {"short": true}}',  # bad key
             f'{{"version": 1, "prefs": {{"{"a" * 64}": "yes"}}}}',  # non-bool
+            f'{{"version": 1, "prefs": {{"{"a" * 64}": true, "{"b" * 64}": false, "{"c" * 64}": true, "{"d" * 64}": false, oops}}}}',  # trailing garbage after four valid entries
+            f'{{"version": 1, "prefs": {{"{"a" * 64}": true, "{"b" * 64}": false, "{"c" * 64}": true, "{"d" * 64}": "yes"}}}}',  # non-bool after three valid entries
             f'{{"version": 1, "prefs": {{"{"a" * 64}": true}}, trailing',
             'garbage {"version": 1, "prefs": {}}',
         ],
