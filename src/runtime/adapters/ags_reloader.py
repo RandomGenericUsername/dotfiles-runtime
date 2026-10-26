@@ -52,6 +52,9 @@ _LIVENESS_POLL_INTERVAL = 0.25
 
 #: Config-dir names never restarted automatically. The icon color mapping
 #: editor can hold unsaved edits; a wallpaper change must not discard them.
+#: The btop theme studio is the same class: its pending theme edits live only
+#: in memory until Save, so a restart would silently destroy them. It has no
+#: live refresh yet; leaving it stale is the deliberate safety trade.
 #: The wallpaper selector is on-demand with a self-hiding window: restarting
 #: it after a set would pop the dialog back open uninvited (it starts
 #: visible, ICME pattern). It refreshes its palette live from the
@@ -59,7 +62,7 @@ _LIVENESS_POLL_INTERVAL = 0.25
 #: notification overlay also subscribes live: restarting it during wallpaper
 #: reconciliation would discard the progress card before it reports done.
 DEFAULT_SKIP_CONFIG_DIRS: frozenset[str] = frozenset(
-    {"ags-icme", "ags-wallpaper-selector", "ags-notifications"}
+    {"ags-icme", "ags-btop-studio", "ags-wallpaper-selector", "ags-notifications"}
 )
 
 _INSTANCE_NAME_RE = re.compile(r"""instanceName\s*:\s*["']([^"']+)["']""")
