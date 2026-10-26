@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.0
+
+The palette is a required artifact (BUG-001).
+
+- `wallpaper set` now prepares the palette (hard) **before** the visible swap:
+  a palette failure exits non-zero without swapping the wallpaper, writing
+  `current.json`, or changing consumer links. A successful set still swaps and
+  persists a real palette.
+- `PaletteUnavailableError` carries the wallpaper path + sha256, stage, tool,
+  csg return code and stderr tail; the CLI renders it in plain/JSON, emits a
+  reasoned `wallpaper.state:error`, and appends a traceable `failures.jsonl`
+  record (`inspect failures`).
+- Reconcile refuses a legacy null-palette state with
+  `PaletteUnavailableError` instead of unlinking consumer pointers; the
+  `remove_on_null_palette` seeder rule is removed.
+- Progress stages move palette generation ahead of `setting_wallpaper`; the
+  `wallpaper.state` order is `generating_palette` → `palette_generated` →
+  `setting_wallpaper` → `visible` → `done`.
+- AGS standalone fallbacks are unchanged; the composition no longer relies on
+  them to mask a missing palette.
+
 ## 0.1.0
 
 The runtime becomes its own repo, extracted from `dotfiles-v3` with history preserved.
