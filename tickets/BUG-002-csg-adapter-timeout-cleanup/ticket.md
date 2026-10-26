@@ -2,7 +2,7 @@
 id: BUG-002
 title: "csg adapter timeout: clean up the container and never discard a complete palette"
 kind: bug
-status: triage
+status: in-progress
 lane: 2
 severity: medium
 links:
@@ -41,6 +41,19 @@ expected: "The adapter timeout must exceed csg's internal 300 s timeout (e.g. 33
   `CsgAdapter(...)` uses the default timeout).
 - `Verify:` `uv run python -c 'from runtime.adapters.csg_adapter import CsgAdapter; print(CsgAdapter()._timeout)'`
   → `60`.
+
+## Implementation session (2026-10-26)
+
+- Worktree: `.worktrees/BUG-002/`; branch:
+  `ticket/BUG-002-csg-adapter-timeout-cleanup` (fast-forwarded to `main`
+  `628ce70` before implementation).
+- Triage baseline: `CsgAdapter()._timeout` → `60`; timeout path raised
+  `PaletteUnavailableError(rc=None, stderr='')` without verifying artifacts;
+  `populate_via_staging` then removed the complete 8-artifact set.
+- Scope: runtime half only (timeout ordering, graceful child termination,
+  complete-artifact verification, precise timeout errors, regression tests,
+  success-required real-input matrix, 512 MiB decision). The historical
+  null-palette investigation stays closed.
 
 ## Closed context — do not reopen
 
