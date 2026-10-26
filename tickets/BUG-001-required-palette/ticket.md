@@ -196,5 +196,13 @@ handoff (OPS-0113) and that repo was not edited.
 - Fix: `fef40b6`; narrowing/record polish `3e97d35`
 - Release prep: `95303de` (`0.2.0` pyproject + lock + CHANGELOG)
 - Worktree `.worktrees/BUG-001/`, branch `ticket/BUG-001-required-palette`.
+- Merge: fast-forward `0bfe1b5..376be9f` into `main`; local `make gates` green on merged `main`.
+- Annotated tag `v0.2.0` → tag object
+  `64368a0ebe81d9dab50e57d35ad35dd181e8f725`, commit
+  `376be9f7399961e27857e7bc6bb6f974e61faf58`.
+- GitHub Release: <https://github.com/RandomGenericUsername/dotfiles-runtime/releases/tag/v0.2.0>
+  with `dotfiles_runtime-0.2.0-py3-none-any.whl` +
+  `dotfiles_runtime-0.2.0.tar.gz`.
+- Tag CI run `40353959361`: all jobs success, including `release`.
 
-`Verify:` `git log --oneline main..ticket/BUG-001-required-palette`
+`Verify:` `git rev-parse v0.2.0 'v0.2.0^{commit}'`; `gh release view v0.2.0 --json assets --jq '.assets[].name'`.
