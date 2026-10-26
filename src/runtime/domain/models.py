@@ -230,18 +230,6 @@ class PaletteUnavailableError(RuntimeError):
             "hint": self.hint,
         }
 
-    def to_record_fields(self) -> dict[str, object]:
-        """Typed fields for the runtime-owned ``failures.jsonl`` record."""
-        return {
-            "wallpaper_path": self.wallpaper_path,
-            "wallpaper_hash": self.wallpaper_hash,
-            "stage": self.stage,
-            "tool": self.tool,
-            "returncode": self.returncode,
-            "stderr": self.stderr,
-            "hint": self.hint,
-        }
-
 
 class CorruptCacheError(RuntimeError):
     """Raised when a cache entry's bytes do not match its recorded digests (AD-26).

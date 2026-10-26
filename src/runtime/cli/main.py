@@ -720,8 +720,14 @@ def _run_wallpaper_set(
         )
         try:
             CacheSeeder(state_root).append_failure(
+                wallpaper_path=exc.wallpaper_path,
+                wallpaper_hash=exc.wallpaper_hash,
+                stage=exc.stage,
+                tool=exc.tool,
+                returncode=exc.returncode,
+                stderr=exc.stderr,
+                hint=exc.hint,
                 error=str(exc),
-                **exc.to_record_fields(),
             )
         except Exception:
             logger.exception("wallpaper set: failed to append failures.jsonl record")
