@@ -36,6 +36,7 @@ _PREFS_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
     r'"prefs"\s*:\s*\{(?P<body>[^}]*)\}', re.DOTALL
 )
 _ENTRY_RE: Final[re.Pattern[str]] = re.compile(r'"(?P<key>[^"]+)"\s*:\s*(?P<value>true|false)')
+_SEPARATORS_ONLY_RE: Final[re.Pattern[str]] = re.compile(r"[\s,]*")
 _FULL_HASH_RE: Final[re.Pattern[str]] = re.compile(rf"^{_HASH_RE}$")
 
 
@@ -72,7 +73,10 @@ def parse(text: str) -> dict[str, bool]:
             raise ValueError(f"invalid icon-contrast prefs key: {key!r}")
         prefs[key.lower()] = entry.group("value") == "true"
     remainder = _ENTRY_RE.sub("", body)
-    if remainder.strip().strip(",").strip():
+    # Removing every entry must leave only separators/whitespace. Peeling
+    # outer commas alone left interior commas behind for 4+ entries, so the
+    # parser rejected its own writer's canonical output.
+    if _SEPARATORS_ONLY_RE.fullmatch(remainder) is None:
         raise ValueError("malformed entries in icon-contrast prefs mapping")
     return prefs
 
