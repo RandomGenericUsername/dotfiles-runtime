@@ -219,6 +219,32 @@ four-entry boundary, so this survived.
   BUG-004 (already in `main`/`v0.2.1`) is kept or reverted; this ticket makes
   no tag, version, CHANGELOG or GitHub-release change.
 
+### Released in v0.2.2 (2026-10-26)
+
+- User decision: **keep BUG-004** (the btop-theme-studio skip); no revert.
+- Release prep commit `5fff96e` (`chore(release): bump dotfiles-runtime to
+  0.2.2`): `pyproject.toml`/`uv.lock` `0.2.2`, `runtime.__version__ = "0.2.2"`
+  (the requested `src/provisioning/__init__.py` does not exist in this repo;
+  the package `__init__` is `src/runtime/__init__.py`), and the CHANGELOG
+  0.2.2 entry naming BUG-003, retained BUG-004 and the included v0.2.1
+  BUG-002 work.
+- `make gates` on `5fff96e` → exit **0**: test `2151 passed, 2 skipped,
+  21 deselected`; lint all checks passed; contracts-check `40 passed`;
+  hermetic `2151 passed, 2 skipped, 21 deselected`; lock-check resolved 25
+  packages; docs-check green. Log: `/tmp/opencode/v0.2.2-gates.txt`.
+- Annotated tag **`v0.2.2`** → tag object
+  `2ce4bd1872a26b60c9e41f7dcf5fe476cb8ee477`, commit
+  `5fff96e7ce3c240e8b4aff2ab7097a68104fd529`.
+- Tag CI run `40403249834`: `success`; all eight jobs succeeded, including
+  `release`.
+- GitHub Release <https://github.com/RandomGenericUsername/dotfiles-runtime/releases/tag/v0.2.2>
+  published with `dotfiles_runtime-0.2.2-py3-none-any.whl` and
+  `dotfiles_runtime-0.2.2.tar.gz`.
+
+`Verify:` `git rev-parse v0.2.2 'v0.2.2^{commit}'`;
+`gh release view v0.2.2 --json assets --jq '.assets[].name'`;
+`gh run view 40403249834 --json conclusion`; `make gates`.
+
 ### Migration / reset decision
 
 **No migration or reset for this defect.** The live document is already the

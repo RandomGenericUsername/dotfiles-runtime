@@ -113,5 +113,8 @@ uv run pytest -q tests/unit/test_ags_reloader.py::TestAgsReloaderSkip::test_skip
   `docs-check` green.
 - **Scope:** skip-only safety. Live refresh and the btop docs row remain
   `EPIC-002` / `REQ-010` in `ags-apps`; they are not implemented here.
+- **Retention:** kept in v0.2.2 per user (2026-10-26). The skip fix was not
+  reverted; it remains in `main` and is part of the v0.2.2 release. Live
+  refresh remains a later `EPIC-002` / `REQ-010` epic.
 
 Verify: the `repro` command above is green on this commit.
