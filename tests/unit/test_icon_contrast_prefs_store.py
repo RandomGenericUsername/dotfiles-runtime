@@ -24,6 +24,16 @@ from runtime.adapters.icon_contrast_prefs_store import (
 
 H1 = "a" * 64
 H2 = "b" * 64
+H3 = "c" * 64
+H4 = "d" * 64
+
+
+def _prefs_text(prefs: dict[str, bool]) -> str:
+    """Canonical store text for an inline fixture (never a host file read)."""
+    entries = ", ".join(
+        f'"{key}": {"true" if value else "false"}' for key, value in prefs.items()
+    )
+    return '{"version": 1, "prefs": {' + entries + "}}\n"
 
 
 class TestStorePath:
@@ -40,11 +50,31 @@ class TestReadPrefs:
         write_pref(path, H1, False)
         assert read_prefs(path) == {H1: False}
 
+    def test_reads_canonical_four_entry_document_without_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        path = store_path(tmp_path)
+        prefs = {H1: True, H2: True, H3: True, H4: True}
+        path.write_text(_prefs_text(prefs), encoding="utf-8")
+        with caplog.at_level("WARNING", logger="runtime.adapters.icon_contrast_prefs_store"):
+            assert read_prefs(path) == prefs
+        assert not caplog.records
+
     def test_corrupt_file_is_empty_with_warning(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         path = store_path(tmp_path)
         path.write_text("{not json", encoding="utf-8")
+        with caplog.at_level("WARNING", logger="runtime.adapters.icon_contrast_prefs_store"):
+            assert read_prefs(path) == {}
+        assert any("corrupt" in r.getMessage() for r in caplog.records)
+
+    def test_four_valid_entries_plus_garbage_is_empty_with_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        path = store_path(tmp_path)
+        text = _prefs_text({H1: True, H2: False, H3: True, H4: False})
+        path.write_text(text[: -len("}}\n")] + ", oops}}\n", encoding="utf-8")
         with caplog.at_level("WARNING", logger="runtime.adapters.icon_contrast_prefs_store"):
             assert read_prefs(path) == {}
         assert any("corrupt" in r.getMessage() for r in caplog.records)
@@ -74,6 +104,20 @@ class TestWritePref:
         updated = write_pref(path, H2, True)
         assert updated == {H1: False, H2: True}
         assert read_prefs(path) == {H1: False, H2: True}
+
+    @pytest.mark.parametrize("count", [1, 3, 4, 5, 10])
+    def test_write_then_read_roundtrip_by_entry_count(
+        self, tmp_path: Path, count: int
+    ) -> None:
+        path = store_path(tmp_path)
+        expected: dict[str, bool] = {}
+        for i in range(count):
+            wallpaper_hash = f"{i:064x}"
+            enabled = i % 2 == 0
+            expected[wallpaper_hash] = enabled
+            assert write_pref(path, wallpaper_hash, enabled) == expected
+            assert read_prefs(path) == expected
+        assert read_prefs(path) == expected
 
     def test_write_heals_corrupt_file(self, tmp_path: Path) -> None:
         path = store_path(tmp_path)
