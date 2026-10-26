@@ -95,10 +95,11 @@ class ConsumerPointerRules:
 
     All flags default ``True`` (the pinned table has no per-pointer
     variation); the seeder loop reads them once and implements the
-    semantics exactly once. Zero I/O.
+    semantics exactly once. The palette is REQUIRED (BUG-001), so there
+    is deliberately no ``remove_on_null_palette`` rule: a null palette is
+    rejected before any pointer is touched. Zero I/O.
     """
 
-    remove_on_null_palette: bool = True
     replace_regular_file: bool = True
     skip_on_missing_target: bool = True
     skip_on_missing_parent: bool = True
@@ -183,6 +184,63 @@ class DesktopState:
 
 class SeedLockedError(RuntimeError):
     """Raised when another process already holds the seed mutex (AD-11)."""
+
+
+class PaletteUnavailableError(RuntimeError):
+    """The required palette could not be produced (BUG-001).
+
+    The palette is a required composition artifact: a ``wallpaper set``
+    must abort BEFORE the visible swap, and reconcile must refuse a
+    legacy null-palette state rather than unlinking consumers. The error
+    carries the traceability fields the CLI renders and the failure log
+    records: the wallpaper identity, the stage, the tool, and the tool's
+    return code + stderr tail.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        wallpaper_path: str,
+        wallpaper_hash: str,
+        stage: str = "palette",
+        tool: str = "csg",
+        returncode: int | None = None,
+        stderr: str = "",
+        hint: str = "re-set the wallpaper / check csg",
+    ) -> None:
+        super().__init__(message)
+        self.wallpaper_path = wallpaper_path
+        self.wallpaper_hash = wallpaper_hash
+        self.stage = stage
+        self.tool = tool
+        self.returncode = returncode
+        self.stderr = stderr
+        self.hint = hint
+
+    def to_details(self) -> dict[str, str]:
+        """String-valued fields for ``ErrorView.details`` (plain/json output)."""
+        return {
+            "wallpaper_path": self.wallpaper_path,
+            "wallpaper_hash": self.wallpaper_hash,
+            "stage": self.stage,
+            "tool": self.tool,
+            "returncode": "" if self.returncode is None else str(self.returncode),
+            "stderr": self.stderr,
+            "hint": self.hint,
+        }
+
+    def to_record_fields(self) -> dict[str, object]:
+        """Typed fields for the runtime-owned ``failures.jsonl`` record."""
+        return {
+            "wallpaper_path": self.wallpaper_path,
+            "wallpaper_hash": self.wallpaper_hash,
+            "stage": self.stage,
+            "tool": self.tool,
+            "returncode": self.returncode,
+            "stderr": self.stderr,
+            "hint": self.hint,
+        }
 
 
 class CorruptCacheError(RuntimeError):

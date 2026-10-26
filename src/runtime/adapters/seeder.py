@@ -698,7 +698,7 @@ class CacheSeeder:
     def repoint_consumer_symlinks(
         self,
         install_spine: Path,
-        palette_entry_hash: str | None,
+        palette_entry_hash: str,
     ) -> list[Path]:
         """Repoint spine consumer pointers at ``current/`` (R2, Epic 4).
 
@@ -743,17 +743,20 @@ class CacheSeeder:
         Args:
             install_spine: provisioning install spine root (read for
                 validation, written ONLY for the spec'd pointer symlinks).
-            palette_entry_hash: palette entry hash, or ``None`` when the
-                palette layer is null.
+            palette_entry_hash: palette entry hash. The palette is a
+                REQUIRED artifact (BUG-001): ``None`` is rejected loudly —
+                the seeder never removes consumer pointers to "degrade" a
+                missing palette.
 
         Returns:
             List of created/updated symlink paths (empty when skipped).
 
         Behavior (rules read ONCE from the spec, semantics implemented
         exactly once here — investigation §3):
-        - ``None`` palette: every existing pointer dest is REMOVED
-          (``missing_ok`` semantics) so consumers never serve a stale
-          palette as if current; AGS falls back to its bundled default.
+        - A null palette raises ``ValueError`` before touching any
+          pointer (reconcile guards the state boundary with the typed
+          ``PaletteUnavailableError``; this adapter guard makes a direct
+          misuse impossible).
         - A regular FILE at the destination (pre-Epic-4 provisioning
           copy on upgraded machines) is REPLACED with the symlink —
           one ``wallpaper set`` migrates (``_repoint_symlink``'s tmp +
@@ -765,22 +768,14 @@ class CacheSeeder:
           dirs are provisioning's: ``config/gtk-{3,4}.0/`` arrive in
           Story gt-3-1).
         """
+        if palette_entry_hash is None:
+            raise ValueError(
+                "palette layer is required: refusing to repoint/remove consumer "
+                "pointers for a null palette (re-set the wallpaper)"
+            )
         pointers = self._consumer_spec.consumer_pointers()
         rules = self._consumer_spec.rules()
         dests = [install_spine / pointer.path for pointer in pointers]
-        if palette_entry_hash is None:
-            if rules.remove_on_null_palette:
-                for dest in dests:
-                    try:
-                        if dest.is_symlink() or dest.exists():
-                            dest.unlink()
-                            logger.warning(
-                                "seeding: palette layer is null; consumer symlink removed: %s",
-                                dest,
-                            )
-                    except OSError as exc:
-                        logger.warning("seeding: cannot remove consumer symlink %s: %s", dest, exc)
-            return []
         created: list[Path] = []
         for pointer, dest in zip(pointers, dests, strict=True):
             target = self._state_root / "current" / pointer.target
@@ -981,3 +976,94 @@ class CacheSeeder:
                     os.close(fd)
                 except OSError:
                     pass
+
+    def append_failure(
+        self,
+        *,
+        wallpaper_path: str,
+        wallpaper_hash: str,
+        stage: str,
+        tool: str,
+        returncode: int | None,
+        stderr: str,
+        hint: str,
+        error: str,
+    ) -> None:
+        """Append one traceable palette-failure record to ``failures.jsonl``.
+
+        BUG-001: the embedded ``history.schema.json`` has
+        ``additionalProperties: false`` and a closed trigger enum, so a
+        ``trigger: "set-failed"`` line cannot live in history without a
+        contracts change. This runtime-owned append-only log carries the
+        full failure payload (path/hash/stage/tool/rc/stderr/hint) and is
+        projected read-only by ``inspect failures``. It is independent of
+        ``suppress_history`` — a failed set is always auditable.
+
+        A torn trailing line (interrupted write) is truncated before the
+        append so the log never grows a corrupt middle line.
+        """
+        path = self._state_root / "failures.jsonl"
+        record: dict[str, object] = {
+            "ts": _now_iso_z(),
+            "trigger": "set-failed",
+            "wallpaper_path": wallpaper_path,
+            "wallpaper_hash": wallpaper_hash,
+            "stage": stage,
+            "tool": tool,
+            "returncode": returncode,
+            "stderr": stderr,
+            "hint": hint,
+            "error": error,
+        }
+        line = json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n"
+
+        with FlockHistoryMutex(self._state_root / _HISTORY_LOCK).hold():
+            self._truncate_torn_failure_tail(path)
+            try:
+                fd = os.open(str(path), _O_APPEND, 0o644)
+            except OSError as exc:
+                raise HistoryLockError(
+                    f"failure log append open failed: {path}: {exc}"
+                ) from exc
+            try:
+                data = memoryview(line.encode("utf-8"))
+                while data:
+                    written = os.write(fd, data)
+                    data = data[written:]
+                os.fsync(fd)
+            except OSError as exc:
+                raise HistoryLockError(
+                    f"failure log append write failed: {path}: {exc}"
+                ) from exc
+            finally:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _truncate_torn_failure_tail(path: Path) -> None:
+        """Truncate a partial trailing line (no trailing newline) in place."""
+        try:
+            fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            return
+        try:
+            with os.fdopen(fd, "rb") as handle:
+                raw = handle.read()
+        except OSError:
+            return
+        if not raw or raw.endswith(b"\n"):
+            return
+        last_newline = raw.rfind(b"\n")
+        keep = last_newline + 1 if last_newline != -1 else 0
+        try:
+            write_fd = os.open(str(path), os.O_WRONLY | os.O_NOFOLLOW)
+            try:
+                os.ftruncate(write_fd, keep)
+            finally:
+                os.close(write_fd)
+        except OSError:
+            # Best-effort repair: the append below still records the new
+            # failure; a reader tolerates a single torn trailing line.
+            pass

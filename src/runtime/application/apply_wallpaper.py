@@ -46,6 +46,7 @@ from runtime.domain.models import (
     IconsEntry,
     MonitorWallpaperConfig,
     PaletteEntry,
+    PaletteUnavailableError,
     WallpaperEntry,
 )
 from runtime.ports.color_scheme_generator import IColorSchemeGenerator
@@ -70,6 +71,20 @@ class ApplyWallpaperResult:
     cache_hit_effects: bool
     cache_hit_icons: bool
     state: DesktopState
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedPalette:
+    """Palette prepared BEFORE the visible swap (BUG-001).
+
+    Produced by :meth:`ApplyWallpaperUseCase.prepare_palette`: the input is
+    validated, hashed and imported, then the palette layer is ensured as a
+    HARD dependency. Nothing in ``current.json``/``current/`` changes yet.
+    """
+
+    wallpaper_hash: str
+    palette: PaletteEntry
+    cache_hit: bool
 
 
 class ApplyWallpaperUseCase:
@@ -126,11 +141,62 @@ class ApplyWallpaperUseCase:
             install_spine=install_spine,
         )
 
+    def prepare_palette(
+        self,
+        image_path: Path,
+        *,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> PreparedPalette:
+        """Prepare the REQUIRED palette before any visible change (BUG-001).
+
+        Validates + hashes + imports the wallpaper, then ensures the
+        palette cache entry as a hard dependency. On failure it raises
+        :class:`PaletteUnavailableError` carrying the wallpaper identity,
+        stage, tool, return code and stderr tail — and writes NOTHING to
+        ``current.json``/``current/`` (only harmless cache staging may
+        exist; the last-good desktop state is untouched).
+
+        The caller passes the result to ``SwapVisibleUseCase.run`` (which
+        persists it) and to :meth:`run` (which skips re-derivation).
+        """
+        img = self._validate_input(image_path)
+
+        # Corrupt-state guard (fail fast): a corrupt current.json must abort
+        # before any cache/state work, exactly like the themed pass.
+        self._state_repo.load_current()
+
+        wallpaper_hash = hash_file(img)
+        self._seeder.import_wallpaper(img, wallpaper_hash, source_mutable=True)
+
+        try:
+            palette, cache_hit = self._pipeline.ensure_palette(img, wallpaper_hash)
+        except PaletteUnavailableError:
+            raise
+        except Exception as exc:
+            stderr = str(getattr(exc, "stderr", "") or exc)
+            raise PaletteUnavailableError(
+                f"palette apply failed: {exc}",
+                wallpaper_path=str(img),
+                wallpaper_hash=wallpaper_hash,
+                returncode=getattr(exc, "returncode", None),
+                stderr=stderr[-2048:],
+                hint="re-set the wallpaper / check csg",
+            ) from exc
+
+        if on_progress is not None:
+            on_progress("palette_generated")
+        return PreparedPalette(
+            wallpaper_hash=wallpaper_hash,
+            palette=palette,
+            cache_hit=cache_hit,
+        )
+
     def run(
         self,
         image_path: Path,
         *,
         wallpaper_hash: str | None = None,
+        prepared_palette: PreparedPalette | None = None,
         contrast_enabled: bool = True,
         contrast_source: str = "default",
         on_progress: Callable[[str], None] | None = None,
@@ -147,12 +213,13 @@ class ApplyWallpaperUseCase:
             image_path: user-supplied wallpaper file (validated, and used
                 for the persisted ``source_path`` in both paths).
             wallpaper_hash: precomputed SHA-256 of the input. The
-                visible-first ``wallpaper set`` passes the hash the swap
-                phase already imported, so this derivation-only pass
-                performs NO re-import (the seeder import is idempotent,
-                but skipping it keeps phase 2 derivation-only by
-                construction). When ``None`` (standalone callers, tests)
-                the input is hashed and imported as before.
+                visible-first ``wallpaper set`` passes the hash the
+                prepare phase already imported, so this themed pass
+                performs NO re-import and NO palette re-derivation when
+                ``prepared_palette`` is supplied.
+            prepared_palette: palette prepared (hard) BEFORE the swap by
+                :meth:`prepare_palette`. ``None`` keeps the standalone
+                derivation path (hash + import + ensure_palette).
             contrast_enabled: per-wallpaper icon-contrast policy for this
                 run (resolved by the composition root from ``--contrast``
                 + the prefs store). ``False`` renders the spine mappings
@@ -164,8 +231,10 @@ class ApplyWallpaperUseCase:
         Raises:
             ValueError: if the input path is missing, empty, or not a
                 regular file; or propagated from a corrupt current.json
-            RuntimeError: if palette (hard dependency) derivation fails,
-                or the cache holds content that contradicts its hash
+            PaletteUnavailableError: if the palette (hard dependency)
+                cannot be produced; ``current.json`` is left unchanged
+            RuntimeError: if the cache holds content that contradicts its
+                hash
             OSError: on filesystem failures (unreadable input, etc.)
         """
         img = self._validate_input(image_path)
@@ -176,25 +245,58 @@ class ApplyWallpaperUseCase:
         # section below (double-checked pattern).
         self._state_repo.load_current()
 
-        if wallpaper_hash is None:
-            wallpaper_hash = hash_file(img)
+        if prepared_palette is not None:
+            if (
+                wallpaper_hash is not None
+                and wallpaper_hash != prepared_palette.wallpaper_hash
+            ):
+                raise ValueError(
+                    "prepared palette wallpaper hash does not match the requested "
+                    f"wallpaper: prepared={prepared_palette.wallpaper_hash} "
+                    f"requested={wallpaper_hash}"
+                )
+            wallpaper_hash = prepared_palette.wallpaper_hash
+            palette = prepared_palette.palette
+            cache_hit_palette = prepared_palette.cache_hit
+        else:
+            if wallpaper_hash is None:
+                wallpaper_hash = hash_file(img)
 
-            # Wallpaper layer: import into the cache (copy policy — cache owns
-            # its bytes; idempotent, content-verified, meta.json write-once).
-            self._seeder.import_wallpaper(img, wallpaper_hash, source_mutable=True)
+                # Wallpaper layer: import into the cache (copy policy — cache
+                # owns its bytes; idempotent, content-verified, meta.json
+                # write-once).
+                self._seeder.import_wallpaper(img, wallpaper_hash, source_mutable=True)
 
-        # Palette (hard dependency): failure aborts the apply — save()
-        # happens only after all layers succeed/degrade, so current.json
-        # is left unchanged.
-        try:
-            palette, cache_hit_palette = self._pipeline.ensure_palette(img, wallpaper_hash)
-        except Exception as exc:
-            raise RuntimeError(f"palette apply failed: {exc}") from exc
+            # Palette (hard dependency): failure aborts the apply — save()
+            # happens only after all layers succeed/degrade, so current.json
+            # is left unchanged.
+            try:
+                palette, cache_hit_palette = self._pipeline.ensure_palette(
+                    img, wallpaper_hash
+                )
+            except PaletteUnavailableError:
+                raise
+            except Exception as exc:
+                stderr = str(getattr(exc, "stderr", "") or exc)
+                raise PaletteUnavailableError(
+                    f"palette apply failed: {exc}",
+                    wallpaper_path=str(img),
+                    wallpaper_hash=wallpaper_hash,
+                    returncode=getattr(exc, "returncode", None),
+                    stderr=stderr[-2048:],
+                    hint="re-set the wallpaper / check csg",
+                ) from exc
 
-        # Informational callback only: the CLI adapts this application-stage
-        # boundary to wallpaper.state. It never controls derivation or locking.
+            # Informational callback only: the CLI adapts this application-
+            # stage boundary to wallpaper.state. It never controls derivation
+            # or locking. The visible-first CLI emits this during
+            # prepare_palette (before the swap), so standalone callers keep it.
+            if on_progress is not None:
+                on_progress("palette_generated")
+
+        # Informational callback only: the palette is already prepared; the
+        # remaining appearance assets (effects/icons) are derived next.
         if on_progress is not None:
-            on_progress("palette_generated")
             on_progress("preparing_appearance_assets")
 
         # Effects + icons (graceful degradation): entry None on failure,

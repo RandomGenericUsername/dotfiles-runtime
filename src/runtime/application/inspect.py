@@ -518,6 +518,167 @@ class InspectHistoryUseCase:
 
 
 # ----------------------------------------------------------------------
+# BUG-001 — runtime-owned failure log projection (read-only)
+# ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class FailureRecord:
+    """One parsed ``failures.jsonl`` line (BUG-001)."""
+
+    ts: str
+    trigger: str
+    wallpaper_path: str
+    wallpaper_hash: str
+    stage: str
+    tool: str
+    returncode: int | None
+    stderr: str
+    hint: str
+    error: str
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the full dict in pinned order."""
+        return {
+            "ts": self.ts,
+            "trigger": self.trigger,
+            "wallpaper_path": self.wallpaper_path,
+            "wallpaper_hash": self.wallpaper_hash,
+            "stage": self.stage,
+            "tool": self.tool,
+            "returncode": self.returncode,
+            "stderr": self.stderr,
+            "hint": self.hint,
+            "error": self.error,
+        }
+
+
+class InspectFailuresUseCase:
+    """Read-only newest-first reader of the runtime-owned failure log.
+
+    ``history.jsonl`` cannot carry failed sets (closed trigger enum +
+    ``additionalProperties: false``), so BUG-001 writes ``failures.jsonl``.
+    This projection mirrors :class:`InspectHistoryUseCase`: no writes, a
+    torn trailing line is tolerated, middle corruption raises loudly.
+    """
+
+    def __init__(self, state_root: Path) -> None:
+        self._state_root = state_root
+
+    def run(self, limit: int = 20) -> list[FailureRecord]:
+        if limit < 0:
+            raise ValueError(f"failure limit must be >= 0, got {limit}")
+        path = self._state_root / "failures.jsonl"
+        if path.is_symlink():
+            raise ValueError(f"failures.jsonl is a symlink (refusing to follow): {path}")
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
+            return []
+        except NotADirectoryError:
+            return []
+
+        window: list[FailureRecord] | deque[FailureRecord] = (
+            [] if limit == 0 else deque(maxlen=limit)
+        )
+        fd = None
+        try:
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            except FileNotFoundError:
+                return []
+            except OSError as exc:
+                raise ValueError(
+                    f"failures.jsonl is a symlink (refusing to follow): {path}",
+                ) from exc
+            try:
+                with os.fdopen(fd, "r", encoding="utf-8") as handle:
+                    fd = None
+                    for lineno, line in enumerate(handle, start=1):
+                        if not line.strip():
+                            continue
+                        try:
+                            obj = json.loads(line)
+                        except json.JSONDecodeError as exc:
+                            is_truncated_tail = not line.endswith(
+                                "\n"
+                            ) and not InspectHistoryUseCase._has_nonblank_tail(handle)
+                            if not is_truncated_tail:
+                                raise ValueError(
+                                    f"failures.jsonl line {lineno}: not valid JSON ({exc.msg})",
+                                ) from exc
+                            logger.warning("failures: skipping torn trailing line %d", lineno)
+                            break
+                        record = self._parse_record(obj, lineno)
+                        window.append(record)
+            except UnicodeDecodeError as exc:
+                raise ValueError(f"failures.jsonl: invalid UTF-8 ({exc})") from exc
+        finally:
+            if fd is not None:
+                os.close(fd)
+        newest_first = list(reversed(window))
+        return newest_first if limit == 0 else newest_first[:limit]
+
+    @staticmethod
+    def _parse_record(obj: object, lineno: int) -> FailureRecord:
+        if not isinstance(obj, dict):
+            raise ValueError(f"failures.jsonl line {lineno}: expected a JSON object")
+        required = (
+            "ts",
+            "trigger",
+            "wallpaper_path",
+            "wallpaper_hash",
+            "stage",
+            "tool",
+            "returncode",
+            "stderr",
+            "hint",
+            "error",
+        )
+        missing = [key for key in required if key not in obj]
+        if missing:
+            raise ValueError(
+                f"failures.jsonl line {lineno}: missing field(s) {', '.join(missing)}"
+            )
+        if obj["trigger"] != "set-failed":
+            raise ValueError(
+                f"failures.jsonl line {lineno}: expected trigger 'set-failed', "
+                f"got {obj['trigger']!r}"
+            )
+        for key in (
+            "ts",
+            "wallpaper_path",
+            "wallpaper_hash",
+            "stage",
+            "tool",
+            "stderr",
+            "hint",
+            "error",
+        ):
+            if not isinstance(obj[key], str):
+                raise ValueError(f"failures.jsonl line {lineno}: {key} must be a string")
+        returncode = obj["returncode"]
+        if returncode is not None and (
+            isinstance(returncode, bool) or not isinstance(returncode, int)
+        ):
+            raise ValueError(
+                f"failures.jsonl line {lineno}: returncode must be an integer or null"
+            )
+        return FailureRecord(
+            ts=cast("str", obj["ts"]),
+            trigger=cast("str", obj["trigger"]),
+            wallpaper_path=cast("str", obj["wallpaper_path"]),
+            wallpaper_hash=cast("str", obj["wallpaper_hash"]),
+            stage=cast("str", obj["stage"]),
+            tool=cast("str", obj["tool"]),
+            returncode=returncode,
+            stderr=cast("str", obj["stderr"]),
+            hint=cast("str", obj["hint"]),
+            error=cast("str", obj["error"]),
+        )
+
+
+# ----------------------------------------------------------------------
 # AC 1/3/5 — cache listing (Story 3.4, list-only, read-only)
 # ----------------------------------------------------------------------
 

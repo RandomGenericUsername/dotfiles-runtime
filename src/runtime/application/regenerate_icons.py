@@ -177,7 +177,7 @@ class RegenerateIconsUseCase:
             repointed = [self._seeder.repoint_current_symlink("icons", icons_dir)]
             consumer_symlinks = self._seeder.repoint_consumer_symlinks(
                 self._install_spine,
-                saved.palette.entry_hash if saved.palette else None,
+                state.palette.entry_hash,
             )
             self._state_repo.save(saved)
 

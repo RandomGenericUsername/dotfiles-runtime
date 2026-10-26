@@ -41,7 +41,7 @@ from runtime.adapters.hashing import (
     hash_file,
     palette_entry_hash,
 )
-from runtime.domain.models import PaletteArtifacts, PaletteEntry
+from runtime.domain.models import PaletteArtifacts, PaletteEntry, PaletteUnavailableError
 from runtime.ports.color_scheme_generator import IColorSchemeGenerator
 
 # Guard from Story 1.6 learnings — fail-closed on algorithm drift (not assert)
@@ -306,7 +306,14 @@ class CsgAdapter(IColorSchemeGenerator):
             msg = f"csg generate timed out after {self._timeout}s"
             if stderr_part:
                 msg += f": {stderr_part}"
-            raise TimeoutError(msg) from exc
+            raise PaletteUnavailableError(
+                msg,
+                wallpaper_path=str(wallpaper_path),
+                wallpaper_hash=wallpaper_hash,
+                returncode=None,
+                stderr=stderr_part,
+                hint="check csg and the wallpaper input, then re-set the wallpaper",
+            ) from exc
         except OSError as exc:
             if exc.errno == errno.E2BIG:
                 raise RuntimeError(f"csg generate env too large (E2BIG): {exc}") from exc
@@ -326,13 +333,21 @@ class CsgAdapter(IColorSchemeGenerator):
                     sig_name = str(sig)
                 stderr = (result.stderr or "")[:2048]
                 stdout_part = (result.stdout or "")[:500]
-                raise RuntimeError(
-                    f"csg killed by signal {sig_name} ({sig}): {stderr} stdout:{stdout_part}"
+                raise PaletteUnavailableError(
+                    f"csg killed by signal {sig_name} ({sig}): {stderr} stdout:{stdout_part}",
+                    wallpaper_path=str(wallpaper_path),
+                    wallpaper_hash=wallpaper_hash,
+                    returncode=result.returncode,
+                    stderr=stderr,
                 )
             stderr = (result.stderr or "")[:2048]
             stdout = (result.stdout or "")[:500]
-            raise RuntimeError(
-                f"csg generate failed (exit {result.returncode}): {stderr} stdout:{stdout}"
+            raise PaletteUnavailableError(
+                f"csg generate failed (exit {result.returncode}): {stderr} stdout:{stdout}",
+                wallpaper_path=str(wallpaper_path),
+                wallpaper_hash=wallpaper_hash,
+                returncode=result.returncode,
+                stderr=stderr,
             )
 
         # 9. Verify artifacts exist as files (not dirs)

@@ -21,6 +21,8 @@ from cli_output.adapters.factory import create_renderer
 from cli_output.domain.enums import OutputFormat
 from cli_output.domain.views import CustomView, ErrorView
 
+from runtime.domain.models import PaletteUnavailableError
+
 if TYPE_CHECKING:
     from cli_output.adapters.factory import Renderer
 
@@ -28,7 +30,7 @@ if TYPE_CHECKING:
     from runtime.adapters.dbus_event_bus import HubService, SignalSink
     from runtime.adapters.gtk4_app_subscriber import Gtk4AppSubscriber
     from runtime.adapters.systemd_notify import SystemdNotifier
-    from runtime.application.apply_wallpaper import ApplyWallpaperResult
+    from runtime.application.apply_wallpaper import ApplyWallpaperResult, PreparedPalette
     from runtime.application.capture_host import CaptureHost
     from runtime.application.check_inputs import CheckInputsResult
     from runtime.application.clipboard_host import ClipboardHost
@@ -467,6 +469,7 @@ def _publish_wallpaper_state(
     *,
     stage: str | None = None,
     reload_failures: list[str] | None = None,
+    error: str | None = None,
 ) -> None:
     """Publish one ``wallpaper.state`` transition; never fail the set.
 
@@ -486,6 +489,8 @@ def _publish_wallpaper_state(
             payload["stage"] = stage
         if reload_failures:
             payload["reload_failures"] = reload_failures
+        if error is not None:
+            payload["error"] = error
         client.publish(
             _WALLPAPER_STATE_TOPIC,
             payload,
@@ -502,41 +507,46 @@ def _run_wallpaper_set(
     client: IJobClient | None = None,
     contrast: str = "auto",
 ) -> _WallpaperSetResult:
-    """Compose the visible-first ``wallpaper set`` pipeline (D1).
+    """Compose the required-palette ``wallpaper set`` pipeline (D1/BUG-001).
 
     Phase functions (composition-root-only orchestration per AD-12 — no
     application-layer orchestrator merges the use cases):
 
-    - ``_phase_visible``: ``SwapVisibleUseCase.run`` — validate → import
-      wallpaper → save wallpaper-only ``current.json`` → repoint ONLY
+    - ``_phase_prepare``: ``ApplyWallpaperUseCase.prepare_palette`` —
+      validate → hash → import wallpaper → ensure palette (HARD). A
+      failure aborts here: no swap, no ``current.json`` write, no
+      consumer link change.
+    - ``_phase_visible``: ``SwapVisibleUseCase.run`` — persist
+      ``current.json`` with the prepared palette → repoint ONLY
       wallpaper symlinks → apply wallpaper. Emits ``visible``.
-    - ``_phase_themed``: ``ApplyWallpaperUseCase.run`` (derivation-only:
-      takes the swap's imported wallpaper + hash, no re-import) then
+    - ``_phase_themed``: ``ApplyWallpaperUseCase.run`` (prepared palette,
+      no palette re-derivation, no re-import) then
       ``ReconcileDesktopStateUseCase.run(trigger="set")`` — full repoint
       → ``current.json`` → ``history.jsonl`` → palette/UI reloads. The
-      wallpaper stage is marked already applied.
-      Emits ``done``.
+      wallpaper stage is marked already applied. Emits ``done``.
 
     ONE state mutex (``FlockSeedMutex`` on ``.seed.lock``) is acquired
-    non-blocking up front and held across BOTH phases: a second set
+    non-blocking up front and held across all phases: a second set
     arriving mid-flight fails busy (``SeedLockedError`` → non-zero exit,
     no mutation, ``error`` event with an empty hash) instead of racing a
     half-themed state. The composed use cases are wired with a
     pass-through mutex — the outer hold is the single serialization
-    point. Both passes are wired with the SAME adapters as
+    point. All passes are wired with the SAME adapters as
     ``_run_seed_if_needed`` / ``_run_reconcile``.
 
-    Events: ``applying`` at set start, ``visible`` after the swap,
-    ``done``/``error`` at finish. Post-visible failure semantics (D5): a
-    palette failure raises ``error`` carrying the LIVE hash (the new
-    wallpaper stays on screen, ``current.json`` holds it with a null
-    palette); effects/icons degrade gracefully to ``done`` per the
-    existing per-layer policy.
+    Event order (BUG-001; hand-off for the v3 stage-order doc):
+    ``applying/generating_palette`` → ``applying/palette_generated`` →
+    ``applying/setting_wallpaper`` → ``visible/preparing_appearance_assets``
+    → ``visible/appearance_assets_ready`` →
+    ``visible/reconciling_consumers`` → ``done/finished``. A palette
+    failure publishes only the first event and then
+    ``error/generating_palette`` (pending hash + reason) — never
+    ``visible``.
 
     ``suppress_history`` (Phase 5): the reactive converge composes this
     pipeline with a history-suppressing seeder so it writes no
     ``trigger="set"`` line; the reactive composite owns the single audit
-    line instead.
+    line instead. A failed set always writes ``failures.jsonl``.
 
     ``client`` (tests): an injected :class:`IJobClient` recording the
     ``wallpaper.state`` transitions; the CLI passes none and the
@@ -577,44 +587,69 @@ def _run_wallpaper_set(
     from runtime.application.derive import find_templates_dir
     from runtime.application.reconcile import ReconcileDesktopStateUseCase
     from runtime.application.swap_visible import SwapVisibleUseCase
-    from runtime.domain.models import SeedLockedError
+    from runtime.domain.models import PaletteUnavailableError, SeedLockedError
 
     try:
         resolved = image_path.expanduser().resolve()
         pending_hash = hash_file(resolved) if resolved.is_file() else ""
     except OSError:
         pending_hash = ""
-    _publish_wallpaper_state(client, "applying", pending_hash, "set", stage="setting_wallpaper")
+    _publish_wallpaper_state(client, "applying", pending_hash, "set", stage="generating_palette")
 
     inner_mutex = PassThroughSeedMutex()
     templates_dir = find_templates_dir(install_spine)
-    current_stage = "setting_wallpaper"
+    current_stage = "generating_palette"
 
-    def _phase_visible() -> SwapVisibleResult:
-        """Phase 1 (D1): import → wallpaper-only persist → repoint → apply."""
+    def _seeder() -> CacheSeeder:
+        return CacheSeeder(
+            state_root,
+            consumer_spec=StaticConsumerPathSpec(),
+            suppress_history=suppress_history,
+        )
+
+    apply_use_case = ApplyWallpaperUseCase(
+        state_repo=JsonStateRepository(state_root=state_root),
+        csg=CsgAdapter(templates_dir=templates_dir),
+        weg=WegAdapter(),
+        itr=ItrAdapter(),
+        install_spine=install_spine,
+        state_root=state_root,
+        seeder=_seeder(),
+        mutex=inner_mutex,
+        monitor_source=HyprlandMonitorSource(),
+    )
+
+    def _phase_prepare() -> PreparedPalette:
+        """Palette (hard) BEFORE any visible change (BUG-001)."""
+        return apply_use_case.prepare_palette(image_path)
+
+    def _phase_visible(prepared: PreparedPalette) -> SwapVisibleResult:
+        """Visible phase: persist the prepared palette → repoint → apply."""
         return SwapVisibleUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
             state_root=state_root,
-            seeder=CacheSeeder(
-                state_root,
-                consumer_spec=StaticConsumerPathSpec(),
-                suppress_history=suppress_history,
-            ),
+            seeder=_seeder(),
             mutex=inner_mutex,
             hyprpaper=_build_wallpaper_applier(state_root),
             monitor_source=HyprlandMonitorSource(),
-        ).run(image_path)
+        ).run(
+            image_path,
+            palette=prepared.palette,
+            wallpaper_hash=prepared.wallpaper_hash,
+        )
 
     def _phase_themed(
-        swap: SwapVisibleResult,
+        prepared: PreparedPalette,
     ) -> tuple[ApplyWallpaperResult, ReconcileResult]:
-        """Phase 2 (D1): derive (no re-import) → converge → history → reload."""
+        """Themed phase: effects/icons → converge → history → reload."""
         nonlocal current_stage
 
         def publish_stage(stage: str) -> None:
             nonlocal current_stage
             current_stage = stage
-            _publish_wallpaper_state(client, "visible", swap.wallpaper_hash, "set", stage=stage)
+            _publish_wallpaper_state(
+                client, "visible", prepared.wallpaper_hash, "set", stage=stage
+            )
 
         from runtime.adapters.icon_contrast_prefs_store import (
             governing_wallpaper_hash,
@@ -627,7 +662,7 @@ def _run_wallpaper_set(
         governing = governing_wallpaper_hash(
             image_path.expanduser().resolve(),
             state_root,
-            fallback_hash=swap.wallpaper_hash,
+            fallback_hash=prepared.wallpaper_hash,
         )
         if contrast == "auto":
             contrast_enabled, contrast_source = resolve_contrast(
@@ -643,23 +678,10 @@ def _run_wallpaper_set(
                     "continuing with the forced value",
                     exc,
                 )
-        apply_result = ApplyWallpaperUseCase(
-            state_repo=JsonStateRepository(state_root=state_root),
-            csg=CsgAdapter(templates_dir=templates_dir),
-            weg=WegAdapter(),
-            itr=ItrAdapter(),
-            install_spine=install_spine,
-            state_root=state_root,
-            seeder=CacheSeeder(
-                state_root,
-                consumer_spec=StaticConsumerPathSpec(),
-                suppress_history=suppress_history,
-            ),
-            mutex=inner_mutex,
-            monitor_source=HyprlandMonitorSource(),
-        ).run(
+        apply_result = apply_use_case.run(
             image_path,
-            wallpaper_hash=swap.wallpaper_hash,
+            wallpaper_hash=prepared.wallpaper_hash,
+            prepared_palette=prepared,
             contrast_enabled=contrast_enabled,
             contrast_source=contrast_source,
             on_progress=publish_stage,
@@ -673,11 +695,7 @@ def _run_wallpaper_set(
             itr=ItrAdapter(),
             install_spine=install_spine,
             state_root=state_root,
-            seeder=CacheSeeder(
-                state_root,
-                consumer_spec=StaticConsumerPathSpec(),
-                suppress_history=suppress_history,
-            ),
+            seeder=_seeder(),
             mutex=inner_mutex,
             reloaders=_build_reloaders(state_root, include_terminal=include_terminal),
         ).run(
@@ -688,18 +706,45 @@ def _run_wallpaper_set(
         )
         return apply_result, reconcile_result
 
+    def _record_palette_failure(exc: PaletteUnavailableError) -> None:
+        """Append the traceable failure record; never mask the original error."""
+        logger.error(
+            "wallpaper set: palette unavailable: path=%s hash=%s stage=%s tool=%s "
+            "returncode=%s stderr=%s",
+            exc.wallpaper_path,
+            exc.wallpaper_hash,
+            exc.stage,
+            exc.tool,
+            exc.returncode,
+            exc.stderr,
+        )
+        try:
+            CacheSeeder(state_root).append_failure(
+                error=str(exc),
+                **exc.to_record_fields(),
+            )
+        except Exception:
+            logger.exception("wallpaper set: failed to append failures.jsonl record")
+
     live_hash: str | None = None
     try:
         with FlockSeedMutex(state_root / ".seed.lock").hold(blocking=False):
+            prepared = _phase_prepare()
+            current_stage = "palette_generated"
+            _publish_wallpaper_state(
+                client, "applying", prepared.wallpaper_hash, "set", stage=current_stage
+            )
+            current_stage = "setting_wallpaper"
+            _publish_wallpaper_state(
+                client, "applying", prepared.wallpaper_hash, "set", stage=current_stage
+            )
             swap_started = time.monotonic()
-            swap = _phase_visible()
+            swap = _phase_visible(prepared)
             live_hash = swap.wallpaper_hash
             swap_elapsed = time.monotonic() - swap_started
             visible_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-            current_stage = "generating_palette"
-            _publish_wallpaper_state(client, "visible", live_hash, "set", stage=current_stage)
             themed_started = time.monotonic()
-            apply_result, reconcile_result = _phase_themed(swap)
+            apply_result, reconcile_result = _phase_themed(prepared)
             theme_elapsed = time.monotonic() - themed_started
             themed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     except SeedLockedError as exc:
@@ -707,6 +752,17 @@ def _run_wallpaper_set(
         raise SeedLockedError(
             f"wallpaper set already in progress (lock held): {state_root / '.seed.lock'}"
         ) from exc
+    except PaletteUnavailableError as exc:
+        _publish_wallpaper_state(
+            client,
+            "error",
+            live_hash if live_hash is not None else pending_hash,
+            "set",
+            stage=current_stage,
+            error=str(exc),
+        )
+        _record_palette_failure(exc)
+        raise
     except Exception:
         _publish_wallpaper_state(
             client,
@@ -809,6 +865,16 @@ def wallpaper_set(
     renderer = create_renderer(output_format)
     try:
         result = _run_wallpaper_set(image_path, contrast=contrast)
+    except PaletteUnavailableError as exc:
+        logger.error("wallpaper set failed: palette unavailable: %s", exc)
+        renderer.error(
+            ErrorView(
+                kind="PaletteUnavailableError",
+                message=str(exc),
+                details=exc.to_details(),
+            )
+        )
+        raise typer.Exit(code=1) from None
     except (ValueError, RuntimeError, OSError) as exc:
         logger.error("wallpaper set failed: %s", exc)
         renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
@@ -3623,6 +3689,66 @@ def inspect_history(
                 "count": count,
                 "total": total,
                 "truncated": truncated,
+                "limit": limit,
+            },
+            rich=plain,
+        )
+    )
+
+
+@inspect_app.command("failures")
+def inspect_failures(
+    limit: int = _HISTORY_LIMIT_OPTION,
+    output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
+) -> None:
+    """Show the runtime-owned palette failure log, newest first (BUG-001).
+
+    Read-only projection of ``failures.jsonl`` (``history.jsonl`` cannot
+    carry ``set-failed``: closed trigger enum + additionalProperties
+    false). An absent log is clean (exit 0 with "no failures recorded").
+    """
+    renderer = create_renderer(output_format)
+    try:
+        from runtime.application.inspect import InspectFailuresUseCase
+
+        entries = InspectFailuresUseCase(state_root=_resolve_state_root()).run(limit=0)
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.error("inspect failures failed: %s", exc)
+        renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
+        raise typer.Exit(code=1) from None
+    except Exception:
+        logger.exception("inspect failures failed unexpectedly")
+        renderer.error(
+            ErrorView(
+                kind="UnexpectedError",
+                message="inspect failures failed unexpectedly; see logs",
+            )
+        )
+        raise typer.Exit(code=1) from None
+
+    total = len(entries)
+    shown = entries if limit == 0 else entries[:limit]
+    if not shown:
+        plain = "no failures recorded yet"
+    else:
+        lines: list[str] = []
+        for record in shown:
+            stderr_tail = record.stderr.splitlines()[-1] if record.stderr else ""
+            lines.append(
+                f"{record.ts} {record.trigger} {record.wallpaper_hash[:12]}"
+                f" stage {record.stage} tool {record.tool}"
+                f" rc {record.returncode if record.returncode is not None else '-'}"
+                f" {stderr_tail}"
+            )
+        plain = "\n".join(lines)
+    renderer.custom(
+        CustomView(
+            plain=plain,
+            object={
+                "entries": [record.to_dict() for record in shown],
+                "count": len(shown),
+                "total": total,
+                "truncated": total > len(shown),
                 "limit": limit,
             },
             rich=plain,

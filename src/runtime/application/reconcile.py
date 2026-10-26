@@ -57,6 +57,7 @@ from runtime.domain.models import (
     EffectsEntry,
     IconsEntry,
     PaletteEntry,
+    PaletteUnavailableError,
 )
 from runtime.ports.color_scheme_generator import IColorSchemeGenerator
 from runtime.ports.desktop_reloader import IDesktopReloader
@@ -181,6 +182,7 @@ class ReconcileDesktopStateUseCase:
             raise RuntimeError("nothing to reconcile")
         # ValueError from a corrupt store propagates loudly here — never
         # swallowed into a reseed or fallback.
+        self._require_palette(state)
 
         # Recovery: revert stray current/ symlinks to last-good current.json (AC 1, 2, 5).
         # Runs OUTSIDE the lock — same as derivation; concurrent wallpaper set
@@ -207,6 +209,10 @@ class ReconcileDesktopStateUseCase:
             state = self._state_repo.load_current()
             if state is None:
                 raise RuntimeError("nothing to reconcile")
+            # Re-check the REQUIRED palette inside the critical section: a
+            # concurrent legacy writer must not be converged into removed
+            # consumer pointers (BUG-001).
+            self._require_palette(state)
 
             # Decision D1: re-derive if state changed while we were outside.
             if state.wallpaper.content_hash != pre_lock_wallpaper_hash:
@@ -271,7 +277,7 @@ class ReconcileDesktopStateUseCase:
             # separately as `consumer_symlinks`.
             consumer_repointed = self._seeder.repoint_consumer_symlinks(
                 self._install_spine,
-                state.palette.entry_hash if state.palette else None,
+                state.palette.entry_hash,
             )
             # D2 — cleanup stale symlinks
             stale_removed = self._cleanup_stale_symlinks(state, monitor_names, repointed)
@@ -350,6 +356,31 @@ class ReconcileDesktopStateUseCase:
         )
 
     # ------------------------------------------------------------------
+    # Required-palette guard (BUG-001)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _require_palette(state: DesktopState) -> PaletteEntry:
+        """Return the palette or refuse the state without touching links.
+
+        A legacy null-palette state stays readable by ``inspect`` but is
+        NOT reconcilable: the palette is a required artifact, and a null
+        one must never cause consumer pointers to be removed.
+        """
+        if state.palette is None:
+            source = state.wallpaper.source_path or "<unknown>"
+            raise PaletteUnavailableError(
+                "reconcile refused: the palette layer is null for wallpaper "
+                f"{state.wallpaper.content_hash} ({source}); "
+                "re-set the wallpaper to regenerate the required palette",
+                wallpaper_path=source,
+                wallpaper_hash=state.wallpaper.content_hash,
+                stderr="",
+                hint="re-set the wallpaper / check csg, then reconcile again",
+            )
+        return state.palette
+
+    # ------------------------------------------------------------------
     # Step 1 — ensure cache entries (derivation outside the lock)
     # ------------------------------------------------------------------
 
@@ -359,7 +390,7 @@ class ReconcileDesktopStateUseCase:
         regenerated: list[str],
         contrast_enabled: bool = True,
         contrast_source: str = "default",
-    ) -> tuple[PaletteEntry | None, EffectsEntry | None, IconsEntry | None]:
+    ) -> tuple[PaletteEntry, EffectsEntry | None, IconsEntry | None]:
         """Ensure every cache entry referenced by the state exists.
 
         Returns the (possibly-rebuilt) palette/effects/icons entries and
@@ -368,6 +399,9 @@ class ReconcileDesktopStateUseCase:
         (``ensure_palette_entry_complete``) so a pre-growth partial
         palette entry is evicted and regenerated — ONE migration rule
         for seed/apply/reconcile (Story gt-2-1, AC 8).
+
+        The palette is REQUIRED (BUG-001): a null-palette state raises
+        ``PaletteUnavailableError`` before any entry/link work.
         """
         self._ensure_wallpaper_entry(state, regenerated)
         cached_wallpaper_img = (
@@ -375,8 +409,8 @@ class ReconcileDesktopStateUseCase:
             / "wallpaper.png"
         )
 
-        palette = state.palette
-        if palette is not None and not ensure_palette_entry_complete(
+        palette = self._require_palette(state)
+        if not ensure_palette_entry_complete(
             cache_entry_path(self._state_root, "palettes", palette.entry_hash), self._seeder
         ):
             try:
@@ -407,13 +441,8 @@ class ReconcileDesktopStateUseCase:
                 regenerated.append("effects")
 
         icons = state.icons
-        # P6 — if palette is None but icons is not, icons cannot exist; degrade
-        if icons is not None and palette is None:
-            logger.warning("reconcile: icons present but palette is null; icons degraded to null")
-            icons = None
-        elif (
+        if (
             icons is not None
-            and palette is not None
             and not cache_entry_path(self._state_root, "icons", icons.entry_hash).exists()
         ):
             try:
