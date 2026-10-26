@@ -2,7 +2,7 @@
 id: BUG-004
 title: "btop-theme-studio is restarted by AgsReloader and loses unsaved edits"
 kind: bug
-status: triage
+status: done
 lane: 2
 severity: high
 links:
@@ -10,7 +10,7 @@ links:
   bmad: none
 worktree: .worktrees/BUG-004/
 branch: ticket/BUG-004-btop-studio-restart
-repro: "uv run pytest -q tests/unit/test_ags_reloader.py::TestAgsReloaderSkip::test_skips_btop_studio_dir"
+repro: "uv run pytest -q tests/unit/test_ags_reloader.py::TestAgsReloaderStandaloneTools::test_skips_btop_studio_dir"
 observed: "On the pre-fix tree the regression test fails: subprocess.run is called twice (bar quit plus `ags quit -i btop-theme-studio`) and Popen twice (bar run plus `ags run -d .../ags-btop-studio`). A running studio is quit and relaunched by reconcile; pending edits live only in memory and are lost."
 expected: "Only the bar is quit/relaunched. `ags-btop-studio` is left running because its pending edits are in memory; the skip applies to every AgsReloader reload cycle and no live refresh is required for this safety fix."
 ---
@@ -90,8 +90,28 @@ uv run pytest -q tests/unit/test_ags_reloader.py::TestAgsReloaderSkip::test_skip
 
 ## Acceptance
 
-- [ ] `DEFAULT_SKIP_CONFIG_DIRS` contains `ags-btop-studio`.
-- [ ] The regression test fails before the change and passes after.
-- [ ] No other app's skip/restart behavior changes.
-- [ ] `make test` (or the focused pytest) is green.
-- [ ] INDEX status and closing evidence are updated in the closeout commit.
+- [x] `DEFAULT_SKIP_CONFIG_DIRS` contains `ags-btop-studio`.
+- [x] The regression test fails before the change and passes after.
+- [x] No other app's skip/restart behavior changes.
+- [x] `make test` (or the focused pytest) is green.
+- [x] INDEX status and closing evidence are updated in the closeout commit.
+
+## Closing evidence
+
+- **Plan:** `d3f24f4 plan(BUG-004): add the btop studio unsaved-edit restart bug`.
+- **Red:** `2cd2c2e test(BUG-004): pin the btop studio skip`.
+  `uv run pytest -q tests/unit/test_ags_reloader.py::TestAgsReloaderStandaloneTools::test_skips_btop_studio_dir`
+  → `1 failed`; `subprocess.run` called twice, including
+  `ags quit -i btop-theme-studio`.
+- **Fix:** `87245f2 fix(BUG-004): skip btop-theme-studio on palette reload`.
+  `DEFAULT_SKIP_CONFIG_DIRS` now contains the deployed name
+  `ags-btop-studio`.
+- **Green:** `uv run pytest -q tests/unit/test_ags_reloader.py`
+  → `29 passed in 0.33s`.
+- **Gates:** `make gates-ci` → exit 0; `2127 passed, 3 skipped, 20 deselected`
+  in both runs; `lint`, `contracts-check`, `hermetic`, `lock-check` and
+  `docs-check` green.
+- **Scope:** skip-only safety. Live refresh and the btop docs row remain
+  `EPIC-002` / `REQ-010` in `ags-apps`; they are not implemented here.
+
+Verify: the `repro` command above is green on this commit.
