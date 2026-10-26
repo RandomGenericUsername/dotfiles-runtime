@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import json
 import logging
-import subprocess
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -32,6 +31,7 @@ from unittest.mock import MagicMock
 import fastjsonschema
 import pytest
 
+from runtime.adapters.csg_adapter import _CsgRunResult
 from runtime.adapters.hashing import canonical_hash_dir, hash_file, palette_entry_hash
 from runtime.adapters.json_state_repository import JsonStateRepository
 from runtime.adapters.seeder import CacheSeeder
@@ -100,21 +100,20 @@ def _populate_entry(entry: Path, names: tuple[str, ...]) -> dict[str, str]:
 
 
 def _fake_csg_run(tmp_path: Path) -> MagicMock:
-    """subprocess.run stand-in that records argv and writes all eight outputs."""
+    """``_run_csg`` stand-in that records argv and writes all eight outputs."""
 
     def fake_run(
         args: list[str],
-        capture_output: bool = False,  # noqa: ARG001
-        text: bool = False,  # noqa: ARG001
-        env: dict[str, str] | None = None,
-        timeout: int | None = None,  # noqa: ARG001
-    ) -> subprocess.CompletedProcess[str]:
-        assert env is not None
+        env: dict[str, str],
+        timeout: int,  # noqa: ARG001
+    ) -> _CsgRunResult:
         out = Path(env["COLORSCHEME__OUTPUT__DIRECTORY"])
         out.mkdir(parents=True, exist_ok=True)
         for name in ALL_ARTIFACTS:
             (out / name).write_text(f"# {name}\n")
-        return subprocess.CompletedProcess(args, 0, "", "")
+        return _CsgRunResult(
+            returncode=0, stdout="", stderr="", timed_out=False, elapsed_seconds=0.01
+        )
 
     return MagicMock(side_effect=fake_run)
 
@@ -147,7 +146,7 @@ def _generate_and_capture_argv(
     from runtime.adapters.csg_adapter import CsgAdapter
 
     fake = _fake_csg_run(tmp_path)
-    monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake)
+    monkeypatch.setattr("runtime.adapters.csg_adapter._run_csg", fake)
     CsgAdapter(templates_dir=templates).generate(
         wallpaper, _palette_output_dir(tmp_path, wallpaper, templates)
     )
@@ -204,7 +203,7 @@ def test_csg_adapter_hashes_the_btop_output(
     templates = _fixture_templates(tmp_path)
 
     fake = _fake_csg_run(tmp_path)
-    monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake)
+    monkeypatch.setattr("runtime.adapters.csg_adapter._run_csg", fake)
     out = _palette_output_dir(tmp_path, wallpaper, templates)
     entry = CsgAdapter(templates_dir=templates).generate(wallpaper, out)
 
@@ -228,13 +227,13 @@ def test_csg_adapter_fails_loud_when_a_btop_output_is_missing(
     full = _fake_csg_run(tmp_path)
     real_side_effect = full.side_effect
 
-    def dropping_run(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        result = real_side_effect(args, **kwargs)
-        (Path(kwargs["env"]["COLORSCHEME__OUTPUT__DIRECTORY"]) / "colors.btop.theme").unlink()
+    def dropping_run(args: list[str], env: dict[str, str], timeout: int) -> _CsgRunResult:
+        result = real_side_effect(args, env, timeout)
+        (Path(env["COLORSCHEME__OUTPUT__DIRECTORY"]) / "colors.btop.theme").unlink()
         return result
 
     monkeypatch.setattr(
-        "runtime.adapters.csg_adapter.subprocess.run",
+        "runtime.adapters.csg_adapter._run_csg",
         MagicMock(side_effect=dropping_run),
     )
 

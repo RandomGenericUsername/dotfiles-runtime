@@ -7,13 +7,12 @@ artifact hash hex, is_available.
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from runtime.adapters.csg_adapter import CsgAdapter
+from runtime.adapters.csg_adapter import CsgAdapter, _CsgRunResult
 from runtime.adapters.hashing import (
     HASH_ALGORITHM,
     canonical_hash_dir,
@@ -46,16 +45,13 @@ def _copy_wallpaper_fixture(tmp_path: Path) -> Path:
 
 
 def _fake_success_factory() -> MagicMock:
-    """Return a fake subprocess.run that writes seven artifacts into env out dir."""
+    """Return a fake ``_run_csg`` that writes all eight artifacts into env out dir."""
 
     def fake_run(
         args: list[str],
-        capture_output: bool = False,  # noqa: ARG001
-        text: bool = False,  # noqa: ARG001
-        env: dict[str, str] | None = None,
-        timeout: int | None = None,  # noqa: ARG001
-    ) -> subprocess.CompletedProcess[str]:
-        assert env is not None
+        env: dict[str, str],
+        timeout: int,  # noqa: ARG001
+    ) -> _CsgRunResult:
         out = Path(env["COLORSCHEME__OUTPUT__DIRECTORY"])
         out.mkdir(parents=True, exist_ok=True)
         (out / "colors.yaml").write_text('{"background":"#000"}\n')
@@ -66,9 +62,9 @@ def _fake_success_factory() -> MagicMock:
         (out / "colors.rasi").write_text("* { background: #000; }\n")
         (out / "colors.kitty").write_text("* { background: #000; }")
         (out / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
-        (out / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
-        (out / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
-        return subprocess.CompletedProcess(args, 0, "", "")
+        return _CsgRunResult(
+            returncode=0, stdout="", stderr="", timed_out=False, elapsed_seconds=0.01
+        )
 
     return MagicMock(side_effect=fake_run)
 
@@ -89,7 +85,7 @@ def test_csg_generate_writes_artifacts_and_entry(
     output_dir = tmp_path / "state" / "cache" / "palettes" / ph
 
     fake = _fake_success_factory()
-    monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake)
+    monkeypatch.setattr("runtime.adapters.csg_adapter._run_csg", fake)
 
     adapter = CsgAdapter(templates_dir=templates_dir)
     entry = adapter.generate(wallpaper, output_dir)
@@ -147,7 +143,7 @@ def test_csg_adapter_never_touches_settings_toml(
     content_before = real_settings.read_bytes()
 
     fake = _fake_success_factory()
-    monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake)
+    monkeypatch.setattr("runtime.adapters.csg_adapter._run_csg", fake)
 
     adapter = CsgAdapter(templates_dir=templates_dir)
     adapter.generate(wallpaper, output_dir)
@@ -179,12 +175,9 @@ def test_csg_adapter_container_env_passthrough(
 
     def fake_run(
         args: list[str],
-        capture_output: bool = False,
-        text: bool = False,
-        env: dict[str, str] | None = None,
-        timeout: int | None = None,
-    ) -> subprocess.CompletedProcess[str]:  # noqa: ARG001
-        assert env is not None
+        env: dict[str, str],
+        timeout: int,  # noqa: ARG001
+    ) -> _CsgRunResult:
         captured.update(env)
         out = Path(env["COLORSCHEME__OUTPUT__DIRECTORY"])
         out.mkdir(parents=True, exist_ok=True)
@@ -196,11 +189,11 @@ def test_csg_adapter_container_env_passthrough(
         (out / "colors.rasi").write_text("rasi")
         (out / "colors.kitty").write_text("* { background: #000; }")
         (out / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
-        (out / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
-        (out / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
-        return subprocess.CompletedProcess(args, 0, "", "")
+        return _CsgRunResult(
+            returncode=0, stdout="", stderr="", timed_out=False, elapsed_seconds=0.01
+        )
 
-    monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake_run)
+    monkeypatch.setattr("runtime.adapters.csg_adapter._run_csg", fake_run)
 
     adapter = CsgAdapter(templates_dir=templates_dir)
     adapter.generate(wallpaper, output_dir)
@@ -224,15 +217,19 @@ def test_csg_adapter_raises_on_non_zero_exit(
     output_dir = tmp_path / "state" / "cache" / "palettes" / ph
 
     def fake_fail(
-        args: list[str],
-        capture_output: bool = False,
-        text: bool = False,
-        env: dict[str, str] | None = None,
-        timeout: int | None = None,
-    ) -> subprocess.CompletedProcess[str]:  # noqa: ARG001
-        return subprocess.CompletedProcess(args, 1, "", "backend not available")
+        args: list[str],  # noqa: ARG001
+        env: dict[str, str],  # noqa: ARG001
+        timeout: int,  # noqa: ARG001
+    ) -> _CsgRunResult:
+        return _CsgRunResult(
+            returncode=1,
+            stdout="",
+            stderr="backend not available",
+            timed_out=False,
+            elapsed_seconds=0.01,
+        )
 
-    monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake_fail)
+    monkeypatch.setattr("runtime.adapters.csg_adapter._run_csg", fake_fail)
 
     adapter = CsgAdapter(templates_dir=templates_dir)
     with pytest.raises(RuntimeError, match="backend not available"):
@@ -249,15 +246,19 @@ def test_csg_nonzero_exit_is_palette_unavailable_with_rc_and_stderr(
     output_dir = tmp_path / "state" / "cache" / "palettes" / ph
 
     def fake_fail(
-        args: list[str],
-        capture_output: bool = False,
-        text: bool = False,
-        env: dict[str, str] | None = None,
-        timeout: int | None = None,
-    ) -> subprocess.CompletedProcess[str]:  # noqa: ARG001
-        return subprocess.CompletedProcess(args, 7, "", "csg exploded")
+        args: list[str],  # noqa: ARG001
+        env: dict[str, str],  # noqa: ARG001
+        timeout: int,  # noqa: ARG001
+    ) -> _CsgRunResult:
+        return _CsgRunResult(
+            returncode=7,
+            stdout="",
+            stderr="csg exploded",
+            timed_out=False,
+            elapsed_seconds=0.01,
+        )
 
-    monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake_fail)
+    monkeypatch.setattr("runtime.adapters.csg_adapter._run_csg", fake_fail)
 
     adapter = CsgAdapter(templates_dir=templates_dir)
     with pytest.raises(PaletteUnavailableError) as excinfo:
@@ -283,10 +284,21 @@ def test_csg_adapter_timeout_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     ph = palette_entry_hash(hash_file(wallpaper), canonical_hash_dir(templates_dir))
     output_dir = tmp_path / "state" / "cache" / "palettes" / ph
 
-    def fake_timeout(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:  # noqa: ARG001
-        raise subprocess.TimeoutExpired(cmd="csg", timeout=60, output="", stderr="partial")
+    def fake_timeout(
+        args: list[str],  # noqa: ARG001
+        env: dict[str, str],  # noqa: ARG001
+        timeout: int,  # noqa: ARG001
+    ) -> _CsgRunResult:
+        return _CsgRunResult(
+            returncode=-9,
+            stdout="",
+            stderr="partial",
+            timed_out=True,
+            elapsed_seconds=1.0,
+            termination="SIGKILL",
+        )
 
-    monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake_timeout)
+    monkeypatch.setattr("runtime.adapters.csg_adapter._run_csg", fake_timeout)
 
     adapter = CsgAdapter(timeout=60, templates_dir=templates_dir)
     with pytest.raises((TimeoutError, RuntimeError), match="timed out"):
@@ -312,7 +324,7 @@ def test_csg_adapter_raises_on_missing_wallpaper(
     output_dir = tmp_path / "state" / "cache" / "palettes" / ph
 
     mock_run = MagicMock()
-    monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", mock_run)
+    monkeypatch.setattr("runtime.adapters.csg_adapter._run_csg", mock_run)
 
     adapter = CsgAdapter(templates_dir=templates_dir)
     with pytest.raises(FileNotFoundError):
@@ -340,7 +352,7 @@ def test_csg_adapter_entry_hash_mismatch(tmp_path: Path, monkeypatch: pytest.Mon
     output_dir = tmp_path / "state" / "cache" / "palettes" / wrong
 
     fake = _fake_success_factory()
-    monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake)
+    monkeypatch.setattr("runtime.adapters.csg_adapter._run_csg", fake)
 
     adapter = CsgAdapter(templates_dir=templates_dir)
     with pytest.raises(ValueError, match="hash mismatch"):
@@ -362,7 +374,7 @@ def test_csg_adapter_artifact_hashes_are_hex64(
     output_dir = tmp_path / "state" / "cache" / "palettes" / ph
 
     fake = _fake_success_factory()
-    monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake)
+    monkeypatch.setattr("runtime.adapters.csg_adapter._run_csg", fake)
 
     adapter = CsgAdapter(templates_dir=templates_dir)
     entry = adapter.generate(wallpaper, output_dir)
@@ -431,12 +443,9 @@ def test_csg_adapter_no_settings_toml_rewrite_even_on_container(
 
     def fake_container_run(
         args: list[str],
-        capture_output: bool = False,
-        text: bool = False,
-        env: dict[str, str] | None = None,
-        timeout: int | None = None,
-    ) -> subprocess.CompletedProcess[str]:  # noqa: ARG001
-        assert env is not None
+        env: dict[str, str],
+        timeout: int,  # noqa: ARG001
+    ) -> _CsgRunResult:
         captured_env.update(env)
         captured_args.extend(args)
         # Simulate container mode: still writes to host env path
@@ -450,11 +459,11 @@ def test_csg_adapter_no_settings_toml_rewrite_even_on_container(
         (out / "colors.rasi").write_text("rasi")
         (out / "colors.kitty").write_text("* { background: #000; }")
         (out / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
-        (out / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
-        (out / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
-        return subprocess.CompletedProcess(args, 0, "", "")
+        return _CsgRunResult(
+            returncode=0, stdout="", stderr="", timed_out=False, elapsed_seconds=0.01
+        )
 
-    monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake_container_run)
+    monkeypatch.setattr("runtime.adapters.csg_adapter._run_csg", fake_container_run)
 
     adapter = CsgAdapter(templates_dir=templates_dir)
     adapter.generate(wallpaper, output_dir)
@@ -489,7 +498,7 @@ def test_csg_adapter_generate_without_templates_dir_raises(
     output_dir = tmp_path / "state" / "cache" / "palettes" / ("a" * 64)
 
     mock_run = MagicMock()
-    monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", mock_run)
+    monkeypatch.setattr("runtime.adapters.csg_adapter._run_csg", mock_run)
 
     adapter = CsgAdapter()  # deliberately no templates_dir
     with pytest.raises(FileNotFoundError) as excinfo:

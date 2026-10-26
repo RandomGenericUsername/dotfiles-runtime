@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Literal, TypedDict
+from typing import Final, Literal, TypedDict
 
 
 class BackendType(StrEnum):
@@ -60,6 +60,21 @@ class PaletteArtifacts(TypedDict):
     colors_rasi: str  # key: "colors.rasi"
     colors_kitty: str  # key: "colors.kitty"
     colors_btop: str  # key: "colors.btop.theme"
+
+
+#: The complete palette artifact set csg must produce (BUG-002).
+#: Single source of truth for the adapter's success/timeout verification and
+#: the cache completeness guard in ``runtime.application.derive``.
+PALETTE_ARTIFACT_NAMES: Final[tuple[str, ...]] = (
+    "colors.yaml",
+    "colors.conf",
+    "colors.gtk.css",
+    "colors.adw.css",
+    "colors.sequences",
+    "colors.rasi",
+    "colors.kitty",
+    "colors.btop.theme",
+)
 
 
 @dataclass(frozen=True, slots=True)

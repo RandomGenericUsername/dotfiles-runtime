@@ -83,7 +83,7 @@ import tempfile
 from collections.abc import Mapping
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import Any, cast
 
 from runtime.adapters.cache import cache_entry_path, populate_via_staging
 from runtime.adapters.hashing import (
@@ -106,6 +106,7 @@ from runtime.domain.icon_contrast import (
 )
 from runtime.domain.icon_contrast_policy import POLICY_SOURCES
 from runtime.domain.models import (
+    PALETTE_ARTIFACT_NAMES,
     EffectsEntry,
     IconsEntry,
     MissingDerivationInputError,
@@ -282,18 +283,6 @@ def _hash_path_input(path: Path, what: str) -> str:
     if path.is_file():
         return hash_file(path)
     raise RuntimeError(f"{what} path missing: {path}")
-
-
-PALETTE_ARTIFACT_NAMES: Final[tuple[str, ...]] = (
-    "colors.yaml",
-    "colors.conf",
-    "colors.gtk.css",
-    "colors.adw.css",
-    "colors.sequences",
-    "colors.rasi",
-    "colors.kitty",
-    "colors.btop.theme",
-)
 
 
 def ensure_palette_entry_complete(target: Path, seeder: CacheSeeder) -> bool:

@@ -89,28 +89,44 @@ def _output_dir_key(record: dict) -> str:
 
 
 def _recording_runner(record: dict) -> MagicMock:
-    """Return a subprocess.run stand-in that records argv/env and writes artifacts."""
+    """Record argv/env and write artifacts for either runner shape.
+
+    ``CsgAdapter`` calls the ``_run_csg(args, env, timeout)`` seam; WEG/ITR
+    still call ``subprocess.run(..., capture_output=True, ...)``. Return the
+    matching result type for each.
+    """
 
     def fake_run(
         args: list[str],
-        capture_output: bool = False,  # noqa: ARG001
-        text: bool = False,  # noqa: ARG001
         env: dict[str, str] | None = None,
         timeout: int | None = None,  # noqa: ARG001
+        capture_output: bool = False,
+        text: bool = False,  # noqa: ARG001
         errors: str | None = None,  # noqa: ARG001
         **_kw: object,
-    ) -> subprocess.CompletedProcess[str]:
+    ) -> object:
         assert env is not None
         output_dir = Path(env[_output_dir_key(record)])
         _write_contract_artifacts(record, output_dir)
-        return subprocess.CompletedProcess(args, 0, "", "")
+        if capture_output:
+            return subprocess.CompletedProcess(args, 0, "", "")
+        from runtime.adapters.csg_adapter import _CsgRunResult
+
+        return _CsgRunResult(
+            returncode=0, stdout="", stderr="", timed_out=False, elapsed_seconds=0.01
+        )
 
     return MagicMock(side_effect=fake_run)
 
 
 def _assert_invocation(record: dict, cli: str, fake: MagicMock) -> None:
-    argv = fake.call_args.args[0] if fake.call_args.args else fake.call_args.kwargs["args"]
-    assert_consumer_invocation(record, cli, argv, fake.call_args.kwargs["env"])
+    call = fake.call_args
+    if len(call.args) >= 2:
+        argv, env = call.args[0], call.args[1]
+    else:
+        argv = call.args[0] if call.args else call.kwargs["args"]
+        env = call.kwargs["env"]
+    assert_consumer_invocation(record, cli, argv, env)
 
 
 def test_csg_invocation_matches_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -121,7 +137,7 @@ def test_csg_invocation_matches_record(tmp_path: Path, monkeypatch: pytest.Monke
     output_dir = tmp_path / "state" / "cache" / "palettes" / entry_hash
 
     fake = _recording_runner(record)
-    monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake)
+    monkeypatch.setattr("runtime.adapters.csg_adapter._run_csg", fake)
 
     CsgAdapter(templates_dir=templates_dir).generate(wallpaper, output_dir)
 
