@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.2.1
+
+A csg timeout is a bounded, clean failure that cannot discard a complete
+palette (BUG-002).
+
+- `CsgAdapter`'s default timeout is 330 s, above csg's 300 s internal
+  container timeout, so csg's own `finally` removes the container before the
+  host process can be killed.
+- On an explicit/forced timeout the adapter SIGINTs the child first (letting
+  csg run that cleanup) and only escalates to SIGKILL after a bounded grace.
+- Every timeout path verifies the complete 8-artifact set: a complete palette
+  is accepted and published instead of being deleted by staging cleanup; an
+  incomplete set raises `PaletteUnavailableError` naming the missing/non-file
+  artifacts plus elapsed time, termination signal, return code and stderr.
+- The real-input proof is success-required for 8K/4K cold/warm, and an opt-in
+  forced 2 s timeout asserts the complete palette is kept and no new container
+  remains in the pre/post `podman ps -a` diff.
+- The 512 MiB csg container limit is kept: measured 8K peak is 310 MiB (190
+  MiB at 4K), 512m passes and 256m fails the 8K fixture. The limit is
+  csg-owned (`[container].memory_limit`); the runtime does not override it.
+- Container lifecycle ownership: adapter/csg timeout cleanup is csg's
+  `finally`; stale containers after SIGKILL/power loss need a csg-owned
+  label/reaper sweep (recorded as a cross-repo handoff). The runtime still
+  only invokes the CLI and never runs containers itself.
+
 ## 0.2.0
 
 The palette is a required artifact (BUG-001).
