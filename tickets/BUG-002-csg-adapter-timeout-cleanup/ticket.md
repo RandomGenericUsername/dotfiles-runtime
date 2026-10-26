@@ -357,8 +357,31 @@ runtime.
   rests on the recorded handoff measurements plus the live config check, not
   on an assumption; it was not changed.
 
+### Merge / tag / release
+
+- Merged the ticket branch into `main` (`1f9c80c` + the BUG-004 tip
+  `6cbad34`) as merge commit `f1ea89d`; `main` fast-forwarded to it.
+- `make gates` on the merged branch → exit **0** (`2133 passed, 3 skipped,
+  21 deselected`; lint/contracts/hermetic/lock/docs green). Log:
+  `/tmp/opencode/bug002-gates-merged.txt`.
+- Real-input matrix + forced-timeout proof rerun on the merged tree →
+  `3 passed` in 63.54 s, `leaked_containers=[]`. Log:
+  `/tmp/opencode/bug002-real-input-merged.txt`.
+- Annotated tag **`v0.2.1`** → tag object
+  `ff5971cf1da6ab8205ff55036d1026f452891a59`, commit
+  `f1ea89d80d9eac824cf5ee6605bf9f163689ea26`.
+- GitHub Release <https://github.com/RandomGenericUsername/dotfiles-runtime/releases/tag/v0.2.1>
+  published with `dotfiles_runtime-0.2.1-py3-none-any.whl` and
+  `dotfiles_runtime-0.2.1.tar.gz`.
+- Tag CI run `40396573276`: `success`; all eight jobs succeeded, including
+  `release`.
+- The pre-existing leftover container `00be5b3bdf2c` was left untouched as
+  evidence; the forced-timeout proof created and removed no new container.
+
 `Verify:` `uv run pytest -q tests/unit/test_csg_adapter_timeout_cleanup.py`;
-`git log --oneline 628ce70..HEAD`; `csg info`; the real-input command above.
+`git log --oneline 628ce70..HEAD`; `git rev-parse v0.2.1 'v0.2.1^{commit}'`;
+`gh release view v0.2.1 --json assets --jq '.assets[].name'`; `csg info`; the
+real-input command above.
 
 ## Scope / constraints
 
