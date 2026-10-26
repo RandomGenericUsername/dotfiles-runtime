@@ -2,7 +2,7 @@
 id: BUG-003
 title: "icon-contrast prefs: the loader rejects its own canonical file at 4+ entries"
 kind: bug
-status: triage
+status: in-progress
 lane: 1
 severity: low
 links:
@@ -177,6 +177,33 @@ four-entry boundary, so this survived.
    tests/unit/test_icon_contrast_prefs_store.py`, then `make gates`; merge only
    when green. This is a docs-only triage commit now; implementation is a
    separate commit/turn.
+
+## Implementation session (2026-10-26)
+
+- Worktree: `.worktrees/BUG-003/`; branch:
+  `ticket/BUG-003-icon-contrast-prefs-malformed` (fast-forwarded to `main`
+  `ad9a61c` before implementation).
+- Red: `a74d8aa test(BUG-003): pin 4+ entry icon-contrast prefs round-trip`.
+  `uv run pytest -q tests/unit/test_icon_contrast_policy.py
+  tests/unit/test_icon_contrast_prefs_store.py` → `8 failed, 68 passed`; the
+  failures are the 4/5/10-entry round-trips, the four-entry canonical read, and
+  `write_pref` ×4/×5/×10. Log: `/tmp/opencode/bug003-red-tests.txt`.
+- Fix: `33ba8bf fix(BUG-003): accept canonical 4+ entry icon-contrast prefs`.
+  After entry removal the parser now requires the remainder to match
+  `[\s,]*` instead of peeling only outer commas; any other residual content
+  still raises `ValueError`.
+- Green: the same focused command → `76 passed in 0.09s`; read-only live-file
+  repro returns the four `True` prefs with sha256 `19bb2f4d…` unchanged;
+  `write_pref` ×10 reads back all 10 entries. Logs:
+  `/tmp/opencode/bug003-green-focused.txt`,
+  `/tmp/opencode/bug003-repro-after.txt`,
+  `/tmp/opencode/bug003-write10-after.txt`.
+- Gates on the ticket branch: `make gates` → exit 0; `2150 passed, 3 skipped,
+  21 deselected`; `lint`, `contracts-check`, `hermetic`, `lock-check` and
+  `docs-check` green. Log: `/tmp/opencode/bug003-gates-branch.txt`.
+- **Release pending:** merge to `main` only. No tag, no release, no version or
+  CHANGELOG bump. `v0.2.2` is held until the user decides whether BUG-004
+  (already in `main`/`v0.2.1`) is kept or reverted.
 
 ### Migration / reset decision
 
