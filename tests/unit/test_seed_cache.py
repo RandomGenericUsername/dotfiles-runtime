@@ -1174,34 +1174,36 @@ class TestConsumerPointerSpec:
         assert any("colors.rasi missing" in r.message for r in caplog.records)
         assert any("colors.btop.theme missing" in r.message for r in caplog.records)
 
-    def test_null_palette_removes_all_existing_pointers(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    def test_null_palette_is_rejected_without_removing_pointers(
+        self, tmp_path: Path
     ) -> None:
+        """BUG-001: the seeder never unlinks consumers for a null palette."""
         install_spine = tmp_path / "install"
         self._parents(install_spine, btop=True)
         self._provision_current(tmp_path)
         seeder = CacheSeeder(tmp_path)
         seeder.repoint_consumer_symlinks(install_spine, "p" * 64)
+        before = {
+            rel: os.readlink(install_spine / rel)
+            for rel in (self.AGS, self.GTK3, self.GTK4, self.ROFI, *self.BTOP)
+        }
 
-        with caplog.at_level(logging.WARNING, logger="runtime.adapters.seeder"):
-            created = seeder.repoint_consumer_symlinks(install_spine, None)
+        with pytest.raises(ValueError, match="palette"):
+            seeder.repoint_consumer_symlinks(install_spine, None)
 
-        assert created == []
-        for rel in (self.AGS, self.GTK3, self.GTK4, self.ROFI, *self.BTOP):
+        for rel, target in before.items():
             dest = install_spine / rel
-            assert not dest.exists() and not dest.is_symlink()
-        removals = [r for r in caplog.records if "palette layer is null" in r.message]
-        assert len(removals) == 5
+            assert dest.is_symlink()
+            assert os.readlink(dest) == target
 
-    def test_null_palette_missing_ok_no_crash(self, tmp_path: Path) -> None:
-        """missing_ok: a null palette with NO existing pointers is clean."""
+    def test_null_palette_is_rejected_even_with_no_pointers(self, tmp_path: Path) -> None:
+        """BUG-001: a null palette is a hard error, not a clean no-op."""
         install_spine = tmp_path / "install"
         (install_spine / "config" / "ags").mkdir(parents=True)
         seeder = CacheSeeder(tmp_path)
 
-        created = seeder.repoint_consumer_symlinks(install_spine, None)
-
-        assert created == []
+        with pytest.raises(ValueError, match="palette"):
+            seeder.repoint_consumer_symlinks(install_spine, None)
 
     def test_rerun_idempotent_no_divergence(self, tmp_path: Path) -> None:
         install_spine = tmp_path / "install"

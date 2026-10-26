@@ -4,14 +4,14 @@ Composes the REAL use cases on a REAL filesystem (real
 ``JsonStateRepository``/``CacheSeeder``/spine, contract-honest fake
 csg/weg/itr, real flock mutex):
 
-- Crash-safety (1.3): kill between ``visible`` and ``done`` (run ONLY
-  the swap phase, then drop it like a dead process) reconverges via the
-  existing reconcile — ``current.json`` validates, symlinks repoint, a
-  follow-up set derives the missing layers.
-- Post-visible failure (1.4): palette failure after the swap keeps the
-  new wallpaper live (``current.json`` holds it with a null palette, no
-  history line); effects/icons failure degrades to a ``done``-shaped
-  full converge with null layers.
+- Crash-safety (1.3): kill between ``visible`` and ``done`` (palette
+  preparation + swap phase, then drop it like a dead process) reconverges
+  via the existing reconcile — ``current.json`` validates with the
+  prepared palette, symlinks repoint, a follow-up set derives the
+  missing effects/icons layers.
+- Post-visible failure (1.4): effects/icons failure degrades to a
+  ``done``-shaped full converge with null layers. A palette failure can
+  no longer happen post-visible: BUG-001 requires it before the swap.
 """
 
 from __future__ import annotations
@@ -20,8 +20,6 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-
-import pytest
 
 from runtime.adapters.flock_seed_mutex import FlockSeedMutex, PassThroughSeedMutex
 from runtime.adapters.hashing import hash_file
@@ -183,10 +181,22 @@ def _run_swap(
     csg: Any | None = None,
     hyprpaper: Any | None = None,
 ) -> Any:
-    """Phase 1 only, under the real outer flock (the composition shape)."""
+    """Palette preparation + phase 1 under the real outer flock (production shape)."""
+    from runtime.application.apply_wallpaper import ApplyWallpaperUseCase
     from runtime.application.swap_visible import SwapVisibleUseCase
 
     with FlockSeedMutex(state_root / ".seed.lock").hold(blocking=False):
+        apply = ApplyWallpaperUseCase(
+            state_repo=JsonStateRepository(state_root=state_root),
+            csg=csg or _FakeCsg(),
+            weg=_FakeWeg(),
+            itr=_FakeItr(),
+            install_spine=install_spine,
+            state_root=state_root,
+            seeder=CacheSeeder(state_root),
+            mutex=PassThroughSeedMutex(),
+        )
+        prepared = apply.prepare_palette(img)
         return SwapVisibleUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
             state_root=state_root,
@@ -194,7 +204,7 @@ def _run_swap(
             mutex=PassThroughSeedMutex(),
             hyprpaper=hyprpaper or _PassingHyprpaper(),
             monitor_source=None,
-        ).run(img)
+        ).run(img, palette=prepared.palette, wallpaper_hash=prepared.wallpaper_hash)
 
 
 def _run_themed(
@@ -247,12 +257,14 @@ class TestCrashSafety:
         # The process dies right after the swap (visible emitted, done never).
         swap = _run_swap(state_root, install_spine, img)
 
-        # A NEW process boots: current.json validates (wallpaper layer
-        # present, layers nullable) and reconcile reconverges it.
+        # A NEW process boots: current.json validates (wallpaper + prepared
+        # palette present, effects/icons still nullable) and reconcile
+        # reconverges it.
         loaded = JsonStateRepository(state_root=state_root).load_current()
         assert loaded is not None
         assert loaded.wallpaper.content_hash == swap.wallpaper_hash
-        assert loaded.palette is None and loaded.effects is None and loaded.icons is None
+        assert loaded.palette is not None
+        assert loaded.effects is None and loaded.icons is None
 
         invoked: list[str] = []
         result = ReconcileDesktopStateUseCase(
@@ -299,30 +311,7 @@ class TestCrashSafety:
 
 
 class TestPostVisibleFailure:
-    """Task 1.4 / D5: post-visible failure keeps the wallpaper."""
-
-    def test_palette_failure_keeps_wallpaper_with_null_palette(self, tmp_path: Path) -> None:
-        state_root, install_spine = _env(tmp_path)
-        img = tmp_path / "wall.png"
-        img.write_bytes(b"palette down bytes")
-        swap = _run_swap(state_root, install_spine, img)
-
-        with pytest.raises(RuntimeError, match="palette apply failed"):
-            _run_themed(
-                state_root, install_spine, img, swap.wallpaper_hash, csg=_FakeCsg(fail=True)
-            )
-
-        # The new wallpaper stays live with a null palette; no history line
-        # (phase 2 never reached its converge step — never a revert).
-        loaded = JsonStateRepository(state_root=state_root).load_current()
-        assert loaded is not None
-        assert loaded.wallpaper.content_hash == swap.wallpaper_hash
-        assert loaded.palette is None
-        assert not (state_root / "history.jsonl").exists()
-        link = state_root / "current" / "wallpaper-DP-1.png"
-        assert link.resolve() == (
-            state_root / "cache" / "wallpapers" / swap.wallpaper_hash / "wallpaper.png"
-        )
+    """Task 1.4 / D5: post-visible failures keep the wallpaper."""
 
     def test_effects_icons_failure_degrades_to_done(self, tmp_path: Path) -> None:
         state_root, install_spine = _env(tmp_path)

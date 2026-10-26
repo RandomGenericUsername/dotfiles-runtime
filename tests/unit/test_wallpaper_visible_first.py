@@ -35,12 +35,35 @@ from runtime.domain.models import (
     DesktopState,
     FitMode,
     MonitorWallpaperConfig,
+    PaletteArtifacts,
+    PaletteEntry,
     WallpaperEntry,
 )
 
 
 def _now_z() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _palette_entry(entry_hash: str = "e" * 64) -> PaletteEntry:
+    return PaletteEntry(
+        hash_algorithm="sha256",
+        kind="palette",
+        entry_hash=entry_hash,
+        source_wallpaper_hash="f" * 64,
+        input_template_hash="c" * 64,
+        artifact_hashes=PaletteArtifacts(
+            colors_yaml="a" * 64,
+            colors_conf="b" * 64,
+            colors_gtk_css="d" * 64,
+            colors_adw_css="e" * 64,
+            colors_sequences="f" * 64,
+            colors_rasi="a" * 64,
+            colors_kitty="a" * 64,
+            colors_btop="a" * 64,
+        ),
+        generated_at=_now_z(),
+    )
 
 
 class _FakeMutex:
@@ -124,20 +147,23 @@ class TestSwapVisibleUseCase:
         img.write_bytes(b"visible swap bytes")
         use_case, mutex, hyprpaper = _make_swap(state_root)
 
-        result = use_case.run(img)
+        result = use_case.run(img, palette=_palette_entry())
 
         wh = hash_file(img)
         assert result.wallpaper_hash == wh
         assert result.wallpaper_path == state_root / "cache" / "wallpapers" / wh / "wallpaper.png"
-        # Wallpaper-only state: layers null (schema-valid, crash-safe).
-        assert result.state.palette is None
+        # The palette is prepared BEFORE the visible swap and persisted; only
+        # effects/icons remain null until the themed phase.
+        assert result.state.palette is not None
+        assert result.state.palette.entry_hash == "e" * 64
         assert result.state.effects is None
         assert result.state.icons is None
         assert result.state.wallpaper.content_hash == wh
         assert result.state.wallpaper.source_path == str(img.expanduser().resolve())
         saved = JsonStateRepository(state_root=state_root).load_current()
         assert saved is not None and saved.wallpaper.content_hash == wh
-        assert saved.palette is None and saved.effects is None and saved.icons is None
+        assert saved.palette is not None and saved.palette.entry_hash == "e" * 64
+        assert saved.effects is None and saved.icons is None
         # ONLY wallpaper symlinks repointed (plus the alias).
         names = {p.name for p in result.repointed}
         assert names == {"wallpaper-DP-1.png", "wallpaper.png"}
@@ -184,7 +210,7 @@ class TestSwapVisibleUseCase:
         new_img.write_bytes(b"new bytes")
         use_case, _, _ = _make_swap(state_root)
 
-        result = use_case.run(new_img)
+        result = use_case.run(new_img, palette=_palette_entry())
 
         new_wh = hash_file(new_img)
         assert result.state.monitors["DP-1"].backend == BackendType.swww
@@ -197,7 +223,7 @@ class TestSwapVisibleUseCase:
         img.write_bytes(b"detection bytes")
         use_case, _, _ = _make_swap(state_root, monitor_source=_FakeMonitorSource(["HDMI-1"]))
 
-        result = use_case.run(img)
+        result = use_case.run(img, palette=_palette_entry())
 
         assert set(result.state.monitors) == {"HDMI-1"}
         assert {p.name for p in result.repointed} == {
@@ -210,7 +236,7 @@ class TestSwapVisibleUseCase:
         use_case, _, hyprpaper = _make_swap(state_root)
 
         with pytest.raises(ValueError, match="not found"):
-            use_case.run(tmp_path / "missing.png")
+            use_case.run(tmp_path / "missing.png", palette=_palette_entry())
 
         assert hyprpaper.calls == 0
         assert not (state_root / "current.json").exists()
@@ -220,7 +246,7 @@ class TestSwapVisibleUseCase:
         use_case, _, hyprpaper = _make_swap(state_root)
 
         with pytest.raises(ValueError, match="regular file"):
-            use_case.run(tmp_path)
+            use_case.run(tmp_path, palette=_palette_entry())
 
         assert hyprpaper.calls == 0
 
@@ -233,7 +259,7 @@ class TestSwapVisibleUseCase:
         use_case, _, hyprpaper = _make_swap(state_root)
 
         with pytest.raises(ValueError, match="not valid JSON"):
-            use_case.run(img)
+            use_case.run(img, palette=_palette_entry())
 
         assert hyprpaper.calls == 0
 
@@ -244,7 +270,7 @@ class TestSwapVisibleUseCase:
         use_case, _, hyprpaper = _make_swap(state_root, hyprpaper=_FakeHyprpaper(ok=False))
 
         with pytest.raises(RuntimeError, match="visible swap failed"):
-            use_case.run(img)
+            use_case.run(img, palette=_palette_entry())
 
         assert hyprpaper.calls == 1
 
@@ -255,7 +281,7 @@ class TestSwapVisibleUseCase:
         use_case, _, _ = _make_swap(state_root, hyprpaper=_FakeHyprpaper(fail=OSError("ipc down")))
 
         with pytest.raises(RuntimeError, match="visible swap failed"):
-            use_case.run(img)
+            use_case.run(img, palette=_palette_entry())
 
 
 class _SpySeeder(CacheSeeder):
@@ -431,6 +457,22 @@ class TestApplyDerivationOnlyDuty:
         assert seeder.imports == [(str(img.expanduser().resolve()), wh)]
         assert result.wallpaper_hash == wh
 
+    def test_prepared_palette_skips_rederivation(self, tmp_path: Path) -> None:
+        img = tmp_path / "wall.png"
+        img.write_bytes(b"prepared palette bytes")
+        use_case, seeder, _, _ = self._make_apply(tmp_path)
+        wh = hash_file(img)
+
+        prepared = use_case.prepare_palette(img)
+        result = use_case.run(img, prepared_palette=prepared)
+
+        assert prepared.wallpaper_hash == wh
+        assert prepared.palette.entry_hash == result.state.palette.entry_hash
+        assert prepared.cache_hit is False
+        # ONE import during prepare_palette; the themed pass does not re-import
+        # and does not re-invoke csg.
+        assert seeder.imports == [(str(img.expanduser().resolve()), wh)]
+
     def test_preimported_palette_failure_still_hard_fails(self, tmp_path: Path) -> None:
         img = tmp_path / "wall.png"
         img.write_bytes(b"palette down bytes")
@@ -477,23 +519,42 @@ class TestConvergeCompositionRegression:
             def __init__(self, **kwargs: Any) -> None:
                 seeders.append(kwargs["seeder"])
 
-            def run(self, image_path: Path) -> Any:
-                return SimpleNamespace(wallpaper_hash="f" * 64)
+            def run(
+                self,
+                image_path: Path,
+                *,
+                palette: Any = None,
+                wallpaper_hash: str | None = None,
+            ) -> Any:
+                return SimpleNamespace(wallpaper_hash=wallpaper_hash or "f" * 64)
 
         class _FakeApplyUseCase:
             def __init__(self, **kwargs: Any) -> None:
                 seeders.append(kwargs["seeder"])
+
+            def prepare_palette(
+                self, image_path: Path, *, on_progress: Any | None = None
+            ) -> Any:
+                if on_progress is not None:
+                    on_progress("palette_generated")
+                return SimpleNamespace(
+                    wallpaper_hash="f" * 64,
+                    palette=SimpleNamespace(entry_hash="e" * 64),
+                    cache_hit=True,
+                )
 
             def run(
                 self,
                 image_path: Path,
                 *,
                 wallpaper_hash: str | None = None,
+                prepared_palette: Any | None = None,
                 contrast_enabled: bool = True,
                 contrast_source: str = "default",
                 on_progress: Any | None = None,
             ) -> Any:
                 return SimpleNamespace(
+                    palette=prepared_palette.palette,
                     wallpaper_hash="f" * 64,
                     cache_hit_palette=True,
                     cache_hit_effects=True,

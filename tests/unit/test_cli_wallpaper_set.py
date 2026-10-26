@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -25,6 +26,7 @@ from runtime.domain.models import (
     MonitorWallpaperConfig,
     PaletteArtifacts,
     PaletteEntry,
+    PaletteUnavailableError,
     WallpaperEntry,
 )
 
@@ -289,24 +291,37 @@ class TestWallpaperSetCompositionRootWiring:
             def __init__(self, **kwargs: Any) -> None:
                 captured["swap_kwargs"] = kwargs
 
-            def run(self, image_path: Path) -> Any:
+            def run(
+                self,
+                image_path: Path,
+                *,
+                palette: Any = None,
+                wallpaper_hash: str | None = None,
+            ) -> Any:
                 captured["swap_image"] = image_path
+                captured["swap_hash"] = wallpaper_hash
                 return _swap_result()
 
         class _FakeApplyUseCase:
             def __init__(self, **kwargs: Any) -> None:
                 captured["apply_kwargs"] = kwargs
 
+            def prepare_palette(self, image_path: Path, *, on_progress: Any = None) -> Any:
+                captured["prepare_image"] = image_path
+                return _prepared()
+
             def run(
                 self,
                 image_path: Path,
                 *,
                 wallpaper_hash: str | None = None,
+                prepared_palette: Any = None,
                 contrast_enabled: bool = True,
                 contrast_source: str = "default",
                 on_progress: Any = None,
             ) -> Any:
                 captured["apply_hash"] = wallpaper_hash
+                captured["prepared_palette"] = prepared_palette
                 captured["apply_contrast"] = (contrast_enabled, contrast_source)
                 return _result()
 
@@ -369,8 +384,12 @@ class TestWallpaperSetCompositionRootWiring:
         # Default policy threads through both phases (guard ON, default source).
         assert captured["apply_contrast"] == (True, "default")
         assert captured["reconcile_contrast"] == (True, "default")
-        # The swap's hash threads into the derivation-only apply (no re-import).
+        # The prepared hash threads into the derivation-only apply (no re-import)
+        # and into the swap that persists the real palette.
         assert captured["apply_hash"] == "f" * 64
+        assert captured["swap_hash"] == "f" * 64
+        assert captured["prepared_palette"] is not None
+        assert captured["prepare_image"] == Path("/img/wall.png")
         assert captured["swap_image"] == Path("/img/wall.png")
         # The SAME real adapter family is wired into ALL THREE use cases — a
         # swapped/missing/forgotten adapter (e.g. weg=CsgAdapter()) fails here.
@@ -423,18 +442,28 @@ class TestWallpaperSetContrastFlag:
             def __init__(self, **kwargs: Any) -> None:
                 pass
 
-            def run(self, image_path: Path) -> Any:
+            def run(
+                self,
+                image_path: Path,
+                *,
+                palette: Any = None,
+                wallpaper_hash: str | None = None,
+            ) -> Any:
                 return _swap_result()
 
         class _FakeApplyUseCase:
             def __init__(self, **kwargs: Any) -> None:
                 pass
 
+            def prepare_palette(self, image_path: Path, *, on_progress: Any = None) -> Any:
+                return _prepared()
+
             def run(
                 self,
                 image_path: Path,
                 *,
                 wallpaper_hash: str | None = None,
+                prepared_palette: Any = None,
                 contrast_enabled: bool = True,
                 contrast_source: str = "default",
                 on_progress: Any = None,
@@ -580,6 +609,111 @@ class TestWallpaperSetCliErrorMapping:
         assert result.exit_code == 1
         assert "palette apply failed" in result.output
 
+    def test_palette_unavailable_plain_carries_traceability(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        exc = PaletteUnavailableError(
+            "csg generate failed (exit 7): boom",
+            wallpaper_path="/img/wall.png",
+            wallpaper_hash="a" * 64,
+            returncode=7,
+            stderr="boom",
+        )
+
+        def _boom(img: Path) -> Any:
+            raise exc
+
+        _fake_composition(monkeypatch, _boom)
+        result = runner.invoke(app, ["wallpaper", "set", "/img/wall.png"])
+
+        assert result.exit_code == 1
+        text = (getattr(result, "stderr", "") or "") + result.output
+        for needle in (
+            "PaletteUnavailableError",
+            "/img/wall.png",
+            "a" * 64,
+            "stage: palette",
+            "tool: csg",
+            "returncode: 7",
+            "stderr: boom",
+        ):
+            assert needle in text
+
+    def test_palette_unavailable_json_carries_details(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        exc = PaletteUnavailableError(
+            "csg generate failed (exit 7): boom",
+            wallpaper_path="/img/wall.png",
+            wallpaper_hash="a" * 64,
+            returncode=7,
+            stderr="boom",
+        )
+
+        def _boom(img: Path) -> Any:
+            raise exc
+
+        _fake_composition(monkeypatch, _boom)
+        result = runner.invoke(app, ["wallpaper", "set", "/img/wall.png", "--format", "json"])
+
+        assert result.exit_code == 1
+        payload = json.loads(getattr(result, "stderr", "") or result.output)
+        assert payload["kind"] == "PaletteUnavailableError"
+        details = payload["details"]
+        assert details["wallpaper_path"] == "/img/wall.png"
+        assert details["wallpaper_hash"] == "a" * 64
+        assert details["stage"] == "palette"
+        assert details["tool"] == "csg"
+        assert details["returncode"] == "7"
+        assert details["stderr"] == "boom"
+
+    def test_palette_failure_writes_failure_record(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import runtime.cli.main as cli_main
+        from runtime.adapters.hashing import hash_file
+
+        install = tmp_path / "install"
+        templates = install / "config" / "color-scheme-generator" / "templates"
+        templates.mkdir(parents=True)
+        (templates / "default.yaml").write_text("window: {}\n")
+        monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(install))
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
+
+        img = tmp_path / "wall.png"
+        img.write_bytes(b"recorded failure bytes")
+
+        class _FailingCsg:
+            def __init__(self, **kwargs: Any) -> None:
+                pass
+
+            def generate(self, wallpaper_path: Path, output_dir: Path) -> Any:
+                raise PaletteUnavailableError(
+                    "csg generate failed (exit 7): boom",
+                    wallpaper_path=str(wallpaper_path),
+                    wallpaper_hash=hash_file(wallpaper_path),
+                    returncode=7,
+                    stderr="boom",
+                )
+
+        monkeypatch.setattr("runtime.adapters.csg_adapter.CsgAdapter", _FailingCsg)
+
+        with pytest.raises(PaletteUnavailableError):
+            cli_main._run_wallpaper_set(img, client=_RecordingClient())
+
+        failures = (tmp_path / "state-home" / "dotfiles" / "failures.jsonl").read_text(
+            encoding="utf-8"
+        )
+        record = json.loads(failures.splitlines()[0])
+        assert record["trigger"] == "set-failed"
+        assert record["wallpaper_path"] == str(img.resolve())
+        assert record["wallpaper_hash"] == hash_file(img)
+        assert record["stage"] == "palette"
+        assert record["tool"] == "csg"
+        assert record["returncode"] == 7
+        assert record["stderr"] == "boom"
+        assert not (tmp_path / "state-home" / "dotfiles" / "current.json").exists()
+
     def test_os_error_maps_to_exit_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(img: Path) -> Any:
             raise PermissionError("unreadable input")
@@ -614,9 +748,15 @@ class _RecordingClient:
         self.published.append((topic, dict(payload)))
 
 
+def _prepared() -> Any:
+    """The prepared-palette contract ``prepare_palette`` returns."""
+    return SimpleNamespace(wallpaper_hash="f" * 64, palette=_palette(), cache_hit=False)
+
+
 def _fake_set_use_cases(
     monkeypatch: pytest.MonkeyPatch,
     *,
+    prepare_error: Exception | None = None,
     apply_result: Any = None,
     apply_error: Exception | None = None,
     swap_result: Any = None,
@@ -630,7 +770,13 @@ def _fake_set_use_cases(
         def __init__(self, **kwargs: Any) -> None:
             pass
 
-        def run(self, image_path: Path) -> Any:
+        def run(
+            self,
+            image_path: Path,
+            *,
+            palette: Any = None,
+            wallpaper_hash: str | None = None,
+        ) -> Any:
             if swap_error is not None:
                 raise swap_error
             return swap_result if swap_result is not None else _swap_result()
@@ -639,11 +785,19 @@ def _fake_set_use_cases(
         def __init__(self, **kwargs: Any) -> None:
             pass
 
+        def prepare_palette(self, image_path: Path, *, on_progress: Any = None) -> Any:
+            if prepare_error is not None:
+                raise prepare_error
+            if on_progress is not None:
+                on_progress("palette_generated")
+            return _prepared()
+
         def run(
             self,
             image_path: Path,
             *,
             wallpaper_hash: str | None = None,
+            prepared_palette: Any = None,
             contrast_enabled: bool = True,
             contrast_source: str = "default",
             on_progress: Any = None,
@@ -651,7 +805,6 @@ def _fake_set_use_cases(
             if apply_error is not None:
                 raise apply_error
             if on_progress is not None:
-                on_progress("palette_generated")
                 on_progress("preparing_appearance_assets")
                 on_progress("appearance_assets_ready")
             return apply_result
@@ -705,25 +858,25 @@ class TestWallpaperStateEmission:
                     "state": "applying",
                     "wallpaper_hash": hash_file(img),
                     "trigger": "set",
-                    "stage": "setting_wallpaper",
-                },
-            ),
-            (
-                "wallpaper.state",
-                {
-                    "state": "visible",
-                    "wallpaper_hash": "f" * 64,
-                    "trigger": "set",
                     "stage": "generating_palette",
                 },
             ),
             (
                 "wallpaper.state",
                 {
-                    "state": "visible",
+                    "state": "applying",
                     "wallpaper_hash": "f" * 64,
                     "trigger": "set",
                     "stage": "palette_generated",
+                },
+            ),
+            (
+                "wallpaper.state",
+                {
+                    "state": "applying",
+                    "wallpaper_hash": "f" * 64,
+                    "trigger": "set",
+                    "stage": "setting_wallpaper",
                 },
             ),
             (
@@ -788,11 +941,11 @@ class TestWallpaperStateEmission:
         assert payload["state"] == "done"
         assert payload["reload_failures"] == ["AgsReloader"]
 
-    def test_post_visible_palette_failure_publishes_error_with_live_hash(
+    def test_pre_swap_palette_failure_publishes_error_with_pending_hash(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """D5: palette fails AFTER the swap — ``error`` carries the LIVE
-        hash (the new wallpaper stays on screen), not the pending hash."""
+        """BUG-001: palette fails BEFORE the swap — ``error`` carries the
+        pending hash, the reason, and no ``visible`` is ever published."""
         import runtime.cli.main as cli_main
         from runtime.adapters.hashing import hash_file
 
@@ -800,12 +953,17 @@ class TestWallpaperStateEmission:
         img.write_bytes(b"doomed emit bytes")
         _fake_set_use_cases(
             monkeypatch,
-            apply_result=_result(),
-            apply_error=RuntimeError("palette apply failed: boom"),
+            prepare_error=PaletteUnavailableError(
+                "csg generate failed (exit 7): boom",
+                wallpaper_path=str(img),
+                wallpaper_hash=hash_file(img),
+                returncode=7,
+                stderr="boom",
+            ),
         )
         client = _RecordingClient()
 
-        with pytest.raises(RuntimeError, match="palette apply failed"):
+        with pytest.raises(PaletteUnavailableError, match="csg generate failed"):
             cli_main._run_wallpaper_set(img, client=client)
 
         assert client.published == [
@@ -815,15 +973,6 @@ class TestWallpaperStateEmission:
                     "state": "applying",
                     "wallpaper_hash": hash_file(img),
                     "trigger": "set",
-                    "stage": "setting_wallpaper",
-                },
-            ),
-            (
-                "wallpaper.state",
-                {
-                    "state": "visible",
-                    "wallpaper_hash": "f" * 64,
-                    "trigger": "set",
                     "stage": "generating_palette",
                 },
             ),
@@ -831,9 +980,10 @@ class TestWallpaperStateEmission:
                 "wallpaper.state",
                 {
                     "state": "error",
-                    "wallpaper_hash": "f" * 64,
+                    "wallpaper_hash": hash_file(img),
                     "trigger": "set",
                     "stage": "generating_palette",
+                    "error": "csg generate failed (exit 7): boom",
                 },
             ),
         ]
@@ -865,6 +1015,24 @@ class TestWallpaperStateEmission:
                     "state": "applying",
                     "wallpaper_hash": hash_file(img),
                     "trigger": "set",
+                    "stage": "generating_palette",
+                },
+            ),
+            (
+                "wallpaper.state",
+                {
+                    "state": "applying",
+                    "wallpaper_hash": "f" * 64,
+                    "trigger": "set",
+                    "stage": "palette_generated",
+                },
+            ),
+            (
+                "wallpaper.state",
+                {
+                    "state": "applying",
+                    "wallpaper_hash": "f" * 64,
+                    "trigger": "set",
                     "stage": "setting_wallpaper",
                 },
             ),
@@ -887,7 +1055,7 @@ class TestWallpaperStateEmission:
         _fake_set_use_cases(
             monkeypatch,
             apply_result=_result(),
-            swap_error=ValueError("wallpaper image not found"),
+            prepare_error=ValueError("wallpaper image not found"),
         )
         client = _RecordingClient()
 
@@ -901,7 +1069,7 @@ class TestWallpaperStateEmission:
                     "state": "applying",
                     "wallpaper_hash": "",
                     "trigger": "set",
-                    "stage": "setting_wallpaper",
+                    "stage": "generating_palette",
                 },
             ),
             (
@@ -910,7 +1078,7 @@ class TestWallpaperStateEmission:
                     "state": "error",
                     "wallpaper_hash": "",
                     "trigger": "set",
-                    "stage": "setting_wallpaper",
+                    "stage": "generating_palette",
                 },
             ),
         ]
@@ -946,7 +1114,7 @@ class TestWallpaperStateEmission:
                     "state": "applying",
                     "wallpaper_hash": hash_file(img),
                     "trigger": "set",
-                    "stage": "setting_wallpaper",
+                    "stage": "generating_palette",
                 },
             ),
             (
@@ -955,7 +1123,7 @@ class TestWallpaperStateEmission:
                     "state": "error",
                     "wallpaper_hash": "",
                     "trigger": "set",
-                    "stage": "setting_wallpaper",
+                    "stage": "generating_palette",
                 },
             ),
         ]

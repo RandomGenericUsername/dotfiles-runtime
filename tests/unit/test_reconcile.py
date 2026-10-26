@@ -32,7 +32,7 @@ from runtime.adapters.flock_seed_mutex import FlockSeedMutex
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.json_state_repository import JsonStateRepository
 from runtime.adapters.seeder import CacheSeeder
-from runtime.domain.models import DesktopState
+from runtime.domain.models import DesktopState, PaletteUnavailableError
 from runtime.ports.state_repository import IStateRepository
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
@@ -546,28 +546,32 @@ class TestReconcileFailurePolicy:
         assert "effects" in links
         assert any("icons" in s for s in result.skipped)
 
-    def test_null_palette_removes_r2_consumer_symlink(self, tmp_path: Path) -> None:
-        """Epic 4 R2: a null palette removes the consumer symlink (never
-        stale) — e.g. after a CSG failure degraded a previous good run.
-        gt-2-2: ALL spec'd pointers are removed (ags + gtk + rofi),
-        missing_ok."""
+    def test_null_palette_is_refused_not_unlinked(self, tmp_path: Path) -> None:
+        """BUG-001: a legacy null-palette state is refused loudly; reconcile
+        must never remove consumer pointers to "degrade" a missing palette."""
         applied = _apply_state(tmp_path)
-        current = applied.state_root / "current"
+        loaded = applied.repo.load_current()
+        assert loaded is not None and loaded.palette is not None
+        old_palette_hash = loaded.palette.entry_hash
+
+        seeder = CacheSeeder(applied.state_root)
+        seeder.repoint_current_symlinks(
+            wallpaper_target=(
+                applied.state_root / "cache" / "wallpapers" / loaded.wallpaper.content_hash
+            )
+            / "wallpaper.png",
+            monitor_names=["DP-1"],
+            palette_entry_hash=old_palette_hash,
+        )
+        seeder.repoint_consumer_symlinks(applied.install_spine, old_palette_hash)
         pointers = [
             applied.install_spine / "config" / "ags" / "colors.css",
-            applied.install_spine / "config" / "gtk-3.0" / "colors.css",
-            applied.install_spine / "config" / "gtk-4.0" / "colors.css",
             applied.install_spine / "config" / "rofi" / "colors.rasi",
         ]
-        for p in pointers:
-            p.parent.mkdir(parents=True, exist_ok=True)
-        pointers[0].symlink_to(current / "colors.gtk.css")
-        pointers[1].symlink_to(current / "colors.gtk.css")
-        # A regular-file dest is also removed (missing_ok semantics —
-        # never leave a stale provisioning copy serving as current).
-        pointers[2].write_text("@define-color stale #000000;\n")
-        loaded = applied.repo.load_current()
-        assert loaded is not None
+        before_links = {p: p.readlink() for p in pointers}
+        state_path = applied.state_root / "current.json"
+        before_state = state_path.read_bytes()
+
         applied.repo.save(
             type(loaded)(
                 schema_version=2,
@@ -579,15 +583,18 @@ class TestReconcileFailurePolicy:
                 applied_at=loaded.applied_at,
             )
         )
+        after_null_state = state_path.read_bytes()
         use_case = _make_reconcile(applied)
 
-        result = use_case.run()
+        with pytest.raises(PaletteUnavailableError, match="palette"):
+            use_case.run()
 
-        for p in pointers:
-            assert not p.exists() and not p.is_symlink(), (
-                "null palette must remove every existing consumer pointer (never stale)"
-            )
-        assert result.consumer_symlinks == []
+        for pointer, target in before_links.items():
+            assert pointer.is_symlink(), "null palette must never unlink a consumer pointer"
+            assert pointer.readlink() == target
+        assert state_path.read_bytes() == after_null_state
+        assert state_path.read_bytes() != before_state  # the seeded null state is readable
+        assert not (applied.state_root / "history.jsonl").exists()
 
     def test_missing_palette_artifact_triggers_regeneration(self, tmp_path: Path) -> None:
         """AC 8 migration: an entry missing an artifact FILE is incomplete →

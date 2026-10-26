@@ -20,6 +20,7 @@ from runtime.adapters.hashing import (
     hash_file,
     palette_entry_hash,
 )
+from runtime.domain.models import PaletteUnavailableError
 
 
 def _make_templates_dir(tmp_path: Path) -> Path:
@@ -236,6 +237,39 @@ def test_csg_adapter_raises_on_non_zero_exit(
     adapter = CsgAdapter(templates_dir=templates_dir)
     with pytest.raises(RuntimeError, match="backend not available"):
         adapter.generate(wallpaper, output_dir)
+
+
+def test_csg_nonzero_exit_is_palette_unavailable_with_rc_and_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BUG-001: a csg failure is a typed hard error with rc/stderr."""
+    wallpaper = _copy_wallpaper_fixture(tmp_path)
+    templates_dir = _make_templates_dir(tmp_path)
+    ph = palette_entry_hash(hash_file(wallpaper), canonical_hash_dir(templates_dir))
+    output_dir = tmp_path / "state" / "cache" / "palettes" / ph
+
+    def fake_fail(
+        args: list[str],
+        capture_output: bool = False,
+        text: bool = False,
+        env: dict[str, str] | None = None,
+        timeout: int | None = None,
+    ) -> subprocess.CompletedProcess[str]:  # noqa: ARG001
+        return subprocess.CompletedProcess(args, 7, "", "csg exploded")
+
+    monkeypatch.setattr("runtime.adapters.csg_adapter.subprocess.run", fake_fail)
+
+    adapter = CsgAdapter(templates_dir=templates_dir)
+    with pytest.raises(PaletteUnavailableError) as excinfo:
+        adapter.generate(wallpaper, output_dir)
+
+    exc = excinfo.value
+    assert exc.returncode == 7
+    assert exc.stderr == "csg exploded"
+    assert exc.wallpaper_path == str(wallpaper)
+    assert exc.wallpaper_hash == hash_file(wallpaper)
+    assert exc.stage == "palette"
+    assert exc.tool == "csg"
 
 
 # ---------------------------------------------------------------------------
