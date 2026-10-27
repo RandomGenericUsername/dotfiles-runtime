@@ -16,4 +16,4 @@
 - [BUG-003-icon-contrast-prefs-malformed](./BUG-003-icon-contrast-prefs-malformed/ticket.md) — icon-contrast prefs: the loader rejects its own canonical file at 4+ entries | `done` | severity: low | worktree: .worktrees/BUG-003/ | tag: v0.2.2
 - [BUG-004-btop-studio-restart](./BUG-004-btop-studio-restart/ticket.md) — btop-theme-studio is restarted by AgsReloader and loses unsaved edits | `done` | severity: high | worktree: .worktrees/BUG-004/ | tag: v0.2.1 (kept in v0.2.2)
 - [BUG-005-watch-health-optional-root](./BUG-005-watch-health-optional-root/ticket.md) — optional `desired.json` with no parent marks the whole watch set degraded | `done` | severity: low | worktree: .worktrees/BUG-005/ | tag: v0.2.3
-- [BUG-006-ags-restart-liveness](./BUG-006-ags-restart-liveness/ticket.md) — AGS restart is not idempotent: async quit, shared bundle and exit-0 misclassified | `triage` | severity: high
+- [BUG-006-ags-restart-liveness](./BUG-006-ags-restart-liveness/ticket.md) — AGS restart is not idempotent: async quit, shared bundle and exit-0 misclassified | `in-progress` | severity: high | worktree: .worktrees/REQ-002/
