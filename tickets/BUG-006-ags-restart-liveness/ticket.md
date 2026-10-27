@@ -2,7 +2,7 @@
 id: BUG-006
 title: "AGS restart is not idempotent: async quit, shared bundle and exit-0 misclassified"
 kind: bug
-status: in-progress
+status: done
 lane: 2
 severity: high
 links:
@@ -25,7 +25,7 @@ expected: "Wait for the old instance's D-Bus name/process to release before laun
 - `severity: high` — one shared `/run/user/$UID/ags.js` bundle and asynchronous
   quit make duplicate/incorrect instances reachable at every login.
 - Evidence: `ags-apps/tickets/SPIKE-001-ags-refresh-patterns/ticket.md` root
-  causes 2/3; current `src/runtime/adapters/ags_reloader.py:206-257`; live
+  causes 2/3; pre-fix `src/runtime/adapters/ags_reloader.py:206-257`; live
   `login-reconcile.log` counts; `ps` two pano wrappers.
 
 ## Repro
@@ -131,3 +131,117 @@ The pre-fix adapter has no launch lock, no name oracle, and treats every exit
 is reproduced in the implementation commit's regression tests
 (`tests/unit/test_ags_reloader.py::TestAgsReloaderQuitRelease` and
 `::TestAgsReloaderFailure`).
+
+## Implementation (2026-10-26)
+
+Worktree/branch: `.worktrees/REQ-002/` on
+`ticket/REQ-002-ags-app-refresh`; implementation commit `e87ad4f`
+(`fix(BUG-006): confirm AGS quit and serialize launches`). Planning commit:
+`912d1d0` (`plan(BUG-006): start AGS restart liveness implementation`).
+
+Files changed:
+
+- `src/runtime/adapters/ags_reloader.py` — bounded quit/name/pid release wait
+  (bar wrapper pids from `/proc`, tool wrapper pid from discovery), shared
+  `flock($XDG_RUNTIME_DIR/ags-launch.lock)` around quit → launch → registration,
+  injectable `ags list` name oracle, intended-name registration verification,
+  clean-exit-0 delegation classification, duplicate-wrapper de-duplication.
+  Missing-binary/error returns and bar/tool argv/skip behavior are unchanged.
+- `tests/unit/test_ags_reloader.py` — deterministic regression tests with a
+  scripted name oracle, fake `Popen`/`subprocess.run`, injected app lister and
+  tmp launch lock (no GUI, no host process kill).
+- `tests/integration/test_ags_reloader_integration.py` — fake `ags` shim now
+  owns a tiny name registry (`list`/`quit`/`run`) and uses a tmp launch lock.
+
+Behavior matrix:
+
+| Case | Result |
+| --- | --- |
+| old name still owned after 5 s quit wait | `False`, **no launch** |
+| old wrapper pid still alive (known pid) | `False`, **no launch** |
+| launch exits 0 and intended name owned | `True`, info log “handed off to the live … instance” (no exit-0 warning) |
+| launch exits 0 with no name owner | `False`, actionable warning |
+| launch exits non-zero / never registers name | `False` |
+| launch-lock contention > 10 s | `False`, no quit/run |
+| two stale wrappers for one instance | one quit/run cycle |
+| missing `ags` binary | `False`, same warning, no subprocess |
+
+Acceptance:
+
+- [x] Quit is confirmed by name release (and known-pid exit) before launch; a
+      surviving name never gets a duplicate launch.
+- [x] Every `ags run` in this adapter holds the shared per-user launch lock
+      (`$XDG_RUNTIME_DIR/ags-launch.lock`, bounded 10 s).
+- [x] Clean GApplication delegation/exit-0 is accepted only with the intended
+      name owned; exit-0 without an owner is failure.
+- [x] Launch verifies the intended instance name (`ags` for the bar, app
+      instance for tools); duplicate wrappers are restarted once.
+- [x] Missing-binary and quit-failure/exception semantics preserved; bar and
+      tool argv/skip-list behavior unchanged.
+- [x] Deterministic regression tests use fakes/injected listers; no GUI, no
+      host process kill, no live AGS quit.
+- [x] `make gates-ci` green.
+
+Green evidence (implementation commit `e87ad4f`, before the docs-only closeout
+commit):
+
+```text
+$ uv run pytest -q tests/unit/test_ags_reloader.py \
+    tests/integration/test_ags_reloader_integration.py
+44 passed
+
+$ make gates-ci
+test:            2180 passed, 3 skipped, 21 deselected
+lint:            All checks passed!
+contracts-check: 39 passed, 1 skipped
+hermetic:        2180 passed, 3 skipped, 21 deselected
+lock-check:      Resolved 25 packages
+docs-check:      green
+GATES_EXIT=0
+```
+
+Log: `/tmp/opencode/bug006-gates-ci.txt` (local evidence; not committed).
+Read-only live oracle sanity check (no quit/run, host untouched):
+`AgsReloader(ags_path=/usr/bin/ags)._owned_instances()` →
+`['ags', 'capture', 'hypr-pano', 'notifications']`.
+
+`Verify:` rerun the focused command above, then `make gates-ci`.
+
+## Shared launch-lock follow-ups (outside this repo)
+
+The runtime side is implemented here. AGS 3.1.0 still has one shared
+`$XDG_RUNTIME_DIR/ags.js`, so every other `ags run` caller must take the same
+`flock` for the fix to be complete end-to-end (AD-28). Not edited in this run:
+
+- `dotfiles-assets/configs/hypr/autostart.lua:19` (bar), `:27` (capture),
+  `:35` (notifications), `:51` (hypr-pano) — wrap each launch in
+  `flock $XDG_RUNTIME_DIR/ags-launch.lock` (or a shared helper) and hold it
+  until the instance name is registered.
+- `dotfiles-assets` shared launcher/autostart wrapper (REQ-015) — one helper
+  all keybinds/launchers call instead of raw `ags run`.
+- `dotfiles-provision/ansible/roles/cli_tools/templates/capture-ui.j2:29`,
+  `hypr-pano-ui.j2:51`, `wallpaper-selector-ui.j2:30`,
+  `btop-theme-studio.j2:38`, `icon-color-mapping-editor.j2:38` — lock the
+  cold-start/restart `ags run`.
+- `dotfiles-provision/ansible/roles/gui_tools/tasks/main.yml` — the always-on
+  start task (`setsid {{ item.launch }}`, around `:195`) and its quit task
+  (`ags quit -i`, `:132`, should also wait for name release before the next
+  start); launch strings live in
+  `ansible/roles/gui_tools/vars/main.yml:203,222`.
+- `dotfiles-provision/ansible/roles/ags_apps/vars/main.yml` — any launch/quiesce
+  command derived from these app entries must use the same lock.
+- `ags request`/`ags toggle` do **not** bundle and are intentionally excluded
+  from the lock.
+
+## Scope / constraints honored
+
+- Runtime repo only; no other repo edited, no merge/push, no tag/release.
+- No sudo, no live AGS quit/restart, no host process killed, no host state
+  changed. Tests use fake `ags`, fake process objects and a tmp lock path.
+- `tickets/INDEX.md` updated with every status change.
+
+## Closeout
+
+`status: done` (2026-10-26). The fix and its regression tests are on the
+ticket branch; release/tag/pin work remains a separate chain (not requested or
+started here).
