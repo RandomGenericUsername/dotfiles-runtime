@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.3
+
+An absent optional intent root is informational, not degraded watch health
+(BUG-005).
+
+- The optional `$XDG_CONFIG_HOME/dotfiles/desired.json` root carries explicit
+  optional metadata: an absent file or absent parent directory is reported as
+  `optional_absent`, logged at INFO, and does not degrade watch health. Only a
+  required-root failure sets `failed_roots`/`degraded`.
+- `watch-health.json` gains the additive `optional_absent` field under the
+  unchanged `version: 1`; old records without the key read as an empty tuple,
+  and a malformed value reads as absent (like the other fields).
+- `inspect daemon` and `doctor` include `optional_absent` in JSON and print
+  `OPTIONAL (absent, not watched) <path>` in plain output while keeping exit 0;
+  the degraded/`UNWATCHED` wording remains reserved for required roots.
+- `WatchCoordinator` retries once per burst when an optional root is absent, so
+  a parent later created by the user is watched without polling or a daemon
+  restart. Required-root warning/failure behavior is unchanged.
+- Per the AD-39/AD-40 contract, the root set stays exactly the five enumerated
+  roots: no parent/ancestor watches, no polling, and no D-Bus/event-contract
+  change.
+
 ## 0.2.2
 
 The icon-contrast prefs reader accepts its own canonical document at any entry
