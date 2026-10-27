@@ -159,7 +159,7 @@ Files:
 - `contracts/event-contract.{json,md}` — `wallpaper.state` is explicitly the
   progress/UI event, not the palette-refresh trigger.
 - Tests: `tests/unit/test_ags_app_discovery.py` (24),
-  `tests/unit/test_ags_app_refresh.py` (23), `tests/unit/test_clipboard_migration.py`
+  `tests/unit/test_ags_app_refresh.py` (24), `tests/unit/test_clipboard_migration.py`
   (6), plus conformance/restart-lane/wiring assertions in existing modules.
 
 ## Red evidence (pre-implementation `cca8f2e`)
@@ -186,7 +186,7 @@ Focused proof:
 ```text
 $ uv run pytest -q tests/unit/test_ags_app_discovery.py \
     tests/unit/test_ags_app_refresh.py tests/unit/test_clipboard_migration.py
-53 passed
+54 passed
 ```
 
 Contracts pin (optional cross-repo positive check):
