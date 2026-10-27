@@ -415,6 +415,45 @@ file absent) prints `registered=1`, `failed=()`, `optional_absent=()`.
 - No tag, release, version bump, CHANGELOG edit, sudo, host change, live-file
   edit, or other-repo change was made.
 
+## Released in v0.2.3 (2026-10-26)
+
+- Release-prep commit `d0e37e9` (`chore(release): bump dotfiles-runtime to
+  0.2.3`): `pyproject.toml`/`uv.lock` `0.2.3`,
+  `runtime.__version__ = "0.2.3"`, and the CHANGELOG 0.2.3 entry naming
+  BUG-005 (optional absence informational, additive `optional_absent` under
+  version 1, `OPTIONAL (absent, not watched)` with exit 0, once-per-burst
+  retry, required-root behavior unchanged).
+- `make gates` on `d0e37e9` → exit **0**: test `2168 passed, 2 skipped, 21
+  deselected`; lint all checks passed; contracts-check `40 passed`; hermetic
+  `2168 passed, 2 skipped, 21 deselected`; lock-check resolved 25 packages;
+  docs-check green. Log: `/tmp/opencode/v0.2.3-gates.txt`.
+- `make build` → exit **0**: `dotfiles_runtime-0.2.3.tar.gz` and
+  `dotfiles_runtime-0.2.3-py3-none-any.whl` in `dist/`; `uv run
+  dotfiles-runtime version` → `0.2.3`, exit **0**. Log:
+  `/tmp/opencode/v0.2.3-build.txt`.
+- Annotated tag **`v0.2.3`** → tag object
+  `960257251af75964c34a825fa64fb4106836faba`, peeled commit
+  `d0e37e91c88371bdd442278408680cec0c334cf4`. Pushed; never moved or deleted.
+- Tag CI run
+  [40428185474](https://github.com/RandomGenericUsername/dotfiles-runtime/actions/runs/40428185474)
+  → `success`; all eight jobs succeeded (`test`, `lint`, `contracts-check`,
+  `hermetic`, `lock-check`, `docs-check`, `ci-gates-parity`, `release`).
+- GitHub Release
+  <https://github.com/RandomGenericUsername/dotfiles-runtime/releases/tag/v0.2.3>
+  published with both assets `uploaded`:
+  `dotfiles_runtime-0.2.3-py3-none-any.whl` (355697 bytes) and
+  `dotfiles_runtime-0.2.3.tar.gz` (639246 bytes).
+- No product-code change in the release commit beyond version metadata and the
+  CHANGELOG entry; the live `~/.local/state/dotfiles/watch-health.json` and
+  `~/.config/dotfiles` were not touched, and no other repo/chain leg was
+  started.
+
+`Verify:` `git rev-parse v0.2.3 'v0.2.3^{commit}'`;
+`gh release view v0.2.3 --json tagName,url,assets --jq
+'{tagName,url,assets:[.assets[]|{name,size,state}]}'`;
+`gh run view 40428185474 --json conclusion`; `make gates`; `make build`;
+`uv run dotfiles-runtime version`.
+
 ## Release / pin chain (follow-up, not part of this ticket)
 
 This ticket changes runtime code only. After the implementation is merged and
