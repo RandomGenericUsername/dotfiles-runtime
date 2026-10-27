@@ -2,7 +2,7 @@
 id: BUG-005
 title: "watch-health reports degraded when the optional desired-state root has no parent"
 kind: bug
-status: triage
+status: in-progress
 lane: 2
 severity: low
 links:
