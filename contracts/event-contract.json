@@ -91,14 +91,15 @@
     },
     "wallpaper.state": {
       "producer": "dotfiles-runtime wallpaper set",
-      "payload": { "state": "s", "wallpaper_hash": "s", "trigger": "s" },
-      "optional": ["trigger"],
+      "payload": { "state": "s", "wallpaper_hash": "s", "trigger": "s", "stage": "s", "reload_failures": "as" },
+      "optional": ["trigger", "stage", "reload_failures"],
       "enum": {
         "state": ["applying", "visible", "done", "error"],
-        "trigger": ["set", "regenerate", "reconcile", "reactive"]
+        "trigger": ["set", "regenerate", "reconcile", "reactive"],
+        "stage": ["setting_wallpaper", "generating_palette", "palette_generated", "preparing_appearance_assets", "appearance_assets_ready", "reconciling_consumers", "finished"]
       },
       "cadence": "on transition: applying at set start, visible after the swap, done/error at finish",
-      "notes": "drives the wallpaper selector's progress indicator and LIVE refresh; publish-only, no job lease; wallpaper_hash is empty when the input never validated; visible means pixels swapped while theming is still in flight (busy — UI stays locked until done/error); done/error semantics unchanged; trigger is optional/additive (old publishers stay valid) and names the operation that produced the transition: set = wallpaper set, regenerate = icons regenerate, reconcile = standalone reconcile, reactive = daemon reactive converge"
+      "notes": "drives the wallpaper selector's progress indicator only — the progress/UI event; it is not the palette-refresh trigger — the runtime invokes each running live app through the fixed palette-refresh request (AD-27); publish-only, no job lease; wallpaper_hash is empty when the input never validated; visible means pixels swapped while theming is still in flight (busy — UI stays locked until done/error); done/error semantics unchanged; trigger is optional/additive (old publishers stay valid) and names the operation that produced the transition: set = wallpaper set, regenerate = icons regenerate, reconcile = standalone reconcile, reactive = daemon reactive converge; stage is optional/additive and names the fine-grained pipeline step (setting_wallpaper -> generating_palette -> palette_generated -> preparing_appearance_assets -> appearance_assets_ready -> reconciling_consumers -> finished), matching the runtime's embedded validator schema; reload_failures is optional/additive and carries the consumer reload failures observed during the pipeline as an array of strings (absent or empty when none)"
     }
   }
 }

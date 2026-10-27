@@ -87,8 +87,9 @@ $XDG_STATE_HOME/dotfiles/
 - Repoints are atomic and symlink-guarded (`adapters/seeder.py`).
 - Consumer pointers are a static table (`adapters/consumer_path_spec.py`): `ags`, `gtk-3.0`,
   `gtk-4.0`, `rofi`, `btop`; adding one is a spec line plus its `@import`.
-- Clipboard history is separate: `$XDG_STATE_HOME/hypr-pano/history.json` with images under
-  `$XDG_CACHE_HOME/hypr-pano/`.
+- Clipboard history is separate: `$XDG_STATE_HOME/clipboard/history.json` with images under
+  `$XDG_CACHE_HOME/clipboard/` (config at `$XDG_CONFIG_HOME/clipboard/config.json`). The old
+  `hypr-pano` paths are a one-time migration source only (AD-35).
 
 ## 6. Daemon and events
 
@@ -101,15 +102,29 @@ requests a second hub name.
 The clipboard watcher is a separate service (`dotfiles-runtime-clipboard.service`) that owns no bus
 name and starts after the daemon.
 
+## 6a. Manifest-driven AGS app refresh
+
+After the palette repoint, `reconcile`/`wallpaper set`/`icons regenerate` run the manifest-driven
+AGS refresh (`adapters/ags_app_refresh.py`). Discovery reads every deployed link under
+`<install>/config` and validates `app.manifest.json` against `app.tsx` and `ags list` (AD-26).
+Running live apps refresh in parallel through
+`ags request palette-refresh <appearance-hash> -i <instance>` with a 5 s timeout; restart apps
+(the bar) go through the serialized BUG-006 quit/confirm/launch procedure and are included even
+when down. The runtime owns the applied-appearance ledger
+(`$XDG_STATE_HOME/dotfiles/appearance-ledger.json`), one operation lock, and per-app JSONL records
+under `$XDG_STATE_HOME/dotfiles/logs/ags-app-refresh/<runId>/`. `wallpaper.state` remains the
+progress/UI event only; it is not a palette-refresh trigger (AD-27).
+
 ## 7. Contracts and conformance
 
 The canonical event contract lives in the `contracts` repo. This package consumes it in two forms:
 
 - **runtime data** — vendored generated binding
   `src/runtime/domain/contract_generated.py` and schema
-  `src/runtime/adapters/contract_generated.schema.json`, plus the four embedded state schemas
-  under `src/runtime/adapters/schemas/`. The wheel cannot read a repo path, so these are package
-  data by design.
+  `src/runtime/adapters/contract_generated.schema.json`, plus the embedded state schemas and the
+  AGS app manifest/install-list/program-tuple/refresh-result schemas under
+  `src/runtime/adapters/schemas/`. The wheel cannot read a repo path, so these are package data
+  by design.
 - **conformance copies** — `contracts/event-contract.{json,xml,md}` and `contracts/schemas/` at the
   commit in `src/runtime/adapters/CONTRACT_PIN`. `make contracts-check` proves the embedded copies
   agree; `scripts/contract-pin-check.py` diffs the vendored generated artifacts against a sibling

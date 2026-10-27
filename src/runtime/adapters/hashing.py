@@ -40,6 +40,7 @@ Spec divergence noted; spec update required.
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Final, Literal
 
@@ -84,6 +85,35 @@ def _hash_file_chunked(path: Path) -> str:
 def hash_file_bytes(data: bytes) -> str:
     """SHA-256 hex (lowercase) of raw bytes."""
     return hashlib.sha256(data).hexdigest()
+
+
+def appearance_hash(
+    *,
+    palette_hash: str | None,
+    effects_hash: str | None,
+    icons_hash: str | None,
+    icon_templates_hash: str | None,
+    icon_mappings_hash: str | None,
+) -> str:
+    """Stable hash of the applied appearance (AD-29).
+
+    Inputs are palette + effects + icons entry hashes plus the icon-manifest
+    inputs (templates + mappings). The serialization is canonical JSON so the
+    same appearance always yields the same hash; ``None`` layers are explicit
+    nulls so a degraded layer cannot collide with a populated one.
+    """
+    payload = json.dumps(
+        {
+            "palette": palette_hash,
+            "effects": effects_hash,
+            "icons": icons_hash,
+            "iconTemplates": icon_templates_hash,
+            "iconMappings": icon_mappings_hash,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def hash_file(path: Path) -> str:

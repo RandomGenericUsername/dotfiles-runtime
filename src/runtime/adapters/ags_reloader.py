@@ -396,6 +396,35 @@ class AgsReloader(IDesktopReloader):
     def _default_bar_pid_lister(self) -> Sequence[int]:
         return _discover_bar_pids(self._ags_path)
 
+    def restart_deployed_app(
+        self,
+        *,
+        instance: str,
+        config_dir: Path,
+        argv: Sequence[str] | None = None,
+        old_pids: Sequence[int] = (),
+    ) -> bool:
+        """Restart one configured app discovered from its deployed config link.
+
+        Used by the manifest-driven restart lane (AD-28/AD-30). The app is
+        included even when its process is down: the quit step is harmless and
+        the confirmed-release wait succeeds immediately. Every launch takes the
+        shared per-user AGS launch lock and verifies the intended name, exactly
+        like :meth:`reload`.
+        """
+        if self._ags_path is None:
+            logger.warning("ags not found in PATH; AGS restart skipped for %s", instance)
+            return False
+        run_argv = (
+            list(argv) if argv is not None else [str(self._ags_path), "run", "-d", str(config_dir)]
+        )
+        return self._restart(
+            self._ags_path,
+            run_argv,
+            instance=instance,
+            old_pids=old_pids,
+        )
+
     def reload(self) -> bool:
         """Restart the bar and every running standalone AGS consumer.
 

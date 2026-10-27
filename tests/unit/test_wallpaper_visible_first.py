@@ -682,3 +682,16 @@ class TestVisibleConsumerAudit:
         converge = repo_root / "src" / "runtime" / "application" / "converge.py"
         assert "wallpaper.state" not in converge.read_text(encoding="utf-8")
         assert "visible" not in converge.read_text(encoding="utf-8")
+
+    def test_palette_refresh_is_a_runtime_request_not_wallpaper_state(
+        self, repo_root: Path
+    ) -> None:
+        """AD-27: the app palette refresh is the runtime's fixed request.
+
+        ``wallpaper.state`` is progress/UI only; the manifest-driven refresher
+        must not subscribe to it (or emit a second refresh trigger)."""
+        refresh = (repo_root / "src" / "runtime" / "adapters" / "ags_app_refresh.py").read_text(
+            encoding="utf-8"
+        )
+        assert '"palette-refresh"' in refresh
+        assert "wallpaper.state" not in refresh

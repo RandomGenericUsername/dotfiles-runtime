@@ -109,7 +109,7 @@ the normal lease expiry still yields the synthetic `JobFinished(-1)`.
 | `speedtest.state` | speed-test service | `{ "state": s (starting\|done\|error), "trigger": s (scheduled\|manual\|connect), "ssid": s?, "server_name": s?, "down_mbps": d?, "up_mbps": d?, "latency_ms": d?, "reason": s? }` |
 | `clipboard.update` | clipboard controller | `{ "type": s (text\|image\|link\|code\|color\|emoji), "hash": s, "path": s, "preview": s }` |
 | `clipboard.state` | clipboard controller | `{ "state": s (idle\|running\|paused), "job_id": s }` |
-| `wallpaper.state` | wallpaper set | `{ "state": s (applying\|visible\|done\|error), "wallpaper_hash": s, "trigger": s (set\|regenerate\|reconcile\|reactive)? }` |
+| `wallpaper.state` | wallpaper set | `{ "state": s (applying\|visible\|done\|error), "wallpaper_hash": s, "trigger": s (set\|regenerate\|reconcile\|reactive)?, "stage": s (setting_wallpaper\|generating_palette\|palette_generated\|preparing_appearance_assets\|appearance_assets_ready\|reconciling_consumers\|finished)?, "reload_failures": as? }` |
 
 `clipboard.update` carries no binary: `path` is the cached image file for image
 items (empty otherwise) and `preview` is a bounded text excerpt for text-like
@@ -123,7 +123,9 @@ route `Control` to the hub-allocated `job_id`.
 `wallpaper.state` is emitted by `dotfiles-runtime wallpaper set` on every
 transition (`applying` at set start, `visible` after the swap,
 `done`/`error` at finish) so the wallpaper selector can show progress
-and refresh its LIVE badge. It is publish-only — the synchronous set
+and update its LIVE badge. It is the **progress/UI event only**: it is
+not the palette-refresh trigger — the runtime invokes each running live
+app through the fixed `palette-refresh` request (AD-27). It is publish-only — the synchronous set
 registers no job lease. `wallpaper_hash` is empty when the input never
 validated. `visible` is additive: the new wallpaper is already on screen
 while palette/effects/icons theming is still in flight — consumers treat
@@ -135,7 +137,13 @@ wallpaper already live. `trigger` is an **optional/additive** discriminator
 (old publishers remain valid and old consumers ignore it): it names the
 operation that produced the transition — `set` (wallpaper set),
 `regenerate` (icons regenerate), `reconcile` (standalone reconcile), or
-`reactive` (daemon reactive converge).
+`reactive` (daemon reactive converge). `stage` is likewise **optional/additive**
+and names the fine-grained pipeline step — `setting_wallpaper`,
+`generating_palette`, `palette_generated`, `preparing_appearance_assets`,
+`appearance_assets_ready`, `reconciling_consumers`, `finished` — matching the
+runtime's embedded validator schema. `reload_failures` is
+**optional/additive**: an array of strings carrying the consumer reload
+failures observed during the pipeline (absent or empty when none).
 
 `speedtest.state` supersedes the old terminal-only `speedtest.finished`. It is
 emitted by the speed-test service on every transition — `starting` when a run

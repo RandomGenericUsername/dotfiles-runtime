@@ -58,7 +58,7 @@ _IMAGE_SUFFIXES = {
 
 def _default_image_dir() -> Path:
     base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
-    return Path(base) / "hypr-pano"
+    return Path(base) / "clipboard"
 
 
 class WlPasteSource(IClipboardSource):

@@ -1,0 +1,93 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://dotfiles.local/schemas/ags-app-refresh-result.schema.json",
+  "title": "AGS app refresh result (JSON Lines record)",
+  "description": "Runtime-owned per-app result/log record for one palette-refresh or restart operation (AD-28/AD-29). The runtime is the sole emitter: one JSON Lines record per app per operation. status is applied, deferred, failed or skipped; deferred/skipped carry a reason; failed carries a reason and a retryable flag. App-internal logs are separate.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["runId", "app", "instance", "configDir", "mode", "appearanceHash", "status", "startedAt", "endedAt", "durationMs", "discoveryIndex"],
+  "properties": {
+    "runId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Runtime operation identity; all app records for one trigger share it."
+    },
+    "app": { "$ref": "#/definitions/pathSegment" },
+    "instance": { "$ref": "#/definitions/pathSegment" },
+    "configDir": { "$ref": "#/definitions/pathSegment" },
+    "mode": { "type": "string", "enum": ["live", "restart"] },
+    "phase": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Runtime phase label for the record (AD-28). The runtime, not the app, defines it."
+    },
+    "appearanceHash": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["applied", "deferred", "failed", "skipped"],
+      "description": "applied = refresh completed; deferred = accepted but not applied yet; failed = refresh failed; skipped = not invoked because the ledger says it is current."
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Why the app was deferred, failed or skipped."
+    },
+    "retryable": {
+      "type": "boolean",
+      "description": "Failed only. true means the next trigger retries; false means the failure is terminal for this appearance."
+    },
+    "startedAt": { "type": "string", "minLength": 1 },
+    "endedAt": { "type": "string", "minLength": 1 },
+    "durationMs": { "type": "integer", "minimum": 0 },
+    "argv": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Exact argv the runtime invoked; absent for a skipped app."
+    },
+    "exitCode": { "type": ["integer", "null"] },
+    "response": {
+      "type": ["object", "null"],
+      "description": "Parsed JSON-string response from the app; null when no response was parsed."
+    },
+    "error": { "type": ["string", "null"] },
+    "timeout": {
+      "type": "boolean",
+      "description": "true when the 5 s caller timeout expired."
+    },
+    "discoveryIndex": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Ascending discovery order; summary order is by this field (AD-28)."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "const": "deferred" } },
+        "required": ["status"]
+      },
+      "then": { "required": ["reason"] }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "skipped" } },
+        "required": ["status"]
+      },
+      "then": { "required": ["reason"] }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "failed" } },
+        "required": ["status"]
+      },
+      "then": { "required": ["reason", "retryable"] }
+    }
+  ],
+  "definitions": {
+    "pathSegment": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$",
+      "description": "Exactly one lowercase path segment."
+    }
+  }
+}

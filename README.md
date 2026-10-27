@@ -52,7 +52,8 @@ contracts.
 
 - **Event contract (`org.dotfiles.Events`)** — canonical in the `contracts` repo. This package
   vendors the generated Python binding and JSON Schema, and embeds byte-identical state schemas
-  under `src/runtime/adapters/schemas/`. The conformance copies live in `contracts/`; the pin is
+  plus the AGS app manifest/install-list/program-tuple/refresh-result schemas under
+  `src/runtime/adapters/schemas/`. The conformance copies live in `contracts/`; the pin is
   `src/runtime/adapters/CONTRACT_PIN` (a commit, by design). `make contracts-check` is hermetic.
 - **CLI invocation contract** — the `cli-invocation-contract` distribution from the same
   `contracts` tag (`pyproject.toml`). Adapters build argv/env and the conformance tests call

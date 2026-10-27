@@ -158,6 +158,7 @@ class TestReconcileCompositionRootWiring:
                 captured["reloaders"] = kwargs.get("reloaders")
                 captured["state_root"] = kwargs.get("state_root")
                 captured["wallpaper_applier"] = kwargs.get("wallpaper_applier")
+                captured["app_refresher"] = kwargs.get("app_refresher")
 
             def run(self) -> Any:
                 return _reconcile_result()
@@ -167,7 +168,7 @@ class TestReconcileCompositionRootWiring:
         )
         cli_main._run_reconcile()
 
-        from runtime.adapters.ags_reloader import AgsReloader
+        from runtime.adapters.ags_app_refresh import AgsAppRefreshCoordinator
         from runtime.adapters.btop_reloader import BtopReloader
         from runtime.adapters.gtk4_app_reloader import Gtk4AppReloader
         from runtime.adapters.hyprland_reloader import HyprlandReloader
@@ -179,14 +180,14 @@ class TestReconcileCompositionRootWiring:
         assert reloaders is not None
         assert [type(r) for r in reloaders] == [
             HyprlandReloader,
-            AgsReloader,
             TerminalColorApplier,
             KittyReloader,
             BtopReloader,
         ]
         assert not any(type(r) is Gtk4AppReloader for r in reloaders)
-        assert reloaders[2]._state_root == captured["state_root"]  # type: ignore[attr-defined]
+        assert reloaders[1]._state_root == captured["state_root"]  # type: ignore[attr-defined]
         assert type(captured["wallpaper_applier"]) is HyprpaperWallpaperApplier
+        assert type(captured["app_refresher"]) is AgsAppRefreshCoordinator
 
     def test_composition_root_excludes_terminal_when_disabled(
         self, monkeypatch: pytest.MonkeyPatch

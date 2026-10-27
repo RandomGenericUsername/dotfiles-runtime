@@ -89,3 +89,23 @@ def load_current_schema() -> dict[str, Any]:
 def load_meta_schema() -> dict[str, Any]:
     """Embedded cache meta.json schema (draft-07)."""
     return _load("meta.schema.json")
+
+
+def ags_app_manifest_validator() -> Validator:
+    """Validator for a deployed ``app.manifest.json`` (AD-26)."""
+    return _validator("ags-app-manifest.schema.json")
+
+
+def ags_app_refresh_result_validator() -> Validator:
+    """Validator for one runtime-owned AGS app result record (AD-28)."""
+    return _validator("ags-app-refresh-result.schema.json")
+
+
+def load_ags_app_manifest_schema() -> dict[str, Any]:
+    """Embedded ``app.manifest.json`` schema (draft-07)."""
+    return _load("ags-app-manifest.schema.json")
+
+
+def load_ags_app_refresh_result_schema() -> dict[str, Any]:
+    """Embedded AGS app refresh-result schema (draft-07)."""
+    return _load("ags-app-refresh-result.schema.json")

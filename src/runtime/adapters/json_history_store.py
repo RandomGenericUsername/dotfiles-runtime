@@ -1,8 +1,9 @@
 """JSON clipboard history store — atomic, deduped, per-kind trimmed (D4).
 
-History is one small JSON document under ``$XDG_STATE_HOME/hypr-pano/``
-(default ``~/.local/state/hypr-pano/history.json``); copied images live under
-``~/.cache/hypr-pano/``. The daemon is the single writer, so a whole-document
+History is one small JSON document under ``$XDG_STATE_HOME/clipboard/``
+(default ``~/.local/state/clipboard/history.json``); copied images live under
+``~/.cache/clipboard/``. The old ``hypr-pano`` paths are a one-time migration
+source only (AD-35). The daemon is the single writer, so a whole-document
 read-modify-write with an atomic ``os.replace`` is sufficient and crash-safe:
 an interrupted write leaves the previous document intact.
 
@@ -50,13 +51,13 @@ def _cache_home() -> Path:
 
 
 def default_history_path() -> Path:
-    """``$XDG_STATE_HOME/hypr-pano/history.json``."""
-    return _state_home() / "hypr-pano" / "history.json"
+    """``$XDG_STATE_HOME/clipboard/history.json``."""
+    return _state_home() / "clipboard" / "history.json"
 
 
 def default_image_dir() -> Path:
-    """``$XDG_CACHE_HOME/hypr-pano/`` (where image items are cached)."""
-    return _cache_home() / "hypr-pano"
+    """``$XDG_CACHE_HOME/clipboard/`` (where image items are cached)."""
+    return _cache_home() / "clipboard"
 
 
 class JsonClipboardStore(IClipboardStore):

@@ -1,7 +1,8 @@
 """Clipboard config reader — tolerant per-kind retention from a settings file.
 
-Settings are file-only (design D5): ``$XDG_CONFIG_HOME/hypr-pano/config.json``
-(default ``~/.config/hypr-pano/config.json``). The shape is::
+Settings are file-only (design D5): ``$XDG_CONFIG_HOME/clipboard/config.json``
+(default ``~/.config/clipboard/config.json``; the old ``hypr-pano`` location is
+a one-time migration source, AD-35). The shape is::
 
     { "limits": { "text": 500, "image": 25, ... } }
 
@@ -28,11 +29,11 @@ logger = logging.getLogger(__name__)
 
 
 def default_config_path() -> Path:
-    """``$XDG_CONFIG_HOME/hypr-pano/config.json`` (falls back to ``~/.config``)."""
+    """``$XDG_CONFIG_HOME/clipboard/config.json`` (falls back to ``~/.config``)."""
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
         os.path.expanduser("~"), ".config"
     )
-    return Path(base) / "hypr-pano" / "config.json"
+    return Path(base) / "clipboard" / "config.json"
 
 
 #: Module-level default resolved lazily so tests can monkeypatch the env.

@@ -897,6 +897,7 @@ class TestReconcileStructuralScopeLock:
             "mutex",
             "reloaders",
             "wallpaper_applier",
+            "app_refresher",
         }
         assert not any("backend" in p or "factory" in p for p in params)
 

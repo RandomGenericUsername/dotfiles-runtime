@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://dotfiles.local/schemas/program-tuple.schema.json",
+  "title": "program-tuple.yaml (version 1)",
+  "description": "One program tuple per install (AD-31/AD-34): exactly the ags-platform, contracts and dotfiles-assets tags. Every app repo and the legacy monorepo build/test against this tuple; a tuple bump is a program-wide revalidation event, never a per-cutover change.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "ags-platform", "contracts", "dotfiles-assets"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "ags-platform": { "$ref": "#/definitions/tag" },
+    "contracts": { "$ref": "#/definitions/tag" },
+    "dotfiles-assets": { "$ref": "#/definitions/tag" }
+  },
+  "definitions": {
+    "tag": {
+      "type": "string",
+      "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$",
+      "description": "Immutable annotated git tag (AD-34)."
+    }
+  }
+}

@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from runtime.application.watch import WatchTrigger
     from runtime.domain.hub import HubEvent
     from runtime.domain.models import ChangeSet, DesktopState
+    from runtime.ports.ags_app_refresher import IAgsAppRefresher
     from runtime.ports.bus_name_owner import IBusNameOwner
     from runtime.ports.desktop_reloader import IDesktopReloader
     from runtime.ports.event_bus import IJobRegistry
@@ -389,29 +390,27 @@ def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list
     """Build the deterministic palette/UI consumer reloader list (AD-17).
 
     Shared by ``reconcile`` and ``wallpaper set`` in the same pinned order:
-    Hyprland (``hyprctl reload``), AGS (restart), then the terminal palette
-    (OSC from ``current/colors.sequences``) when ``include_terminal`` is set,
-    with the kitty reloader (``SIGUSR1``) appended last.
+    Hyprland (``hyprctl reload``), then the terminal palette (OSC from
+    ``current/colors.sequences``) when ``include_terminal`` is set, with the
+    kitty reloader (``SIGUSR1``) appended last.
 
-    Event-driven consumers are NOT part of this synchronous chain: the
-    daemon-hosted GTK4 restart subscriber and ICME's live refresh act on
-    ``wallpaper.state done`` afterwards.
+    AGS is deliberately absent: it is driven by the manifest-discovered
+    :class:`AgsAppRefreshCoordinator` (parallel live lane + serialized restart
+    lane), not by an ordinary boolean reloader. Event-driven consumers are NOT
+    part of this synchronous chain: the daemon-hosted GTK4 restart subscriber
+    and ICME's live refresh act on ``wallpaper.state done`` afterwards.
 
     ``include_terminal=False`` excludes ``TerminalColorApplier`` — the
     daemon has no controlling tty, so the ``/dev/tty`` applier would surface
     a failure on every converge. CLI runs keep it (they may run inside a
     terminal).
     """
-    from runtime.adapters.ags_reloader import AgsReloader
     from runtime.adapters.btop_reloader import BtopReloader
     from runtime.adapters.hyprland_reloader import HyprlandReloader
     from runtime.adapters.kitty_reloader import KittyReloader
     from runtime.adapters.terminal_color_applier import TerminalColorApplier
 
-    reloaders: list[IDesktopReloader] = [
-        HyprlandReloader(),
-        AgsReloader(),
-    ]
+    reloaders: list[IDesktopReloader] = [HyprlandReloader()]
     if include_terminal:
         reloaders.append(TerminalColorApplier(state_root=state_root))
     reloaders.append(KittyReloader())
@@ -420,6 +419,24 @@ def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list
     # KittyReloader ordering constraint.
     reloaders.append(BtopReloader())
     return reloaders
+
+
+def _build_app_refresher(
+    state_root: Path, install_spine: Path
+) -> IAgsAppRefresher:
+    """Build the manifest-driven AGS refresh coordinator (AD-27…AD-30).
+
+    Discovery reads only the installed spine's ``config/`` links; the ledger
+    and operation lock live under the runtime state root.
+    """
+    from runtime.adapters.ags_app_refresh import AgsAppRefreshCoordinator
+    from runtime.adapters.json_state_repository import JsonStateRepository
+
+    return AgsAppRefreshCoordinator(
+        state_root=state_root,
+        install_spine=install_spine,
+        state_repo=JsonStateRepository(state_root=state_root),
+    )
 
 
 def _build_wallpaper_applier(state_root: Path) -> IWallpaperApplier:
@@ -698,6 +715,7 @@ def _run_wallpaper_set(
             seeder=_seeder(),
             mutex=inner_mutex,
             reloaders=_build_reloaders(state_root, include_terminal=include_terminal),
+            app_refresher=_build_app_refresher(state_root, install_spine),
         ).run(
             trigger="set",
             contrast_enabled=contrast_enabled,
@@ -990,7 +1008,6 @@ def _run_icons_regenerate(
     ``client`` (tests): an injected :class:`IJobClient` recording the
     transitions; the CLI passes none and the production client is built.
     """
-    from runtime.adapters.ags_reloader import AgsReloader
     from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
     from runtime.adapters.csg_adapter import CsgAdapter
     from runtime.adapters.dbus_job_client import DbusJobClient
@@ -1044,7 +1061,8 @@ def _run_icons_regenerate(
                     state_root, consumer_spec=StaticConsumerPathSpec()
                 ),
                 mutex=inner_mutex,
-                reloaders=[AgsReloader()],
+                reloaders=[],
+                app_refresher=_build_app_refresher(state_root, install_spine),
             ).run(contrast=contrast)
     except SeedLockedError as exc:
         _publish_wallpaper_state(client, "error", "", "regenerate")
@@ -1367,6 +1385,7 @@ def _run_reconcile(
         mutex=FlockSeedMutex(state_root / ".seed.lock"),
         reloaders=_build_reloaders(state_root, include_terminal=include_terminal),
         wallpaper_applier=_build_wallpaper_applier(state_root),
+        app_refresher=_build_app_refresher(state_root, install_spine),
     )
     return use_case.run()
 
@@ -1622,6 +1641,7 @@ def _run_regenerate_stale(
             mutex=mutex,
             reloaders=_build_reloaders(state_root, include_terminal=include_terminal),
             wallpaper_applier=_build_wallpaper_applier(state_root),
+            app_refresher=_build_app_refresher(state_root, install_spine),
         ),
         mutex=mutex,
         state_root=state_root,
@@ -1698,6 +1718,7 @@ def _run_doctor_repair() -> RepairResult:
             mutex=mutex,
             reloaders=_build_reloaders(state_root),
             wallpaper_applier=_build_wallpaper_applier(state_root),
+            app_refresher=_build_app_refresher(state_root, install_spine),
         ),
         state_root=state_root,
         heal_history_tail=seeder.heal_torn_history_tail,
@@ -2835,10 +2856,18 @@ def _run_clipboard_host(
     drains its own loop with no bus. Injectables exist for hermetic tests.
     """
     from runtime.adapters.clipboard_config import JsonClipboardConfigReader
+    from runtime.adapters.clipboard_migration import migrate_clipboard_paths
     from runtime.adapters.dbus_job_client import DbusJobClient
     from runtime.adapters.json_history_store import JsonClipboardStore
     from runtime.adapters.wl_paste_source import WlPasteSource
     from runtime.application.clipboard_host import ClipboardHost
+
+    # AD-35: one-time move from the retired hypr-pano namespace. Never fail
+    # the watcher because migration could not run; new paths still work.
+    try:
+        migrate_clipboard_paths()
+    except Exception:
+        logger.exception("clipboard: hypr-pano data migration failed; using clipboard paths")
 
     resolved_clock: Callable[[], float] = time.monotonic if clock is None else clock
     resolved_source = WlPasteSource() if source is None else source

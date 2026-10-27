@@ -194,7 +194,7 @@ def test_embedded_schema_table_matches_contract_topics(repo_root: Path) -> None:
     topics = data["topics"]
     assert isinstance(topics, dict)
     assert set(TOPIC_SCHEMAS) == set(topics)
-    sig_to_json_type = {"s": "string", "d": "number", "x": "integer"}
+    sig_to_json_type = {"s": "string", "d": "number", "x": "integer", "as": "array"}
     for topic, entry in topics.items():
         assert isinstance(entry, dict)
         payload = entry["payload"]

@@ -32,8 +32,10 @@ from runtime.adapters.icon_contrast_prefs_store import (
 )
 from runtime.adapters.seeder import CacheSeeder
 from runtime.application.derive import DerivationPipeline
+from runtime.domain.ags_apps import AppRefreshRecord, ReloadFailure
 from runtime.domain.icon_contrast_policy import CONTRAST_FLAGS
 from runtime.domain.models import DesktopState, IconsEntry
+from runtime.ports.ags_app_refresher import IAgsAppRefresher
 from runtime.ports.color_scheme_generator import IColorSchemeGenerator
 from runtime.ports.desktop_reloader import IDesktopReloader
 from runtime.ports.effects_generator import IEffectsGenerator
@@ -53,9 +55,10 @@ class RegenerateIconsResult:
     state: DesktopState
     repointed: list[Path]
     consumer_symlinks: list[Path]
-    reload_failures: list[str]
+    reload_failures: list[ReloadFailure]
     contrast_enabled: bool
     contrast_source: str
+    app_refresh_results: list[AppRefreshRecord] = dataclasses.field(default_factory=list)
 
 
 class RegenerateIconsUseCase:
@@ -95,6 +98,7 @@ class RegenerateIconsUseCase:
         seeder: CacheSeeder,
         mutex: ISeedMutex,
         reloaders: list[IDesktopReloader] | None = None,
+        app_refresher: IAgsAppRefresher | None = None,
     ) -> None:
         self._state_repo = state_repo
         self._install_spine = install_spine
@@ -102,6 +106,7 @@ class RegenerateIconsUseCase:
         self._seeder = seeder
         self._mutex = mutex
         self._reloaders: list[IDesktopReloader] = list(reloaders) if reloaders is not None else []
+        self._app_refresher = app_refresher
         self._pipeline = DerivationPipeline(
             state_root=state_root,
             seeder=seeder,
@@ -191,7 +196,23 @@ class RegenerateIconsUseCase:
             details={"layers": {"icons": 1}},
         )
 
-        reload_failures: list[str] = []
+        reload_failures: list[ReloadFailure] = []
+        app_results: list[AppRefreshRecord] = []
+        if self._app_refresher is not None:
+            try:
+                outcome = self._app_refresher.refresh(saved, trigger="regenerate")
+            except Exception as exc:
+                logger.warning("AGS app refresh failed unexpectedly: %s", exc)
+                reload_failures.append(
+                    ReloadFailure(
+                        "AgsAppRefresh",
+                        status="failed",
+                        reason=f"unexpected refresh failure: {exc}",
+                    )
+                )
+            else:
+                app_results = list(outcome.records)
+                reload_failures.extend(outcome.failures)
         for reloader in self._reloaders:
             try:
                 ok = reloader.reload()
@@ -199,7 +220,7 @@ class RegenerateIconsUseCase:
                 logger.warning("desktop reload failed for %s: %s", type(reloader).__name__, exc)
                 ok = False
             if not ok:
-                reload_failures.append(type(reloader).__name__)
+                reload_failures.append(ReloadFailure(type(reloader).__name__))
 
         return RegenerateIconsResult(
             icons=icons,
@@ -210,4 +231,5 @@ class RegenerateIconsUseCase:
             reload_failures=reload_failures,
             contrast_enabled=enabled,
             contrast_source=source,
+            app_refresh_results=app_results,
         )

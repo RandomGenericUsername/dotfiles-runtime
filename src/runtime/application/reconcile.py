@@ -50,6 +50,7 @@ from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder, _repoint_symlink
 from runtime.application.bar_backdrop import with_bar_backdrops
 from runtime.application.derive import DerivationPipeline, ensure_palette_entry_complete
+from runtime.domain.ags_apps import AppRefreshRecord, ReloadFailure
 from runtime.domain.history import HISTORY_TRIGGERS
 from runtime.domain.models import (
     DEFAULT_MONITOR,
@@ -59,6 +60,7 @@ from runtime.domain.models import (
     PaletteEntry,
     PaletteUnavailableError,
 )
+from runtime.ports.ags_app_refresher import IAgsAppRefresher
 from runtime.ports.color_scheme_generator import IColorSchemeGenerator
 from runtime.ports.desktop_reloader import IDesktopReloader
 from runtime.ports.effects_generator import IEffectsGenerator
@@ -78,8 +80,9 @@ class ReconcileResult:
     skipped: list[str]
     state: DesktopState
     cache_regenerated: list[str]
-    reload_failures: list[str] = field(default_factory=list)
+    reload_failures: list[ReloadFailure] = field(default_factory=list)
     consumer_symlinks: list[Path] = field(default_factory=list)
+    app_refresh_results: list[AppRefreshRecord] = field(default_factory=list)
     """Spine consumer pointers (Epic 4, gt-2-2 spec table) — e.g.
     ``<install>/config/ags/colors.css`` → ``current/colors.gtk.css``.
     Kept separate from ``repointed`` (which is ``current/``-only) so CLI
@@ -120,6 +123,7 @@ class ReconcileDesktopStateUseCase:
         mutex: ISeedMutex,
         reloaders: list[IDesktopReloader] | None = None,
         wallpaper_applier: IWallpaperApplier | None = None,
+        app_refresher: IAgsAppRefresher | None = None,
     ) -> None:
         self._state_repo = state_repo
         self._state_root = state_root
@@ -128,6 +132,10 @@ class ReconcileDesktopStateUseCase:
         self._mutex = mutex
         self._reloaders: list[IDesktopReloader] = list(reloaders) if reloaders is not None else []
         self._wallpaper_applier = wallpaper_applier
+        #: Manifest-driven AGS app refresh (AD-27…30). It owns both the live
+        #: lane and the configured restart lane; it is NOT an ordinary
+        #: ``IDesktopReloader`` because its failures are structured per app.
+        self._app_refresher = app_refresher
         self._pipeline = DerivationPipeline(
             state_root=state_root,
             seeder=seeder,
@@ -322,7 +330,7 @@ class ReconcileDesktopStateUseCase:
         # Step 5 — apply the persisted wallpaper before reloading palette/UI
         # consumers. wallpaper set has already done this during its visible
         # phase and opts out of this one stage only.
-        reload_failures: list[str] = []
+        reload_failures: list[ReloadFailure] = []
         if not wallpaper_already_applied and self._wallpaper_applier is not None:
             try:
                 wallpaper_ok = self._wallpaper_applier.apply()
@@ -334,9 +342,31 @@ class ReconcileDesktopStateUseCase:
                 )
                 wallpaper_ok = False
             if not wallpaper_ok:
-                reload_failures.append(type(self._wallpaper_applier).__name__)
+                reload_failures.append(ReloadFailure(type(self._wallpaper_applier).__name__))
 
-        # Step 6 — reload palette/UI consumers (outside lock, fire-and-report)
+        # Step 6 — the manifest-driven AGS app refresh (live + restart lanes).
+        # AD-27: the runtime, not the wallpaper.state event, is the palette
+        # refresh trigger. The ledger gate makes an unchanged appearance a no-op.
+        app_results: list[AppRefreshRecord] = []
+        if self._app_refresher is not None:
+            try:
+                outcome = self._app_refresher.refresh(saved, trigger=trigger)
+            except Exception as exc:
+                logger.warning("AGS app refresh failed unexpectedly: %s", exc)
+                reload_failures.append(
+                    ReloadFailure(
+                        "AgsAppRefresh",
+                        status="failed",
+                        reason=f"unexpected refresh failure: {exc}",
+                    )
+                )
+            else:
+                app_results = list(outcome.records)
+                reload_failures.extend(outcome.failures)
+
+        # Step 7 — reload the remaining palette/UI consumers (outside lock,
+        # fire-and-report). AGS is not in this list: its two lanes are owned by
+        # the manifest-driven refresher above.
         for reloader in self._reloaders:
             try:
                 ok = reloader.reload()
@@ -344,7 +374,7 @@ class ReconcileDesktopStateUseCase:
                 logger.warning("desktop reload failed for %s: %s", type(reloader).__name__, exc)
                 ok = False
             if not ok:
-                reload_failures.append(type(reloader).__name__)
+                reload_failures.append(ReloadFailure(type(reloader).__name__))
 
         return ReconcileResult(
             repointed=repointed,
@@ -353,6 +383,7 @@ class ReconcileDesktopStateUseCase:
             cache_regenerated=regenerated,
             reload_failures=reload_failures,
             consumer_symlinks=consumer_repointed,
+            app_refresh_results=app_results,
         )
 
     # ------------------------------------------------------------------

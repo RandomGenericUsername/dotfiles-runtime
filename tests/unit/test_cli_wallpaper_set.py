@@ -361,7 +361,7 @@ class TestWallpaperSetCompositionRootWiring:
 
         cli_main._run_wallpaper_set(Path("/img/wall.png"))
 
-        from runtime.adapters.ags_reloader import AgsReloader
+        from runtime.adapters.ags_app_refresh import AgsAppRefreshCoordinator
         from runtime.adapters.csg_adapter import CsgAdapter
         from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
         from runtime.adapters.gtk4_app_reloader import Gtk4AppReloader
@@ -417,13 +417,15 @@ class TestWallpaperSetCompositionRootWiring:
         assert reloaders is not None
         assert [type(r) for r in reloaders] == [
             HyprlandReloader,
-            AgsReloader,
             TerminalColorApplier,
             KittyReloader,
             BtopReloader,
         ]
         assert not any(type(r) is Gtk4AppReloader for r in reloaders)
-        assert reloaders[2]._state_root == captured["reconcile_kwargs"]["state_root"]  # type: ignore[attr-defined]
+        assert reloaders[1]._state_root == captured["reconcile_kwargs"]["state_root"]  # type: ignore[attr-defined]
+        assert (
+            type(captured["reconcile_kwargs"]["app_refresher"]) is AgsAppRefreshCoordinator
+        )
 
 
 class TestWallpaperSetContrastFlag:

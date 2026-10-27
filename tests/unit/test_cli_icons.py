@@ -248,11 +248,12 @@ class TestIconsRegenerateEmission:
             ),
         ]
         assert captured["contrast"] == "auto"
-        # AGS-only reload wiring: exactly one reloader, the AGS one.
-        from runtime.adapters.ags_reloader import AgsReloader
+        # AGS wiring is the manifest-driven coordinator, not an ordinary
+        # boolean reloader (AD-27…30).
+        from runtime.adapters.ags_app_refresh import AgsAppRefreshCoordinator
 
-        reloaders = captured["kwargs"]["reloaders"]
-        assert [type(r) for r in reloaders] == [AgsReloader]
+        assert captured["kwargs"]["reloaders"] == []
+        assert type(captured["kwargs"]["app_refresher"]) is AgsAppRefreshCoordinator
         assert result.contrast_enabled is True
 
     def test_absent_state_publishes_error_without_mutation(

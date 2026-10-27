@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+Manifest-driven AGS palette refresh, applied-appearance ledger and clipboard
+namespace migration (REQ-002).
+
+- Discovery reads every deployed link under the installed `<install>/config`
+  spine and validates `app.manifest.json` identity against `app.tsx` and
+  `ags list`; missing/invalid/duplicate manifests and foreign/dev owners are
+  structured failures. Restart apps are included even when down; dev instances
+  never refresh.
+- One applied-appearance ledger under `$XDG_STATE_HOME/dotfiles/` records the
+  palette/icons/effects hash and per-app `applied|deferred|failed|skipped`
+  results atomically, retries deferred/failed/skipped apps on the next trigger,
+  and is serialized by one operation lock.
+- Running live apps refresh in parallel via
+  `ags request palette-refresh <appearance-hash> -i <instance>` (5 s timeout, one
+  JSON string ack); the bar and other restart apps use the serialized BUG-006
+  quit/confirm/launch lane. A live failure never restarts an app. Runtime-owned
+  per-app JSONL records and structured `reload_failures` carry the outcome.
+- Clipboard config/state/cache paths move from `hypr-pano` to `clipboard` with a
+  one-time migration of history (favorites/recency), preferences and images.
+- `CONTRACT_PIN` moves to contracts `5eb01b8`; the AGS manifest, install-list,
+  program-tuple and refresh-result schemas are embedded and conformance-checked.
+  The `wallpaper.state` description is explicitly progress/UI only (AD-27).
+
 ## 0.2.3
 
 An absent optional intent root is informational, not degraded watch health

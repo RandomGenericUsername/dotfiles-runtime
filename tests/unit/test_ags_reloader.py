@@ -436,6 +436,39 @@ class TestAgsReloaderQuitRelease:
         )
 
 
+class TestAgsReloaderDeployedRestart:
+    def test_down_configured_app_is_launched_from_its_link(
+        self, ags_bin: Path, tmp_path: Path
+    ) -> None:
+        """AD-30: a configured restart app is included even when down."""
+        link = tmp_path / "install" / "config" / "ags"
+        link.mkdir(parents=True)
+        names = _NameState(launch_names=(BAR_INSTANCE_NAME,))
+        reloader = _make_reloader(ags_bin, tmp_path, instance_lister=names)
+        with (
+            patch("runtime.adapters.ags_reloader.subprocess.run"),
+            patch(
+                "runtime.adapters.ags_reloader.subprocess.Popen",
+                side_effect=names.popen(_FakeProcess(code=None)),
+            ) as mock_popen,
+            patch("runtime.adapters.ags_reloader.time.sleep"),
+        ):
+            assert (
+                reloader.restart_deployed_app(
+                    instance=BAR_INSTANCE_NAME,
+                    config_dir=link,
+                )
+                is True
+            )
+        mock_popen.assert_called_once_with(
+            [str(ags_bin), "run", "-d", str(link)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+
 class TestAgsReloaderLaunchLock:
     def test_lock_contention_fails_without_launching(
         self, ags_bin: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture

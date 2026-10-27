@@ -12,7 +12,16 @@ from pathlib import Path
 import fastjsonschema
 import pytest
 
-_SCHEMAS = ("history", "current", "meta", "last-converged")
+_SCHEMAS = (
+    "history",
+    "current",
+    "meta",
+    "last-converged",
+    "ags-app-manifest",
+    "ags-app-refresh-result",
+    "ags-apps-install-list",
+    "program-tuple",
+)
 
 
 @pytest.mark.parametrize("name", _SCHEMAS)

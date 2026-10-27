@@ -88,6 +88,20 @@ def test_edited_xml_is_detected(repo_root: Path, tmp_path: Path) -> None:
     assert signals != data["signals"]
 
 
+def test_wallpaper_state_is_progress_ui_only(repo_root: Path) -> None:
+    """AD-27: the event is progress/UI, never the palette-refresh trigger."""
+    data = _load_json(repo_root / "contracts" / "event-contract.json")
+    topics = data["topics"]
+    assert isinstance(topics, dict)
+    topic = topics["wallpaper.state"]
+    assert isinstance(topic, dict)
+    notes = topic["notes"]
+    assert isinstance(notes, str)
+    assert "progress/UI event" in notes
+    assert "not the palette-refresh trigger" in notes
+    assert "palette-refresh" in notes
+
+
 def test_job_interface_xml_and_json_agree(repo_root: Path) -> None:
     """The Job node/interface in the XML matches the JSON `job_interface`."""
     root = ET.parse(repo_root / "contracts" / "event-contract.xml").getroot()
