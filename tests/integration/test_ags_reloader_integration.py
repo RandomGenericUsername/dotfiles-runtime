@@ -142,19 +142,21 @@ def _make_applied(
     return repo, state_root, install_spine
 
 
-def _make_ags_shim(tmp_path: Path, marker: Path) -> Path:
-    """A fake ``ags`` that records its argv to ``marker``.
+def _make_ags_shim(tmp_path: Path, marker: Path, state: Path) -> Path:
+    """A fake ``ags`` with a tiny name registry.
 
-    ``quit`` exits 0 immediately; ``run`` sleeps LONGER than the adapter's
-    liveness window (3s > 2s) so the liveness poll sees a live process.
+    ``list`` prints the owned name from ``state``; ``quit`` releases it;
+    ``run`` registers ``ags`` and sleeps long enough for the adapter's name
+    poll to observe it. ``quit``/``run`` are recorded in ``marker``.
     """
     shim = tmp_path / "ags"
     shim.write_text(
         "#!/bin/sh\n"
-        f'echo "$1" >> "{marker}"\n'
+        f'if [ "$1" != "list" ]; then echo "$1" >> "{marker}"; fi\n'
         'case "$1" in\n'
-        "  quit) exit 0 ;;\n"
-        "  run) sleep 3; exit 0 ;;\n"
+        f'  list) [ -f "{state}" ] && cat "{state}"; exit 0 ;;\n'
+        f'  quit) rm -f "{state}"; exit 0 ;;\n'
+        f'  run) echo ags > "{state}"; sleep 3; exit 0 ;;\n'
         "esac\n"
         "exit 1\n"
     )
@@ -167,19 +169,26 @@ def test_ags_reloader_integration_restart_with_shim(
 ) -> None:
     """E2E: seed → apply → reconcile with an ``ags`` shim, restart recorded.
 
-    A fake ``ags`` shim records every invocation to a marker file and is
-    injected via PATH. A real ``AgsReloader(ags_path=<shim>)`` drives the
-    full swap sequence; the marker proves both ``quit`` and detached
-    ``run`` were invoked and no reload failure was surfaced.
+    A fake ``ags`` shim records ``quit``/``run`` invocations to a marker file
+    and owns the instance name in a tiny state file. A real
+    ``AgsReloader(ags_path=<shim>)`` drives the full swap sequence; the marker
+    proves both ``quit`` and detached ``run`` were invoked after the name
+    check, and no reload failure was surfaced.
     """
     bin_dir = tmp_path / "fakebin"
     bin_dir.mkdir()
     marker = tmp_path / "ags-called"
-    shim = _make_ags_shim(bin_dir, marker)
+    state = tmp_path / "ags-name"
+    shim = _make_ags_shim(bin_dir, marker, state)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
 
     repo, state_root, install_spine = _make_applied(tmp_path)
-    reloader = AgsReloader(ags_path=shim, app_lister=lambda: [])
+    reloader = AgsReloader(
+        ags_path=shim,
+        app_lister=lambda: [],
+        bar_pid_lister=lambda: (),
+        launch_lock_path=tmp_path / "ags-launch.lock",
+    )
     use_case = ReconcileDesktopStateUseCase(
         state_repo=repo,
         csg=_FakeCsg(),  # type: ignore[arg-type]
