@@ -251,6 +251,31 @@ class TestWatchHealthSurface:
         assert "UNWATCHED /spine/x" in result.output
         assert "UNWATCHED /spine/y" in result.output
 
+    def test_optional_absent_is_reported_not_degraded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from runtime.adapters.watch_health import WatchHealthStore
+        from runtime.domain.watch import WatchStatus
+
+        self._probe_absent(monkeypatch)
+        intent = cli_main._resolve_desired_path()
+        WatchHealthStore(_state_root()).write(
+            WatchStatus(registered=4, optional_absent=(str(intent),))
+        )
+
+        plain = runner.invoke(app, ["inspect", "daemon"])
+        assert plain.exit_code == 0
+        assert "watch health: ok" in plain.output
+        assert f"OPTIONAL (absent, not watched) {intent}" in plain.output
+        assert "UNWATCHED" not in plain.output
+
+        result = runner.invoke(app, ["inspect", "daemon", "--format", "json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["watch_health"]["degraded"] is False
+        assert payload["watch_health"]["failed_roots"] == []
+        assert payload["watch_health"]["optional_absent"] == [str(intent)]
+
 
 # ── kill switch (AD-41) ──────────────────────────────────────────────────
 

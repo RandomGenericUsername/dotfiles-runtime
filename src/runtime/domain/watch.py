@@ -64,18 +64,22 @@ class WatchStatus:
     """Health of the installed watch set (AD-40 registration exhaustion).
 
     ``registered`` is how many watches are currently installed; ``failed``
-    names the roots that could **not** be registered (e.g. ``max_user_watches``
-    exhaustion — ``ENOSPC``/``EMFILE``). A non-empty ``failed`` is a degraded
-    watch set: the daemon is temporarily blind to those roots and must retry
-    at the next safe opportunity (never poll). ``last_error`` is diagnostic
+    names the **required** roots that could **not** be registered (e.g.
+    ``max_user_watches`` exhaustion — ``ENOSPC``/``EMFILE``). A non-empty
+    ``failed`` is a degraded watch set: the daemon is temporarily blind to
+    those roots and must retry at the next safe opportunity (never poll).
+    ``optional_absent`` names optional inputs whose root is absent (an
+    expected state, e.g. ``desired.json`` with no config parent); it is
+    informational and retryable, never degraded. ``last_error`` is diagnostic
     only and never parsed.
     """
 
     registered: int = 0
     failed: tuple[str, ...] = ()
     last_error: str | None = None
+    optional_absent: tuple[str, ...] = ()
 
     @property
     def degraded(self) -> bool:
-        """True when any root is unwatched."""
+        """True when any **required** root is unwatched."""
         return bool(self.failed)

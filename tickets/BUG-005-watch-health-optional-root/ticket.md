@@ -2,7 +2,7 @@
 id: BUG-005
 title: "watch-health reports degraded when the optional desired-state root has no parent"
 kind: bug
-status: triage
+status: done
 lane: 2
 severity: low
 links:
@@ -321,22 +321,99 @@ Focused tests to add or update:
 
 Acceptance:
 
-- [ ] The deterministic repro prints `degraded=False`, `failed=()`, and
+- [x] The deterministic repro prints `degraded=False`, `failed=()`, and
       `optional_absent` naming the missing-parent intent root.
-- [ ] A missing required root still prints `degraded=True` with `failed`
+- [x] A missing required root still prints `degraded=True` with `failed`
       naming it; exhaustion/`IN_IGNORED` behavior is unchanged.
-- [ ] `inspect daemon` and `doctor` show the optional root as informational,
+- [x] `inspect daemon` and `doctor` show the optional root as informational,
       exit 0, and JSON includes the additive field; the degraded/UNWATCHED
       wording is reserved for required roots.
-- [ ] The empty-parent optional root is retried once per burst and becomes
+- [x] The empty-parent optional root is retried once per burst and becomes
       watched after the parent is created (no polling, no restart required in
       the test).
-- [ ] Old `watch-health.json` records without `optional_absent` still read
+- [x] Old `watch-health.json` records without `optional_absent` still read
       (empty tuple), and corrupt/symlinked records still read as `None`.
-- [ ] `make gates` is green on the ticket branch.
-- [ ] The live `~/.local/state/dotfiles/watch-health.json` and
+- [x] `make gates` is green on the ticket branch.
+- [x] The live `~/.local/state/dotfiles/watch-health.json` and
       `~/.config/dotfiles` were not edited during triage or implementation;
       the live record only changes when the upgraded daemon next writes it.
+
+## Implementation (2026-10-26)
+
+Worktree/branch: `.worktrees/BUG-005/` on
+`ticket/BUG-005-watch-health-optional-root`; implementation commit `ee0556b`
+(`fix(BUG-005): keep absent optional watch roots informational`).
+
+What changed:
+
+- `WatchRoot.optional` (last field, default `False`); only the intent root is
+  constructed with `optional=True` in `enumerate_watch_roots`.
+- `WatchStatus.optional_absent`; `degraded` remains `bool(self.failed)` so only
+  required roots degrade.
+- `InotifyWatchSource` tracks an absent optional root separately, logs the
+  absence at INFO once per root, clears it on install/rebuild/close, and exposes
+  it sorted in `status()`. Required roots keep the WARNING/`failed` path.
+- `WatchHealthRecord.optional_absent` is persisted as an additive `list[str]`
+  under the unchanged `version: 1`; missing key → `()`, wrong shape → `None`.
+- `DaemonWatchHealthView`/`assemble_daemon_report` carry the field; `inspect
+  daemon` and `doctor` include it in JSON and print
+  `OPTIONAL (absent, not watched) <path>` while keeping exit 0.
+- `WatchCoordinator` retries once per burst when
+  `status.degraded or status.optional_absent`.
+
+Post-fix deterministic proof (uses the real enumerated root set; the triage
+snippet above constructs a bare required `WatchRoot`, so it intentionally keeps
+the required-root behavior):
+
+```bash
+cd /home/inumaki/Development/dotfiles/dotfiles-runtime
+uv run python - <<'PY'
+import tempfile
+from pathlib import Path
+from runtime.adapters.inotify_watch_source import InotifyWatchSource
+from runtime.adapters.watch_roots import enumerate_watch_roots
+
+with tempfile.TemporaryDirectory() as d:
+    spine = Path(d) / "install"
+    (spine / "config" / "color-scheme-generator" / "templates").mkdir(parents=True)
+    (spine / "config" / "weg").mkdir(parents=True)
+    (spine / "config" / "weg" / "effects.yaml").touch()
+    (spine / "icon-templates").mkdir()
+    (spine / "icon-mappings").mkdir()
+    intent = Path(d) / "config" / "dotfiles" / "desired.json"  # parent absent
+    source = InotifyWatchSource(enumerate_watch_roots(spine, intent))
+    source.start()
+    try:
+        status = source.status()
+        print(status, "degraded=", status.degraded)
+    finally:
+        source.close()
+PY
+```
+
+Observed:
+`WatchStatus(registered=4, failed=(), last_error=None,
+optional_absent=('<tmp>/config/dotfiles/desired.json',)) degraded= False`.
+A temporary required root with no parent prints `degraded=True`,
+`failed=('<tmp>/spine/weg/effects.yaml',)`; the control case (parent present,
+file absent) prints `registered=1`, `failed=()`, `optional_absent=()`.
+
+- `Evidence:` focused tests
+  `uv run pytest -q tests/unit/test_watch_roots.py
+  tests/unit/test_inotify_registration_recovery.py tests/unit/test_watch_health.py
+  tests/unit/test_watch_coordinator.py tests/unit/test_cli_inspect_daemon.py
+  tests/unit/test_doctor_check.py tests/unit/test_daemon_run.py`
+  → 135 passed. `make gates` → exit 0 (test 2167 passed, 3 skipped, 21
+  deselected; lint, contracts-check, hermetic, lock-check, docs-check green).
+  Temp-XDG `inspect daemon` → exit 0 with `watch health: ok` and
+  `OPTIONAL (absent, not watched) …`; JSON `degraded: false`, `failed_roots:
+  []`, `optional_absent: [path]`. Doctor test covers the same exit-0/JSON path.
+- `Evidence:` live file untouched — `175` bytes, sha256
+  `24f04324d885ebd32893ca08d50ce5b226c1fe1944f6490636f6dc3ccc12f67e`
+  (same as Observed); `~/.config/dotfiles` still absent.
+- `Verify:` rerun the focused test command above, then `make gates`.
+- No tag, release, version bump, CHANGELOG edit, sudo, host change, live-file
+  edit, or other-repo change was made.
 
 ## Release / pin chain (follow-up, not part of this ticket)
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from runtime.adapters.watch_health import WatchHealthStore
 from runtime.domain.watch import WatchStatus
 
@@ -34,6 +36,64 @@ def test_roundtrip_degraded(tmp_path: Path) -> None:
     assert record.degraded is True
     assert record.failed_roots == ("/spine/icon-templates", "/spine/weg/effects.yaml")
     assert record.last_error == "No space left on device"
+
+
+def test_roundtrip_optional_absent(tmp_path: Path) -> None:
+    store = WatchHealthStore(tmp_path)
+    store.write(
+        WatchStatus(
+            registered=4,
+            optional_absent=("/cfg/dotfiles/desired.json",),
+        )
+    )
+    record = store.read()
+    assert record is not None
+    assert record.degraded is False
+    assert record.failed_roots == ()
+    assert record.optional_absent == ("/cfg/dotfiles/desired.json",)
+    raw = json.loads((tmp_path / "watch-health.json").read_text(encoding="utf-8"))
+    assert raw["version"] == 1
+    assert raw["optional_absent"] == ["/cfg/dotfiles/desired.json"]
+
+
+def test_legacy_record_without_optional_absent(tmp_path: Path) -> None:
+    path = tmp_path / "watch-health.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "degraded": False,
+                "failed_roots": [],
+                "last_error": None,
+                "updated_at": "2026-10-26T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    record = WatchHealthStore(tmp_path).read()
+    assert record is not None
+    assert record.degraded is False
+    assert record.failed_roots == ()
+    assert record.optional_absent == ()
+
+
+@pytest.mark.parametrize("value", ["not-a-list", [1], [None], None, {}])
+def test_invalid_optional_absent_shape_is_none(tmp_path: Path, value: object) -> None:
+    path = tmp_path / "watch-health.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "degraded": False,
+                "failed_roots": [],
+                "optional_absent": value,
+                "last_error": None,
+                "updated_at": "2026-10-26T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert WatchHealthStore(tmp_path).read() is None
 
 
 def test_absent_is_none(tmp_path: Path) -> None:

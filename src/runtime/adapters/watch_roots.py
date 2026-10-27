@@ -26,11 +26,17 @@ ICON_MAPPINGS_DEPTH = 2
 
 @dataclass(frozen=True, slots=True)
 class WatchRoot:
-    """One watched location: a directory tree (bounded) or a single file."""
+    """One watched location: a directory tree (bounded) or a single file.
+
+    ``optional`` marks an input whose absence is an expected state rather than
+    watch loss (the relocated intent document). A missing optional root is
+    reported as ``optional_absent`` and never degrades the required watch set.
+    """
 
     path: Path
     is_directory: bool
     depth: int = 0
+    optional: bool = False
 
 
 def enumerate_watch_roots(install_spine: Path, intent_path: Path) -> tuple[WatchRoot, ...]:
@@ -61,5 +67,5 @@ def enumerate_watch_roots(install_spine: Path, intent_path: Path) -> tuple[Watch
             is_directory=True,
             depth=ICON_MAPPINGS_DEPTH,
         ),
-        WatchRoot(intent_path, is_directory=False),
+        WatchRoot(intent_path, is_directory=False, optional=True),
     )

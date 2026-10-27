@@ -206,11 +206,11 @@ class TestIgnoredEventHandling:
 
 
 class TestMissingRootWarnOnce:
-    def test_missing_parent_warns_once_across_rebuilds(
+    def test_missing_required_parent_is_degraded_and_warns_once_across_rebuilds(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         missing = tmp_path / "nope" / "desired.json"  # parent directory absent
-        source = InotifyWatchSource((WatchRoot(missing, is_directory=False),))
+        source = InotifyWatchSource((WatchRoot(missing, is_directory=False, optional=False),))
         source._lib = _FakeLib()  # type: ignore[assignment]
         with caplog.at_level(logging.WARNING, logger="runtime.adapters.inotify_watch_source"):
             source.start()
@@ -221,6 +221,86 @@ class TestMissingRootWarnOnce:
                 r for r in caplog.records if "file root parent missing" in r.getMessage()
             ]
             assert len(warnings) == 1
-            assert source.status().degraded is True
+            status = source.status()
+            assert status.degraded is True
+            assert status.failed == (str(missing),)
+            assert status.optional_absent == ()
+        finally:
+            source.close()
+
+
+class TestOptionalMissingRoot:
+    def test_missing_optional_parent_is_not_degraded(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        missing = tmp_path / "nope" / "desired.json"  # parent directory absent
+        source = InotifyWatchSource((WatchRoot(missing, is_directory=False, optional=True),))
+        source._lib = _FakeLib()  # type: ignore[assignment]
+        with caplog.at_level(logging.INFO, logger="runtime.adapters.inotify_watch_source"):
+            source.start()
+        try:
+            status = source.status()
+            assert status.degraded is False
+            assert status.failed == ()
+            assert status.optional_absent == (str(missing),)
+            assert status.registered == 0
+            assert not [
+                r
+                for r in caplog.records
+                if "file root parent missing" in r.getMessage() and r.levelno >= logging.WARNING
+            ]
+            assert any(
+                r.levelno == logging.INFO and "file root parent missing" in r.getMessage()
+                for r in caplog.records
+            )
+        finally:
+            source.close()
+
+    def test_optional_absence_is_logged_once_across_rebuilds(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        missing = tmp_path / "nope" / "desired.json"
+        source = InotifyWatchSource((WatchRoot(missing, is_directory=False, optional=True),))
+        source._lib = _FakeLib()  # type: ignore[assignment]
+        with caplog.at_level(logging.INFO, logger="runtime.adapters.inotify_watch_source"):
+            source.start()
+            source.rebuild()
+            source.rebuild()
+        try:
+            infos = [r for r in caplog.records if "file root parent missing" in r.getMessage()]
+            assert len(infos) == 1
+            assert source.status().optional_absent == (str(missing),)
+        finally:
+            source.close()
+
+    def test_optional_root_clears_when_parent_appears(self, tmp_path: Path) -> None:
+        missing = tmp_path / "config" / "dotfiles" / "desired.json"
+        source = InotifyWatchSource((WatchRoot(missing, is_directory=False, optional=True),))
+        source._lib = _FakeLib(fail_first=False)  # type: ignore[assignment]
+        source.start()
+        try:
+            assert source.status().optional_absent == (str(missing),)
+            missing.parent.mkdir(parents=True)
+            source.rebuild()
+            status = source.status()
+            assert status.degraded is False
+            assert status.failed == ()
+            assert status.optional_absent == ()
+            assert status.registered == 1
+        finally:
+            source.close()
+
+    def test_parent_present_file_absent_is_watched(self, tmp_path: Path) -> None:
+        (tmp_path / "config").mkdir()
+        missing = tmp_path / "config" / "desired.json"  # parent exists, file absent
+        source = InotifyWatchSource((WatchRoot(missing, is_directory=False, optional=True),))
+        source._lib = _FakeLib(fail_first=False)  # type: ignore[assignment]
+        source.start()
+        try:
+            status = source.status()
+            assert status.degraded is False
+            assert status.failed == ()
+            assert status.optional_absent == ()
+            assert status.registered == 1
         finally:
             source.close()

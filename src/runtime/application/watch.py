@@ -118,11 +118,12 @@ class WatchCoordinator:
         ``source.read_event`` (never a timed state poll); a ``None`` result is
         the quiet-window signal that releases one accumulated trigger.
 
-        A degraded watch set (a root dropped by registration exhaustion) is
-        retried **once per burst** the moment a real event arrives from a
-        still-watched root — the "next safe opportunity" (AD-40). There is no
-        timer and no state poll; a burst that never sees an event never
-        retries, and the source's own blocking read stays the only clock.
+        A degraded watch set (a required root dropped by registration
+        exhaustion) or an absent optional root is retried **once per burst**
+        the moment a real event arrives from a still-watched root — the "next
+        safe opportunity" (AD-40). There is no timer and no state poll; a
+        burst that never sees an event never retries, and the source's own
+        blocking read stays the only clock.
         """
         accumulator = WatchAccumulator()
         self._report_status()
@@ -139,9 +140,12 @@ class WatchCoordinator:
                 self._rebuild("registration-loss")
                 retried_this_burst = True
                 continue
-            if not retried_this_burst and self._source.status().degraded:
-                self._rebuild("registration-exhaustion")
-                retried_this_burst = True
+            if not retried_this_burst:
+                status = self._source.status()
+                if status.degraded or status.optional_absent:
+                    reason = "registration-exhaustion" if status.degraded else "optional-absent"
+                    self._rebuild(reason)
+                    retried_this_burst = True
         # Flush a burst that was still open when stop arrived? Intentionally
         # no: shutdown must not start a long converge the supervisor is about
         # to kill. The change is caught by converge-on-start next time.

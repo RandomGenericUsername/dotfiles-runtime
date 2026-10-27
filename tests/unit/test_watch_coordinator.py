@@ -10,7 +10,7 @@ import threading
 from collections.abc import Callable
 
 from runtime.application.watch import WatchAccumulator, WatchCoordinator, WatchTrigger
-from runtime.domain.watch import WatchEvent, WatchEventKind
+from runtime.domain.watch import WatchEvent, WatchEventKind, WatchStatus
 from runtime.ports.watch_source import IWatchSource
 
 
@@ -53,6 +53,63 @@ class _ScriptedSource(IWatchSource):
 
 def _modify() -> WatchEvent:
     return WatchEvent(kind=WatchEventKind.MODIFIED, path="/t/x")
+
+
+class _OptionalAbsentSource(_ScriptedSource):
+    """Fake source: an optional root is absent until ``rebuild`` installs it."""
+
+    def __init__(self, path: str = "/cfg/dotfiles/desired.json") -> None:
+        super().__init__([_modify(), _modify()], none_reads=1)
+        self.path = path
+        self.optional_absent = (path,)
+        self.installed = False
+
+    def rebuild(self) -> None:
+        super().rebuild()
+        self.installed = True
+        self.optional_absent = ()
+
+    def status(self) -> WatchStatus:
+        return WatchStatus(
+            registered=1 if self.installed else 0,
+            optional_absent=self.optional_absent,
+        )
+
+    def queue_burst(self, *, events: int = 1) -> None:
+        self._events.extend(_modify() for _ in range(events))
+        self._none_reads = 1
+
+
+def test_optional_absent_is_retried_once_per_burst() -> None:
+    path = "/cfg/dotfiles/desired.json"
+    source = _OptionalAbsentSource(path)
+    statuses: list[WatchStatus] = []
+    triggers: list[WatchTrigger] = []
+    stop = threading.Event()
+    source._on_none = stop.set
+
+    coordinator = WatchCoordinator(source, triggers.append, on_status=statuses.append)
+    coordinator.serve_events(stop)
+
+    assert source.rebuilds == 1
+    assert [s.optional_absent for s in statuses] == [(path,), ()]
+    assert len(triggers) == 1
+    assert triggers[0].reason == "change"
+
+
+def test_recovered_optional_root_is_not_rebuilt_on_next_burst() -> None:
+    source = _OptionalAbsentSource()
+    coordinator = WatchCoordinator(source, lambda trigger: None)
+    stop = threading.Event()
+    source._on_none = stop.set
+    coordinator.serve_events(stop)
+    assert source.rebuilds == 1
+
+    source.queue_burst()
+    stop = threading.Event()
+    source._on_none = stop.set
+    coordinator.serve_events(stop)
+    assert source.rebuilds == 1
 
 
 def test_burst_coalesces_to_one_trigger() -> None:
