@@ -409,6 +409,34 @@ class TestLiveLane:
         assert ledger is not None
         assert ledger.apps["clipboard"].status == "skipped"
 
+    def test_name_query_failure_is_a_structured_failure(self, tmp_path: Path) -> None:
+        spine = tmp_path / "install"
+        _deploy_live(spine)
+        runner = _LiveRunner()
+
+        def _broken_names() -> tuple[str, ...]:
+            raise RuntimeError("ags list down")
+
+        ags = tmp_path / "fake-ags"
+        ags.write_text("#!/bin/sh\nexit 0\n")
+        ags.chmod(0o755)
+        coordinator = AgsAppRefreshCoordinator(
+            state_root=tmp_path / "state",
+            install_spine=spine,
+            state_repo=_StateRepo(_state()),
+            ags_path=ags,
+            process_lister=lambda: (),
+            instance_lister=_broken_names,
+            live_runner=runner,
+            restart_reloader=_RestartFake(),  # type: ignore[arg-type]
+            run_id_factory=lambda: "run-1",
+        )
+        outcome = coordinator.refresh(_state())
+        assert outcome.records[0].status == "failed"
+        assert "cannot determine running state" in outcome.records[0].reason
+        assert runner.calls == []
+        assert outcome.failures
+
     def test_no_op_for_unchanged_appearance(self, tmp_path: Path) -> None:
         spine = tmp_path / "install"
         link = _deploy_live(spine)

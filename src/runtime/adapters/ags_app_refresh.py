@@ -362,6 +362,41 @@ class AgsAppRefreshCoordinator(IAgsAppRefresher):
                 continue
             if identity.mode == "restart":
                 restart_plan.append(app)
+            elif names_error is not None:
+                reason = f"cannot determine running state: {names_error}"
+                results.append(
+                    self._record(
+                        run_id,
+                        identity,
+                        appearance,
+                        status="failed",
+                        reason=reason,
+                        retryable=True,
+                        started=now,
+                        ended=now,
+                        duration_ms=0,
+                        error=names_error,
+                    )
+                )
+                ledger_apps[identity.instance] = AppAppearanceState(
+                    app=identity.app,
+                    instance=identity.instance,
+                    mode=identity.mode,
+                    status="failed",
+                    appearance_hash=appearance,
+                    reason=reason,
+                    retryable=True,
+                )
+                failures.append(
+                    ReloadFailure(
+                        identity.app,
+                        instance=identity.instance,
+                        mode=identity.mode,
+                        status="failed",
+                        reason=reason,
+                        detail=names_error,
+                    )
+                )
             elif not app.running:
                 results.append(
                     self._record(
@@ -369,9 +404,7 @@ class AgsAppRefreshCoordinator(IAgsAppRefresher):
                         identity,
                         appearance,
                         status="skipped",
-                        reason=(
-                            names_error if names_error is not None else "live app is not running"
-                        ),
+                        reason="live app is not running",
                         started=now,
                         ended=now,
                         duration_ms=0,
@@ -383,7 +416,7 @@ class AgsAppRefreshCoordinator(IAgsAppRefresher):
                     mode=identity.mode,
                     status="skipped",
                     appearance_hash=appearance,
-                    reason=names_error or "live app is not running",
+                    reason="live app is not running",
                 )
             else:
                 live_plan.append(app)
