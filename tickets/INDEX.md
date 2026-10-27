@@ -7,7 +7,7 @@
 ## Requirements
 
 - [REQ-001-repo-birth](./REQ-001-repo-birth/ticket.md) — Birth `dotfiles-runtime` as its own mu-strict repo | `done` | openspec: 2026-10-23-repo-birth | tag: v0.1.0
-- [REQ-002-ags-app-refresh](./REQ-002-ags-app-refresh/ticket.md) — Manifest-driven palette refresh: discovery, ledger, lanes and launch lock | `proposed` | links: none
+- [REQ-002-ags-app-refresh](./REQ-002-ags-app-refresh/ticket.md) — Manifest-driven palette refresh: discovery, ledger, lanes and launch lock | `in-progress` | worktree: .worktrees/REQ-002/ | branch: ticket/REQ-002-ags-app-refresh
 
 ## Bugs
 

@@ -2,13 +2,13 @@
 id: REQ-002
 title: "Manifest-driven palette refresh: discovery, ledger, lanes and launch lock"
 kind: requirement
-status: proposed
+status: in-progress
 lane: 3
 links:
   openspec: none
   bmad: none
-worktree: none
-branch: none
+worktree: .worktrees/REQ-002/
+branch: ticket/REQ-002-ags-app-refresh
 ---
 
 # Manifest-driven palette refresh: discovery, ledger, lanes and launch lock
@@ -71,3 +71,43 @@ Implement the runtime side of the standalone AGS app contract from
 - Current `src/runtime/adapters/ags_reloader.py`,
   `src/runtime/application/reconcile.py`, `clipboard_config.py`,
   `json_history_store.py`.
+
+## Triage (implementation start, 2026-10-26)
+
+- `kind: requirement`, `lane: 3` — cross-cutting runtime slice with
+  deterministic fake-AGS proofs; no OpenSpec change.
+- Worktree `.worktrees/REQ-002/` on `ticket/REQ-002-ags-app-refresh`;
+  BUG-006 (`e87ad4f`, commit `cca8f2e`) is already on this branch and its
+  restart liveness/launch-lock behavior is preserved.
+- The installed-spine contract is unambiguous: discovery is
+  `<install>/config` from `_resolve_install_spine()`
+  (`$XDG_DATA_HOME/dotfiles` or `DOTFILES_INSTALL_SPINE`), never a composition
+  checkout (AD-26/AD-31).
+- Contracts source: `contracts@5eb01b8`; new schemas/protocol copied per the
+  embedded-schema + conformance-copy convention.
+
+## Implementation plan
+
+1. **Discovery adapter** — enumerate deployed links/manifests under the
+   installed `config/` root; validate one-segment identity, `configDir == link`,
+   `instance == app.tsx == ags list`, reject missing/invalid/duplicate entries,
+   ignore dev instances, and report foreign owners as structured failures.
+2. **Ledger + operation lock** — one atomic applied-appearance ledger under the
+   state root (`applied|deferred|failed|skipped`, per-app appearance hash),
+   retry non-applied entries next trigger, serialize operations with one flock.
+3. **Refresh coordinator** — ledger gate; parallel live lane
+   (`ags request palette-refresh <hash> -i <instance>`, 5 s, one JSON string
+   ack, no immediate retry); serialized restart lane through BUG-006,
+   including configured down apps; runtime JSONL records; structured
+   `ReloadFailure` entries with a string view.
+4. **Composition wiring** — reconcile/`wallpaper set`/`icons regenerate`
+   (and therefore reactive/doctor) use the coordinator instead of the old
+   unconditional AGS restart reloader.
+5. **Clipboard namespace** — config/state/cache paths move to `clipboard`;
+   one-time migration merges history/favorites and removes legacy paths only
+   after the new copies are proven.
+6. **Contracts/docs** — pin `5eb01b8`, embed the four new schemas, refresh the
+   `wallpaper.state` description as progress/UI only, update README/
+   ARCHITECTURE/CHANGELOG.
+7. **Proofs** — deterministic fake AGS/apps/manifests; no GUI, no host AGS
+   kills, no sudo; `make gates-ci` green.
