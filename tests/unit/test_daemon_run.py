@@ -557,6 +557,13 @@ class _DegradedBlockingSource(_BlockingWatchSource):
         return WatchStatus(registered=0, failed=("/spine/x",), last_error="ENOSPC")
 
 
+class _OptionalAbsentBlockingSource(_BlockingWatchSource):
+    def status(self):
+        from runtime.domain.watch import WatchStatus
+
+        return WatchStatus(registered=4, optional_absent=("/cfg/dotfiles/desired.json",))
+
+
 class TestWatchHealthPersistence:
     def test_degraded_watch_set_is_persisted(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -583,6 +590,32 @@ class TestWatchHealthPersistence:
         assert record.degraded is True
         assert record.failed_roots == ("/spine/x",)
         assert record.last_error == "ENOSPC"
+
+    def test_optional_absent_watch_set_is_persisted_not_degraded(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from runtime.adapters.watch_health import WatchHealthStore
+
+        owner = _FakeOwner()
+        monkeypatch.setattr(cli_main, "_build_bus_name_owner", lambda service=None: owner)
+        source = _OptionalAbsentBlockingSource()
+
+        def _converge(_trigger: object) -> None:
+            def _watchdog() -> None:
+                deadline = time.monotonic() + 5
+                while not source.started and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                time.sleep(0.05)
+                owner.stop()
+
+            threading.Thread(target=_watchdog, daemon=True).start()
+
+        cli_main._run_daemon_run(owner=owner, converge=_converge, watch_source=source)
+        record = WatchHealthStore(_state_root(tmp_path)).read()
+        assert record is not None
+        assert record.degraded is False
+        assert record.failed_roots == ()
+        assert record.optional_absent == ("/cfg/dotfiles/desired.json",)
 
 
 class _HostedSubscriber:

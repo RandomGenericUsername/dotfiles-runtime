@@ -20,7 +20,10 @@ Properties pinned to AD-40:
 
 A root that cannot be watched (missing, on a filesystem without inotify,
 ``max_user_watches`` exhaustion) is surfaced with a warning and left
-unwatched — never silently ignored.
+unwatched — never silently ignored. A root marked
+:attr:`~runtime.adapters.watch_roots.WatchRoot.optional` is the exception: its
+absence is an expected input state, reported at INFO as ``optional_absent``
+(and retried on the next safe opportunity) without degrading the required set.
 """
 
 from __future__ import annotations
@@ -111,6 +114,7 @@ class InotifyWatchSource(IWatchSource):
         self._watches: dict[int, _Watch] = {}
         self._pending: collections.deque[WatchEvent] = collections.deque()
         self._failed: dict[str, str] = {}
+        self._optional_absent: set[str] = set()
         self._warned: set[str] = set()
         self._last_error: str | None = None
         self._closed = False
@@ -154,6 +158,7 @@ class InotifyWatchSource(IWatchSource):
         self._watches.clear()
         self._pending.clear()
         self._failed.clear()
+        self._optional_absent.clear()
         self._warned.clear()
         self._last_error = None
 
@@ -174,6 +179,7 @@ class InotifyWatchSource(IWatchSource):
         # Retry every root, including ones dropped by an earlier registration
         # exhaustion (AD-40): the capacity may have freed up since.
         self._failed.clear()
+        self._optional_absent.clear()
         self._last_error = None
         for index, root in enumerate(self._roots):
             self._install_root(index, root)
@@ -184,15 +190,26 @@ class InotifyWatchSource(IWatchSource):
             registered=len(self._watches),
             failed=tuple(sorted(self._failed)),
             last_error=self._last_error,
+            optional_absent=tuple(sorted(self._optional_absent)),
         )
 
     def _record_unwatchable(self, path: Path, reason: str) -> None:
-        """Record a root that could not be watched (surfaced, never silent)."""
+        """Record a required root that could not be watched (surfaced, never silent)."""
         self._failed[str(path)] = reason
         self._last_error = reason
 
+    def _record_optional_absent(self, path: Path, message: str) -> None:
+        """Record an absent optional root; expected, informational, retryable."""
+        self._optional_absent.add(str(path))
+        self._info_once(path, message)
+
+    def _clear_optional_absent(self, path: Path) -> None:
+        """A successful install re-arms the optional-absence INFO and clears it."""
+        self._optional_absent.discard(str(path))
+        self._warned.discard(str(path))
+
     def _warn_once(self, path: Path | str, message: str) -> None:
-        """Warn about an unwatchable root at most once until it recovers.
+        """Warn about an unwatchable required root at most once until it recovers.
 
         ``rebuild`` re-attempts every root, so a permanently missing root
         (e.g. ``desired.json`` with no parent dir) would otherwise re-log on
@@ -205,39 +222,60 @@ class InotifyWatchSource(IWatchSource):
         self._warned.add(key)
         logger.warning("watch: %s: %s", message, path)
 
+    def _info_once(self, path: Path | str, message: str) -> None:
+        """Log an optional-root absence at INFO at most once until it recovers."""
+        key = str(path)
+        if key in self._warned:
+            return
+        self._warned.add(key)
+        logger.info("watch: %s: %s", message, path)
+
     def _install_root(self, index: int, root: WatchRoot) -> None:
         path = root.path
         if root.is_directory:
-            self._install_dir_root(index, path, root.depth)
+            self._install_dir_root(index, path, root.depth, optional=root.optional)
         else:
-            self._install_file_root(index, path)
+            self._install_file_root(index, path, optional=root.optional)
 
-    def _install_file_root(self, index: int, path: Path) -> None:
+    def _install_file_root(self, index: int, path: Path, *, optional: bool = False) -> None:
         """Watch the immediate parent filtered to the exact filename."""
         parent = path.parent
         if not parent.is_dir():
+            if optional:
+                self._record_optional_absent(path, "file root parent missing, not watched")
+                return
             self._warn_once(path, "file root parent missing, not watched")
             self._record_unwatchable(path, "parent missing")
             return
-        self._add_watch(parent, filename=path.name, depth=0, root_index=index)
+        if self._add_watch(parent, filename=path.name, depth=0, root_index=index) and optional:
+            self._clear_optional_absent(path)
 
-    def _install_dir_root(self, index: int, path: Path, max_depth: int) -> None:
+    def _install_dir_root(
+        self, index: int, path: Path, max_depth: int, *, optional: bool = False
+    ) -> None:
         if not path.is_dir():
+            if optional:
+                self._record_optional_absent(path, "directory root missing, not watched")
+                return
             self._warn_once(path, "directory root missing, not watched")
             self._record_unwatchable(path, "directory missing")
             return
-        root_str = str(path)
+        root_installed = False
         for dirpath, dirnames, _filenames in os.walk(path):
             rel = os.path.relpath(dirpath, path)
             depth = 0 if rel == "." else rel.count(os.sep) + 1
-            self._add_watch(Path(dirpath), filename=None, depth=depth, root_index=index)
+            installed = self._add_watch(Path(dirpath), filename=None, depth=depth, root_index=index)
+            if depth == 0:
+                root_installed = installed
             if depth >= max_depth:
                 dirnames[:] = []
-        logger.debug("watch: installed tree watches under %s", root_str)
+        if root_installed and optional:
+            self._clear_optional_absent(path)
+        logger.debug("watch: installed tree watches under %s", path)
 
     def _add_watch(
         self, directory: Path, *, filename: str | None, depth: int, root_index: int
-    ) -> None:
+    ) -> bool:
         wd = self._lib.inotify_add_watch(
             self._require_fd(), os.fsencode(str(directory)), _DIR_WATCH_MASK
         )
@@ -264,10 +302,11 @@ class InotifyWatchSource(IWatchSource):
                         reason,
                     )
             self._record_unwatchable(directory, reason)
-            return
+            return False
         self._failed.pop(key, None)
         self._warned.discard(key)
         self._watches[wd] = _Watch(key, filename, depth, root_index)
+        return True
 
     # ── event reading ────────────────────────────────────────────────
     def read_event(self, timeout: float | None = None) -> WatchEvent | None:

@@ -1820,7 +1820,12 @@ def doctor(
         )
     else:
         watch_desc = "watch health: ok"
-    plain = f"{plain}; {watch_desc}"
+    optional_desc = ""
+    if health is not None:
+        optional_desc = "".join(
+            f"; OPTIONAL (absent, not watched) {path}" for path in health.optional_absent
+        )
+    plain = f"{plain}; {watch_desc}{optional_desc}"
     icons_policy = _read_live_icons_policy()
     if icons_policy is not None:
         plain = f"{plain}; {_describe_icons_policy(icons_policy)}"
@@ -1845,6 +1850,7 @@ def doctor(
                     else {
                         "degraded": health.degraded,
                         "failed_roots": list(health.failed_roots),
+                        "optional_absent": list(health.optional_absent),
                         "last_error": health.last_error,
                         "updated_at": health.updated_at,
                     }
@@ -3571,13 +3577,18 @@ def inspect_daemon(
     health = report.watch_health
     if health is None:
         parts.append("watch health: unknown (daemon has not reported)")
-    elif health.degraded:
-        error_desc = f": {health.last_error}" if health.last_error else ""
-        parts.append(f"watch health: degraded ({len(health.failed_roots)} unwatched){error_desc}")
-        for failed_root in health.failed_roots:
-            parts.append(f"  UNWATCHED {failed_root}")
     else:
-        parts.append("watch health: ok")
+        if health.degraded:
+            error_desc = f": {health.last_error}" if health.last_error else ""
+            parts.append(
+                f"watch health: degraded ({len(health.failed_roots)} unwatched){error_desc}"
+            )
+            for failed_root in health.failed_roots:
+                parts.append(f"  UNWATCHED {failed_root}")
+        else:
+            parts.append("watch health: ok")
+        for optional_root in health.optional_absent:
+            parts.append(f"  OPTIONAL (absent, not watched) {optional_root}")
     plain = "\n".join(parts)
     renderer.custom(
         CustomView(
@@ -3605,6 +3616,7 @@ def inspect_daemon(
                     else {
                         "degraded": health.degraded,
                         "failed_roots": list(health.failed_roots),
+                        "optional_absent": list(health.optional_absent),
                         "last_error": health.last_error,
                         "updated_at": health.updated_at,
                     }

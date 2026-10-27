@@ -48,6 +48,12 @@ def test_bounded_depths() -> None:
     assert by_path[Path("/cfg/dotfiles/desired.json")].is_directory is False
 
 
+def test_only_intent_root_is_optional() -> None:
+    roots = _roots()
+    assert [root.optional for root in roots] == [False, False, False, False, True]
+    assert roots[-1].path == INTENT
+
+
 def test_consumer_pointers_and_state_root_are_not_watched() -> None:
     watched = {str(r.path) for r in _roots()}
     forbidden_fragments = (

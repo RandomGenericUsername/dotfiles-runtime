@@ -34,12 +34,17 @@ WATCH_HEALTH_VERSION = 1
 
 @dataclass(frozen=True, slots=True)
 class WatchHealthRecord:
-    """One persisted snapshot of the daemon's watch-set health."""
+    """One persisted snapshot of the daemon's watch-set health.
+
+    ``optional_absent`` is additive to version 1: old records without the key
+    read as an empty tuple, and older readers ignore the key.
+    """
 
     degraded: bool
     failed_roots: tuple[str, ...]
     last_error: str | None
     updated_at: str | None
+    optional_absent: tuple[str, ...] = ()
 
 
 def _now_iso_z() -> str:
@@ -94,6 +99,12 @@ class WatchHealthStore:
         if not isinstance(failed, list) or not all(isinstance(item, str) for item in failed):
             logger.warning("watch-health shape invalid; treating as unknown: %s", self._path)
             return None
+        optional_absent = record.get("optional_absent", [])
+        if not isinstance(optional_absent, list) or not all(
+            isinstance(item, str) for item in optional_absent
+        ):
+            logger.warning("watch-health shape invalid; treating as unknown: %s", self._path)
+            return None
         degraded = record.get("degraded")
         if not isinstance(degraded, bool):
             return None
@@ -108,6 +119,7 @@ class WatchHealthStore:
             failed_roots=tuple(failed),
             last_error=last_error,
             updated_at=updated_at,
+            optional_absent=tuple(optional_absent),
         )
 
     def write(self, status: WatchStatus) -> None:
@@ -117,6 +129,7 @@ class WatchHealthStore:
             "version": WATCH_HEALTH_VERSION,
             "degraded": status.degraded,
             "failed_roots": list(status.failed),
+            "optional_absent": list(status.optional_absent),
             "last_error": status.last_error,
             "updated_at": _now_iso_z(),
         }

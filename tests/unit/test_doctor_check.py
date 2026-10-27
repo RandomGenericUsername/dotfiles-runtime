@@ -492,6 +492,33 @@ class TestCliShape:
         assert payload["watch_health"]["degraded"] is True
         assert payload["watch_health"]["failed_roots"] == ["/spine/x"]
 
+    def test_optional_absent_watch_health_is_informational(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An absent optional root is informational, never desktop drift."""
+        from runtime.adapters.watch_health import WatchHealthStore
+        from runtime.domain.watch import WatchStatus
+
+        state_root = tmp_path / "state-home" / "dotfiles"
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
+        _seed_state(state_root)
+        intent = "/cfg/dotfiles/desired.json"
+        WatchHealthStore(state_root).write(WatchStatus(registered=4, optional_absent=(intent,)))
+
+        plain = runner.invoke(app, ["doctor"])
+        assert plain.exit_code == 0
+        assert "watch health: ok" in plain.output
+        assert f"OPTIONAL (absent, not watched) {intent}" in plain.output
+        assert "UNWATCHED" not in plain.output
+
+        result = runner.invoke(app, ["doctor", "--format", "json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["clean"] is True
+        assert payload["watch_health"]["degraded"] is False
+        assert payload["watch_health"]["failed_roots"] == []
+        assert payload["watch_health"]["optional_absent"] == [intent]
+
     def test_diverged_machine_end_to_end(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

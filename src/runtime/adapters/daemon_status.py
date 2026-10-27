@@ -96,6 +96,7 @@ class DaemonWatchHealthView:
     failed_roots: tuple[str, ...]
     last_error: str | None
     updated_at: str | None
+    optional_absent: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +249,7 @@ def assemble_daemon_report(
             failed_roots=watch_health_record.failed_roots,
             last_error=watch_health_record.last_error,
             updated_at=watch_health_record.updated_at,
+            optional_absent=watch_health_record.optional_absent,
         )
     )
     return DaemonReport(
