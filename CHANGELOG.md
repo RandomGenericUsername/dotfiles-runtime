@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
-Manifest-driven AGS palette refresh, applied-appearance ledger and clipboard
-namespace migration (REQ-002).
+Manifest-driven AGS palette refresh, applied-appearance ledger, parallel live /
+serialized restart lanes and clipboard namespace migration (REQ-002), plus
+confirmed AGS restart liveness (BUG-006).
 
 - Discovery reads every deployed link under the installed `<install>/config`
   spine and validates `app.manifest.json` identity against `app.tsx` and
@@ -19,6 +20,11 @@ namespace migration (REQ-002).
   JSON string ack); the bar and other restart apps use the serialized BUG-006
   quit/confirm/launch lane. A live failure never restarts an app. Runtime-owned
   per-app JSONL records and structured `reload_failures` carry the outcome.
+- AGS restarts now confirm liveness end to end (BUG-006): every `ags run`
+  caller shares `$XDG_RUNTIME_DIR/ags-launch.lock`, quit waits up to 5 s for the
+  intended D-Bus name (and known pid) to release, a still-owned name fails
+  without launching, and exit 0 counts as delegation only when the intended
+  instance owns its name afterwards. One wrapper per intended instance.
 - Clipboard config/state/cache paths move from `hypr-pano` to `clipboard` with a
   one-time migration of history (favorites/recency), preferences and images.
 - `CONTRACT_PIN` moves to contracts `5eb01b8`; the AGS manifest, install-list,

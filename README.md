@@ -26,6 +26,33 @@ dotfiles-runtime version
 
 Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
+## Release notes
+
+**0.3.0** — manifest-driven AGS refresh plus confirmed restart liveness.
+
+- Discovery reads every deployed link under `<install>/config`, validates
+  `app.manifest.json` against `app.tsx` and `ags list`, and reports
+  missing/duplicate/invalid manifests as structured failures. Restart apps are
+  included even when down; dev instances are never refreshed.
+- The appearance ledger at
+  `$XDG_STATE_HOME/dotfiles/appearance-ledger.json` records the applied
+  palette/icons/effects hash and per-app `applied|deferred|failed|skipped`
+  results atomically, retries non-successful apps on the next trigger, and
+  serializes refresh runs under one operation lock.
+- Live apps refresh in parallel over `ags request palette-refresh` (5 s
+  timeout); restart apps use the serialized quit/confirm/launch lane. A live
+  failure never causes a restart.
+- AGS restarts hold `$XDG_RUNTIME_DIR/ags-launch.lock`, wait for the old D-Bus
+  name/pid to release, verify the intended instance name, and treat exit 0 as
+  delegation only when that name is owned (BUG-006).
+- Clipboard config, history and images migrate once from `hypr-pano` to
+  `clipboard`, retaining favorites/recency and preferences.
+- `CONTRACT_PIN` moves to contracts `5eb01b8`, with embedded and
+  conformance-checked AGS manifest, install-list, program-tuple and
+  refresh-result schemas.
+
+See [`CHANGELOG.md`](CHANGELOG.md) for the full entry.
+
 ## Architecture
 
 The package is a hexagon: `domain` (pure, zero-I/O) → `ports` → `adapters` → `application` →
