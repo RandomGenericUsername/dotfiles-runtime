@@ -144,6 +144,26 @@ def test_csg_invocation_matches_record(tmp_path: Path, monkeypatch: pytest.Monke
     _assert_invocation(record, "csg", fake)
 
 
+def test_tpr_invocation_matches_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from runtime.adapters.tpr_adapter import TprAdapter
+
+    record = contract_record("tpr")
+    wallpaper = _copy_wallpaper_fixture(tmp_path)
+    templates_dir = _make_csg_templates_dir(tmp_path)
+    adapter = TprAdapter(
+        templates_dir=templates_dir, engine="native", version="v0.1.0"
+    )
+    entry_hash = adapter.expected_entry_hash(hash_file(wallpaper))
+    output_dir = tmp_path / "state" / "cache" / "palettes" / entry_hash
+
+    fake = _recording_runner(record)
+    monkeypatch.setattr("runtime.adapters.tpr_adapter._run_csg", fake)
+
+    adapter.generate(wallpaper, output_dir)
+
+    _assert_invocation(record, "tpr", fake)
+
+
 def test_weg_invocation_matches_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     record = contract_record("weg")
     wallpaper = _copy_wallpaper_fixture(tmp_path)

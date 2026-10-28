@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.support.palette_fakes import PaletteProducerStub
+
 import fcntl
 import os
 import stat
@@ -890,7 +892,7 @@ class _FakeMutex:
         return _Hold()
 
 
-class _FakeCsg:
+class _FakeCsg(PaletteProducerStub):
     def generate(self, wallpaper_path: Path, output_dir: Path) -> object:
         from runtime.adapters.hashing import hash_file
         from runtime.domain.models import PaletteArtifacts, PaletteEntry

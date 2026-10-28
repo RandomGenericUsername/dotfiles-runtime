@@ -10,6 +10,8 @@ idempotency, no spine writes. CLI shape via monkeypatched composition.
 
 from __future__ import annotations
 
+from tests.support.palette_fakes import PaletteProducerStub
+
 import hashlib
 import json
 import os
@@ -64,7 +66,7 @@ def _now_z() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
-class _Csg:
+class _Csg(PaletteProducerStub):
     def __init__(self) -> None:
         self.calls = 0
 

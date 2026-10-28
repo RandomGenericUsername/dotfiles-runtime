@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.support.palette_fakes import PaletteProducerStub
+
 import json
 import logging
 import os
@@ -36,7 +38,7 @@ class _FakeMutex:
         return _Hold()
 
 
-class _FakeCsg:
+class _FakeCsg(PaletteProducerStub):
     def __init__(self) -> None:
         self.calls = 0
 

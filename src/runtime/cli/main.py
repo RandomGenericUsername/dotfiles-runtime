@@ -257,14 +257,13 @@ def _run_seed_if_needed() -> None:
 
     try:
         from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
-        from runtime.adapters.csg_adapter import CsgAdapter
         from runtime.adapters.flock_seed_mutex import FlockSeedMutex
         from runtime.adapters.hyprland_monitor_source import HyprlandMonitorSource
         from runtime.adapters.itr_adapter import ItrAdapter
         from runtime.adapters.json_state_repository import JsonStateRepository
         from runtime.adapters.seeder import CacheSeeder
         from runtime.adapters.weg_adapter import WegAdapter
-        from runtime.application.derive import find_templates_dir
+        from runtime.application.palette_producer import create_palette_producer
         from runtime.application.seed_cache import SeedCacheUseCase
         from runtime.ports.seed_mutex import SeedLockedError
         from runtime.ports.wallpaper_backend import IStaticWallpaperBackend, IVideoWallpaperBackend
@@ -275,7 +274,7 @@ def _run_seed_if_needed() -> None:
         )
 
         state_repo = JsonStateRepository(state_root=state_root)
-        csg = CsgAdapter(templates_dir=find_templates_dir(install_spine))
+        csg = create_palette_producer(install_spine)
         weg = WegAdapter()
         itr = ItrAdapter()
         seeder = CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec())
@@ -592,7 +591,6 @@ def _run_wallpaper_set(
         client = _build_wallpaper_client()
 
     from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
-    from runtime.adapters.csg_adapter import CsgAdapter
     from runtime.adapters.flock_seed_mutex import FlockSeedMutex, PassThroughSeedMutex
     from runtime.adapters.hashing import hash_file
     from runtime.adapters.hyprland_monitor_source import HyprlandMonitorSource
@@ -601,7 +599,7 @@ def _run_wallpaper_set(
     from runtime.adapters.seeder import CacheSeeder
     from runtime.adapters.weg_adapter import WegAdapter
     from runtime.application.apply_wallpaper import ApplyWallpaperUseCase
-    from runtime.application.derive import find_templates_dir
+    from runtime.application.palette_producer import create_palette_producer
     from runtime.application.reconcile import ReconcileDesktopStateUseCase
     from runtime.application.swap_visible import SwapVisibleUseCase
     from runtime.domain.models import PaletteUnavailableError, SeedLockedError
@@ -614,7 +612,7 @@ def _run_wallpaper_set(
     _publish_wallpaper_state(client, "applying", pending_hash, "set", stage="generating_palette")
 
     inner_mutex = PassThroughSeedMutex()
-    templates_dir = find_templates_dir(install_spine)
+    producer = create_palette_producer(install_spine)
     current_stage = "generating_palette"
 
     def _seeder() -> CacheSeeder:
@@ -626,7 +624,7 @@ def _run_wallpaper_set(
 
     apply_use_case = ApplyWallpaperUseCase(
         state_repo=JsonStateRepository(state_root=state_root),
-        csg=CsgAdapter(templates_dir=templates_dir),
+        csg=producer,
         weg=WegAdapter(),
         itr=ItrAdapter(),
         install_spine=install_spine,
@@ -707,7 +705,7 @@ def _run_wallpaper_set(
         publish_stage("reconciling_consumers")
         reconcile_result = ReconcileDesktopStateUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
-            csg=CsgAdapter(templates_dir=templates_dir),
+            csg=producer,
             weg=WegAdapter(),
             itr=ItrAdapter(),
             install_spine=install_spine,
@@ -1009,14 +1007,13 @@ def _run_icons_regenerate(
     transitions; the CLI passes none and the production client is built.
     """
     from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
-    from runtime.adapters.csg_adapter import CsgAdapter
     from runtime.adapters.dbus_job_client import DbusJobClient
     from runtime.adapters.flock_seed_mutex import FlockSeedMutex, PassThroughSeedMutex
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
     from runtime.adapters.weg_adapter import WegAdapter
-    from runtime.application.derive import find_templates_dir
+    from runtime.application.palette_producer import create_palette_producer
     from runtime.application.regenerate_icons import RegenerateIconsUseCase
     from runtime.domain.icon_contrast_policy import CONTRAST_FLAGS
     from runtime.domain.models import SeedLockedError
@@ -1047,12 +1044,12 @@ def _run_icons_regenerate(
     _publish_wallpaper_state(client, "applying", pending_hash, "regenerate")
 
     inner_mutex = PassThroughSeedMutex()
-    templates_dir = find_templates_dir(install_spine)
+    producer = create_palette_producer(install_spine)
     try:
         with FlockSeedMutex(state_root / ".seed.lock").hold(blocking=False):
             result = RegenerateIconsUseCase(
                 state_repo=JsonStateRepository(state_root=state_root),
-                csg=CsgAdapter(templates_dir=templates_dir),
+                csg=producer,
                 weg=WegAdapter(),
                 itr=ItrAdapter(),
                 install_spine=install_spine,
@@ -1363,18 +1360,17 @@ def _run_reconcile(
     install_spine = _resolve_install_spine()
 
     from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
-    from runtime.adapters.csg_adapter import CsgAdapter
     from runtime.adapters.flock_seed_mutex import FlockSeedMutex
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
     from runtime.adapters.weg_adapter import WegAdapter
-    from runtime.application.derive import find_templates_dir
+    from runtime.application.palette_producer import create_palette_producer
     from runtime.application.reconcile import ReconcileDesktopStateUseCase
 
     use_case = ReconcileDesktopStateUseCase(
         state_repo=JsonStateRepository(state_root=state_root),
-        csg=CsgAdapter(templates_dir=find_templates_dir(install_spine)),
+        csg=create_palette_producer(install_spine),
         weg=WegAdapter(),
         itr=ItrAdapter(),
         install_spine=install_spine,
@@ -1411,15 +1407,17 @@ def _run_check_inputs() -> CheckInputsResult:
         find_effects_catalog,
         find_icon_mappings,
         find_icon_templates,
-        find_templates_dir,
     )
+    from runtime.application.palette_producer import create_palette_producer
 
+    producer = create_palette_producer(install_spine)
     invalidation = InvalidationQueryAdapter(
         state_root=state_root,
-        templates_dir=find_templates_dir(install_spine),
+        templates_dir=producer.templates_dir,
         catalog_path=find_effects_catalog(install_spine),
         icon_templates=find_icon_templates(install_spine),
         icon_mappings=find_icon_mappings(install_spine),
+        palette_producer=producer,
     )
     use_case = CheckInputsUseCase(
         state_repo=JsonStateRepository(state_root=state_root),
@@ -1496,20 +1494,22 @@ def _run_reconcile_plan(
         find_effects_catalog,
         find_icon_mappings,
         find_icon_templates,
-        find_templates_dir,
     )
+    from runtime.application.palette_producer import create_palette_producer
     from runtime.application.prune import PruneUseCase
 
     state_repo = JsonStateRepository(state_root=state_root)
     # Fail fast on malformed intent: before any invalidation work, loud
     # ValueError on bad file (AC 4) — never silent fallback to imperative.
     desired = read_desired_state(_resolve_desired_path())
+    producer = create_palette_producer(install_spine)
     invalidation = InvalidationQueryAdapter(
         state_root=state_root,
-        templates_dir=find_templates_dir(install_spine),
+        templates_dir=producer.templates_dir,
         catalog_path=find_effects_catalog(install_spine),
         icon_templates=find_icon_templates(install_spine),
         icon_mappings=find_icon_mappings(install_spine),
+        palette_producer=producer,
     )
     check_result = CheckInputsUseCase(
         state_repo=state_repo,
@@ -1583,7 +1583,6 @@ def _run_regenerate_stale(
     install_spine = _resolve_install_spine()
 
     from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
-    from runtime.adapters.csg_adapter import CsgAdapter
     from runtime.adapters.flock_seed_mutex import FlockSeedMutex
     from runtime.adapters.invalidation import InvalidationQueryAdapter
     from runtime.adapters.itr_adapter import ItrAdapter
@@ -1596,8 +1595,8 @@ def _run_regenerate_stale(
         find_effects_catalog,
         find_icon_mappings,
         find_icon_templates,
-        find_templates_dir,
     )
+    from runtime.application.palette_producer import create_palette_producer
     from runtime.application.reconcile import ReconcileDesktopStateUseCase
     from runtime.application.regenerate import RegenerateStaleUseCase
 
@@ -1606,14 +1605,15 @@ def _run_regenerate_stale(
         state_root, consumer_spec=StaticConsumerPathSpec(), suppress_history=suppress_history
     )
     mutex = FlockSeedMutex(state_root / ".seed.lock")
-    csg = CsgAdapter(templates_dir=find_templates_dir(install_spine))
+    csg = create_palette_producer(install_spine)
     weg, itr = WegAdapter(), ItrAdapter()
     invalidation = InvalidationQueryAdapter(
         state_root=state_root,
-        templates_dir=find_templates_dir(install_spine),
+        templates_dir=csg.templates_dir,
         catalog_path=find_effects_catalog(install_spine),
         icon_templates=find_icon_templates(install_spine),
         icon_mappings=find_icon_mappings(install_spine),
+        palette_producer=csg,
     )
     use_case = RegenerateStaleUseCase(
         check=CheckInputsUseCase(
@@ -1687,20 +1687,19 @@ def _run_doctor_repair() -> RepairResult:
 
     from runtime.adapters.cache import quarantine_entry
     from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
-    from runtime.adapters.csg_adapter import CsgAdapter
     from runtime.adapters.flock_seed_mutex import FlockSeedMutex
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
     from runtime.adapters.weg_adapter import WegAdapter
-    from runtime.application.derive import find_templates_dir
     from runtime.application.doctor import DoctorRepairUseCase, DoctorUseCase
+    from runtime.application.palette_producer import create_palette_producer
     from runtime.application.reconcile import ReconcileDesktopStateUseCase
 
     state_repo = JsonStateRepository(state_root=state_root)
     seeder = CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec())
     mutex = FlockSeedMutex(state_root / ".seed.lock")
-    csg = CsgAdapter(templates_dir=find_templates_dir(install_spine))
+    csg = create_palette_producer(install_spine)
     weg, itr = WegAdapter(), ItrAdapter()
     use_case = DoctorRepairUseCase(
         doctor=DoctorUseCase(

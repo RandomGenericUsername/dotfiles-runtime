@@ -13,6 +13,8 @@ contract:
 
 from __future__ import annotations
 
+from tests.support.palette_fakes import PaletteProducerStub
+
 import json
 import os
 from datetime import UTC, datetime
@@ -106,18 +108,18 @@ def _write_palette_artifacts(output_dir: Path) -> None:
         (output_dir / name).write_text(f"{name} content")
 
 
-class _FakeCsg:
+class _FakeCsg(PaletteProducerStub):
     """Contract-honest csg fake: echoes the output dir name as entry hash."""
 
     def __init__(self, **kwargs: Any) -> None:
-        pass
+        self.templates_dir = kwargs.get("templates_dir")
 
     def generate(self, wallpaper_path: Path, output_dir: Path) -> PaletteEntry:
         _write_palette_artifacts(output_dir)
         return _palette_entry(output_dir, hash_file(wallpaper_path))
 
 
-class _FailingCsg:
+class _FailingCsg(PaletteProducerStub):
     def __init__(self, **kwargs: Any) -> None:
         pass
 

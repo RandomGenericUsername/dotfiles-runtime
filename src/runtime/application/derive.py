@@ -91,7 +91,6 @@ from runtime.adapters.hashing import (
     effects_entry_hash,
     hash_file,
     icons_entry_hash,
-    palette_entry_hash,
 )
 from runtime.adapters.icon_contrast_sampler import sample_top_strip_luminance
 from runtime.adapters.seeder import CacheSeeder
@@ -688,10 +687,13 @@ class DerivationPipeline:
         Cache hit requires completeness (migration, AC 8): dir existence
         alone is NOT enough — ``ensure_palette_entry_complete`` evicts a
         pre-growth partial entry so the same ``<ph>`` regenerates below.
+
+        The active producer owns both the templates fingerprint and the entry
+        key (:class:`runtime.ports.color_scheme_generator.IColorSchemeGenerator`),
+        so ``csg`` keeps its legacy key and ``tpr`` can never collide with it.
         """
-        templates_dir = require_input("csg_templates", self._install_spine)
-        template_set_hash = canonical_hash_dir(templates_dir)
-        peh = palette_entry_hash(wallpaper_hash, template_set_hash)
+        template_set_hash = self._csg.template_set_hash()
+        peh = self._csg.expected_entry_hash(wallpaper_hash)
         target = cache_entry_path(self._state_root, "palettes", peh)
         if ensure_palette_entry_complete(target, self._seeder):
             return self._seeder.load_palette_entry(target), True

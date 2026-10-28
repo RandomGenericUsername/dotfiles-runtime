@@ -16,6 +16,8 @@ csg/weg/itr, real flock mutex):
 
 from __future__ import annotations
 
+from tests.support.palette_fakes import PaletteProducerStub
+
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,7 +34,7 @@ def _now_z() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
-class _FakeCsg:
+class _FakeCsg(PaletteProducerStub):
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
         self.calls = 0
