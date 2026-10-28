@@ -11,6 +11,8 @@ no history append).
 
 from __future__ import annotations
 
+from tests.support.palette_fakes import PaletteProducerStub
+
 import json
 import logging
 from datetime import UTC, datetime
@@ -86,13 +88,20 @@ class _FakeMutex:
         return _Hold()
 
 
-class _FakeCsg:
+class _FakeCsg(PaletteProducerStub):
     """Contract-honest fake: echoes the output dir's name as entry hash."""
 
-    def __init__(self, *, fail: bool = False, events: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        fail: bool = False,
+        events: list[str] | None = None,
+        templates_dir: Path | None = None,
+    ) -> None:
         self.fail = fail
         self.calls = 0
         self.events = events
+        self.templates_dir = templates_dir
 
     def generate(self, wallpaper_path: Path, output_dir: Path) -> Any:
         from runtime.domain.models import PaletteArtifacts, PaletteEntry
@@ -219,9 +228,12 @@ def _make_use_case(
 
     state_root = tmp_path / "state"
     spine = install_spine if install_spine is not None else tmp_path / "install"
+    csg_adapter = csg or _FakeCsg()
+    if getattr(csg_adapter, "templates_dir", None) is None:
+        csg_adapter.templates_dir = spine / "config" / "color-scheme-generator" / "templates"
     return ApplyWallpaperUseCase(
         state_repo=repo,
-        csg=csg or _FakeCsg(),
+        csg=csg_adapter,
         weg=weg or _FakeWeg(),
         itr=itr or _FakeItr(),
         install_spine=spine,

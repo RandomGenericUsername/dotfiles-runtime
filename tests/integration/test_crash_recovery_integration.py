@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.support.palette_fakes import PaletteProducerStub
+
 import json
 import os
 import threading
@@ -17,7 +19,7 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 WALLPAPER_PNG = FIXTURES / "wallpaper.png"
 
 
-class _FakeCsg:
+class _FakeCsg(PaletteProducerStub):
     def __init__(self) -> None:
         self.calls = 0
 

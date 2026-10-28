@@ -7,6 +7,8 @@ state surfacing and reseed after a crashed prior run.
 
 from __future__ import annotations
 
+from tests.support.palette_fakes import PaletteProducerStub
+
 import json
 import os
 from pathlib import Path
@@ -27,7 +29,7 @@ def _make_wallpaper_hash() -> str:
     return hash_file(WALLPAPER_PNG)
 
 
-class _FakeCsg:
+class _FakeCsg(PaletteProducerStub):
     """Contract-honest fake: output dir name is the entry hash identity."""
 
     def generate(self, wallpaper_path: Path, output_dir: Path) -> object:

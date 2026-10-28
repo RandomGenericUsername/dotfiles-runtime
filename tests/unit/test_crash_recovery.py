@@ -8,6 +8,8 @@ Mirrors test_reconcile.py fake-adapter patterns.
 
 from __future__ import annotations
 
+from tests.support.palette_fakes import PaletteProducerStub
+
 import json
 import logging
 import os
@@ -41,7 +43,7 @@ class _FakeMutex:
         return _Hold()
 
 
-class _FakeCsg:
+class _FakeCsg(PaletteProducerStub):
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
         self.calls = 0

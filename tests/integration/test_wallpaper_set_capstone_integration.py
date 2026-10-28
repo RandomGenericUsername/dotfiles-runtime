@@ -24,6 +24,8 @@ Covers the capstone ACs:
 
 from __future__ import annotations
 
+from tests.support.palette_fakes import PaletteProducerStub
+
 import json
 import logging
 import re
@@ -67,9 +69,10 @@ class _FakeMutex:
         return _Hold()
 
 
-class _FakeCsg:
-    def __init__(self) -> None:
+class _FakeCsg(PaletteProducerStub):
+    def __init__(self, templates_dir: Path | None = None) -> None:
         self.calls = 0
+        self.templates_dir = templates_dir
 
     def generate(self, wallpaper_path: Path, output_dir: Path) -> object:
         from runtime.domain.models import PaletteArtifacts, PaletteEntry
@@ -238,7 +241,9 @@ def _setup(tmp_path: Path, *, img_bytes: bytes | None = None, fixture_img: bool 
         state_root=state_root,
         install_spine=install_spine,
         img=img,
-        csg=_FakeCsg(),
+        csg=_FakeCsg(
+            templates_dir=install_spine / "config" / "color-scheme-generator" / "templates"
+        ),
         weg=_FakeWeg(),
         itr=_FakeItr(),
     )
@@ -673,7 +678,9 @@ class TestCapstoneCliExitCode:
         img.write_bytes(b"cli capstone exit-code evidence")
         ApplyWallpaperUseCase(
             state_repo=repo,
-            csg=_FakeCsg(),
+            csg=_FakeCsg(
+            templates_dir=install_spine / "config" / "color-scheme-generator" / "templates"
+        ),
             weg=_FakeWeg(),
             itr=_FakeItr(),
             install_spine=install_spine,

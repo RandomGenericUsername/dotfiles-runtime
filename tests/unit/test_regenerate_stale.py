@@ -9,6 +9,8 @@ ACs: minimality + cascade, reconverge, idempotency, absent loudness.
 
 from __future__ import annotations
 
+from tests.support.palette_fakes import PaletteProducerStub
+
 import json
 from contextlib import contextmanager
 from pathlib import Path
@@ -561,7 +563,7 @@ class TestRegenerateEndToEnd:
         def _h(data: bytes) -> str:
             return hashlib.sha256(data).hexdigest()
 
-        class _Csg:
+        class _Csg(PaletteProducerStub):
             def __init__(self) -> None:
                 self.calls = 0
 
@@ -647,11 +649,13 @@ class TestRegenerateEndToEnd:
                 self.calls += 1
                 return True
 
+        csg = _Csg()
+        csg.templates_dir = templates  # producer seam: real template fingerprint
         return {
             "install": install,
             "state_root": state_root,
             "templates": templates,
-            "csg": _Csg(),
+            "csg": csg,
             "weg": _Weg(),
             "itr": _Itr(),
             "reloaders": [_Reloader()],

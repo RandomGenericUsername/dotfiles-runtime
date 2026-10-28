@@ -16,6 +16,8 @@ seeded artifact).
 
 from __future__ import annotations
 
+from tests.support.palette_fakes import PaletteProducerStub
+
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -74,7 +76,7 @@ class _FakeMutex:
         return _Hold()
 
 
-class _FakeCsg:
+class _FakeCsg(PaletteProducerStub):
     def generate(self, wallpaper_path: Path, output_dir: Path) -> object:
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "colors.yaml").write_text(_pinned_colors_yaml())

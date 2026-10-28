@@ -44,7 +44,7 @@ from runtime.adapters.hashing import (
     HASH_ALGORITHM,
     canonical_hash_dir,
     hash_file,
-    palette_entry_hash,
+    palette_entry_hash_for_producer,
 )
 from runtime.domain.models import (
     PALETTE_ARTIFACT_NAMES,
@@ -208,6 +208,7 @@ def _build_palette_entry(
     entry_hash: str,
     wallpaper_hash: str,
     template_set_hash: str,
+    producer: str = "csg",
 ) -> PaletteEntry:
     """Hash the verified 8-artifact set and build the ``PaletteEntry``."""
     # Compute artifact hashes via binary chunked hash_file — wrap TOCTOU
@@ -223,7 +224,7 @@ def _build_palette_entry(
             colors_btop=hash_file(output_dir / "colors.btop.theme"),
         )
     except (FileNotFoundError, PermissionError, IsADirectoryError, OSError) as exc:
-        raise RuntimeError(f"cannot hash csg artifacts in {output_dir}: {exc}") from exc
+        raise RuntimeError(f"cannot hash {producer} artifacts in {output_dir}: {exc}") from exc
 
     generated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
@@ -276,6 +277,40 @@ def _validate_output_dir(output_dir: Path, expected_hash: str) -> None:
         raise ValueError(f"output_dir path too long ({len(str(output_dir))} chars): {output_dir}")
 
 
+def _validate_wallpaper(wallpaper_path: Path) -> str:
+    """Validate a wallpaper input and return its SHA-256 hex hash."""
+    if str(wallpaper_path) in ("", "."):
+        raise ValueError(f"wallpaper_path must be non-empty, got {wallpaper_path!r}")
+    if not wallpaper_path.exists():
+        raise FileNotFoundError(wallpaper_path)
+    if wallpaper_path.is_dir():
+        raise IsADirectoryError(wallpaper_path)
+    if not wallpaper_path.is_file():
+        # FIFO, socket, device, broken symlink, etc. — not a regular file
+        raise ValueError(f"wallpaper_path is not a regular file: {wallpaper_path}")
+    # Size / type guard — avoid hashing /dev/zero, huge files, empty
+    try:
+        st = wallpaper_path.stat()
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError(f"wallpaper_path is not a regular file: {wallpaper_path}")
+        if st.st_size == 0:
+            raise ValueError(f"wallpaper_path is empty (0 bytes): {wallpaper_path}")
+        # 100 MB cap — prevents DoS before subprocess timeout
+        if st.st_size > 100 * 1024 * 1024:
+            raise ValueError(f"wallpaper_path too large ({st.st_size} bytes): {wallpaper_path}")
+    except OSError as exc:
+        # PermissionError / OSError from stat — surface as runtime error
+        if isinstance(exc, (FileNotFoundError, IsADirectoryError, ValueError)):
+            raise
+        raise RuntimeError(f"cannot stat wallpaper_path {wallpaper_path}: {exc}") from exc
+
+    # Compute wallpaper hash via chunked binary read — wrap permission errors
+    try:
+        return hash_file(wallpaper_path)
+    except (PermissionError, OSError) as exc:
+        raise RuntimeError(f"cannot hash wallpaper_path {wallpaper_path}: {exc}") from exc
+
+
 class CsgAdapter(IColorSchemeGenerator):
     """Adapter that invokes ``csg generate`` via env override.
 
@@ -295,6 +330,8 @@ class CsgAdapter(IColorSchemeGenerator):
 
     DEFAULT_TIMEOUT: int = DEFAULT_TIMEOUT_SECONDS
 
+    producer_name: str = "csg"
+
     def __init__(
         self,
         timeout: int = DEFAULT_TIMEOUT,
@@ -308,6 +345,59 @@ class CsgAdapter(IColorSchemeGenerator):
         self._timeout = timeout
         self._csg_bin = _validate_csg_bin(csg_bin)
         self._templates_dir = templates_dir
+
+    @property
+    def templates_dir(self) -> Path | None:
+        """The spine-resolved CSG templates dir (``None`` when not supplied)."""
+        return self._templates_dir
+
+    def _resolve_template_set_hash(self) -> str:
+        """Validate the templates dir and return its canonical hash.
+
+        ``templates_dir`` is REQUIRED and must be resolved from the
+        provisioning spine by the caller (``find_templates_dir(install_spine)``).
+        There is no repo-relative discovery fallback: the in-tree csg checkout
+        was retired with cli-tools-repos S5, so a discovered path would be dead
+        on a provisioned host and divergent on a dev checkout. Failing here
+        (not in ``__init__``) keeps bare construction for ``is_available()``
+        legitimate.
+        """
+        templates_dir = self._templates_dir
+        if templates_dir is None:
+            raise FileNotFoundError(
+                "CSG templates dir not provided: CsgAdapter was constructed without "
+                "templates_dir. Resolve it from the provisioning spine "
+                "(runtime.application.derive.find_templates_dir(install_spine)) and pass "
+                "templates_dir=... to the caller's CsgAdapter construction; the retired "
+                "repo-relative discovery fallback has been removed."
+            )
+        if not templates_dir.exists():
+            raise FileNotFoundError(f"CSG templates dir not found: {templates_dir}")
+        if not templates_dir.is_dir():
+            raise NotADirectoryError(f"CSG templates dir is not a directory: {templates_dir}")
+        # Empty dir check — canonical_hash_dir returns sha256(b"") for empty
+        try:
+            if not any(templates_dir.iterdir()):
+                raise FileNotFoundError(f"CSG templates dir is empty: {templates_dir}")
+        except OSError as exc:
+            raise RuntimeError(f"cannot read templates dir {templates_dir}: {exc}") from exc
+        try:
+            template_set_hash = canonical_hash_dir(templates_dir)
+        except OSError as exc:
+            raise RuntimeError(f"cannot hash templates dir {templates_dir}: {exc}") from exc
+        if template_set_hash == _EMPTY_DIR_HASH:
+            raise FileNotFoundError(f"CSG templates dir is empty (hash is empty): {templates_dir}")
+        return template_set_hash
+
+    def template_set_hash(self) -> str:
+        """Canonical hash of the CSG template set (same value ``generate`` uses)."""
+        return self._resolve_template_set_hash()
+
+    def expected_entry_hash(self, wallpaper_hash: str) -> str:
+        """CSG's palette entry key: legacy formula, seed ``None`` (unchanged)."""
+        return palette_entry_hash_for_producer(
+            self.producer_name, wallpaper_hash, self.template_set_hash()
+        )
 
     def is_available(self) -> bool:
         """Return True if ``csg`` binary is on PATH and executable."""
@@ -360,75 +450,15 @@ class CsgAdapter(IColorSchemeGenerator):
                 signal, missing/non-file artifact names, rc and stderr tail).
                 A timeout with a complete set returns a normal ``PaletteEntry``.
         """
-        # 1. Validate wallpaper_path before spawning subprocess
-        if str(wallpaper_path) in ("", "."):
-            raise ValueError(f"wallpaper_path must be non-empty, got {wallpaper_path!r}")
-        if not wallpaper_path.exists():
-            raise FileNotFoundError(wallpaper_path)
-        if wallpaper_path.is_dir():
-            raise IsADirectoryError(wallpaper_path)
-        if not wallpaper_path.is_file():
-            # FIFO, socket, device, broken symlink, etc. — not a regular file
-            raise ValueError(f"wallpaper_path is not a regular file: {wallpaper_path}")
-        # Size / type guard — avoid hashing /dev/zero, huge files, empty
-        try:
-            st = wallpaper_path.stat()
-            if not stat.S_ISREG(st.st_mode):
-                raise ValueError(f"wallpaper_path is not a regular file: {wallpaper_path}")
-            if st.st_size == 0:
-                raise ValueError(f"wallpaper_path is empty (0 bytes): {wallpaper_path}")
-            # 100 MB cap — prevents DoS before subprocess timeout
-            if st.st_size > 100 * 1024 * 1024:
-                raise ValueError(f"wallpaper_path too large ({st.st_size} bytes): {wallpaper_path}")
-        except OSError as exc:
-            # PermissionError / OSError from stat — surface as runtime error
-            if isinstance(exc, (FileNotFoundError, IsADirectoryError, ValueError)):
-                raise
-            raise RuntimeError(f"cannot stat wallpaper_path {wallpaper_path}: {exc}") from exc
+        # 1. Validate wallpaper_path and hash it before spawning a subprocess
+        wallpaper_hash = _validate_wallpaper(wallpaper_path)
 
-        # 2. Compute wallpaper hash via chunked binary read — wrap permission errors
-        try:
-            wallpaper_hash = hash_file(wallpaper_path)
-        except (PermissionError, OSError) as exc:
-            raise RuntimeError(f"cannot hash wallpaper_path {wallpaper_path}: {exc}") from exc
+        # 2. Resolve templates dir READ-ONLY and compute template_set_hash.
+        #    See ``_resolve_template_set_hash`` for the spine-only contract.
+        template_set_hash = self._resolve_template_set_hash()
 
-        # 3. Resolve templates dir READ-ONLY and compute template_set_hash.
-        # templates_dir is REQUIRED and must be resolved from the provisioning
-        # spine by the caller (``find_templates_dir(install_spine)``). There is no
-        # repo-relative discovery fallback: the in-tree csg checkout was retired
-        # with cli-tools-repos S5, so a discovered path would be dead on a
-        # provisioned host and divergent on a dev checkout. Failing here (not in
-        # __init__) keeps bare construction for ``is_available()`` legitimate.
-        # The error type matches the neighbouring "templates dir not found"
-        # failures: a missing input path, not a malformed argument value.
-        templates_dir = self._templates_dir
-        if templates_dir is None:
-            raise FileNotFoundError(
-                "CSG templates dir not provided: CsgAdapter was constructed without "
-                "templates_dir. Resolve it from the provisioning spine "
-                "(runtime.application.derive.find_templates_dir(install_spine)) and pass "
-                "templates_dir=... to the caller's CsgAdapter construction; the retired "
-                "repo-relative discovery fallback has been removed."
-            )
-        if not templates_dir.exists():
-            raise FileNotFoundError(f"CSG templates dir not found: {templates_dir}")
-        if not templates_dir.is_dir():
-            raise NotADirectoryError(f"CSG templates dir is not a directory: {templates_dir}")
-        # Empty dir check — canonical_hash_dir returns sha256(b"") for empty
-        try:
-            if not any(templates_dir.iterdir()):
-                raise FileNotFoundError(f"CSG templates dir is empty: {templates_dir}")
-        except OSError as exc:
-            raise RuntimeError(f"cannot read templates dir {templates_dir}: {exc}") from exc
-        try:
-            template_set_hash = canonical_hash_dir(templates_dir)
-        except OSError as exc:
-            raise RuntimeError(f"cannot hash templates dir {templates_dir}: {exc}") from exc
-        if template_set_hash == _EMPTY_DIR_HASH:
-            raise FileNotFoundError(f"CSG templates dir is empty (hash is empty): {templates_dir}")
-
-        # 4. Compute entry hash and validate output_dir name (strict, case-sensitive)
-        ph = palette_entry_hash(wallpaper_hash, template_set_hash)
+        # 3. Compute entry hash and validate output_dir name (strict, case-sensitive)
+        ph = self.expected_entry_hash(wallpaper_hash)
         _validate_output_dir(output_dir, ph)
 
         # 5. Ensure parent exists; create output_dir if needed (staging case already exists)

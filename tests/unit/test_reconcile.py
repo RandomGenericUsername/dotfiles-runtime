@@ -17,6 +17,8 @@ channel in the constructor); mutex double-checked ordering.
 
 from __future__ import annotations
 
+from tests.support.palette_fakes import PaletteProducerStub
+
 import inspect
 import json
 import logging
@@ -64,7 +66,7 @@ class _FakeMutex:
         return _Hold()
 
 
-class _FakeCsg:
+class _FakeCsg(PaletteProducerStub):
     """Contract-honest fake: echoes the output dir's name as entry hash."""
 
     def __init__(self, *, fail: bool = False, events: list[str] | None = None) -> None:
@@ -270,6 +272,7 @@ def _apply_state(
     state_root = tmp_path / "state"
     repo = JsonStateRepository(state_root=state_root)
     csg, weg, itr = _FakeCsg(), _FakeWeg(fail=weg_fail), _FakeItr(fail=itr_fail)
+    csg.templates_dir = install_spine / "config" / "color-scheme-generator" / "templates"
     img = tmp_path / "wall.png"
     img.write_bytes(img_bytes)
 

@@ -6,8 +6,9 @@ OCI containers via ``csg``'s ``container_processor``. Replaces
 (``GITHUB_TOKEN``, ``AWS_*``, ``*_SECRET*`` etc.) and handles
 ``E2BIG`` (argument list too long) explicitly.
 
-Scalable: single source for all three adapters (CSG/WEG/ITR) — future
-adapters reuse ``build_env`` without duplicating allowlists.
+Scalable: single source for all three adapters (CSG/WEG/ITR) plus the
+opt-in TPR palette producer — future adapters reuse ``build_env`` without
+duplicating allowlists.
 
 AD-7: adapter only sets host ``env=``; ``csg`` forwards into
 ``RunConfig``. This module builds the host env dict.
@@ -48,6 +49,7 @@ _ALLOWED_PREFIXES: tuple[str, ...] = (
     "COLORSCHEME__",
     "WALLPAPER__",
     "ICON_RENDERER__",
+    "THEME__",
     "XDG_",
 )
 

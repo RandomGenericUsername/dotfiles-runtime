@@ -10,6 +10,8 @@ versions is the evidence, mirroring the AGS story pattern).
 
 from __future__ import annotations
 
+from tests.support.palette_fakes import PaletteProducerStub
+
 import os
 import shutil
 import stat
@@ -42,7 +44,7 @@ class _FakeMutex:
         return _Hold()
 
 
-class _FakeCsg:
+class _FakeCsg(PaletteProducerStub):
     def generate(self, wallpaper_path: Path, output_dir: Path) -> object:
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "colors.yaml").write_text("colors: []")

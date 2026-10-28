@@ -279,6 +279,57 @@ def palette_entry_hash(wallpaper_hash: str, template_set_hash: str, seed: str | 
     return hashlib.sha256(base.encode("utf-8")).hexdigest()
 
 
+def palette_producer_seed(
+    producer_name: str,
+    template_set_hash: str,
+    *,
+    engine: str | None = None,
+    version: str | None = None,
+) -> str | None:
+    """Seed that folds a palette producer's identity into the entry key.
+
+    ``csg`` keeps today's formula exactly: seed ``None``, so the entry hash is
+    ``sha256(wallpaper_hash || template_set_hash)``. ``tpr`` adds a 64-char hex
+    fingerprint over its engine, version and template set:
+
+    ``sha256("tpr:" + engine + ":" + version + ":" + template_set_hash)``
+
+    Single source for the seed formula (``TprAdapter`` and any caller that
+    recomputes the key). Unknown producers fail loud rather than silently
+    reusing the CSG key.
+    """
+    if producer_name == "csg":
+        return None
+    if producer_name == "tpr":
+        _validate_hex64("template_set_hash", template_set_hash)
+        if not engine:
+            raise ValueError("tpr producer seed requires a non-empty engine")
+        if not version:
+            raise ValueError("tpr producer seed requires a non-empty version")
+        material = f"tpr:{engine}:{version}:{template_set_hash}"
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+    raise ValueError(f"unknown palette producer: {producer_name!r}")
+
+
+def palette_entry_hash_for_producer(
+    producer_name: str,
+    wallpaper_hash: str,
+    template_set_hash: str,
+    *,
+    engine: str | None = None,
+    version: str | None = None,
+) -> str:
+    """Producer-aware palette entry hash.
+
+    Thin wrapper over :func:`palette_producer_seed` + :func:`palette_entry_hash`
+    so adapters never re-implement the fingerprint formula.
+    """
+    seed = palette_producer_seed(
+        producer_name, template_set_hash, engine=engine, version=version
+    )
+    return palette_entry_hash(wallpaper_hash, template_set_hash, seed=seed)
+
+
 def effects_entry_hash(wallpaper_hash: str, catalog_hash: str, seed: str | None = None) -> str:
     """Entry hash for ``cache/effects/<eh>/``.
 

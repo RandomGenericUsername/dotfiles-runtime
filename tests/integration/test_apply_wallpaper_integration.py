@@ -8,6 +8,8 @@ filesystem outcomes end-to-end.
 
 from __future__ import annotations
 
+from tests.support.palette_fakes import PaletteProducerStub
+
 import json
 from pathlib import Path
 from typing import Any
@@ -21,7 +23,7 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 WALLPAPER_PNG = FIXTURES / "wallpaper.png"
 
 
-class _FakeCsg:
+class _FakeCsg(PaletteProducerStub):
     """Contract-honest fake with invocation counters."""
 
     def __init__(self) -> None:

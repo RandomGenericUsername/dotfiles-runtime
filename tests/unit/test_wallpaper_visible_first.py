@@ -19,6 +19,8 @@ Covers the layers the composition tests cannot reach in isolation:
 
 from __future__ import annotations
 
+from tests.support.palette_fakes import PaletteProducerStub
+
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -296,7 +298,7 @@ class _SpySeeder(CacheSeeder):
         return super().import_wallpaper(src, wallpaper_hash, source_mutable=source_mutable)
 
 
-class _FakeCsg:
+class _FakeCsg(PaletteProducerStub):
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
         self.calls = 0

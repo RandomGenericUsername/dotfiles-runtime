@@ -22,6 +22,8 @@ case rather than a unit-level fake.
 
 from __future__ import annotations
 
+from tests.support.palette_fakes import PaletteProducerStub
+
 import json
 import logging
 from pathlib import Path
@@ -495,7 +497,7 @@ def test_missing_btop_source_is_skipped_with_a_warning_and_no_dangling_link(
 # ---------------------------------------------------------------------------
 
 
-class _FakeCsg:
+class _FakeCsg(PaletteProducerStub):
     """Contract-honest fake: writes all ten artifacts, returns real hashes."""
 
     def __init__(self) -> None:

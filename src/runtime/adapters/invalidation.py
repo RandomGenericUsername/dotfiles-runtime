@@ -48,6 +48,7 @@ from runtime.domain.invalidation import (
     close_stale_set,
     diff_input_hashes,
 )
+from runtime.ports.color_scheme_generator import IColorSchemeGenerator
 from runtime.ports.invalidation_query import IInvalidationQuery
 
 #: Separator for multi-input layer encodings (mirrors canonical_hash_dir D2).
@@ -129,12 +130,30 @@ class InvalidationQueryAdapter(IInvalidationQuery):
         catalog_path: Path | None = None,
         icon_templates: Path | None = None,
         icon_mappings: Path | None = None,
+        palette_producer: IColorSchemeGenerator | None = None,
     ) -> None:
         self._state_root = state_root
         self._templates_dir = templates_dir
         self._catalog_path = catalog_path
         self._icon_templates = icon_templates
         self._icon_mappings = icon_mappings
+        self._palette_producer = palette_producer
+
+    def _palette_input_hash(self) -> str | None:
+        """Recompute the palette layer's recorded input hash.
+
+        When the composition root injects the active producer, its own
+        ``template_set_hash`` is used — the same value ``derive.ensure_palette``
+        records and folds into the entry key — so the two sides cannot drift
+        across ``csg``/``tpr``. The legacy ``templates_dir`` path remains for
+        callers that only need the CSG hash (and for absent-input reporting).
+        """
+        producer = self._palette_producer
+        if producer is None:
+            return _hash_dir_input(self._templates_dir, "csg templates")
+        if producer.templates_dir is None:
+            return None
+        return producer.template_set_hash()
 
     def recompute_input_hashes(self) -> Mapping[DerivationLayer, str | None]:
         """Recompute current spine input hashes, keyed by derivation layer.
@@ -143,7 +162,7 @@ class InvalidationQueryAdapter(IInvalidationQuery):
         ``None`` here; :meth:`compare_against_meta` excludes it (convention 2).
         Any unresolved (``None``) spine input yields ``None`` for its layer.
         """
-        templates_hash = _hash_dir_input(self._templates_dir, "csg templates")
+        templates_hash = self._palette_input_hash()
         catalog_hash = _hash_file_input(self._catalog_path, "weg catalog")
         icon_templates_hash = _hash_dir_input(self._icon_templates, "icon templates")
         icon_mappings_hash = _hash_path_input(self._icon_mappings, "icon mappings")
