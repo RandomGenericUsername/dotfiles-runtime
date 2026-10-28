@@ -6,7 +6,7 @@
 
 ## Requirements
 
-- [REQ-003-palette-producer-seam](./REQ-003-palette-producer-seam/ticket.md) — Palette producer seam: adopt tpr behind the CSG default | `in-progress` | bmad: architecture-theme-producer | worktree: .worktrees/REQ-003/ | branch: ticket/REQ-003-palette-producer-seam
+- [REQ-003-palette-producer-seam](./REQ-003-palette-producer-seam/ticket.md) — Palette producer seam: adopt tpr behind the CSG default | `done` | bmad: architecture-theme-producer | worktree: .worktrees/REQ-003/ | branch: ticket/REQ-003-palette-producer-seam
 - [REQ-001-repo-birth](./REQ-001-repo-birth/ticket.md) — Birth `dotfiles-runtime` as its own mu-strict repo | `done` | openspec: 2026-10-23-repo-birth | tag: v0.1.0
 - [REQ-002-ags-app-refresh](./REQ-002-ags-app-refresh/ticket.md) — Manifest-driven palette refresh: discovery, ledger, lanes and launch lock | `done` | worktree: .worktrees/REQ-002/ | branch: ticket/REQ-002-ags-app-refresh | fix: d2a220b
 

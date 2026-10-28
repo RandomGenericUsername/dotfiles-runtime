@@ -2,7 +2,7 @@
 id: REQ-003
 title: "Palette producer seam: adopt tpr behind the CSG default"
 kind: requirement
-status: in-progress
+status: done
 lane: 4
 links:
   openspec: none
