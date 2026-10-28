@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0
+
+Palette producer seam (REQ-003): the runtime can produce a palette with `tpr` as well as `csg`,
+without changing the default.
+
+- `RUNTIME__PALETTE__PRODUCER=csg|tpr` selects the producer; absent/`csg` keeps today's behavior.
+- `TprAdapter` invokes the pinned `tpr` contract record (`generate` + eight `--format`s, `THEME__`
+  output env), copies exactly the eight palette artifacts, and ignores the canonical `theme.json`.
+- CSG palette keys are byte-identical to 0.3.0 (seed `None`). TPR keys add
+  `sha256("tpr:<engine>:<version>:<templates_hash>")` as the seed, so a producer switch cannot hit
+  the other's cache entry.
+- `derive.ensure_palette` and `invalidation.recomputed()` share the producer seed formula and the
+  producer-specific templates dir; `THEME__` is added to the subprocess env allowlist.
+- `cli-invocation-contract` re-pinned to `v0.4.0` (the `tpr` record).
+
 ## 0.3.0
 
 Manifest-driven AGS palette refresh, applied-appearance ledger, parallel live /
