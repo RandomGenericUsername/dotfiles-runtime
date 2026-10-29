@@ -2,14 +2,14 @@
 id: BUG-007
 title: "Palette step intermittently fails with missing colors.yaml under the AGS selector"
 kind: bug
-status: proposed
+status: in-progress
 lane: 2
 severity: high
 links:
   openspec: none
   bmad: none
-worktree: none
-branch: none
+worktree: .worktrees/REQ-004/
+branch: ticket/REQ-004-runtime-palette-fixes
 repro: "Apply a wallpaper from the AGS wallpaper selector after the tpr cutover while the selector still has RUNTIME__PALETTE__PRODUCER=csg. The runtime set fails at the palette stage with `csg did not write expected artifact: .../colors.yaml`; the wallpaper is already on screen and effects/icons/consumers are not updated. Direct csg and a sequential runtime csg set for the same image succeed."
 observed: "2026-10-29 ~/.local/state/dotfiles/failures.jsonl: set-failed white_tailed_eagle.png at 22:53:24Z and 22:55:27Z, shani.png at 22:59:00Z, stage palette, tool csg, returncode null, `csg did not write expected artifact: .../colors.yaml`. The same white_tailed_eagle run succeeded sequentially at ~23:04Z with palette e2f7b58…, the exact entry hash from the failed staging path. The selector process had RUNTIME__PALETTE__PRODUCER=csg while the daemon had tpr."
 expected: "A retry or a second wallpaper set must not leave the runtime in a partial state; failures must carry the producer's stdout/stderr and exit code, and concurrent/repeated applies must be serialized or rejected with a clear busy error before the visible palette step."
@@ -90,6 +90,42 @@ is not what fails.
    the missing path; it drops `result.returncode`, stdout and stderr. The
    failure record therefore cannot distinguish CSG crash, container collision,
    or cleanup. Capture and persist them before raising.
+
+## Triage findings (2026-10-29)
+
+The failure is **not** a runtime lock/staging race. The runtime holds one
+non-blocking seed lock for the whole set; the three failed runs each had exactly
+one CSG container, distinct PIDs, normal create/exec/remove, no overlap. Direct
+CSG, 8 concurrent direct CSG runs, the exact adapter pipeline, and staggered
+runs all produced 8/8 artifacts.
+
+**Root cause:** the selector runs from
+`/home/inumaki/.local/share/dotfiles/apps/wallpaper-selector/v0.1.0`, which
+contains `templates/ags-app/`. CSG's resolver accepts `templates/` in CWD,
+finds no `colors.*.j2`, renders nothing, and exits 0. The runtime only passes
+output env, not the spine templates dir, so the adapter and CSG can resolve
+different catalogs even though the adapter hashes the spine set. From `/tmp`
+the same command writes all 8; pinning the CSG templates env fixes the selector
+CWD run.
+
+The runtime also drops the result on the missing-artifact path: step 9 raises a
+plain `RuntimeError` with only the path, so `failures.jsonl` shows
+`returncode: null` and no CSG stdout/stderr. The 22:31 tpr failure is labelled
+`tool: csg` because `PaletteUnavailableError` defaults to csg.
+
+**Proper fixes (this ticket):**
+- Pin `COLORSCHEME_TEMPLATES_TEMPLATES_DIR` (or the equivalent supported env)
+  to `self._templates_dir` in `CsgAdapter.generate`, so the hashed catalog and
+  the rendered catalog are the same and CWD cannot win.
+- On exit 0 with missing/partial artifacts, raise a typed
+  `PaletteUnavailableError` with actual return code, stdout, stderr, elapsed,
+  timeout/termination and the missing names; do the same in `TprAdapter`.
+- Set `tool=self.producer_name` on every adapter failure; extend
+  `PaletteUnavailableError`/`append_failure`/`inspect failures` with the new
+  fields while keeping old records readable.
+- Keep the existing fail-busy lock contract; no queue/retry in this ticket.
+- CSG's own fail-closed/template-resolution fix is `color-scheme-generator`
+  BUG-002; the runtime pin is defense in depth.
 
 ## Immediate workaround
 

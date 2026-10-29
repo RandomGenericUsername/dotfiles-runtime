@@ -6,6 +6,8 @@
 
 ## Requirements
 
+- [REQ-004-producer-config](./REQ-004-producer-config/ticket.md) — Runtime-owned palette producer config (no ambient-env authority) | `in-progress` | worktree: .worktrees/REQ-004/ | branch: ticket/REQ-004-runtime-palette-fixes
+- [REQ-005-tpr-container-runtime](./REQ-005-tpr-container-runtime/ticket.md) — TprAdapter uses the container runtime; no host tpr-native dependency | `in-progress` | worktree: .worktrees/REQ-004/ | branch: ticket/REQ-004-runtime-palette-fixes
 - [REQ-003-palette-producer-seam](./REQ-003-palette-producer-seam/ticket.md) — Palette producer seam: adopt tpr behind the CSG default | `done` | bmad: architecture-theme-producer | worktree: .worktrees/REQ-003/ | branch: ticket/REQ-003-palette-producer-seam
 - [REQ-001-repo-birth](./REQ-001-repo-birth/ticket.md) — Birth `dotfiles-runtime` as its own mu-strict repo | `done` | openspec: 2026-10-23-repo-birth | tag: v0.1.0
 - [REQ-002-ags-app-refresh](./REQ-002-ags-app-refresh/ticket.md) — Manifest-driven palette refresh: discovery, ledger, lanes and launch lock | `done` | worktree: .worktrees/REQ-002/ | branch: ticket/REQ-002-ags-app-refresh | fix: d2a220b
@@ -18,4 +20,4 @@
 - [BUG-004-btop-studio-restart](./BUG-004-btop-studio-restart/ticket.md) — btop-theme-studio is restarted by AgsReloader and loses unsaved edits | `done` | severity: high | worktree: .worktrees/BUG-004/ | tag: v0.2.1 (kept in v0.2.2)
 - [BUG-005-watch-health-optional-root](./BUG-005-watch-health-optional-root/ticket.md) — optional `desired.json` with no parent marks the whole watch set degraded | `done` | severity: low | worktree: .worktrees/BUG-005/ | tag: v0.2.3
 - [BUG-006-ags-restart-liveness](./BUG-006-ags-restart-liveness/ticket.md) — AGS restart is not idempotent: async quit, shared bundle and exit-0 misclassified | `done` | severity: high | worktree: .worktrees/REQ-002/ | fix: e87ad4f
-- [BUG-007-palette-missing-artifact](./BUG-007-palette-missing-artifact/ticket.md) — Palette step intermittently fails with missing colors.yaml under the AGS selector | `proposed` | severity: high | investigation; no worktree
+- [BUG-007-palette-missing-artifact](./BUG-007-palette-missing-artifact/ticket.md) — Palette step intermittently fails with missing colors.yaml under the AGS selector | `in-progress` | severity: high | worktree .worktrees/REQ-004, branch ticket/REQ-004-runtime-palette-fixes | root cause: CSG CWD templates
