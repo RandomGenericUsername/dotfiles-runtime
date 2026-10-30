@@ -33,7 +33,8 @@ from runtime.application.palette_conformance import (
     check_palette_entry,
     require_palette_conformance,
 )
-from runtime.domain.models import PaletteEntry
+from runtime.application.reconcile import ReconcileDesktopStateUseCase
+from runtime.domain.models import DesktopState, PaletteEntry, WallpaperEntry
 from runtime.domain.palette_vocabulary import (
     PALETTE_VOCABULARY_ROLES,
     PALETTE_VOCABULARY_V1,
@@ -318,3 +319,53 @@ def test_doctor_reports_conforming_palette_with_extras(tmp_path: Path) -> None:
     assert items[0].status == "ok"
     assert "conforming" in items[0].detail
     assert "foreground" in items[0].detail
+
+
+def test_reconcile_validates_existing_tpr_entry_before_swap(tmp_path: Path) -> None:
+    """A complete but nonconforming tpr entry blocks reconcile before repoint."""
+    import hashlib
+
+    wallpaper_bytes = b"wallpaper"
+    wallpaper_hash = hashlib.sha256(wallpaper_bytes).hexdigest()
+    wall_dir = tmp_path / "cache" / "wallpapers" / wallpaper_hash
+    wall_dir.mkdir(parents=True)
+    (wall_dir / "wallpaper.png").write_bytes(wallpaper_bytes)
+
+    entry_hash = "a" * 64
+    shutil.copytree(_fixture("v0.4.0"), tmp_path / "cache" / "palettes" / entry_hash)
+    state = DesktopState(
+        schema_version=2,
+        wallpaper=WallpaperEntry(
+            hash_algorithm="sha256",
+            kind="wallpaper",
+            content_hash=wallpaper_hash,
+            source_path=str(tmp_path / "wall.png"),
+            imported_at="2026-01-01T00:00:00Z",
+        ),
+        monitors={},
+        palette=PaletteEntry(
+            hash_algorithm="sha256",
+            kind="palette",
+            entry_hash=entry_hash,
+            source_wallpaper_hash=wallpaper_hash,
+            input_template_hash="c" * 64,
+            artifact_hashes={},  # type: ignore[arg-type]
+            generated_at="2026-01-01T00:00:00Z",
+        ),
+        effects=None,
+        icons=None,
+        applied_at="2026-01-01T00:00:00Z",
+    )
+    reconcile = ReconcileDesktopStateUseCase(
+        state_repo=None,  # type: ignore[arg-type]
+        csg=_TprPaletteStub(_fixture("v1-valid")),  # type: ignore[arg-type]
+        weg=None,  # type: ignore[arg-type]
+        itr=None,  # type: ignore[arg-type]
+        install_spine=tmp_path,
+        state_root=tmp_path,
+        seeder=CacheSeeder(tmp_path),
+        mutex=None,  # type: ignore[arg-type]
+    )
+    with pytest.raises(PaletteVocabularyError) as excinfo:
+        reconcile._ensure_entries(state, [])
+    assert excinfo.value.missing_roles == ("on_backdrop",)

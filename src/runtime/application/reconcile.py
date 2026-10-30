@@ -50,6 +50,7 @@ from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder, _repoint_symlink
 from runtime.application.bar_backdrop import with_bar_backdrops
 from runtime.application.derive import DerivationPipeline, ensure_palette_entry_complete
+from runtime.application.palette_conformance import require_palette_conformance
 from runtime.domain.ags_apps import AppRefreshRecord, ReloadFailure
 from runtime.domain.history import HISTORY_TRIGGERS
 from runtime.domain.models import (
@@ -444,8 +445,14 @@ class ReconcileDesktopStateUseCase:
         )
 
         palette = self._require_palette(state)
+        palette_dir = cache_entry_path(self._state_root, "palettes", palette.entry_hash)
+        if self._producer_name == "tpr" and palette_dir.is_dir():
+            # REQ-006: a pre-existing tpr entry must conform BEFORE the
+            # visible swap. A miss/incomplete entry is evicted and
+            # regenerated below (the pipeline validates the fresh build).
+            require_palette_conformance(palette_dir)
         if not ensure_palette_entry_complete(
-            cache_entry_path(self._state_root, "palettes", palette.entry_hash), self._seeder
+            palette_dir, self._seeder
         ):
             try:
                 entry, _cache_hit = self._pipeline.ensure_palette(
