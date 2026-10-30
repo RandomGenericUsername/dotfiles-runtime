@@ -26,6 +26,7 @@ from typing import Final
 
 from runtime.adapters.csg_adapter import (
     DEFAULT_TIMEOUT_SECONDS,
+    _artifact_failure,
     _build_palette_entry,
     _inspect_artifacts,
     _run_csg,
@@ -305,8 +306,14 @@ class TprAdapter(IColorSchemeGenerator):
                     msg,
                     wallpaper_path=str(wallpaper_path),
                     wallpaper_hash=wallpaper_hash,
+                    tool=self.producer_name,
                     returncode=result.returncode,
+                    stdout=result.stdout,
                     stderr=stderr_part,
+                    elapsed_seconds=result.elapsed_seconds,
+                    timed_out=True,
+                    termination=result.termination,
+                    missing_artifacts=tuple(missing + not_files),
                     hint=(
                         "tpr timed out and the palette artifact set is incomplete; "
                         "check tpr/engine logs, then re-set the wallpaper"
@@ -327,8 +334,12 @@ class TprAdapter(IColorSchemeGenerator):
                         f"stdout:{stdout_part}",
                         wallpaper_path=str(wallpaper_path),
                         wallpaper_hash=wallpaper_hash,
+                        tool=self.producer_name,
                         returncode=result.returncode,
+                        stdout=result.stdout,
                         stderr=stderr,
+                        elapsed_seconds=result.elapsed_seconds,
+                        termination=sig_name,
                     )
                 stderr = result.stderr[:2048]
                 stdout = result.stdout[:500]
@@ -337,17 +348,28 @@ class TprAdapter(IColorSchemeGenerator):
                     f"stdout:{stdout}",
                     wallpaper_path=str(wallpaper_path),
                     wallpaper_hash=wallpaper_hash,
+                    tool=self.producer_name,
                     returncode=result.returncode,
+                    stdout=result.stdout,
                     stderr=stderr,
+                    elapsed_seconds=result.elapsed_seconds,
                 )
 
             missing, not_files = _inspect_artifacts(producer_dir)
             if missing or not_files:
-                name = (missing or not_files)[0]
-                path = producer_dir / name
-                if name in not_files:
-                    raise RuntimeError(f"tpr output {name} is a directory, expected file: {path}")
-                raise RuntimeError(f"tpr did not write expected artifact: {path}")
+                raise _artifact_failure(
+                    producer=self.producer_name,
+                    wallpaper_path=wallpaper_path,
+                    wallpaper_hash=wallpaper_hash,
+                    artifact_dir=producer_dir,
+                    missing=missing,
+                    not_files=not_files,
+                    result=result,
+                    hint=(
+                        "tpr exited successfully but its artifact set is incomplete; "
+                        "check the pinned templates dir and tpr logs, then re-set the wallpaper"
+                    ),
+                )
 
             self._copy_artifacts(producer_dir, output_dir)
             return _build_palette_entry(

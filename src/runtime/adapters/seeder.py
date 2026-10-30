@@ -988,6 +988,11 @@ class CacheSeeder:
         stderr: str,
         hint: str,
         error: str,
+        stdout: str = "",
+        elapsed_seconds: float | None = None,
+        timed_out: bool = False,
+        termination: str | None = None,
+        missing_artifacts: tuple[str, ...] = (),
     ) -> None:
         """Append one traceable palette-failure record to ``failures.jsonl``.
 
@@ -995,9 +1000,14 @@ class CacheSeeder:
         ``additionalProperties: false`` and a closed trigger enum, so a
         ``trigger: "set-failed"`` line cannot live in history without a
         contracts change. This runtime-owned append-only log carries the
-        full failure payload (path/hash/stage/tool/rc/stderr/hint) and is
-        projected read-only by ``inspect failures``. It is independent of
-        ``suppress_history`` — a failed set is always auditable.
+        full failure payload (path/hash/stage/tool/rc/stdout/stderr/hint)
+        and is projected read-only by ``inspect failures``. It is independent
+        of ``suppress_history`` — a failed set is always auditable.
+
+        BUG-007 adds the optional subprocess diagnostics (``stdout``,
+        ``elapsed_seconds``, ``timed_out``, ``termination``,
+        ``missing_artifacts``). Records written before the extension remain
+        readable: the reader defaults the absent fields.
 
         A torn trailing line (interrupted write) is truncated before the
         append so the log never grows a corrupt middle line.
@@ -1011,7 +1021,12 @@ class CacheSeeder:
             "stage": stage,
             "tool": tool,
             "returncode": returncode,
+            "stdout": stdout,
             "stderr": stderr,
+            "elapsed_seconds": elapsed_seconds,
+            "timed_out": timed_out,
+            "termination": termination,
+            "missing_artifacts": list(missing_artifacts),
             "hint": hint,
             "error": error,
         }

@@ -130,6 +130,8 @@ class ReconcileDesktopStateUseCase:
         self._install_spine = install_spine
         self._seeder = seeder
         self._mutex = mutex
+        #: Real producer identity for typed failures (tpr must never be csg).
+        self._producer_name = getattr(csg, "producer_name", "csg")
         self._reloaders: list[IDesktopReloader] = list(reloaders) if reloaders is not None else []
         self._wallpaper_applier = wallpaper_applier
         #: Manifest-driven AGS app refresh (AD-27…30). It owns both the live
@@ -390,8 +392,7 @@ class ReconcileDesktopStateUseCase:
     # Required-palette guard (BUG-001)
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _require_palette(state: DesktopState) -> PaletteEntry:
+    def _require_palette(self, state: DesktopState) -> PaletteEntry:
         """Return the palette or refuse the state without touching links.
 
         A legacy null-palette state stays readable by ``inspect`` but is
@@ -400,14 +401,16 @@ class ReconcileDesktopStateUseCase:
         """
         if state.palette is None:
             source = state.wallpaper.source_path or "<unknown>"
+            producer = self._producer_name
             raise PaletteUnavailableError(
                 "reconcile refused: the palette layer is null for wallpaper "
                 f"{state.wallpaper.content_hash} ({source}); "
                 "re-set the wallpaper to regenerate the required palette",
                 wallpaper_path=source,
                 wallpaper_hash=state.wallpaper.content_hash,
+                tool=producer,
                 stderr="",
-                hint="re-set the wallpaper / check csg, then reconcile again",
+                hint=f"re-set the wallpaper / check {producer}, then reconcile again",
             )
         return state.palette
 

@@ -744,6 +744,11 @@ def _run_wallpaper_set(
                 stderr=exc.stderr,
                 hint=exc.hint,
                 error=str(exc),
+                stdout=exc.stdout,
+                elapsed_seconds=exc.elapsed_seconds,
+                timed_out=exc.timed_out,
+                termination=exc.termination,
+                missing_artifacts=exc.missing_artifacts,
             )
         except Exception:
             logger.exception("wallpaper set: failed to append failures.jsonl record")

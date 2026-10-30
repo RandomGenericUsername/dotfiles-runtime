@@ -202,6 +202,55 @@ def _inspect_artifacts(output_dir: Path) -> tuple[list[str], list[str]]:
     return missing, not_files
 
 
+def _artifact_failure(
+    *,
+    producer: str,
+    wallpaper_path: Path,
+    wallpaper_hash: str,
+    artifact_dir: Path,
+    missing: list[str],
+    not_files: list[str],
+    result: _CsgRunResult,
+    hint: str,
+) -> PaletteUnavailableError:
+    """Build the typed failure for an exit-0 run with an incomplete artifact set.
+
+    Carries the real return code, stdout/stderr, elapsed time, timeout/
+    termination state and the missing/non-file artifact names (BUG-007). The
+    message keeps the historical ``did not write expected artifact`` phrase so
+    operators and existing log greps still find it.
+    """
+    names = missing + not_files
+    detail_parts: list[str] = []
+    if missing:
+        detail_parts.append("missing=" + ",".join(missing))
+    if not_files:
+        detail_parts.append("not_files=" + ",".join(not_files))
+    detail = "; ".join(detail_parts)
+    name = names[0] if names else "<unknown>"
+    message = f"{producer} did not write expected artifact: {artifact_dir / name}"
+    if detail:
+        message += f" ({detail})"
+    if result.stdout:
+        message += f" stdout:{result.stdout[:500]}"
+    if result.stderr:
+        message += f" stderr:{result.stderr[:2048]}"
+    return PaletteUnavailableError(
+        message,
+        wallpaper_path=str(wallpaper_path),
+        wallpaper_hash=wallpaper_hash,
+        tool=producer,
+        returncode=result.returncode,
+        stdout=result.stdout,
+        stderr=result.stderr[:2048],
+        elapsed_seconds=result.elapsed_seconds,
+        timed_out=result.timed_out,
+        termination=result.termination,
+        missing_artifacts=tuple(names),
+        hint=hint,
+    )
+
+
 def _build_palette_entry(
     output_dir: Path,
     *,
@@ -456,6 +505,8 @@ class CsgAdapter(IColorSchemeGenerator):
         # 2. Resolve templates dir READ-ONLY and compute template_set_hash.
         #    See ``_resolve_template_set_hash`` for the spine-only contract.
         template_set_hash = self._resolve_template_set_hash()
+        templates_dir = self._templates_dir
+        assert templates_dir is not None  # guaranteed by _resolve_template_set_hash
 
         # 3. Compute entry hash and validate output_dir name (strict, case-sensitive)
         ph = self.expected_entry_hash(wallpaper_hash)
@@ -490,6 +541,9 @@ class CsgAdapter(IColorSchemeGenerator):
             {
                 "COLORSCHEME__OUTPUT__DIRECTORY": str(output_dir),
                 "COLORSCHEME__OUTPUT__OVERWRITE": "true",
+                # Pin the SAME catalog hashed for the cache key. Without this,
+                # csg's CWD traversal can select a decoy templates/ (BUG-007).
+                "COLORSCHEME_TEMPLATES_TEMPLATES_DIR": str(templates_dir),
             }
         )
 
@@ -574,8 +628,14 @@ class CsgAdapter(IColorSchemeGenerator):
                 msg,
                 wallpaper_path=str(wallpaper_path),
                 wallpaper_hash=wallpaper_hash,
+                tool=self.producer_name,
                 returncode=result.returncode,
+                stdout=result.stdout,
                 stderr=stderr_part,
+                elapsed_seconds=result.elapsed_seconds,
+                timed_out=True,
+                termination=result.termination,
+                missing_artifacts=tuple(missing + not_files),
                 hint=(
                     "csg timed out and the palette artifact set is incomplete; "
                     "check csg/container logs, then re-set the wallpaper"
@@ -596,8 +656,12 @@ class CsgAdapter(IColorSchemeGenerator):
                     f"csg killed by signal {sig_name} ({sig}): {stderr} stdout:{stdout_part}",
                     wallpaper_path=str(wallpaper_path),
                     wallpaper_hash=wallpaper_hash,
+                    tool=self.producer_name,
                     returncode=result.returncode,
+                    stdout=result.stdout,
                     stderr=stderr,
+                    elapsed_seconds=result.elapsed_seconds,
+                    termination=sig_name,
                 )
             stderr = result.stderr[:2048]
             stdout = result.stdout[:500]
@@ -605,18 +669,31 @@ class CsgAdapter(IColorSchemeGenerator):
                 f"csg generate failed (exit {result.returncode}): {stderr} stdout:{stdout}",
                 wallpaper_path=str(wallpaper_path),
                 wallpaper_hash=wallpaper_hash,
+                tool=self.producer_name,
                 returncode=result.returncode,
+                stdout=result.stdout,
                 stderr=stderr,
+                elapsed_seconds=result.elapsed_seconds,
             )
 
-        # 9. Verify artifacts exist as files (not dirs)
+        # 9. Verify artifacts exist as files (not dirs). An exit-0 run with an
+        #    incomplete set is still a typed palette failure carrying the full
+        #    subprocess diagnostics (BUG-007).
         missing, not_files = _inspect_artifacts(output_dir)
         if missing or not_files:
-            name = (missing or not_files)[0]
-            p = output_dir / name
-            if name in not_files:
-                raise RuntimeError(f"csg output {name} is a directory, expected file: {p}")
-            raise RuntimeError(f"csg did not write expected artifact: {p}")
+            raise _artifact_failure(
+                producer=self.producer_name,
+                wallpaper_path=wallpaper_path,
+                wallpaper_hash=wallpaper_hash,
+                artifact_dir=output_dir,
+                missing=missing,
+                not_files=not_files,
+                result=result,
+                hint=(
+                    "csg exited successfully but its artifact set is incomplete; "
+                    "check the pinned templates dir and csg logs, then re-set the wallpaper"
+                ),
+            )
 
         # 10. Compute artifact hashes and return the entry
         return _build_palette_entry(
