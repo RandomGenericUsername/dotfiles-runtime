@@ -40,6 +40,7 @@ if TYPE_CHECKING:
         HistoryRecord,
         InspectCacheResult,
         InspectStatusResult,
+        PaletteInspection,
     )
     from runtime.application.planner import ConvergenceReport
     from runtime.application.prune import PrunePlan
@@ -1914,12 +1915,26 @@ def doctor(
     icons_policy = _read_live_icons_policy()
     if icons_policy is not None:
         plain = f"{plain}; {_describe_icons_policy(icons_policy)}"
+    vocabulary_item = next(
+        (item for item in report.items if item.kind == "vocabulary"),
+        None,
+    )
+    if vocabulary_item is not None:
+        plain = f"{plain}; {vocabulary_item.detail}"
     renderer.custom(
         CustomView(
             plain=plain,
             object={
                 "clean": report.clean,
                 "icons_contrast": icons_policy,
+                "palette_vocabulary": (
+                    None
+                    if vocabulary_item is None
+                    else {
+                        "status": vocabulary_item.status,
+                        "detail": vocabulary_item.detail,
+                    }
+                ),
                 "items": [
                     {
                         "name": item.name,
@@ -3546,6 +3561,23 @@ def _run_inspect_status() -> InspectStatusResult:
     return use_case.run()
 
 
+def _run_inspect_palette() -> PaletteInspection:
+    """Compose and run InspectPaletteUseCase (inspect palette command).
+
+    Read-only wiring mirroring ``_run_inspect_status``: JSON state repository
+    + state_root only. No seeder, mutex, derivation adapters, or reloaders.
+    """
+    state_root = _resolve_state_root()
+
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.application.inspect import InspectPaletteUseCase
+
+    return InspectPaletteUseCase(
+        state_repo=JsonStateRepository(state_root=state_root),
+        state_root=state_root,
+    ).run()
+
+
 def _run_inspect_daemon(
     probe: Callable[[], DaemonStatusSnapshot] | None = None,
 ) -> DaemonReport:
@@ -3642,6 +3674,89 @@ def inspect_status(
             rich=summary,
         )
     )
+
+
+@inspect_app.command("palette")
+def inspect_palette(
+    output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
+) -> None:
+    """Show ``palette.v1`` vocabulary conformance of the live palette (REQ-006).
+
+    Read-only: reads ``current.json`` and the live palette entry's
+    ``colors.yaml``/``colors.gtk.css``, reports the declared vocabulary
+    version, per-artifact conformance, and additive extra roles (information
+    only). Exits 1 when a semantic (tpr) palette is nonconforming; a legacy
+    csg palette is reported ``n/a`` (csg is not a ``palette.v1`` producer).
+    """
+    renderer = create_renderer(output_format)
+    try:
+        result = _run_inspect_palette()
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.error("inspect palette failed: %s", exc)
+        renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
+        raise typer.Exit(code=1) from None
+    except Exception:
+        logger.exception("inspect palette failed unexpectedly")
+        renderer.error(
+            ErrorView(
+                kind="UnexpectedError",
+                message="inspect palette failed unexpectedly; see logs",
+            )
+        )
+        raise typer.Exit(code=1) from None
+
+    conformance = result.conformance
+    if result.palette is None or conformance is None:
+        plain = "no palette recorded in current.json"
+        renderer.custom(
+            CustomView(
+                plain=plain,
+                object={"palette": None, "entry_present": False, "vocabulary": None},
+                rich=plain,
+            )
+        )
+        return
+
+    extras = ", ".join(conformance.extra_roles) or "none"
+    if not conformance.semantic:
+        plain = (
+            f"palette vocabulary v{conformance.vocabulary_version}: n/a "
+            "(legacy csg palette, not a palette.v1 producer); "
+            f"extra roles: {extras}"
+        )
+    elif conformance.conforming:
+        from runtime.domain.palette_vocabulary import PALETTE_VOCABULARY_V1
+
+        plain = (
+            f"palette vocabulary v{conformance.vocabulary_version}: conforming "
+            f"({len(PALETTE_VOCABULARY_V1)} declared roles); extra roles: {extras}"
+        )
+    else:
+        parts: list[str] = []
+        if conformance.missing_roles:
+            parts.append("missing: " + ", ".join(conformance.missing_roles))
+        if conformance.malformed_roles:
+            parts.append("malformed: " + ", ".join(conformance.malformed_roles))
+        for error in conformance.errors():
+            parts.append(error)
+        plain = (
+            f"palette vocabulary v{conformance.vocabulary_version}: NONCONFORMING ("
+            + "; ".join(parts)
+            + f"); extra roles: {extras}"
+        )
+    renderer.custom(
+        CustomView(
+            plain=plain,
+            object={
+                "palette": result.palette,
+                "entry_present": result.entry_present,
+                "vocabulary": conformance.to_dict(),
+            },
+            rich=plain,
+        )
+    )
+    if conformance.semantic and not conformance.conforming:
+        raise typer.Exit(code=1) from None
 
 
 @inspect_app.command("daemon")

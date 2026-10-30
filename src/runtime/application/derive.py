@@ -94,6 +94,7 @@ from runtime.adapters.hashing import (
 )
 from runtime.adapters.icon_contrast_sampler import sample_top_strip_luminance
 from runtime.adapters.seeder import CacheSeeder
+from runtime.application.palette_conformance import require_palette_conformance
 from runtime.domain.icon_contrast import (
     BAR_GROUPS,
     DEFAULT_THRESHOLD,
@@ -691,11 +692,23 @@ class DerivationPipeline:
         The active producer owns both the templates fingerprint and the entry
         key (:class:`runtime.ports.color_scheme_generator.IColorSchemeGenerator`),
         so ``csg`` keeps its legacy key and ``tpr`` can never collide with it.
+
+        ``palette.v1`` (REQ-006): a tpr-produced entry is checked against the
+        declared role vocabulary BEFORE it can become visible — both a fresh
+        staged entry and an existing cache hit. A missing/renamed/malformed
+        role raises the typed :class:`PaletteVocabularyError`, which the
+        calling use case surfaces as a hard palette failure before the
+        BUG-001 visible swap. Legacy csg palettes are exempt: csg emits only
+        ``background``/``foreground``/ANSI colors and is retired in REQ-007;
+        the vocabulary is the tpr production contract.
         """
         template_set_hash = self._csg.template_set_hash()
         peh = self._csg.expected_entry_hash(wallpaper_hash)
         target = cache_entry_path(self._state_root, "palettes", peh)
+        enforce_vocabulary = getattr(self._csg, "producer_name", "csg") == "tpr"
         if ensure_palette_entry_complete(target, self._seeder):
+            if enforce_vocabulary:
+                require_palette_conformance(target)
             return self._seeder.load_palette_entry(target), True
 
         entry_holder: list[PaletteEntry] = []
@@ -708,6 +721,10 @@ class DerivationPipeline:
                     f"adapter entry hash mismatch: adapter={generated.entry_hash} "
                     f"computed={peh} (templates dir divergence)"
                 )
+            if enforce_vocabulary:
+                # Fail closed BEFORE drain/staging rename: a nonconforming
+                # entry never lands in the cache and never reaches the swap.
+                require_palette_conformance(work)
             self._seeder.drain_work_dir(work, staging)
             self._seeder.write_palette_meta_in(
                 staging,

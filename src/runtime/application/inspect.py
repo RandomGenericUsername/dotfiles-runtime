@@ -55,6 +55,7 @@ import fastjsonschema
 from runtime.adapters.cache import CACHE_LAYERS, cache_entry_path
 from runtime.adapters.contract_schemas import history_validator
 from runtime.adapters.icon_contrast_prefs_store import read_icons_policy
+from runtime.application.palette_conformance import PaletteConformance, check_palette_entry
 from runtime.domain.history import HistoryTrigger
 from runtime.domain.models import (
     DEFAULT_MONITOR,
@@ -362,6 +363,48 @@ class InspectStateUseCase:
                 state.icons.entry_hash,
             )
         return targets
+
+
+@dataclass(frozen=True, slots=True)
+class PaletteInspection:
+    """Outcome of one ``InspectPaletteUseCase.run`` invocation."""
+
+    palette: str | None
+    entry_present: bool
+    conformance: PaletteConformance | None
+
+
+class InspectPaletteUseCase:
+    """Read-only ``palette.v1`` projection of the live palette entry (REQ-006).
+
+    Reports the declared vocabulary version, conformance of ``colors.yaml``
+    and ``colors.gtk.css``, and any additive extra roles. Mutates nothing:
+    only ``current.json`` + two palette artifact reads. A legacy csg palette
+    is reported with ``conformance.semantic == False``; it is not a
+    ``palette.v1`` producer (csg retires in REQ-007).
+    """
+
+    def __init__(self, state_repo: IStateRepository, state_root: Path) -> None:
+        self._state_repo = state_repo
+        self._state_root = state_root
+
+    def run(self) -> PaletteInspection:
+        """Project the live palette's vocabulary conformance (read-only).
+
+        Raises:
+            RuntimeError: when no state has been recorded yet.
+        """
+        state = self._state_repo.load_current()
+        if state is None:
+            raise RuntimeError(_ABSENT_STATE_MESSAGE)
+        if state.palette is None:
+            return PaletteInspection(palette=None, entry_present=False, conformance=None)
+        entry_dir = cache_entry_path(self._state_root, "palettes", state.palette.entry_hash)
+        return PaletteInspection(
+            palette=state.palette.entry_hash,
+            entry_present=entry_dir.is_dir(),
+            conformance=check_palette_entry(entry_dir),
+        )
 
 
 class InspectHistoryUseCase:

@@ -24,6 +24,7 @@ from pathlib import Path
 from runtime.adapters.cache import resolve_entry_artifact
 from runtime.adapters.hashing import hash_file
 from runtime.application.inspect import InspectHistoryUseCase, LinkStatusKind
+from runtime.application.palette_conformance import check_palette_entry
 from runtime.application.reconcile import ReconcileDesktopStateUseCase
 from runtime.domain.models import DEFAULT_MONITOR, DesktopState, HistoryLockError
 from runtime.ports.state_repository import IStateRepository
@@ -91,6 +92,7 @@ class DoctorUseCase:
             )
         items: list[DriftItem] = []
         items.extend(self._check_entries(state))
+        items.extend(self._check_vocabulary(state))
         items.extend(self._check_links(state))
         items.extend(self._check_input_provenance())
         items.extend(self._check_history(state))
@@ -310,6 +312,62 @@ class DoctorUseCase:
                 items.append(_item("ok", f"{entry_dir} healthy"))
         return items
 
+    def _check_vocabulary(self, state: DesktopState) -> list[DriftItem]:
+        """REQ-006 leg — live palette vs the declared ``palette.v1`` roles.
+
+        Read-only. A tpr-shaped (semantic) palette must conform to every
+        declared role in ``colors.yaml`` and ``colors.gtk.css``; missing or
+        malformed roles are ``diverged`` and repair quarantines/regenerates
+        the entry. Legacy csg palettes (no semantic signature) are reported
+        ``ok`` with the vocabulary verdict in the detail: csg is not a
+        ``palette.v1`` producer and retires in REQ-007. Extra roles are
+        informational and never dirty the report.
+        """
+        if state.palette is None:
+            return []
+        entry_hash = state.palette.entry_hash
+        conformance = check_palette_entry(self._entry_dir("palettes", entry_hash))
+        extras = ", ".join(conformance.extra_roles) or "none"
+        name = f"cache/palettes/{entry_hash[:12]}:vocabulary"
+        if conformance.errors():
+            status: LinkStatusKind = "diverged"
+            detail = "palette vocabulary v1 unreadable: " + "; ".join(conformance.errors())
+        elif not conformance.semantic:
+            status = "ok"
+            detail = (
+                "legacy palette (not a palette.v1 producer; "
+                f"{len(conformance.missing_roles)} declared role(s) absent); "
+                f"extra roles: {extras}"
+            )
+        elif conformance.conforming:
+            status = "ok"
+            detail = (
+                f"palette vocabulary v{conformance.vocabulary_version} conforming; "
+                f"extra roles: {extras}"
+            )
+        else:
+            status = "diverged"
+            parts: list[str] = []
+            if conformance.missing_roles:
+                parts.append("missing: " + ", ".join(conformance.missing_roles))
+            if conformance.malformed_roles:
+                parts.append("malformed: " + ", ".join(conformance.malformed_roles))
+            detail = (
+                f"palette vocabulary v{conformance.vocabulary_version} nonconforming ("
+                + "; ".join(parts)
+                + f"); extra roles: {extras}"
+            )
+        return [
+            DriftItem(
+                name,
+                "vocabulary",
+                status,
+                detail,
+                layer="palettes",
+                entry_hash=entry_hash,
+            )
+        ]
+
     def _check_links(self, state: DesktopState) -> list[DriftItem]:
         """Leg 2 — store vs current/ symlinks against expected cache targets."""
         current_dir = self._state_root / "current"
@@ -440,7 +498,10 @@ class DoctorRepairUseCase:
             # full reconverge, whose tail appends the same doctor line.
         quarantined: list[Path] = []
         for item in report.items:
-            if item.kind != "entry" or item.status not in ("missing", "diverged"):
+            if item.kind not in ("entry", "vocabulary") or item.status not in (
+                "missing",
+                "diverged",
+            ):
                 continue
             if item.layer is None or item.entry_hash is None:
                 continue
