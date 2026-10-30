@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.0
+
+Palette vocabulary contract (`palette.v1`) with fail-closed conformance
+validation and probe fixtures (REQ-006).
+
+- Declares the 51-role `palette.v1` vocabulary: the 50 theme-producer Material
+  roles plus the produced `on_backdrop` role (tpr v0.5.0 / REQ-022).
+- Validates every tpr palette (`colors.yaml` top-level roles and
+  `colors.gtk.css` `@define-color` definitions) before staging and before the
+  visible swap; missing or malformed roles fail closed with a typed error naming
+  the roles. Extra roles are additive and reported as info only.
+- `inspect palette` and `doctor` report the vocabulary version, conformance and
+  extras. A readable producer shape that is not tpr is reported as not
+  applicable until the CSG retirement lands.
+
 ## 0.4.1
 
 Runtime-owned palette producer config, tpr container runtime, and precise

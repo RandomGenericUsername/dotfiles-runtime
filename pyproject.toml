@@ -1,6 +1,6 @@
 [project]
 name = "dotfiles-runtime"
-version = "0.4.1"
+version = "0.5.0"
 description = "Runtime engine for the dotfiles system — wallpaper, state, history, cache"
 readme = "README.md"
 license = "MIT"
