@@ -7,8 +7,8 @@ lane: 2
 links:
   openspec: none
   bmad: none
-worktree: none
-branch: none
+worktree: .worktrees/REQ-006/
+branch: ticket/REQ-006-palette-vocabulary-contract
 ---
 
 # Palette vocabulary contract (`palette.v1`)
@@ -47,17 +47,19 @@ the same list, but the runtime is the gate.
 
 ## Acceptance
 
-- [ ] `runtime.domain.palette_vocabulary` declares v1 (50 roles +
+- [x] `runtime.domain.palette_vocabulary` declares v1 (50 roles +
       `on_backdrop`) with a source comment and version.
-- [ ] Palette cache build fails closed with a typed error naming missing roles;
+- [x] Palette cache build fails closed with a typed error naming missing roles;
       pre-swap ordering preserved.
-- [ ] `colors.gtk.css` role definitions are validated too.
-- [ ] `inspect palette` / doctor expose vocabulary conformance.
-- [ ] Probe test fails when a role is removed/renamed; passes on the tpr
+- [x] `colors.gtk.css` role definitions are validated too.
+- [x] `inspect palette` / doctor expose vocabulary conformance.
+- [x] Probe test fails when a role is removed/renamed; passes on the tpr
       `v0.5.0` fixture; extras are accepted.
 - [ ] Integration fixture: a real tpr `v0.5.0` palette passes; a v0.4.0
-      palette fails naming `on_backdrop`.
+      palette fails naming `on_backdrop`. (blocked: tpr v0.5.0 REQ-022 not
+      published yet; unit fixtures cover both shapes)
 - [ ] `make gates` green; release `v0.5.0` after tpr `v0.5.0` is published.
+      (gates green at implementation commit; release intentionally pending)
 
 ## Evidence / Verify
 
@@ -67,3 +69,58 @@ the same list, but the runtime is the gate.
   `src/runtime/application/`.
 - Verify: `make gates`; `uv run dotfiles-runtime inspect palette` after a
   tpr v0.5.0 set; fixture test for the v0.4.0 failure.
+
+## Progress / evidence (2026-10-30)
+
+Implementation commit: `8cb1489` on
+`ticket/REQ-006-palette-vocabulary-contract` (worktree `.worktrees/REQ-006/`).
+
+Delivered:
+
+- `src/runtime/domain/palette_vocabulary.py` — `PALETTE_VOCABULARY_VERSION =
+  "1"`, ordered `PALETTE_VOCABULARY_V1` (50 `MaterialRole` values in tpr
+  declaration order + `on_backdrop`), frozenset projection, source comment
+  naming theme-producer `v0.5.0` REQ-022, and typed
+  `PaletteVocabularyError`.
+- `src/runtime/application/palette_conformance.py` — no-YAML subset parsers
+  for `colors.yaml` (`key: "#hex"`) and `colors.gtk.css`
+  (`@define-color role #hex;`); missing/malformed/extra reporting;
+  `require()` raises the typed error naming roles. Extras are allowed and
+  reported only.
+- `DerivationPipeline.ensure_palette` — for a **tpr** producer, validates the
+  staged artifacts BEFORE `drain_work_dir`/staging rename and also validates
+  an existing cache hit. Failure therefore aborts before the BUG-001 visible
+  swap and leaves no cache entry or staging dir.
+- `inspect palette` — reports version, per-artifact conformance, extras; exits
+  1 for a nonconforming semantic palette. `doctor` — adds a `vocabulary`
+  verdict (diverged when roles are missing/malformed, repair quarantines and
+  regenerates). Legacy csg palettes report `n/a`/`ok` because csg is not a
+  `palette.v1` producer.
+- Probe fixture `tests/fixtures/palette-vocabulary-v1.json` pins the 51-role
+  declaration. Palette fixtures: `v1-valid`, `v1-missing-role`,
+  `v1-extra-roles`, `v0.4.0`; the v0.4.0 shape fails naming `on_backdrop`.
+
+Deviation / risk:
+
+- The build-time gate is scoped to `producer_name == "tpr"`. CSG emits only
+  `background`/`foreground`/ANSI colors, cannot satisfy `palette.v1`, and is
+  still the documented default until REQ-007 retires it. A blanket gate would
+  break the default producer; the ticket's vocabulary is explicitly the tpr
+  role set. `inspect`/`doctor` never dirty a healthy legacy csg desktop.
+- tpr `v0.5.0` (REQ-022) is not yet published, so no live tpr run was
+  attempted. The `v0.4.0` fixture is the current tpr projection and fails
+  naming `on_backdrop` — expected pre-pin behavior by design.
+
+Evidence (executed):
+
+- `uv run pytest tests/unit/test_palette_vocabulary.py
+  tests/unit/test_cli_inspect_palette.py -q` → `22 passed in 0.62s` (exit 0).
+- `make gates` (worktree root) → `EXIT:0`:
+  - `uv run pytest -q -m "not integration"` → `2323 passed, 3 skipped, 22
+    deselected`.
+  - `uv run ruff check src` → `All checks passed!`.
+  - contracts-check → `48 passed, 1 skipped`.
+  - hermetic → same fast suite `2323 passed, 3 skipped, 22 deselected`.
+  - `uv lock --check` → `Resolved 25 packages in 2ms`; docs-check silent
+    success.
+- Verify probe: `uv run pytest tests/unit/test_palette_vocabulary.py::test_declared_vocabulary_matches_probe_fixture -q` → `1 passed`.
