@@ -6,7 +6,7 @@
 
 ## Requirements
 
-- [REQ-006-palette-vocabulary-contract](./REQ-006-palette-vocabulary-contract/ticket.md) — Palette vocabulary contract (`palette.v1`): declared roles, conformance validation, probe tests | `in-progress`
+- [REQ-006-palette-vocabulary-contract](./REQ-006-palette-vocabulary-contract/ticket.md) — Palette vocabulary contract (`palette.v1`): declared roles, conformance validation, probe tests | `done` | tag: v0.5.0 | live: conforming 51 roles
 - [REQ-007-seam-cleanup](./REQ-007-seam-cleanup/ticket.md) — Seam cleanup: delete the icon-contrast guard, retire the CSG producer | `proposed` | depends: REQ-006 + assets req-008
 - [REQ-004-producer-config](./REQ-004-producer-config/ticket.md) — Runtime-owned palette producer config (no ambient-env authority) | `done` | tag: v0.4.1
 - [REQ-005-tpr-container-runtime](./REQ-005-tpr-container-runtime/ticket.md) — TprAdapter uses the container runtime; no host tpr-native dependency | `done` | tag: v0.4.1

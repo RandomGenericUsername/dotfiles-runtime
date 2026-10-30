@@ -2,7 +2,7 @@
 id: REQ-006
 title: "Palette vocabulary contract (palette.v1): declared roles, conformance validation, probe tests"
 kind: requirement
-status: in-progress
+status: done
 lane: 2
 links:
   openspec: none
@@ -133,3 +133,15 @@ Evidence (executed):
   - `uv lock --check` → `Resolved 25 packages in 2ms`; docs-check silent
     success.
 - Verify probe: `uv run pytest tests/unit/test_palette_vocabulary.py::test_declared_vocabulary_matches_probe_fixture -q` → `1 passed`.
+
+## Outcome
+
+Released `v0.5.0` (tag pushed) and deployed via PIN-0120 (engine v0.1.28).
+Live proof 2026-10-30:
+- `dotfiles-runtime inspect palette` → `palette vocabulary v1: conforming
+  (51 declared roles)`; extras reported info-only;
+- `doctor` → `palette vocabulary v1 conforming`;
+- live palette `c4fa1eb3…` carries `on_backdrop`; producer `tpr` (config,
+  native engine, container runtime);
+- unit/integration fixtures cover v1 valid, missing-role, extra-roles and the
+  v0.4.0 rejection path.
