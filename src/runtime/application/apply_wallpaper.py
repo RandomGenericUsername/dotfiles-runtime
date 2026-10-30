@@ -132,6 +132,8 @@ class ApplyWallpaperUseCase:
         self._seeder = seeder
         self._mutex = mutex
         self._monitor_source = monitor_source
+        #: Real producer identity for typed failures (tpr must never be csg).
+        self._producer_name = getattr(csg, "producer_name", "csg")
         self._pipeline = DerivationPipeline(
             state_root=state_root,
             seeder=seeder,
@@ -178,9 +180,15 @@ class ApplyWallpaperUseCase:
                 f"palette apply failed: {exc}",
                 wallpaper_path=str(img),
                 wallpaper_hash=wallpaper_hash,
+                tool=self._producer_name,
                 returncode=getattr(exc, "returncode", None),
+                stdout=str(getattr(exc, "stdout", "") or ""),
                 stderr=stderr[-2048:],
-                hint="re-set the wallpaper / check csg",
+                elapsed_seconds=getattr(exc, "elapsed_seconds", None),
+                timed_out=bool(getattr(exc, "timed_out", False)),
+                termination=getattr(exc, "termination", None),
+                missing_artifacts=tuple(getattr(exc, "missing_artifacts", ()) or ()),
+                hint=f"re-set the wallpaper / check {self._producer_name}",
             ) from exc
 
         if on_progress is not None:

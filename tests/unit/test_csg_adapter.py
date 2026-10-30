@@ -203,6 +203,85 @@ def test_csg_adapter_container_env_passthrough(
     assert "COLORSCHEME__OUTPUT__DIRECTORY" not in os.environ
 
 
+def test_csg_adapter_pins_templates_dir_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BUG-007: the rendered catalog must be the hashed catalog, not CWD's."""
+    wallpaper = _copy_wallpaper_fixture(tmp_path)
+    templates_dir = _make_templates_dir(tmp_path)
+    ph = palette_entry_hash(hash_file(wallpaper), canonical_hash_dir(templates_dir))
+    output_dir = tmp_path / "staging" / ph
+    captured: dict[str, str] = {}
+
+    def fake_run(
+        args: list[str], env: dict[str, str], timeout: int  # noqa: ARG001
+    ) -> _CsgRunResult:
+        captured.update(env)
+        out = Path(env["COLORSCHEME__OUTPUT__DIRECTORY"])
+        out.mkdir(parents=True, exist_ok=True)
+        for name in (
+            "colors.yaml",
+            "colors.conf",
+            "colors.gtk.css",
+            "colors.adw.css",
+            "colors.sequences",
+            "colors.rasi",
+            "colors.kitty",
+            "colors.btop.theme",
+        ):
+            (out / name).write_text("artifact")
+        return _CsgRunResult(
+            returncode=0, stdout="", stderr="", timed_out=False, elapsed_seconds=0.01
+        )
+
+    monkeypatch.setattr("runtime.adapters.csg_adapter._run_csg", fake_run)
+    CsgAdapter(templates_dir=templates_dir).generate(wallpaper, output_dir)
+
+    assert captured["COLORSCHEME_TEMPLATES_TEMPLATES_DIR"] == str(templates_dir)
+
+
+def test_exit_zero_with_missing_artifact_is_typed_with_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BUG-007: exit 0 + missing artifact keeps rc/stdout/stderr/elapsed/names."""
+    wallpaper = _copy_wallpaper_fixture(tmp_path)
+    templates_dir = _make_templates_dir(tmp_path)
+    ph = palette_entry_hash(hash_file(wallpaper), canonical_hash_dir(templates_dir))
+    output_dir = tmp_path / "staging" / ph
+
+    def fake_run(
+        args: list[str], env: dict[str, str], timeout: int  # noqa: ARG001
+    ) -> _CsgRunResult:
+        out = Path(env["COLORSCHEME__OUTPUT__DIRECTORY"])
+        out.mkdir(parents=True, exist_ok=True)
+        # Simulate the selector-CWD bug: csg exits 0 but renders nothing.
+        return _CsgRunResult(
+            returncode=0,
+            stdout="rendered 0 templates",
+            stderr="selected /selector/templates",
+            timed_out=False,
+            elapsed_seconds=0.42,
+        )
+
+    monkeypatch.setattr("runtime.adapters.csg_adapter._run_csg", fake_run)
+
+    with pytest.raises(PaletteUnavailableError, match="did not write expected artifact") as excinfo:
+        CsgAdapter(templates_dir=templates_dir).generate(wallpaper, output_dir)
+
+    exc = excinfo.value
+    assert exc.tool == "csg"
+    assert exc.returncode == 0
+    assert exc.stdout == "rendered 0 templates"
+    assert exc.stderr == "selected /selector/templates"
+    assert exc.elapsed_seconds == pytest.approx(0.42)
+    assert exc.timed_out is False
+    assert "colors.yaml" in exc.missing_artifacts
+    details = exc.to_details()
+    assert details["returncode"] == "0"
+    assert details["stdout"] == "rendered 0 templates"
+    assert details["missing_artifacts"].startswith("colors.yaml")
+
+
 # ---------------------------------------------------------------------------
 # 4. Raises on non-zero exit, preserves stderr
 # ---------------------------------------------------------------------------

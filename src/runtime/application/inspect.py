@@ -524,7 +524,11 @@ class InspectHistoryUseCase:
 
 @dataclass(frozen=True, slots=True)
 class FailureRecord:
-    """One parsed ``failures.jsonl`` line (BUG-001)."""
+    """One parsed ``failures.jsonl`` line (BUG-001/BUG-007).
+
+    The last five fields are optional on disk: records written before
+    BUG-007 do not carry them and parse to the documented defaults.
+    """
 
     ts: str
     trigger: str
@@ -536,6 +540,11 @@ class FailureRecord:
     stderr: str
     hint: str
     error: str
+    stdout: str = ""
+    elapsed_seconds: float | None = None
+    timed_out: bool = False
+    termination: str | None = None
+    missing_artifacts: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """Return the full dict in pinned order."""
@@ -550,6 +559,11 @@ class FailureRecord:
             "stderr": self.stderr,
             "hint": self.hint,
             "error": self.error,
+            "stdout": self.stdout,
+            "elapsed_seconds": self.elapsed_seconds,
+            "timed_out": self.timed_out,
+            "termination": self.termination,
+            "missing_artifacts": list(self.missing_artifacts),
         }
 
 
@@ -664,6 +678,34 @@ class InspectFailuresUseCase:
             raise ValueError(
                 f"failures.jsonl line {lineno}: returncode must be an integer or null"
             )
+
+        # BUG-007 optional diagnostics: absent on old records, typed when present.
+        stdout = obj.get("stdout", "")
+        if not isinstance(stdout, str):
+            raise ValueError(f"failures.jsonl line {lineno}: stdout must be a string")
+        elapsed = obj.get("elapsed_seconds")
+        if elapsed is not None and (
+            isinstance(elapsed, bool) or not isinstance(elapsed, int | float)
+        ):
+            raise ValueError(
+                f"failures.jsonl line {lineno}: elapsed_seconds must be a number or null"
+            )
+        timed_out = obj.get("timed_out", False)
+        if not isinstance(timed_out, bool):
+            raise ValueError(f"failures.jsonl line {lineno}: timed_out must be a boolean")
+        termination = obj.get("termination")
+        if termination is not None and not isinstance(termination, str):
+            raise ValueError(
+                f"failures.jsonl line {lineno}: termination must be a string or null"
+            )
+        raw_missing = obj.get("missing_artifacts", [])
+        if not isinstance(raw_missing, list) or not all(
+            isinstance(name, str) for name in raw_missing
+        ):
+            raise ValueError(
+                f"failures.jsonl line {lineno}: missing_artifacts must be a list of strings"
+            )
+
         return FailureRecord(
             ts=cast("str", obj["ts"]),
             trigger=cast("str", obj["trigger"]),
@@ -675,6 +717,11 @@ class InspectFailuresUseCase:
             stderr=cast("str", obj["stderr"]),
             hint=cast("str", obj["hint"]),
             error=cast("str", obj["error"]),
+            stdout=stdout,
+            elapsed_seconds=cast("float | None", elapsed),
+            timed_out=timed_out,
+            termination=cast("str | None", termination),
+            missing_artifacts=tuple(cast("list[str]", raw_missing)),
         )
 
 

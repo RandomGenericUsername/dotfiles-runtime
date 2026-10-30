@@ -96,6 +96,22 @@ app.add_typer(gtk4_app, name="gtk4")
 logger = logging.getLogger(__name__)
 
 
+def _call_with_producer(
+    fn: Callable[..., object],
+    *args: object,
+    producer: str | None,
+    **kwargs: object,
+) -> object:
+    """Call a composition helper, adding ``producer`` only for an override.
+
+    Keeping the keyword absent for the default path preserves the historical
+    call shape (tests and callers patch these helpers with narrow signatures).
+    """
+    if producer is None:
+        return fn(*args, **kwargs)
+    return fn(*args, producer=producer, **kwargs)
+
+
 def _log_automatic_action(
     *,
     trigger: str,
@@ -230,7 +246,7 @@ def _resolve_desired_path() -> Path:
     return resolve_desired_path(_resolve_config_home())
 
 
-def _run_seed_if_needed() -> None:
+def _run_seed_if_needed(*, producer: str | None = None) -> None:
     """Run first-run seeding if current.json is absent.
 
     Validates provisioning output before constructing the use case, then
@@ -274,7 +290,7 @@ def _run_seed_if_needed() -> None:
         )
 
         state_repo = JsonStateRepository(state_root=state_root)
-        csg = create_palette_producer(install_spine)
+        csg = create_palette_producer(install_spine, producer=producer)
         weg = WegAdapter()
         itr = ItrAdapter()
         seeder = CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec())
@@ -383,6 +399,9 @@ class _WallpaperSetResult:
     themed_at: str = ""
     swap_elapsed_s: float = 0.0
     theme_elapsed_s: float = 0.0
+    producer: str = ""
+    producer_source: str = ""
+    producer_engine: str | None = None
 
 
 def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list[IDesktopReloader]:
@@ -522,6 +541,7 @@ def _run_wallpaper_set(
     include_terminal: bool = True,
     client: IJobClient | None = None,
     contrast: str = "auto",
+    producer: str | None = None,
 ) -> _WallpaperSetResult:
     """Compose the required-palette ``wallpaper set`` pipeline (D1/BUG-001).
 
@@ -599,7 +619,10 @@ def _run_wallpaper_set(
     from runtime.adapters.seeder import CacheSeeder
     from runtime.adapters.weg_adapter import WegAdapter
     from runtime.application.apply_wallpaper import ApplyWallpaperUseCase
-    from runtime.application.palette_producer import create_palette_producer
+    from runtime.application.palette_producer import (
+        create_palette_producer,
+        resolve_palette_producer,
+    )
     from runtime.application.reconcile import ReconcileDesktopStateUseCase
     from runtime.application.swap_visible import SwapVisibleUseCase
     from runtime.domain.models import PaletteUnavailableError, SeedLockedError
@@ -612,7 +635,8 @@ def _run_wallpaper_set(
     _publish_wallpaper_state(client, "applying", pending_hash, "set", stage="generating_palette")
 
     inner_mutex = PassThroughSeedMutex()
-    producer = create_palette_producer(install_spine)
+    producer_resolution = resolve_palette_producer(install_spine, producer=producer)
+    palette_producer = create_palette_producer(install_spine, resolution=producer_resolution)
     current_stage = "generating_palette"
 
     def _seeder() -> CacheSeeder:
@@ -624,7 +648,7 @@ def _run_wallpaper_set(
 
     apply_use_case = ApplyWallpaperUseCase(
         state_repo=JsonStateRepository(state_root=state_root),
-        csg=producer,
+        csg=palette_producer,
         weg=WegAdapter(),
         itr=ItrAdapter(),
         install_spine=install_spine,
@@ -705,7 +729,7 @@ def _run_wallpaper_set(
         publish_stage("reconciling_consumers")
         reconcile_result = ReconcileDesktopStateUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
-            csg=producer,
+            csg=palette_producer,
             weg=WegAdapter(),
             itr=ItrAdapter(),
             install_spine=install_spine,
@@ -744,6 +768,11 @@ def _run_wallpaper_set(
                 stderr=exc.stderr,
                 hint=exc.hint,
                 error=str(exc),
+                stdout=exc.stdout,
+                elapsed_seconds=exc.elapsed_seconds,
+                timed_out=exc.timed_out,
+                termination=exc.termination,
+                missing_artifacts=exc.missing_artifacts,
             )
         except Exception:
             logger.exception("wallpaper set: failed to append failures.jsonl record")
@@ -812,6 +841,9 @@ def _run_wallpaper_set(
         themed_at=themed_at,
         swap_elapsed_s=swap_elapsed,
         theme_elapsed_s=theme_elapsed,
+        producer=producer_resolution.producer,
+        producer_source=producer_resolution.source,
+        producer_engine=producer_resolution.engine,
     )
 
 
@@ -869,6 +901,12 @@ def wallpaper_set(
         "preference (default ON); 'on'/'off' force the guard for this run and "
         "persist the choice for the wallpaper.",
     ),
+    producer: str | None = typer.Option(
+        None,
+        "--producer",
+        help="One-shot palette producer override (csg|tpr); the runtime-owned "
+        "producer config is authoritative otherwise",
+    ),
 ) -> None:
     """Derive, cache, swap, reload, and persist state for a wallpaper.
 
@@ -886,7 +924,9 @@ def wallpaper_set(
     """
     renderer = create_renderer(output_format)
     try:
-        result = _run_wallpaper_set(image_path, contrast=contrast)
+        result = _call_with_producer(
+            _run_wallpaper_set, image_path, contrast=contrast, producer=producer
+        )
     except PaletteUnavailableError as exc:
         logger.error("wallpaper set failed: palette unavailable: %s", exc)
         renderer.error(
@@ -958,6 +998,9 @@ def wallpaper_set(
         "palette": state.palette.entry_hash if state.palette else None,
         "effects": state.effects.entry_hash if state.effects else None,
         "icons": state.icons.entry_hash if state.icons else None,
+        "producer": result.producer,
+        "producer_source": result.producer_source,
+        "producer_engine": result.producer_engine,
         "visible_at": result.visible_at,
         "themed_at": result.themed_at,
         "cache_hits": {
@@ -982,6 +1025,7 @@ def _run_icons_regenerate(
     *,
     contrast: str = "auto",
     client: IJobClient | None = None,
+    producer: str | None = None,
 ) -> RegenerateIconsResult:
     """Compose the icons-only ``icons regenerate`` pipeline (D3).
 
@@ -1044,12 +1088,12 @@ def _run_icons_regenerate(
     _publish_wallpaper_state(client, "applying", pending_hash, "regenerate")
 
     inner_mutex = PassThroughSeedMutex()
-    producer = create_palette_producer(install_spine)
+    palette_producer = create_palette_producer(install_spine, producer=producer)
     try:
         with FlockSeedMutex(state_root / ".seed.lock").hold(blocking=False):
             result = RegenerateIconsUseCase(
                 state_repo=JsonStateRepository(state_root=state_root),
-                csg=producer,
+                csg=palette_producer,
                 weg=WegAdapter(),
                 itr=ItrAdapter(),
                 install_spine=install_spine,
@@ -1085,6 +1129,12 @@ def icons_regenerate(
         "preference (default ON); 'on'/'off' force the guard for this run and "
         "persist the choice for the live wallpaper.",
     ),
+    producer: str | None = typer.Option(
+        None,
+        "--producer",
+        help="One-shot palette producer override (csg|tpr); the runtime-owned "
+        "producer config is authoritative otherwise",
+    ),
 ) -> None:
     """Re-render ONLY the icons layer from the live palette and reconverge.
 
@@ -1097,7 +1147,9 @@ def icons_regenerate(
     """
     renderer = create_renderer(output_format)
     try:
-        result = _run_icons_regenerate(contrast=contrast)
+        result = _call_with_producer(
+            _run_icons_regenerate, contrast=contrast, producer=producer
+        )
     except (ValueError, RuntimeError, OSError) as exc:
         logger.error("icons regenerate failed: %s", exc)
         renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
@@ -1341,7 +1393,10 @@ def _append_inputs_check(summary: str, obj: dict[str, object]) -> str:
 
 
 def _run_reconcile(
-    *, suppress_history: bool = False, include_terminal: bool = True
+    *,
+    suppress_history: bool = False,
+    include_terminal: bool = True,
+    producer: str | None = None,
 ) -> ReconcileResult:
     """Compose and run ReconcileDesktopStateUseCase (reconcile command).
 
@@ -1370,7 +1425,7 @@ def _run_reconcile(
 
     use_case = ReconcileDesktopStateUseCase(
         state_repo=JsonStateRepository(state_root=state_root),
-        csg=create_palette_producer(install_spine),
+        csg=create_palette_producer(install_spine, producer=producer),
         weg=WegAdapter(),
         itr=ItrAdapter(),
         install_spine=install_spine,
@@ -1386,7 +1441,7 @@ def _run_reconcile(
     return use_case.run()
 
 
-def _run_check_inputs() -> CheckInputsResult:
+def _run_check_inputs(*, producer: str | None = None) -> CheckInputsResult:
     """Compose and run CheckInputsUseCase (reconcile --check-inputs).
 
     Read-only wiring (Story 1.3): resolve state_root / install_spine (both
@@ -1410,14 +1465,14 @@ def _run_check_inputs() -> CheckInputsResult:
     )
     from runtime.application.palette_producer import create_palette_producer
 
-    producer = create_palette_producer(install_spine)
+    palette_producer = create_palette_producer(install_spine, producer=producer)
     invalidation = InvalidationQueryAdapter(
         state_root=state_root,
-        templates_dir=producer.templates_dir,
+        templates_dir=palette_producer.templates_dir,
         catalog_path=find_effects_catalog(install_spine),
         icon_templates=find_icon_templates(install_spine),
         icon_mappings=find_icon_mappings(install_spine),
-        palette_producer=producer,
+        palette_producer=palette_producer,
     )
     use_case = CheckInputsUseCase(
         state_repo=JsonStateRepository(state_root=state_root),
@@ -1466,7 +1521,7 @@ class _DeclarativePlanResult:
 
 
 def _run_reconcile_plan(
-    keep: int | None, prune_pinned: bool
+    keep: int | None, prune_pinned: bool, *, producer: str | None = None
 ) -> _ReconcilePlanResult | _DeclarativePlanResult:
     """Compose and run the ``reconcile --plan`` read-only preview.
 
@@ -1502,14 +1557,14 @@ def _run_reconcile_plan(
     # Fail fast on malformed intent: before any invalidation work, loud
     # ValueError on bad file (AC 4) — never silent fallback to imperative.
     desired = read_desired_state(_resolve_desired_path())
-    producer = create_palette_producer(install_spine)
+    palette_producer = create_palette_producer(install_spine, producer=producer)
     invalidation = InvalidationQueryAdapter(
         state_root=state_root,
-        templates_dir=producer.templates_dir,
+        templates_dir=palette_producer.templates_dir,
         catalog_path=find_effects_catalog(install_spine),
         icon_templates=find_icon_templates(install_spine),
         icon_mappings=find_icon_mappings(install_spine),
-        palette_producer=producer,
+        palette_producer=palette_producer,
     )
     check_result = CheckInputsUseCase(
         state_repo=state_repo,
@@ -1563,7 +1618,11 @@ def _run_reconcile_plan(
 
 
 def _run_regenerate_stale(
-    *, suppress_history: bool = False, reconcile: bool = True, include_terminal: bool = True
+    *,
+    suppress_history: bool = False,
+    reconcile: bool = True,
+    include_terminal: bool = True,
+    producer: str | None = None,
 ) -> RegenerateResult:
     """Compose and run RegenerateStaleUseCase (reconcile --regenerate-stale).
 
@@ -1605,7 +1664,7 @@ def _run_regenerate_stale(
         state_root, consumer_spec=StaticConsumerPathSpec(), suppress_history=suppress_history
     )
     mutex = FlockSeedMutex(state_root / ".seed.lock")
-    csg = create_palette_producer(install_spine)
+    csg = create_palette_producer(install_spine, producer=producer)
     weg, itr = WegAdapter(), ItrAdapter()
     invalidation = InvalidationQueryAdapter(
         state_root=state_root,
@@ -1671,7 +1730,7 @@ def _run_doctor_check() -> DoctorReport:
     return use_case.check()
 
 
-def _run_doctor_repair() -> RepairResult:
+def _run_doctor_repair(*, producer: str | None = None) -> RepairResult:
     """Compose and run DoctorRepairUseCase.repair (doctor --repair).
 
     Mutation wiring (Story 2.2), sharing ONE set of adapters with the
@@ -1699,7 +1758,7 @@ def _run_doctor_repair() -> RepairResult:
     state_repo = JsonStateRepository(state_root=state_root)
     seeder = CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec())
     mutex = FlockSeedMutex(state_root / ".seed.lock")
-    csg = create_palette_producer(install_spine)
+    csg = create_palette_producer(install_spine, producer=producer)
     weg, itr = WegAdapter(), ItrAdapter()
     use_case = DoctorRepairUseCase(
         doctor=DoctorUseCase(
@@ -1735,6 +1794,12 @@ def doctor(
         "--repair",
         help="Quarantine bad entries and reconverge the desktop (mutating)",
     ),
+    producer: str | None = typer.Option(
+        None,
+        "--producer",
+        help="One-shot palette producer override (csg|tpr); the runtime-owned "
+        "producer config is authoritative otherwise",
+    ),
 ) -> None:
     """Report store/symlink/cache divergence; optionally repair it.
 
@@ -1747,7 +1812,7 @@ def doctor(
     renderer = create_renderer(output_format)
     if repair:
         try:
-            repair_result = _run_doctor_repair()
+            repair_result = _call_with_producer(_run_doctor_repair, producer=producer)
         except (ValueError, RuntimeError, OSError) as exc:
             logger.error("doctor --repair failed: %s", exc)
             renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
@@ -1992,6 +2057,7 @@ def _run_reactive_converge(
     source: str | None = None,
     prune_on_reactive: bool = False,
     client: IJobClient | None = None,
+    producer: str | None = None,
 ) -> ReactiveConvergeResult:
     """Compose the daemon's reactive converge (P5-1-3, AD-35/AD-36/AD-42).
 
@@ -2041,7 +2107,12 @@ def _run_reactive_converge(
 
     def _declarative() -> object:
         try:
-            return _run_converge(suppress_history=True, allow_delete=False, include_terminal=False)
+            return _run_converge(
+                suppress_history=True,
+                allow_delete=False,
+                include_terminal=False,
+                producer=producer,
+            )
         except ValueError as exc:
             # Corrupt/symlinked intent is a logged recoverable skip, never a
             # crash-loop (AD-41); the other steps still converge.
@@ -2073,11 +2144,20 @@ def _run_reactive_converge(
         read_backstop=backstop.read,
         write_backstop=backstop.write,
         has_state=lambda: state_repo.load_current() is not None,
-        check_inputs=_run_check_inputs,
-        regenerate_stale=lambda: _run_regenerate_stale(
-            suppress_history=True, reconcile=False, include_terminal=False
+        check_inputs=lambda: _call_with_producer(_run_check_inputs, producer=producer),
+        regenerate_stale=lambda: _call_with_producer(
+            _run_regenerate_stale,
+            suppress_history=True,
+            reconcile=False,
+            include_terminal=False,
+            producer=producer,
         ),
-        reconcile=lambda: _run_reconcile(suppress_history=True, include_terminal=False),
+        reconcile=lambda: _call_with_producer(
+            _run_reconcile,
+            suppress_history=True,
+            include_terminal=False,
+            producer=producer,
+        ),
         declarative=_declarative,
         append_history=_append_reactive,
         prune=(
@@ -3055,6 +3135,12 @@ def reconcile(
     prune_pinned: bool = typer.Option(
         False, "--prune-pinned", help="Include seed-pinned entries in the plan/prune removal set"
     ),
+    producer: str | None = typer.Option(
+        None,
+        "--producer",
+        help="One-shot palette producer override (csg|tpr); the runtime-owned "
+        "producer config is authoritative otherwise",
+    ),
 ) -> None:
     """Repoint current/ symlinks to match current.json (swap sequence steps 1-4).
 
@@ -3096,7 +3182,7 @@ def reconcile(
         raise typer.Exit(code=2) from None
     if regenerate_stale:
         try:
-            regen_result = _run_regenerate_stale()
+            regen_result = _call_with_producer(_run_regenerate_stale, producer=producer)
         except (ValueError, RuntimeError, OSError) as exc:
             logger.error("reconcile --regenerate-stale failed: %s", exc)
             renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
@@ -3140,7 +3226,9 @@ def reconcile(
         return
     if plan:
         try:
-            plan_result = _run_reconcile_plan(keep, prune_pinned)
+            plan_result = _call_with_producer(
+                _run_reconcile_plan, keep, prune_pinned, producer=producer
+            )
         except (ValueError, RuntimeError, OSError) as exc:
             logger.error("reconcile --plan failed: %s", exc)
             renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
@@ -3212,7 +3300,7 @@ def reconcile(
             live = None
         pending_hash = live.wallpaper.content_hash if live is not None else ""
         _publish_wallpaper_state(client, "applying", pending_hash, "reconcile")
-        result = _run_reconcile()
+        result = _call_with_producer(_run_reconcile, producer=producer)
     except (ValueError, RuntimeError, OSError) as exc:
         _publish_wallpaper_state(client, "error", pending_hash, "reconcile")
         logger.error("reconcile failed: %s", exc)
@@ -3270,7 +3358,7 @@ def reconcile(
         "reload_failures": list(result.reload_failures),
     }
     try:
-        converge_report = _run_converge()
+        converge_report = _call_with_producer(_run_converge, producer=producer)
     except (ValueError, RuntimeError, OSError) as exc:
         logger.error("reconcile succeeded, converge failed: %s", exc)
         renderer.error(
@@ -3331,7 +3419,11 @@ def _render_converge(
 
 
 def _run_converge(
-    *, suppress_history: bool = False, allow_delete: bool = True, include_terminal: bool = True
+    *,
+    suppress_history: bool = False,
+    allow_delete: bool = True,
+    include_terminal: bool = True,
+    producer: str | None = None,
 ) -> ConvergenceReport | None:
     """Execute the declarative gap for plain ``reconcile`` (Story 4.5, AC 3).
 
@@ -3380,8 +3472,12 @@ def _run_converge(
     changeset = diff_states(desired, refresh_actual(), 5)
 
     def set_wallpaper(target: str) -> object:
-        res = _run_wallpaper_set(
-            Path(target), suppress_history=suppress_history, include_terminal=include_terminal
+        res = _call_with_producer(
+            _run_wallpaper_set,
+            Path(target),
+            suppress_history=suppress_history,
+            include_terminal=include_terminal,
+            producer=producer,
         )
         if res.reconcile.reload_failures:
             raise RuntimeError(f"reload failed for: {', '.join(res.reconcile.reload_failures)}")
@@ -3800,6 +3896,67 @@ def inspect_failures(
             rich=plain,
         )
     )
+
+
+@inspect_app.command("producer")
+def inspect_producer(
+    output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
+    producer: str | None = typer.Option(
+        None,
+        "--producer",
+        help="Report this one-shot override instead of the configured producer",
+    ),
+) -> None:
+    """Show the runtime-owned palette producer decision and its provenance.
+
+    Read-only (REQ-004): reports the resolved producer/source/engine/runtime,
+    the config path, ambient producer/engine env, any ignored ambient values,
+    and the warnings a composition root would log. An absent config is the
+    documented default (``csg``) and exits 0 with a warning; a malformed
+    config fails loud.
+    """
+    renderer = create_renderer(output_format)
+    try:
+        from runtime.application.palette_producer import resolve_palette_producer
+
+        resolution = resolve_palette_producer(_resolve_install_spine(), producer=producer)
+    except (ValueError, OSError) as exc:
+        logger.error("inspect producer failed: %s", exc)
+        renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
+        raise typer.Exit(code=1) from None
+    except Exception:
+        logger.exception("inspect producer failed unexpectedly")
+        renderer.error(
+            ErrorView(
+                kind="UnexpectedError",
+                message="inspect producer failed unexpectedly; see logs",
+            )
+        )
+        raise typer.Exit(code=1) from None
+
+    engine_desc = resolution.engine or "-"
+    runtime_desc = resolution.runtime or "-"
+    parts = [
+        f"palette producer: {resolution.producer} (source: {resolution.source}, "
+        f"engine: {engine_desc}, runtime: {runtime_desc})",
+        f"config: {resolution.config_path}",
+    ]
+    if resolution.ambient_env:
+        parts.append(
+            "ambient env: "
+            + ", ".join(f"{key}={value}" for key, value in sorted(resolution.ambient_env.items()))
+        )
+    else:
+        parts.append("ambient env: none")
+    if resolution.ignored_env:
+        parts.append(
+            "ignored env: "
+            + ", ".join(f"{key}={value}" for key, value in sorted(resolution.ignored_env.items()))
+        )
+    for warning in resolution.warnings:
+        parts.append(f"warning: {warning}")
+    plain = "\n".join(parts)
+    renderer.custom(CustomView(plain=plain, object=resolution.to_dict(), rich=plain))
 
 
 def _run_inspect_cache_list() -> InspectCacheResult:

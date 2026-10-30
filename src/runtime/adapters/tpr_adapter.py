@@ -26,6 +26,7 @@ from typing import Final
 
 from runtime.adapters.csg_adapter import (
     DEFAULT_TIMEOUT_SECONDS,
+    _artifact_failure,
     _build_palette_entry,
     _inspect_artifacts,
     _run_csg,
@@ -52,6 +53,11 @@ PALETTE_PRODUCER_ENV: Final[str] = "RUNTIME__PALETTE__PRODUCER"
 #: Env selector for tpr's generation engine (default: ``native``).
 TPR_ENGINE_ENV: Final[str] = "RUNTIME__PALETTE__TPR_ENGINE"
 TPR_DEFAULT_ENGINE: Final[str] = "native"
+
+#: tpr's runtime mode. Container is the production default: the engine images
+#: ship ``tpr-native``/``matugen``, so a fresh host needs no host helper.
+TPR_DEFAULT_RUNTIME: Final[str] = "container"
+VALID_TPR_RUNTIMES: Final[tuple[str, ...]] = ("local", "container")
 
 #: Pinned fallback when ``tpr --version`` is unavailable (matches contracts
 #: v0.4.0's tpr record era).
@@ -109,6 +115,8 @@ class TprAdapter(IColorSchemeGenerator):
         tpr_bin: str | None = None,
         templates_dir: Path | None = None,
         engine: str | None = None,
+        runtime: str | None = None,
+        settings_path: Path | None = None,
         version: str | None = None,
     ) -> None:
         if not isinstance(timeout, int):
@@ -118,9 +126,13 @@ class TprAdapter(IColorSchemeGenerator):
         self._timeout = timeout
         self._tpr_bin = _validate_tpr_bin(tpr_bin)
         self._templates_dir = templates_dir
-        self._engine = (engine or os.environ.get(TPR_ENGINE_ENV, "")).strip() or (
-            TPR_DEFAULT_ENGINE
-        )
+        self._engine = (engine or TPR_DEFAULT_ENGINE).strip() or TPR_DEFAULT_ENGINE
+        resolved_runtime = (runtime or TPR_DEFAULT_RUNTIME).strip() or TPR_DEFAULT_RUNTIME
+        if resolved_runtime not in VALID_TPR_RUNTIMES:
+            accepted = "|".join(VALID_TPR_RUNTIMES)
+            raise ValueError(f"tpr runtime must be one of {accepted}, got {resolved_runtime!r}")
+        self._runtime = resolved_runtime
+        self._settings_path = settings_path
         self._version = version
         self._resolved_version: str | None = version
 
@@ -133,6 +145,16 @@ class TprAdapter(IColorSchemeGenerator):
     def engine(self) -> str:
         return self._engine
 
+    @property
+    def runtime(self) -> str:
+        """Resolved tpr runtime mode (``container`` unless explicitly local)."""
+        return self._runtime
+
+    @property
+    def settings_path(self) -> Path | None:
+        """Provisioned tpr settings pinned into the child env, when present."""
+        return self._settings_path
+
     def version(self) -> str:
         """``tpr --version``'s last token, else the pinned fallback."""
         if self._resolved_version is not None:
@@ -140,6 +162,17 @@ class TprAdapter(IColorSchemeGenerator):
         probed = _probe_version(self._tpr_bin or "tpr")
         self._resolved_version = probed or TPR_VERSION_FALLBACK
         return self._resolved_version
+
+    def _resolve_templates_dir(self) -> Path:
+        """Return the supplied templates dir, failing loudly when absent."""
+        templates_dir = self._templates_dir
+        if templates_dir is None:
+            raise FileNotFoundError(
+                "TPR templates dir not provided: TprAdapter was constructed without "
+                "templates_dir. Resolve it from the install spine at "
+                "config/theme-producer/templates and pass templates_dir=..."
+            )
+        return templates_dir
 
     def _resolve_template_set_hash(self) -> str:
         templates_dir = self._templates_dir
@@ -225,14 +258,19 @@ class TprAdapter(IColorSchemeGenerator):
 
         with tempfile.TemporaryDirectory(prefix=".tpr-", dir=output_dir.parent) as raw_tmp:
             producer_dir = Path(raw_tmp)
-            env = build_env(
-                {
-                    "THEME__OUTPUT__DIRECTORY": str(producer_dir),
-                    "THEME__OUTPUT__OVERWRITE": "true",
-                    "THEME__GENERATION__ENGINE": self._engine,
-                    "THEME__RUNTIME__MODE": "local",
-                }
-            )
+            overrides = {
+                "THEME__OUTPUT__DIRECTORY": str(producer_dir),
+                "THEME__OUTPUT__OVERWRITE": "true",
+                "THEME__GENERATION__ENGINE": self._engine,
+                "THEME__RUNTIME__MODE": self._runtime,
+                # Pin the SAME catalog the adapter hashes; CWD discovery must
+                # never select an unrelated templates/ tree.
+                "THEME__TEMPLATES__DIRECTORY": str(self._resolve_templates_dir()),
+            }
+            if self._settings_path is not None and self._settings_path.is_file():
+                # Provisioned tpr settings own the container image tag/engine.
+                overrides["THEME_CONFIG_FILE_PATH"] = str(self._settings_path)
+            env = build_env(overrides)
             bin_name = self._tpr_bin or "tpr"
             args = [
                 bin_name,
@@ -305,8 +343,14 @@ class TprAdapter(IColorSchemeGenerator):
                     msg,
                     wallpaper_path=str(wallpaper_path),
                     wallpaper_hash=wallpaper_hash,
+                    tool=self.producer_name,
                     returncode=result.returncode,
+                    stdout=result.stdout,
                     stderr=stderr_part,
+                    elapsed_seconds=result.elapsed_seconds,
+                    timed_out=True,
+                    termination=result.termination,
+                    missing_artifacts=tuple(missing + not_files),
                     hint=(
                         "tpr timed out and the palette artifact set is incomplete; "
                         "check tpr/engine logs, then re-set the wallpaper"
@@ -327,8 +371,12 @@ class TprAdapter(IColorSchemeGenerator):
                         f"stdout:{stdout_part}",
                         wallpaper_path=str(wallpaper_path),
                         wallpaper_hash=wallpaper_hash,
+                        tool=self.producer_name,
                         returncode=result.returncode,
+                        stdout=result.stdout,
                         stderr=stderr,
+                        elapsed_seconds=result.elapsed_seconds,
+                        termination=sig_name,
                     )
                 stderr = result.stderr[:2048]
                 stdout = result.stdout[:500]
@@ -337,17 +385,28 @@ class TprAdapter(IColorSchemeGenerator):
                     f"stdout:{stdout}",
                     wallpaper_path=str(wallpaper_path),
                     wallpaper_hash=wallpaper_hash,
+                    tool=self.producer_name,
                     returncode=result.returncode,
+                    stdout=result.stdout,
                     stderr=stderr,
+                    elapsed_seconds=result.elapsed_seconds,
                 )
 
             missing, not_files = _inspect_artifacts(producer_dir)
             if missing or not_files:
-                name = (missing or not_files)[0]
-                path = producer_dir / name
-                if name in not_files:
-                    raise RuntimeError(f"tpr output {name} is a directory, expected file: {path}")
-                raise RuntimeError(f"tpr did not write expected artifact: {path}")
+                raise _artifact_failure(
+                    producer=self.producer_name,
+                    wallpaper_path=wallpaper_path,
+                    wallpaper_hash=wallpaper_hash,
+                    artifact_dir=producer_dir,
+                    missing=missing,
+                    not_files=not_files,
+                    result=result,
+                    hint=(
+                        "tpr exited successfully but its artifact set is incomplete; "
+                        "check the pinned templates dir and tpr logs, then re-set the wallpaper"
+                    ),
+                )
 
             self._copy_artifacts(producer_dir, output_dir)
             return _build_palette_entry(

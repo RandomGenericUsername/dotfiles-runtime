@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.4.1
+
+Runtime-owned palette producer config, tpr container runtime, and precise
+palette-failure diagnostics (REQ-004, REQ-005, BUG-007).
+
+- The producer is resolved from `<install_spine>/config/dotfiles-runtime/producer.json`
+  (schema version 1) with the order explicit `--producer` > config > default `csg` with a
+  warning. `RUNTIME__PALETTE__PRODUCER`/`RUNTIME__PALETTE__TPR_ENGINE` are no longer
+  authoritative; stale values are reported as `ignored_env` and warned about.
+  Malformed config fails loud.
+- `dotfiles-runtime inspect producer --format json` reports producer/source/engine/runtime,
+  the config path, ambient env, ignored env and warnings. `wallpaper set --format json`
+  gains `producer`, `producer_source` and `producer_engine`.
+- Every CLI/daemon composition root uses the same operation-time resolver, so a selector
+  launched before provisioning cannot pin the old producer.
+- `TprAdapter` runs the container runtime by default (`local` remains explicit for tests/dev),
+  pins `THEME__TEMPLATES__DIRECTORY` to the hashed spine catalog, and pins the provisioned
+  `theme-producer/settings.toml` so the container image tag/engine come from provisioning.
+  No host `tpr-native` is required.
+- `CsgAdapter` pins `COLORSCHEME_TEMPLATES_TEMPLATES_DIR` to the same templates dir it hashes,
+  so a selector CWD cannot select an unrelated catalog.
+- Exit-0 runs with missing/partial artifacts now raise typed `PaletteUnavailableError` carrying
+  the real return code, stdout, stderr, elapsed time, timeout/termination state and missing
+  names. `failures.jsonl` and `inspect failures` carry the optional diagnostics (old records
+  remain readable), and failures record the real producer (`tpr` is never labelled `csg`).
+- The existing fail-busy lock contract is unchanged: no retry or queue was added.
+
 ## 0.4.0
 
 Palette producer seam (REQ-003): the runtime can produce a palette with `tpr` as well as `csg`,

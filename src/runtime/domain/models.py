@@ -221,7 +221,12 @@ class PaletteUnavailableError(RuntimeError):
         stage: str = "palette",
         tool: str = "csg",
         returncode: int | None = None,
+        stdout: str = "",
         stderr: str = "",
+        elapsed_seconds: float | None = None,
+        timed_out: bool = False,
+        termination: str | None = None,
+        missing_artifacts: tuple[str, ...] = (),
         hint: str = "re-set the wallpaper / check csg",
     ) -> None:
         super().__init__(message)
@@ -230,7 +235,12 @@ class PaletteUnavailableError(RuntimeError):
         self.stage = stage
         self.tool = tool
         self.returncode = returncode
+        self.stdout = stdout
         self.stderr = stderr
+        self.elapsed_seconds = elapsed_seconds
+        self.timed_out = timed_out
+        self.termination = termination
+        self.missing_artifacts = missing_artifacts
         self.hint = hint
 
     def to_details(self) -> dict[str, str]:
@@ -241,7 +251,14 @@ class PaletteUnavailableError(RuntimeError):
             "stage": self.stage,
             "tool": self.tool,
             "returncode": "" if self.returncode is None else str(self.returncode),
+            "stdout": self.stdout,
             "stderr": self.stderr,
+            "elapsed_seconds": (
+                "" if self.elapsed_seconds is None else f"{self.elapsed_seconds:.3f}"
+            ),
+            "timed_out": "true" if self.timed_out else "false",
+            "termination": self.termination or "",
+            "missing_artifacts": ",".join(self.missing_artifacts),
             "hint": self.hint,
         }
 

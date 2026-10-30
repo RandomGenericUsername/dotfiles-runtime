@@ -236,6 +236,10 @@ def test_timeout_with_missing_artifact_raises_precise_error(tmp_path: Path) -> N
     assert exc.wallpaper_hash == hash_file(wallpaper)
     assert exc.stage == "palette"
     assert exc.tool == "csg"
+    assert exc.timed_out is True
+    assert exc.termination is not None
+    assert exc.elapsed_seconds is not None
+    assert "colors.kitty" in exc.missing_artifacts
 
 
 def test_timeout_ignored_sigint_escalates_and_still_fails_precisely(
