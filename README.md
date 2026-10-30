@@ -19,7 +19,7 @@ dotfiles-runtime icons regenerate         # re-render the icon set
 dotfiles-runtime icons preference …       # light/dark icon preference
 dotfiles-runtime gtk4 restart             # reload GTK4 subscribers
 dotfiles-runtime daemon run               # systemd ExecStart: org.dotfiles.Events owner
-dotfiles-runtime inspect status|daemon|history
+dotfiles-runtime inspect status|daemon|history|failures|producer
 dotfiles-runtime inspect cache list|prune
 dotfiles-runtime version
 ```
@@ -27,6 +27,18 @@ dotfiles-runtime version
 Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
+
+**0.4.1** — runtime-owned producer config, tpr container runtime, and palette-failure
+diagnostics.
+
+- The palette producer comes from
+  `<install_spine>/config/dotfiles-runtime/producer.json`; `--producer` is a one-shot
+  override and stale `RUNTIME__PALETTE__*` env is reported, never authoritative. Inspect it
+  with `dotfiles-runtime inspect producer --format json`.
+- `tpr` runs in its container runtime by default with the spine templates and provisioned
+  settings pinned; no host `tpr-native` is required.
+- CSG pins the same templates dir it hashes, and incomplete exit-0 runs carry the producer's
+  rc/stdout/stderr/elapsed/timeout/missing-artifact diagnostics into `failures.jsonl`.
 
 **0.3.0** — manifest-driven AGS refresh plus confirmed restart liveness.
 
