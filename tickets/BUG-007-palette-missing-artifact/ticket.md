@@ -2,7 +2,7 @@
 id: BUG-007
 title: "Palette step intermittently fails with missing colors.yaml under the AGS selector"
 kind: bug
-status: in-progress
+status: done
 lane: 2
 severity: high
 links:
@@ -152,3 +152,14 @@ plain `RuntimeError` with only the path, so `failures.jsonl` shows
 - `dotfiles-provision` BUG-007 — tpr native helper not provisioned.
 - `color-scheme-generator` is the upstream candidate if CSG is proven to exit 0
   without writing an artifact under concurrency.
+
+## Closeout evidence (2026-10-30)
+
+- Runtime `v0.4.1` pins CSG templates and records typed palette failures; gates
+  green (2299 passed).
+- Forced tpr missing-artifact run: rc 1, failure record `tool: tpr`,
+  `returncode: 0`, stdout/stderr, elapsed, missing artifact list; current state
+  unchanged.
+- CSG decoy-CWD fallback succeeds (8 artifacts); explicit decoy catalog exits 1.
+- `inspect failures` reads old and new records; no `returncode:null` loss on the
+  new path.

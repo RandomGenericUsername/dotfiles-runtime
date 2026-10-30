@@ -2,7 +2,7 @@
 id: REQ-004
 title: "Runtime-owned palette producer config (no ambient-env authority)"
 kind: requirement
-status: in-progress
+status: done
 lane: 2
 links:
   openspec: none
@@ -72,3 +72,11 @@ Surface the resolved value:
   startup diagnostic can use `inspect producer`.
 - `dotfiles-runtime` REQ-005 — tpr container runtime in the same release.
 - `dotfiles-runtime` BUG-007 — palette diagnostics in the same release.
+
+## Closeout evidence (2026-10-30)
+
+- Released `v0.4.1` (tag pushed); gates: 2299 passed, lint/contracts/hermetic/lock/docs green.
+- Live `producer.json` is `tpr/native/container`; `inspect producer` with ambient
+  `RUNTIME__PALETTE__PRODUCER=csg` reports `source: config`, `ignored_env: csg`.
+- Selector-shaped set reports `producer=tpr`, `producer_source=config`,
+  `producer_engine=native`; daemon/unit no longer carry producer env.

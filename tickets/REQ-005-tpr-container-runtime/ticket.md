@@ -2,7 +2,7 @@
 id: REQ-005
 title: "TprAdapter uses the container runtime; no host tpr-native dependency"
 kind: requirement
-status: in-progress
+status: done
 lane: 2
 links:
   openspec: none
@@ -60,3 +60,12 @@ requirement.
   runtime pin.
 - `dotfiles-runtime` REQ-004 — producer config in the same release.
 - `theme-producer` v0.4.0 already ships the container/native image.
+
+## Closeout evidence (2026-10-30)
+
+- TprAdapter container path released in `v0.4.1`; real container integration
+  test passed (16.42 s).
+- Manual `~/.local/bin/tpr-native` was removed; a selector-CWD tpr set still
+  succeeded (`white_tailed_eagle.png`, palette `a53f2180…`) using the image.
+- `tpr list-engines` now reports host native unavailable but image available;
+  runtime container mode is the working path.
