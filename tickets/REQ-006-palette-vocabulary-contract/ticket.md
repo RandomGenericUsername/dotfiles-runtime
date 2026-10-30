@@ -72,8 +72,11 @@ the same list, but the runtime is the gate.
 
 ## Progress / evidence (2026-10-30)
 
-Implementation commit: `8cb1489` on
-`ticket/REQ-006-palette-vocabulary-contract` (worktree `.worktrees/REQ-006/`).
+Implementation commits on `ticket/REQ-006-palette-vocabulary-contract`
+(worktree `.worktrees/REQ-006/`):
+
+- `8cb1489` — vocabulary, conformance, gate wiring, inspect/doctor, fixtures.
+- `57cadbe` — reconcile cache-hit validation before repoint.
 
 Delivered:
 
@@ -91,6 +94,9 @@ Delivered:
   staged artifacts BEFORE `drain_work_dir`/staging rename and also validates
   an existing cache hit. Failure therefore aborts before the BUG-001 visible
   swap and leaves no cache entry or staging dir.
+- `ReconcileDesktopStateUseCase._ensure_entries` — validates a complete
+  existing tpr palette before the symlink repoint; a miss/incomplete entry
+  still regenerates through the pipeline (which validates the build).
 - `inspect palette` — reports version, per-artifact conformance, extras; exits
   1 for a nonconforming semantic palette. `doctor` — adds a `vocabulary`
   verdict (diverged when roles are missing/malformed, repair quarantines and
@@ -114,13 +120,16 @@ Deviation / risk:
 Evidence (executed):
 
 - `uv run pytest tests/unit/test_palette_vocabulary.py
-  tests/unit/test_cli_inspect_palette.py -q` → `22 passed in 0.62s` (exit 0).
+  tests/unit/test_cli_inspect_palette.py -q` → `23 passed` (exit 0).
+- `uv run pytest tests/unit/test_palette_vocabulary.py
+  tests/unit/test_cli_inspect_palette.py tests/unit/test_reconcile.py -q` →
+  `64 passed` (exit 0).
 - `make gates` (worktree root) → `EXIT:0`:
-  - `uv run pytest -q -m "not integration"` → `2323 passed, 3 skipped, 22
+  - `uv run pytest -q -m "not integration"` → `2324 passed, 3 skipped, 22
     deselected`.
   - `uv run ruff check src` → `All checks passed!`.
   - contracts-check → `48 passed, 1 skipped`.
-  - hermetic → same fast suite `2323 passed, 3 skipped, 22 deselected`.
+  - hermetic → same fast suite `2324 passed, 3 skipped, 22 deselected`.
   - `uv lock --check` → `Resolved 25 packages in 2ms`; docs-check silent
     success.
 - Verify probe: `uv run pytest tests/unit/test_palette_vocabulary.py::test_declared_vocabulary_matches_probe_fixture -q` → `1 passed`.
