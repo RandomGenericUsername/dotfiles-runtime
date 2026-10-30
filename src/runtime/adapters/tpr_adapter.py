@@ -54,6 +54,11 @@ PALETTE_PRODUCER_ENV: Final[str] = "RUNTIME__PALETTE__PRODUCER"
 TPR_ENGINE_ENV: Final[str] = "RUNTIME__PALETTE__TPR_ENGINE"
 TPR_DEFAULT_ENGINE: Final[str] = "native"
 
+#: tpr's runtime mode. Container is the production default: the engine images
+#: ship ``tpr-native``/``matugen``, so a fresh host needs no host helper.
+TPR_DEFAULT_RUNTIME: Final[str] = "container"
+VALID_TPR_RUNTIMES: Final[tuple[str, ...]] = ("local", "container")
+
 #: Pinned fallback when ``tpr --version`` is unavailable (matches contracts
 #: v0.4.0's tpr record era).
 TPR_VERSION_FALLBACK: Final[str] = "v0.1.0"
@@ -110,6 +115,8 @@ class TprAdapter(IColorSchemeGenerator):
         tpr_bin: str | None = None,
         templates_dir: Path | None = None,
         engine: str | None = None,
+        runtime: str | None = None,
+        settings_path: Path | None = None,
         version: str | None = None,
     ) -> None:
         if not isinstance(timeout, int):
@@ -119,9 +126,13 @@ class TprAdapter(IColorSchemeGenerator):
         self._timeout = timeout
         self._tpr_bin = _validate_tpr_bin(tpr_bin)
         self._templates_dir = templates_dir
-        self._engine = (engine or os.environ.get(TPR_ENGINE_ENV, "")).strip() or (
-            TPR_DEFAULT_ENGINE
-        )
+        self._engine = (engine or TPR_DEFAULT_ENGINE).strip() or TPR_DEFAULT_ENGINE
+        resolved_runtime = (runtime or TPR_DEFAULT_RUNTIME).strip() or TPR_DEFAULT_RUNTIME
+        if resolved_runtime not in VALID_TPR_RUNTIMES:
+            accepted = "|".join(VALID_TPR_RUNTIMES)
+            raise ValueError(f"tpr runtime must be one of {accepted}, got {resolved_runtime!r}")
+        self._runtime = resolved_runtime
+        self._settings_path = settings_path
         self._version = version
         self._resolved_version: str | None = version
 
@@ -134,6 +145,16 @@ class TprAdapter(IColorSchemeGenerator):
     def engine(self) -> str:
         return self._engine
 
+    @property
+    def runtime(self) -> str:
+        """Resolved tpr runtime mode (``container`` unless explicitly local)."""
+        return self._runtime
+
+    @property
+    def settings_path(self) -> Path | None:
+        """Provisioned tpr settings pinned into the child env, when present."""
+        return self._settings_path
+
     def version(self) -> str:
         """``tpr --version``'s last token, else the pinned fallback."""
         if self._resolved_version is not None:
@@ -141,6 +162,17 @@ class TprAdapter(IColorSchemeGenerator):
         probed = _probe_version(self._tpr_bin or "tpr")
         self._resolved_version = probed or TPR_VERSION_FALLBACK
         return self._resolved_version
+
+    def _resolve_templates_dir(self) -> Path:
+        """Return the supplied templates dir, failing loudly when absent."""
+        templates_dir = self._templates_dir
+        if templates_dir is None:
+            raise FileNotFoundError(
+                "TPR templates dir not provided: TprAdapter was constructed without "
+                "templates_dir. Resolve it from the install spine at "
+                "config/theme-producer/templates and pass templates_dir=..."
+            )
+        return templates_dir
 
     def _resolve_template_set_hash(self) -> str:
         templates_dir = self._templates_dir
@@ -226,14 +258,19 @@ class TprAdapter(IColorSchemeGenerator):
 
         with tempfile.TemporaryDirectory(prefix=".tpr-", dir=output_dir.parent) as raw_tmp:
             producer_dir = Path(raw_tmp)
-            env = build_env(
-                {
-                    "THEME__OUTPUT__DIRECTORY": str(producer_dir),
-                    "THEME__OUTPUT__OVERWRITE": "true",
-                    "THEME__GENERATION__ENGINE": self._engine,
-                    "THEME__RUNTIME__MODE": "local",
-                }
-            )
+            overrides = {
+                "THEME__OUTPUT__DIRECTORY": str(producer_dir),
+                "THEME__OUTPUT__OVERWRITE": "true",
+                "THEME__GENERATION__ENGINE": self._engine,
+                "THEME__RUNTIME__MODE": self._runtime,
+                # Pin the SAME catalog the adapter hashes; CWD discovery must
+                # never select an unrelated templates/ tree.
+                "THEME__TEMPLATES__DIRECTORY": str(self._resolve_templates_dir()),
+            }
+            if self._settings_path is not None and self._settings_path.is_file():
+                # Provisioned tpr settings own the container image tag/engine.
+                overrides["THEME_CONFIG_FILE_PATH"] = str(self._settings_path)
+            env = build_env(overrides)
             bin_name = self._tpr_bin or "tpr"
             args = [
                 bin_name,

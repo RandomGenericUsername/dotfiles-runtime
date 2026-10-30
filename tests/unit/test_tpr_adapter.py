@@ -110,7 +110,9 @@ def test_generate_invokes_contract_and_copies_only_eight_artifacts(
     assert "-o" not in args and "--output" not in args
     assert env["THEME__OUTPUT__OVERWRITE"] == "true"
     assert env["THEME__GENERATION__ENGINE"] == "native"
-    assert env["THEME__RUNTIME__MODE"] == "local"
+    # REQ-005: container is the production default, never a forced local mode.
+    assert env["THEME__RUNTIME__MODE"] == "container"
+    assert env["THEME__TEMPLATES__DIRECTORY"] == str(adapter.templates_dir)
     assert Path(env["THEME__OUTPUT__DIRECTORY"]) != output_dir
 
     # Exactly the 8 recorded artifacts land in the palette entry.
@@ -121,6 +123,45 @@ def test_generate_invokes_contract_and_copies_only_eight_artifacts(
     assert entry.input_template_hash == canonical_hash_dir(adapter.templates_dir)  # type: ignore[arg-type]
     for name in PALETTE_ARTIFACT_NAMES:
         assert (output_dir / name).is_file()
+
+
+def test_explicit_local_runtime_is_available_for_tests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wallpaper = _copy_wallpaper_fixture(tmp_path)
+    adapter = _adapter(tmp_path, runtime="local")
+    output_dir = _output_dir(tmp_path, adapter, hash_file(wallpaper))
+    captured: dict[str, object] = {}
+    monkeypatch.setattr("runtime.adapters.tpr_adapter._run_csg", _runner(captured))
+
+    adapter.generate(wallpaper, output_dir)
+
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["THEME__RUNTIME__MODE"] == "local"
+
+
+def test_invalid_runtime_fails_loud(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="tpr runtime"):
+        TprAdapter(templates_dir=_make_templates_dir(tmp_path), runtime="vm")
+
+
+def test_provisioned_settings_are_pinned_when_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wallpaper = _copy_wallpaper_fixture(tmp_path)
+    settings = tmp_path / "settings.toml"
+    settings.write_text('[runtime]\nmode = "container"\n', encoding="utf-8")
+    adapter = _adapter(tmp_path, settings_path=settings)
+    output_dir = _output_dir(tmp_path, adapter, hash_file(wallpaper))
+    captured: dict[str, object] = {}
+    monkeypatch.setattr("runtime.adapters.tpr_adapter._run_csg", _runner(captured))
+
+    adapter.generate(wallpaper, output_dir)
+
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["THEME_CONFIG_FILE_PATH"] == str(settings)
 
 
 def test_theme_json_is_ignored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -143,8 +184,17 @@ def test_missing_artifact_fails_loudly(tmp_path: Path, monkeypatch: pytest.Monke
         "runtime.adapters.tpr_adapter._run_csg", _runner({}, skip="colors.kitty")
     )
 
-    with pytest.raises(RuntimeError, match="tpr did not write expected artifact"):
+    from runtime.domain.models import PaletteUnavailableError
+
+    with pytest.raises(PaletteUnavailableError, match="tpr did not write expected artifact") as excinfo:
         adapter.generate(wallpaper, output_dir)
+
+    exc = excinfo.value
+    assert exc.tool == "tpr"
+    assert exc.returncode == 0
+    assert exc.missing_artifacts == ("colors.kitty",)
+    assert exc.timed_out is False
+    assert exc.elapsed_seconds is not None
 
 
 def test_missing_templates_dir_fails_clearly(tmp_path: Path) -> None:
