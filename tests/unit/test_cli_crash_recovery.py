@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tests.support.palette_fakes import PaletteProducerStub
+from tests.support.palette_fakes import PaletteProducerStub, v1_colors_yaml, v1_gtk_css
 
 import json
 import logging
@@ -48,9 +48,9 @@ class _FakeCsg(PaletteProducerStub):
 
         self.calls += 1
         output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "colors.yaml").write_text("colors: []")
+        (output_dir / "colors.yaml").write_text(v1_colors_yaml())
         (output_dir / "colors.conf").write_text("colors {}")
-        (output_dir / "colors.gtk.css").write_text("colors {}")
+        (output_dir / "colors.gtk.css").write_text(v1_gtk_css())
         (output_dir / "colors.adw.css").write_text("colors {}")
         (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         (output_dir / "colors.rasi").write_text("* { background: #000; }")
@@ -117,7 +117,7 @@ class _FakeItr:
 
 
 def _setup_spine(install_spine: Path) -> None:
-    csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
+    csg_templates = install_spine / "config" / "theme-producer" / "templates"
     csg_templates.mkdir(parents=True)
     (csg_templates / "default.yaml").write_text("window: {}\n")
     weg_config = install_spine / "config" / "weg"
@@ -142,7 +142,7 @@ def _prepare_state(tmp_path: Path, state_root: Path) -> Path:
     img.write_bytes(b"user wallpaper bytes")
     ApplyWallpaperUseCase(
         state_repo=repo,
-        csg=csg,
+        palette_producer=csg,
         weg=weg,
         itr=itr,
         install_spine=install_spine,
@@ -154,7 +154,7 @@ def _prepare_state(tmp_path: Path, state_root: Path) -> Path:
 
     ReconcileDesktopStateUseCase(
         state_repo=repo,
-        csg=csg,
+        palette_producer=csg,
         weg=weg,
         itr=itr,
         install_spine=install_spine,

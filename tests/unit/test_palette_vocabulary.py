@@ -101,7 +101,7 @@ def _pipeline(tmp_path: Path, stub: PaletteProducerStub) -> DerivationPipeline:
     return DerivationPipeline(
         state_root=tmp_path,
         seeder=CacheSeeder(tmp_path),
-        csg=stub,  # type: ignore[arg-type]
+        palette_producer=stub,  # type: ignore[arg-type]
         weg=None,  # type: ignore[arg-type]
         itr=None,  # type: ignore[arg-type]
         install_spine=tmp_path,
@@ -149,7 +149,6 @@ def test_probe_fixture_removing_a_role_breaks_the_contract(tmp_path: Path) -> No
 def test_valid_v1_palette_conforms_and_reports_extras() -> None:
     conformance = check_palette_entry(_fixture("v1-valid"))
     assert conformance.conforming
-    assert conformance.semantic
     assert conformance.missing_roles == ()
     assert conformance.malformed_roles == ()
     assert "foreground" in conformance.extra_roles
@@ -211,23 +210,6 @@ def test_v040_palette_fails_naming_on_backdrop() -> None:
     assert "on_backdrop" in str(excinfo.value)
 
 
-def test_legacy_csg_palette_is_not_a_v1_producer(tmp_path: Path) -> None:
-    entry = tmp_path / "csg"
-    entry.mkdir()
-    (entry / "colors.yaml").write_text(
-        'background: "#000000"\nforeground: "#ffffff"\ncursor: "#ffffff"\ncolors:\n  - "#000000"\n',
-        encoding="utf-8",
-    )
-    (entry / "colors.gtk.css").write_text(
-        "@define-color color_background #000000;\n@define-color color_00 #000000;\n",
-        encoding="utf-8",
-    )
-    conformance = check_palette_entry(entry)
-    assert not conformance.semantic
-    assert not conformance.conforming
-    assert "surface" in conformance.missing_roles
-
-
 def test_v1_valid_has_all_51_roles_in_both_artifacts() -> None:
     conformance = check_palette_entry(_fixture("v1-valid"))
     for check in conformance.artifacts:
@@ -277,16 +259,6 @@ def test_tpr_cache_hit_is_validated_too(tmp_path: Path) -> None:
     with pytest.raises(PaletteVocabularyError) as excinfo:
         pipeline.ensure_palette(tmp_path / "wall.png", wallpaper_hash)
     assert excinfo.value.missing_roles == ("on_backdrop",)
-
-
-def test_csg_producer_is_exempt_from_the_v1_vocabulary(tmp_path: Path) -> None:
-    """Legacy csg emits no Material vocabulary; it is not a v1 producer."""
-    stub = _TprPaletteStub(_fixture("v0.4.0"))
-    stub.producer_name = "csg"
-    pipeline = _pipeline(tmp_path, stub)
-    entry, cache_hit = pipeline.ensure_palette(tmp_path / "wall.png", "ab" * 32)
-    assert not cache_hit
-    assert entry.entry_hash
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +330,7 @@ def test_reconcile_validates_existing_tpr_entry_before_swap(tmp_path: Path) -> N
     )
     reconcile = ReconcileDesktopStateUseCase(
         state_repo=None,  # type: ignore[arg-type]
-        csg=_TprPaletteStub(_fixture("v1-valid")),  # type: ignore[arg-type]
+        palette_producer=_TprPaletteStub(_fixture("v1-valid")),  # type: ignore[arg-type]
         weg=None,  # type: ignore[arg-type]
         itr=None,  # type: ignore[arg-type]
         install_spine=tmp_path,

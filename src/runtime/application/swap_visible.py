@@ -8,7 +8,7 @@ null until the themed phase), repoints ONLY the wallpaper symlinks, and
 reloads hyprpaper so pixels change only after the palette is known good.
 
 Scope boundary:
-- No derivation (no CSG/WEG/ITR): palette preparation is
+- No derivation (no palette/WEG/ITR producer call): palette preparation is
   ``ApplyWallpaperUseCase.prepare_palette``'s duty; effects/icons belong
   to the themed pass.
 - No history append: the phase-2 reconcile owns the single

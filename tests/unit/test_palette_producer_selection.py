@@ -3,6 +3,7 @@
 REQ-004: the producer is owned by
 ``<install_spine>/config/dotfiles-runtime/producer.json``. Ambient
 ``RUNTIME__PALETTE__*`` values are reported but never authoritative.
+REQ-007: ``tpr`` is the only registered producer; ``csg`` is retired.
 """
 
 from __future__ import annotations
@@ -12,11 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from runtime.adapters.csg_adapter import CsgAdapter
 from runtime.adapters.tpr_adapter import TprAdapter
 from runtime.application.palette_producer import (
     PALETTE_PRODUCER_ENV,
     ProducerResolution,
+    UnsupportedPaletteProducerError,
     create_palette_producer,
     palette_producer_name,
     producer_config_path,
@@ -27,12 +28,8 @@ from runtime.application.palette_producer import (
 TPR_ENGINE_ENV = "RUNTIME__PALETTE__TPR_ENGINE"
 
 
-def _spine(tmp_path: Path, *, with_csg_templates: bool = True) -> Path:
+def _spine(tmp_path: Path) -> Path:
     spine = tmp_path / "install"
-    if with_csg_templates:
-        csg = spine / "config" / "color-scheme-generator" / "templates"
-        csg.mkdir(parents=True)
-        (csg / "default.yaml").write_text("window: {}\n")
     tpr = tpr_templates_dir(spine)
     tpr.mkdir(parents=True)
     (tpr / "colors.yaml.j2").write_text("background: {{ bg }}\n")
@@ -62,17 +59,17 @@ def _write_config(
     return path
 
 
-def test_absent_config_defaults_to_csg_with_warning(tmp_path: Path) -> None:
+def test_absent_config_defaults_to_tpr_with_warning(tmp_path: Path) -> None:
     spine = _spine(tmp_path)
     resolution = resolve_palette_producer(spine, env={})
 
-    assert resolution.producer == "csg"
+    assert resolution.producer == "tpr"
     assert resolution.source == "default"
-    assert resolution.engine is None
-    assert resolution.runtime is None
-    assert any("defaulting to csg" in warning for warning in resolution.warnings)
-    assert isinstance(create_palette_producer(spine, env={}), CsgAdapter)
-    assert palette_producer_name(spine, env={}) == "csg"
+    assert resolution.engine == "native"
+    assert resolution.runtime == "container"
+    assert any("defaulting to tpr" in warning for warning in resolution.warnings)
+    assert isinstance(create_palette_producer(spine, env={}), TprAdapter)
+    assert palette_producer_name(spine, env={}) == "tpr"
 
 
 def test_config_tpr_wins_over_ambient_csg(tmp_path: Path) -> None:
@@ -105,21 +102,41 @@ def test_config_tpr_wins_over_ambient_csg(tmp_path: Path) -> None:
     assert producer.runtime == "container"
 
 
-def test_explicit_override_wins_over_config(tmp_path: Path) -> None:
+def test_explicit_tpr_override_wins_over_config(tmp_path: Path) -> None:
     spine = _spine(tmp_path)
-    _write_config(spine, producer="tpr")
+    _write_config(spine, producer="tpr", engine="matugen", runtime="local")
 
-    resolution = resolve_palette_producer(spine, producer="csg")
-    assert resolution.producer == "csg"
+    resolution = resolve_palette_producer(spine, producer="tpr")
+    assert resolution.producer == "tpr"
     assert resolution.source == "cli"
-    assert isinstance(create_palette_producer(spine, producer="csg"), CsgAdapter)
+    assert resolution.engine == "matugen"
+    assert resolution.runtime == "local"
+    assert isinstance(create_palette_producer(spine, producer="tpr"), TprAdapter)
 
+
+@pytest.mark.parametrize("producer", ["csg", "bogus"])
+def test_unknown_explicit_producer_is_typed_and_names_supported(
+    tmp_path: Path, producer: str
+) -> None:
+    spine = _spine(tmp_path)
+    with pytest.raises(UnsupportedPaletteProducerError) as excinfo:
+        resolve_palette_producer(spine, producer=producer)
+    assert "supported producers: tpr" in str(excinfo.value)
+
+
+def test_empty_explicit_producer_is_rejected(tmp_path: Path) -> None:
+    spine = _spine(tmp_path)
+    with pytest.raises(ValueError, match="must be a non-empty string"):
+        resolve_palette_producer(spine, producer="")
+
+
+def test_config_csg_is_typed_and_names_supported(tmp_path: Path) -> None:
+    spine = _spine(tmp_path)
     _write_config(spine, producer="csg")
-    tpr = resolve_palette_producer(spine, producer="tpr")
-    assert tpr.producer == "tpr"
-    assert tpr.source == "cli"
-    assert tpr.engine == "native"
-    assert tpr.runtime == "container"
+    with pytest.raises(UnsupportedPaletteProducerError) as excinfo:
+        resolve_palette_producer(spine)
+    assert "supported producers: tpr" in str(excinfo.value)
+    assert excinfo.value.supported == ("tpr",)
 
 
 def test_config_engine_and_runtime_are_used(tmp_path: Path) -> None:
@@ -147,6 +164,7 @@ def test_ambient_engine_matching_config_is_not_ignored(tmp_path: Path) -> None:
         json.dumps([]),
         json.dumps({"schema_version": 2, "producer": "tpr"}),
         json.dumps({"schema_version": 1, "producer": "bogus"}),
+        json.dumps({"schema_version": 1, "producer": "csg"}),
         json.dumps({"schema_version": 1, "producer": "tpr", "tpr_engine": ""}),
         json.dumps({"schema_version": 1, "producer": "tpr", "tpr_runtime": "vm"}),
         json.dumps(
@@ -164,12 +182,6 @@ def test_malformed_config_fails_loud(tmp_path: Path, payload: str) -> None:
         resolve_palette_producer(spine)
     with pytest.raises(ValueError, match="invalid palette producer config"):
         create_palette_producer(spine)
-
-
-def test_unknown_explicit_producer_fails_loud(tmp_path: Path) -> None:
-    spine = _spine(tmp_path)
-    with pytest.raises(ValueError, match="unknown palette producer 'bogus'"):
-        resolve_palette_producer(spine, producer="bogus")
 
 
 def test_resolution_to_dict_is_the_inspect_shape(tmp_path: Path) -> None:

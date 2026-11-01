@@ -17,7 +17,7 @@ _DEFAULT_TEMPLATE_SET_HASH = "c" * 64
 class PaletteProducerStub:
     """Minimal ``IColorSchemeGenerator`` key surface for duck-typed fakes."""
 
-    producer_name: str = "csg"
+    producer_name: str = "tpr"
     templates_dir: Path | None = None
 
     def template_set_hash(self) -> str:
@@ -28,3 +28,20 @@ class PaletteProducerStub:
 
     def expected_entry_hash(self, wallpaper_hash: str) -> str:
         return palette_entry_hash(wallpaper_hash, self.template_set_hash())
+
+
+_V1_HEX = "#000000"
+
+
+def v1_colors_yaml() -> str:
+    """A conforming ``palette.v1`` ``colors.yaml`` (all declared roles)."""
+    from runtime.domain.palette_vocabulary import PALETTE_VOCABULARY_V1
+
+    return "".join(f'{role}: "{_V1_HEX}"\n' for role in PALETTE_VOCABULARY_V1)
+
+
+def v1_gtk_css() -> str:
+    """A conforming ``palette.v1`` ``colors.gtk.css`` (all declared roles)."""
+    from runtime.domain.palette_vocabulary import PALETTE_VOCABULARY_V1
+
+    return "".join(f"@define-color {role} {_V1_HEX};\n" for role in PALETTE_VOCABULARY_V1)

@@ -19,17 +19,17 @@ gt-3-2; until then it still reads provisioning's rendered copy, which
 the runtime never edits, AD-5), so the live terminal and fresh shells
 theme from one byte sequence. No additional OSC codes are invented and
 no terminfo negotiation occurs; the LFs are part of what the pinned
-template produces (csg's own ``terminal_applier._emit_to_terminal``
+template produces (the producer's own ``terminal_applier._emit_to_terminal``
 writes the file bytes verbatim — this adapter mirrors that precedent).
 
-AD-15 no-import note: ``color_scheme_generator`` is in the forbidden
+AD-15 no-import note: the palette producer package is in the forbidden
 import set (ARCHITECTURE-SPINE.md AD-15). This adapter MIRRORS the
-``/dev/tty`` write mechanics of csg's ``adapters/terminal_applier.py``
+``/dev/tty`` write mechanics of the producer's terminal applier
 (``open("/dev/tty", "wb")`` + flush) but NEVER imports it or its
-templates. The last re-derivation coupling to csg's rendered shapes is
-gone — the applier imports nothing new and touches nothing under the
-install spine (AD-5/AD-11: it only reads ``current/`` and writes the
-TTY).
+templates. The last re-derivation coupling to the producer's rendered
+shapes is gone — the applier imports nothing new and touches nothing
+under the install spine (AD-5/AD-11: it only reads ``current/`` and writes
+the TTY).
 
 Minimal corrupt-artifact guard (R5): the artifact must be non-empty AND
 start with ``\\x1b]`` (the template's first byte by construction);
@@ -47,8 +47,8 @@ surfaced ``False`` failures that run only after a consumer entry exists
 (R5; rt-2-5 review D2 resolution). A missing consumer entry wins over
 the missing-TTY rule.
 
-R5 headless decision: no ``sys.stdout.isatty()`` precondition — csg
-guards on it because csg's stdout may be captured mid-pipeline; the
+R5 headless decision: no ``sys.stdout.isatty()`` precondition — the
+producer guards on it because its stdout may be captured mid-pipeline; the
 runtime adapter's contract is a SURFACED failure (spec-literal R5: the
 terminal cannot be re-themed → ``False`` with ``TerminalColorApplier``
 in ``ReconcileResult.reload_failures``). Attempting the write

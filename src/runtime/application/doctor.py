@@ -315,13 +315,10 @@ class DoctorUseCase:
     def _check_vocabulary(self, state: DesktopState) -> list[DriftItem]:
         """REQ-006 leg — live palette vs the declared ``palette.v1`` roles.
 
-        Read-only. A tpr-shaped (semantic) palette must conform to every
-        declared role in ``colors.yaml`` and ``colors.gtk.css``; missing or
-        malformed roles are ``diverged`` and repair quarantines/regenerates
-        the entry. Legacy csg palettes (no semantic signature) are reported
-        ``ok`` with the vocabulary verdict in the detail: csg is not a
-        ``palette.v1`` producer and retires in REQ-007. Extra roles are
-        informational and never dirty the report.
+        Read-only. Every palette must conform to every declared role in
+        ``colors.yaml`` and ``colors.gtk.css``; missing or malformed roles are
+        ``diverged`` and repair quarantines/regenerates the entry. Extra roles
+        are informational and never dirty the report.
         """
         if state.palette is None:
             return []
@@ -332,13 +329,6 @@ class DoctorUseCase:
         if conformance.errors():
             status: LinkStatusKind = "diverged"
             detail = "palette vocabulary v1 unreadable: " + "; ".join(conformance.errors())
-        elif not conformance.semantic:
-            status = "ok"
-            detail = (
-                "legacy palette (not a palette.v1 producer; "
-                f"{len(conformance.missing_roles)} declared role(s) absent); "
-                f"extra roles: {extras}"
-            )
         elif conformance.conforming:
             status = "ok"
             detail = (

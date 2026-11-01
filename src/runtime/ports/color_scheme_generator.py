@@ -7,7 +7,7 @@ from runtime.domain.models import PaletteEntry
 
 
 class IColorSchemeGenerator(ABC):
-    #: Stable producer identity folded into cache keys ("csg" | "tpr").
+    #: Stable producer identity folded into cache keys (only "tpr" today).
     producer_name: str
 
     @property

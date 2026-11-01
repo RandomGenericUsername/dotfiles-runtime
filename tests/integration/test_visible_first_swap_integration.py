@@ -2,7 +2,7 @@
 
 Composes the REAL use cases on a REAL filesystem (real
 ``JsonStateRepository``/``CacheSeeder``/spine, contract-honest fake
-csg/weg/itr, real flock mutex):
+palette_producer/weg/itr, real flock mutex):
 
 - Crash-safety (1.3): kill between ``visible`` and ``done`` (palette
   preparation + swap phase, then drop it like a dead process) reconverges
@@ -16,7 +16,7 @@ csg/weg/itr, real flock mutex):
 
 from __future__ import annotations
 
-from tests.support.palette_fakes import PaletteProducerStub
+from tests.support.palette_fakes import PaletteProducerStub, v1_colors_yaml, v1_gtk_css
 
 import json
 from datetime import UTC, datetime
@@ -44,12 +44,10 @@ class _FakeCsg(PaletteProducerStub):
 
         self.calls += 1
         if self.fail:
-            raise RuntimeError("csg exploded")
+            raise RuntimeError("palette_producer exploded")
         output_dir.mkdir(parents=True, exist_ok=True)
         for name in (
-            "colors.yaml",
             "colors.conf",
-            "colors.gtk.css",
             "colors.adw.css",
             "colors.sequences",
             "colors.rasi",
@@ -57,6 +55,8 @@ class _FakeCsg(PaletteProducerStub):
             "colors.btop.theme",
         ):
             (output_dir / name).write_text(f"{name} content")
+        (output_dir / "colors.yaml").write_text(v1_colors_yaml())
+        (output_dir / "colors.gtk.css").write_text(v1_gtk_css())
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -156,7 +156,7 @@ class _RecordingReloader:
 
 
 def _setup_spine(install_spine: Path) -> None:
-    csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
+    csg_templates = install_spine / "config" / "theme-producer" / "templates"
     csg_templates.mkdir(parents=True)
     (csg_templates / "default.yaml").write_text("window: {}\n")
     weg_config = install_spine / "config" / "weg"
@@ -180,7 +180,7 @@ def _run_swap(
     install_spine: Path,
     img: Path,
     *,
-    csg: Any | None = None,
+    palette_producer: Any | None = None,
     hyprpaper: Any | None = None,
 ) -> Any:
     """Palette preparation + phase 1 under the real outer flock (production shape)."""
@@ -190,7 +190,7 @@ def _run_swap(
     with FlockSeedMutex(state_root / ".seed.lock").hold(blocking=False):
         apply = ApplyWallpaperUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
-            csg=csg or _FakeCsg(),
+            palette_producer=palette_producer or _FakeCsg(),
             weg=_FakeWeg(),
             itr=_FakeItr(),
             install_spine=install_spine,
@@ -215,7 +215,7 @@ def _run_themed(
     img: Path,
     wallpaper_hash: str,
     *,
-    csg: Any | None = None,
+    palette_producer: Any | None = None,
     weg: Any | None = None,
     itr: Any | None = None,
     reloaders: list[Any] | None = None,
@@ -226,7 +226,7 @@ def _run_themed(
     with FlockSeedMutex(state_root / ".seed.lock").hold(blocking=False):
         apply_result = ApplyWallpaperUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
-            csg=csg or _FakeCsg(),
+            palette_producer=palette_producer or _FakeCsg(),
             weg=weg or _FakeWeg(),
             itr=itr or _FakeItr(),
             install_spine=install_spine,
@@ -236,7 +236,7 @@ def _run_themed(
         ).run(img, wallpaper_hash=wallpaper_hash)
         reconcile_result = ReconcileDesktopStateUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
-            csg=csg or _FakeCsg(),
+            palette_producer=palette_producer or _FakeCsg(),
             weg=weg or _FakeWeg(),
             itr=itr or _FakeItr(),
             install_spine=install_spine,
@@ -271,7 +271,7 @@ class TestCrashSafety:
         invoked: list[str] = []
         result = ReconcileDesktopStateUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
-            csg=_FakeCsg(),
+            palette_producer=_FakeCsg(),
             weg=_FakeWeg(),
             itr=_FakeItr(),
             install_spine=install_spine,
@@ -294,19 +294,19 @@ class TestCrashSafety:
 
         # The next set re-derives the missing effects/icons layers; the
         # palette was already prepared+persisted by the swap phase (cache hit),
-        # so csg is not invoked again (BUG-001).
-        csg, weg, itr = _FakeCsg(), _FakeWeg(), _FakeItr()
+        # so palette_producer is not invoked again (BUG-001).
+        palette_producer, weg, itr = _FakeCsg(), _FakeWeg(), _FakeItr()
         apply_result, reconcile_result = _run_themed(
             state_root,
             install_spine,
             img,
             swap.wallpaper_hash,
-            csg=csg,
+            palette_producer=palette_producer,
             weg=weg,
             itr=itr,
         )
 
-        assert (csg.calls, weg.calls, itr.calls) == (0, 1, 1)
+        assert (palette_producer.calls, weg.calls, itr.calls) == (0, 1, 1)
         assert apply_result.state.palette is not None
         assert reconcile_result.state.palette is not None
         lines = (state_root / "history.jsonl").read_text().splitlines()

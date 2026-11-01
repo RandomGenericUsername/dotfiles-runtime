@@ -38,7 +38,6 @@ __all__ = [
     "PaletteConformance",
     "check_palette_artifacts",
     "check_palette_entry",
-    "is_semantic_palette",
     "require_palette_conformance",
 ]
 
@@ -189,17 +188,6 @@ class PaletteConformance:
             if any(role in check.present_roles for check in self.artifacts)
         )
 
-    @property
-    def semantic(self) -> bool:
-        """True when the palette carries the semantic signature (tpr shape).
-
-        Legacy csg palettes expose only ``background``/``foreground``/16 ANSI
-        colors (csg retires in REQ-007); they are not ``palette.v1``
-        producers. Reporting uses this to say "not applicable" instead of
-        dirtying a healthy legacy desktop.
-        """
-        return "on_surface" in self.present_roles and "surface" in self.present_roles
-
     def errors(self) -> tuple[str, ...]:
         return tuple(check.error for check in self.artifacts if check.error)
 
@@ -208,7 +196,6 @@ class PaletteConformance:
         return {
             "vocabulary_version": self.vocabulary_version,
             "conforming": self.conforming,
-            "semantic": self.semantic,
             "missing_roles": list(self.missing_roles),
             "malformed_roles": list(self.malformed_roles),
             "extra_roles": list(self.extra_roles),
@@ -279,9 +266,7 @@ def check_palette_entry(entry_dir: Path) -> PaletteConformance:
     """Read + check a built palette entry directory (read-only).
 
     A missing/unreadable artifact is reported as nonconforming with the full
-    declared vocabulary missing and a populated ``error`` — never silently
-    treated as "legacy". Only :attr:`PaletteConformance.semantic` classifies
-    a readable palette as a non-v1 producer shape.
+    declared vocabulary missing and a populated ``error``.
     """
     checks: list[ArtifactVocabularyCheck] = []
     for artifact in ("colors.yaml", "colors.gtk.css"):
@@ -311,7 +296,3 @@ def require_palette_conformance(entry_dir: Path) -> PaletteConformance:
     conformance.require()
     return conformance
 
-
-def is_semantic_palette(entry_dir: Path) -> bool:
-    """True when the entry's artifacts carry the semantic palette signature."""
-    return check_palette_entry(entry_dir).semantic

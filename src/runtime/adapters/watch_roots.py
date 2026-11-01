@@ -17,9 +17,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 #: Bounded recursion depths for directory roots (AD-39). ``icon-templates``
-#: nests up to 4 levels; the CSG template tree up to 2; the icon-mappings
-#: tree is shallow (its ``icons.yaml`` plus siblings) and bounded at 2.
-CSG_TEMPLATES_DEPTH = 2
+#: nests up to 4 levels; the theme-producer template tree up to 2; the
+#: icon-mappings tree is shallow (its ``icons.yaml`` plus siblings) and
+#: bounded at 2.
+THEME_PRODUCER_TEMPLATES_DEPTH = 2
 ICON_TEMPLATES_DEPTH = 4
 ICON_MAPPINGS_DEPTH = 2
 
@@ -49,9 +50,9 @@ def enumerate_watch_roots(install_spine: Path, intent_path: Path) -> tuple[Watch
     """
     return (
         WatchRoot(
-            install_spine / "config" / "color-scheme-generator" / "templates",
+            install_spine / "config" / "theme-producer" / "templates",
             is_directory=True,
-            depth=CSG_TEMPLATES_DEPTH,
+            depth=THEME_PRODUCER_TEMPLATES_DEPTH,
         ),
         WatchRoot(
             install_spine / "config" / "weg" / "effects.yaml",

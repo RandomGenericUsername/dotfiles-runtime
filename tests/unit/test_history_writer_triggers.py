@@ -63,7 +63,7 @@ def test_reconcile_use_case_rejects_unknown_trigger() -> None:
 
     use_case = ReconcileDesktopStateUseCase(
         state_repo=None,  # type: ignore[arg-type]
-        csg=None,  # type: ignore[arg-type]
+        palette_producer=None,  # type: ignore[arg-type]
         weg=None,  # type: ignore[arg-type]
         itr=None,  # type: ignore[arg-type]
         install_spine=Path("/install"),

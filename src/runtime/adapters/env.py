@@ -1,16 +1,15 @@
-"""Centralized env builder for CSG/WEG/ITR adapters (Story 1.7 review).
+"""Centralized env builder for palette/WEG/ITR adapters (Story 1.7 review).
 
 Implements least-privilege allowlist for subprocess env forwarded into
-OCI containers via ``csg``'s ``container_processor``. Replaces
+OCI containers via the producer's ``container_processor``. Replaces
 ``dict(os.environ)`` passthrough to avoid secret exfiltration
 (``GITHUB_TOKEN``, ``AWS_*``, ``*_SECRET*`` etc.) and handles
 ``E2BIG`` (argument list too long) explicitly.
 
-Scalable: single source for all three adapters (CSG/WEG/ITR) plus the
-opt-in TPR palette producer — future adapters reuse ``build_env`` without
-duplicating allowlists.
+Scalable: single source for all three adapters (palette/WEG/ITR) — future
+adapters reuse ``build_env`` without duplicating allowlists.
 
-AD-7: adapter only sets host ``env=``; ``csg`` forwards into
+AD-7: adapter only sets host ``env=``; the producer forwards into
 ``RunConfig``. This module builds the host env dict.
 """
 
@@ -19,7 +18,7 @@ from __future__ import annotations
 import errno
 import os
 
-# Exact keys always allowed (needed for csg/shim/poc + hermetic determinism)
+# Exact keys always allowed (needed for shim/poc + hermetic determinism)
 _ALLOWED_EXACT: frozenset[str] = frozenset(
     {
         "PATH",
@@ -46,7 +45,6 @@ _ALLOWED_EXACT: frozenset[str] = frozenset(
 
 # Prefixes allowed — covers all env-override protocol keys and XDG
 _ALLOWED_PREFIXES: tuple[str, ...] = (
-    "COLORSCHEME__",
     "WALLPAPER__",
     "ICON_RENDERER__",
     "THEME__",
@@ -77,7 +75,7 @@ def build_env(overrides: dict[str, str]) -> dict[str, str]:
 
     Args:
         overrides: literal override keys to inject (e.g.
-            ``COLORSCHEME__OUTPUT__DIRECTORY``).
+            ``THEME__OUTPUT__DIRECTORY``).
 
     Returns:
         Filtered env dict containing allowlisted host vars + overrides.

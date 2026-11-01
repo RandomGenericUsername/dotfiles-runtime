@@ -9,6 +9,8 @@ CliRunner + monkeypatched composition for shape, real wiring for behavior.
 
 from __future__ import annotations
 
+from tests.support.palette_fakes import v1_colors_yaml, v1_gtk_css
+
 import hashlib
 import json
 import os
@@ -54,7 +56,7 @@ def _quiet_seed_hook(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     (spine / "icon-templates" / "x.svg").write_text("<svg/>", encoding="utf-8")
     (spine / "icon-mappings").mkdir(parents=True)
     (spine / "icon-mappings" / "icons.yaml").write_text("icons: {}\n", encoding="utf-8")
-    templates = spine / "config" / "color-scheme-generator" / "templates"
+    templates = spine / "config" / "theme-producer" / "templates"
     templates.mkdir(parents=True)
     (templates / "t.j2").write_text("x", encoding="utf-8")
     weg = spine / "config" / "weg"
@@ -103,10 +105,13 @@ def _seed_state(state_root: Path) -> None:
         },
     )
     pal_dir = state_root / "cache" / "palettes" / PH
-    pal_artifacts = {name: _h(name.encode()) for name in PALETTE_FILES}
-    for name in PALETTE_FILES:
+    artifact_bytes = {name: name.encode() for name in PALETTE_FILES}
+    artifact_bytes["colors.yaml"] = v1_colors_yaml().encode()
+    artifact_bytes["colors.gtk.css"] = v1_gtk_css().encode()
+    pal_artifacts = {name: _h(data) for name, data in artifact_bytes.items()}
+    for name, data in artifact_bytes.items():
         (pal_dir / name).parent.mkdir(parents=True, exist_ok=True)
-        (pal_dir / name).write_bytes(name.encode())
+        (pal_dir / name).write_bytes(data)
     _write_meta(
         pal_dir,
         {

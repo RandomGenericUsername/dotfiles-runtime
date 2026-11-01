@@ -3,9 +3,14 @@
 The producer is runtime-owned, provisioning-rendered state, not caller
 environment (REQ-004):
 
-1. explicit ``--producer csg|tpr`` (one-shot override);
+1. explicit ``--producer tpr`` (one-shot override);
 2. ``<install_spine>/config/dotfiles-runtime/producer.json``;
-3. default ``csg`` with a warning when the file is absent.
+3. default ``tpr`` with a warning when the file is absent.
+
+Only registered, vocabulary-conformant producers are accepted. ``tpr`` is the
+sole producer in the ``palette.v1`` era; any other value (including the retired
+``csg``) raises the typed :class:`UnsupportedPaletteProducerError` naming the
+supported set.
 
 ``RUNTIME__PALETTE__PRODUCER`` / ``RUNTIME__PALETTE__TPR_ENGINE`` are never
 authoritative. When present and different they are reported in
@@ -33,13 +38,12 @@ from runtime.adapters.tpr_adapter import (
     TPR_ENGINE_ENV,
     VALID_TPR_RUNTIMES,
 )
-from runtime.application.derive import find_templates_dir
 from runtime.ports.color_scheme_generator import IColorSchemeGenerator
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PALETTE_PRODUCER: Final[str] = "csg"
-VALID_PALETTE_PRODUCERS: Final[tuple[str, ...]] = ("csg", "tpr")
+DEFAULT_PALETTE_PRODUCER: Final[str] = "tpr"
+VALID_PALETTE_PRODUCERS: Final[tuple[str, ...]] = ("tpr",)
 
 #: Versioned runtime-owned producer config under the install spine.
 PRODUCER_CONFIG_SCHEMA_VERSION: Final[int] = 1
@@ -67,14 +71,25 @@ TPR_SETTINGS_SPINE_PATH: Final[tuple[str, ...]] = (
 )
 
 
+class UnsupportedPaletteProducerError(ValueError):
+    """A producer outside the registered vocabulary-conformant set.
+
+    ``supported`` names the accepted producers so a caller can render the
+    exact set without parsing the message.
+    """
+
+    def __init__(self, message: str, *, supported: tuple[str, ...]) -> None:
+        super().__init__(message)
+        self.supported = supported
+
+
 @dataclass(frozen=True, slots=True)
 class ProducerResolution:
     """One resolved producer decision, including its provenance.
 
-    ``source`` is ``"cli"``, ``"config"`` or ``"default"``. ``engine`` /
-    ``runtime`` are ``None`` for csg (they are meaningless there). The ambient
-    maps are reported verbatim so ``inspect producer`` can show stale env that
-    was deliberately ignored.
+    ``source`` is ``"cli"``, ``"config"`` or ``"default"``. The ambient maps
+    are reported verbatim so ``inspect producer`` can show stale env that was
+    deliberately ignored.
     """
 
     producer: str
@@ -121,7 +136,10 @@ def _validate_producer(value: object, *, context: str) -> str:
     producer = value.strip()
     if producer not in VALID_PALETTE_PRODUCERS:
         accepted = "|".join(VALID_PALETTE_PRODUCERS)
-        raise ValueError(f"unknown palette producer {producer!r}: must be one of {accepted}")
+        raise UnsupportedPaletteProducerError(
+            f"unsupported palette producer {producer!r}: supported producers: {accepted}",
+            supported=VALID_PALETTE_PRODUCERS,
+        )
     return producer
 
 
@@ -131,7 +149,7 @@ def _load_producer_config(path: Path) -> dict[str, object] | None:
     Malformed JSON, a wrong ``schema_version``, an unknown producer/engine/
     runtime, unknown keys, or wrong field types raise ``ValueError`` naming
     the config path. A missing file is the documented default path, not an
-    error.
+    error. An unregistered producer keeps its typed class.
     """
     try:
         raw = path.read_text(encoding="utf-8")
@@ -161,6 +179,10 @@ def _load_producer_config(path: Path) -> dict[str, object] | None:
         raise ValueError(f"invalid palette producer config {path}: missing 'producer'")
     try:
         _validate_producer(data["producer"], context="config")
+    except UnsupportedPaletteProducerError as exc:
+        raise UnsupportedPaletteProducerError(
+            f"invalid palette producer config {path}: {exc}", supported=exc.supported
+        ) from exc
     except ValueError as exc:
         raise ValueError(f"invalid palette producer config {path}: {exc}") from exc
 
@@ -218,12 +240,8 @@ def resolve_palette_producer(
             f"no palette producer config at {config_path}; defaulting to {resolved_producer}"
         )
 
-    if resolved_producer == "tpr":
-        engine = str(config["tpr_engine"]) if config is not None else TPR_DEFAULT_ENGINE
-        runtime = str(config["tpr_runtime"]) if config is not None else TPR_DEFAULT_RUNTIME
-    else:
-        engine = None
-        runtime = None
+    engine = str(config["tpr_engine"]) if config is not None else TPR_DEFAULT_ENGINE
+    runtime = str(config["tpr_runtime"]) if config is not None else TPR_DEFAULT_RUNTIME
 
     ignored_env: dict[str, str] = {}
     ambient_producer = ambient_env.get(PALETTE_PRODUCER_ENV, "").strip()
@@ -281,9 +299,8 @@ def create_palette_producer(
     """Compose the selected ``IColorSchemeGenerator`` for a composition root.
 
     Every CLI/daemon root calls this at operation time with the same resolver,
-    so a selector's stale environment can never change the producer. ``csg``
-    keeps the existing spine discovery and adapter exactly. ``tpr`` resolves
-    ``config/theme-producer/templates`` and pins the provisioned
+    so a selector's stale environment can never change the producer. ``tpr``
+    resolves ``config/theme-producer/templates`` and pins the provisioned
     ``config/theme-producer/settings.toml`` (image tag/container engine) when
     that file exists.
     """
@@ -291,12 +308,6 @@ def create_palette_producer(
         resolution = resolve_palette_producer(install_spine, producer=producer, env=env)
     for warning in resolution.warnings:
         logger.warning("palette producer: %s", warning)
-
-    if resolution.producer == "csg":
-        # Function-local so tests can still monkeypatch the adapter class.
-        from runtime.adapters.csg_adapter import CsgAdapter
-
-        return CsgAdapter(templates_dir=find_templates_dir(install_spine))
 
     from runtime.adapters.tpr_adapter import TprAdapter
 

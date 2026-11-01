@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from runtime.adapters.csg_adapter import _CsgRunResult
+from runtime.adapters.producer_process import ProducerRunResult
 from runtime.adapters.hashing import (
     canonical_hash_dir,
     hash_file,
@@ -59,7 +59,7 @@ def _runner(
     include_theme_json: bool = True,
     skip: str | None = None,
 ) -> MagicMock:
-    def fake_run(args: list[str], env: dict[str, str], timeout: int) -> _CsgRunResult:  # noqa: ARG001
+    def fake_run(args: list[str], env: dict[str, str], timeout: int) -> ProducerRunResult:  # noqa: ARG001
         captured["args"] = list(args)
         captured["env"] = dict(env)
         out = Path(env["THEME__OUTPUT__DIRECTORY"])
@@ -70,7 +70,7 @@ def _runner(
             (out / name).write_text(f"{name} from tpr\n")
         if include_theme_json:
             (out / "theme.json").write_text('{"schemaVersion": 1}\n')
-        return _CsgRunResult(
+        return ProducerRunResult(
             returncode=0, stdout="", stderr="", timed_out=False, elapsed_seconds=0.01
         )
 
@@ -99,7 +99,7 @@ def test_generate_invokes_contract_and_copies_only_eight_artifacts(
     wallpaper_hash = hash_file(wallpaper)
     output_dir = _output_dir(tmp_path, adapter, wallpaper_hash)
     captured: dict[str, object] = {}
-    monkeypatch.setattr("runtime.adapters.tpr_adapter._run_csg", _runner(captured))
+    monkeypatch.setattr("runtime.adapters.tpr_adapter.run_producer", _runner(captured))
 
     entry = adapter.generate(wallpaper, output_dir)
 
@@ -132,7 +132,7 @@ def test_explicit_local_runtime_is_available_for_tests(
     adapter = _adapter(tmp_path, runtime="local")
     output_dir = _output_dir(tmp_path, adapter, hash_file(wallpaper))
     captured: dict[str, object] = {}
-    monkeypatch.setattr("runtime.adapters.tpr_adapter._run_csg", _runner(captured))
+    monkeypatch.setattr("runtime.adapters.tpr_adapter.run_producer", _runner(captured))
 
     adapter.generate(wallpaper, output_dir)
 
@@ -155,7 +155,7 @@ def test_provisioned_settings_are_pinned_when_present(
     adapter = _adapter(tmp_path, settings_path=settings)
     output_dir = _output_dir(tmp_path, adapter, hash_file(wallpaper))
     captured: dict[str, object] = {}
-    monkeypatch.setattr("runtime.adapters.tpr_adapter._run_csg", _runner(captured))
+    monkeypatch.setattr("runtime.adapters.tpr_adapter.run_producer", _runner(captured))
 
     adapter.generate(wallpaper, output_dir)
 
@@ -168,7 +168,7 @@ def test_theme_json_is_ignored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     wallpaper = _copy_wallpaper_fixture(tmp_path)
     adapter = _adapter(tmp_path)
     output_dir = _output_dir(tmp_path, adapter, hash_file(wallpaper))
-    monkeypatch.setattr("runtime.adapters.tpr_adapter._run_csg", _runner({}))
+    monkeypatch.setattr("runtime.adapters.tpr_adapter.run_producer", _runner({}))
 
     entry = adapter.generate(wallpaper, output_dir)
 
@@ -181,7 +181,7 @@ def test_missing_artifact_fails_loudly(tmp_path: Path, monkeypatch: pytest.Monke
     adapter = _adapter(tmp_path)
     output_dir = _output_dir(tmp_path, adapter, hash_file(wallpaper))
     monkeypatch.setattr(
-        "runtime.adapters.tpr_adapter._run_csg", _runner({}, skip="colors.kitty")
+        "runtime.adapters.tpr_adapter.run_producer", _runner({}, skip="colors.kitty")
     )
 
     from runtime.domain.models import PaletteUnavailableError

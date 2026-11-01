@@ -13,19 +13,17 @@ from pathlib import Path
 import pytest
 
 from runtime.application.derive import (
-    find_templates_dir,
     input_provenance,
     require_input,
     resolve_input,
 )
 from runtime.domain.models import MissingDerivationInputError
 
-_KEYS = ("csg_templates", "weg_effects", "icon_templates", "icon_mappings")
+_KEYS = ("weg_effects", "icon_templates", "icon_mappings")
 
-#: Inputs that still carry a dev-checkout candidate. `weg_effects` lost its
-#: repo candidate in cli-tools-repos S5 and `csg_templates` in S6 (both CLIs are
-#: consumed from their pinned repos and their trees are retired here), so those
-#: two are spine-only.
+#: Inputs that still carry a dev-checkout candidate. ``weg_effects`` lost its
+#: repo candidate in cli-tools-repos S5 (the CLI is consumed from its pinned
+#: repo), so it is spine-only.
 _REPO_KEYS = ("icon_templates", "icon_mappings")
 
 
@@ -34,9 +32,6 @@ def _populate_spine(spine: Path) -> None:
     (spine / "icon-templates" / "x.svg").write_text("<svg/>", encoding="utf-8")
     (spine / "icon-mappings").mkdir(parents=True)
     (spine / "icon-mappings" / "icons.yaml").write_text("icons: {}\n", encoding="utf-8")
-    templates = spine / "config" / "color-scheme-generator" / "templates"
-    templates.mkdir(parents=True)
-    (templates / "t.j2").write_text("x", encoding="utf-8")
     weg = spine / "config" / "weg"
     weg.mkdir(parents=True)
     (weg / "effects.yaml").write_text("effects: {}\n", encoding="utf-8")
@@ -84,13 +79,12 @@ def test_missing_input_is_missing_without_override(
     for key in _KEYS:
         path, source = resolve_input(key, spine)
         assert (path, source) == (None, "missing")
-    assert find_templates_dir(spine) is None
 
 
 def test_require_input_raises_typed_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DOTFILES_DEV_INPUTS_ROOT", raising=False)
     with pytest.raises(MissingDerivationInputError, match="install spine"):
-        require_input("csg_templates", tmp_path / "install")
+        require_input("icon_mappings", tmp_path / "install")
 
 
 def test_dev_override_restores_repo_and_logs(
@@ -123,19 +117,6 @@ def test_weg_effects_has_no_repo_candidate_after_s5(
     assert resolve_input("weg_effects", tmp_path / "install") == (None, "missing")
 
 
-def test_csg_templates_has_no_repo_candidate_after_s6(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """cli-tools-repos S6: the in-tree csg tree is retired, so the template
-    catalog must resolve from the spine only — even with the dev override set.
-    Provisioning copies the catalog from the pinned csg checkout into that
-    spine dir (roles/assets), so the spine is the only legitimate location."""
-    repo = tmp_path / "checkout"
-    _populate_repo(repo)
-    monkeypatch.setenv("DOTFILES_DEV_INPUTS_ROOT", str(repo))
-    assert resolve_input("csg_templates", tmp_path / "install") == (None, "missing")
-
-
 def test_dev_override_does_not_shadow_a_present_spine(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -145,7 +126,7 @@ def test_dev_override_does_not_shadow_a_present_spine(
     _populate_repo(repo)
     monkeypatch.setenv("DOTFILES_DEV_INPUTS_ROOT", str(repo))
     # spine still wins when present
-    assert resolve_input("csg_templates", spine)[1] == "spine"
+    assert resolve_input("icon_templates", spine)[1] == "spine"
 
 
 def test_input_provenance_covers_all_inputs(

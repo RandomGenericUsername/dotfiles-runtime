@@ -17,7 +17,7 @@ channel in the constructor); mutex double-checked ordering.
 
 from __future__ import annotations
 
-from tests.support.palette_fakes import PaletteProducerStub
+from tests.support.palette_fakes import PaletteProducerStub, v1_colors_yaml, v1_gtk_css
 
 import inspect
 import json
@@ -66,7 +66,7 @@ class _FakeMutex:
         return _Hold()
 
 
-class _FakeCsg(PaletteProducerStub):
+class _FakeProducer(PaletteProducerStub):
     """Contract-honest fake: echoes the output dir's name as entry hash."""
 
     def __init__(self, *, fail: bool = False, events: list[str] | None = None) -> None:
@@ -79,13 +79,13 @@ class _FakeCsg(PaletteProducerStub):
 
         self.calls += 1
         if self.events is not None:
-            self.events.append("csg")
+            self.events.append("palette")
         if self.fail:
-            raise RuntimeError("csg exploded")
+            raise RuntimeError("producer exploded")
         output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "colors.yaml").write_text("colors: []")
+        (output_dir / "colors.yaml").write_text(v1_colors_yaml())
         (output_dir / "colors.conf").write_text("colors {}")
-        (output_dir / "colors.gtk.css").write_text("colors {}")
+        (output_dir / "colors.gtk.css").write_text(v1_gtk_css())
         (output_dir / "colors.adw.css").write_text("colors {}")
         (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         (output_dir / "colors.rasi").write_text("* { background: #000; }")
@@ -226,7 +226,7 @@ class _Applied:
     state_root: Path
     install_spine: Path
     img: Path
-    csg: _FakeCsg
+    palette_producer: _FakeProducer
     weg: _FakeWeg
     itr: _FakeItr
 
@@ -238,9 +238,9 @@ def _setup_spine(install_spine: Path) -> None:
     reality (Story gt-2-2 / add-rofi-app-launcher: the no-mkdir parent
     guard requires each pointer's parent to exist).
     """
-    csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
-    csg_templates.mkdir(parents=True)
-    (csg_templates / "default.yaml").write_text("window: {}\n")
+    producer_templates = install_spine / "config" / "theme-producer" / "templates"
+    producer_templates.mkdir(parents=True)
+    (producer_templates / "default.yaml").write_text("window: {}\n")
     weg_config = install_spine / "config" / "weg"
     weg_config.mkdir(parents=True)
     (weg_config / "effects.yaml").write_text("effects: []\n")
@@ -271,14 +271,14 @@ def _apply_state(
     _setup_spine(install_spine)
     state_root = tmp_path / "state"
     repo = JsonStateRepository(state_root=state_root)
-    csg, weg, itr = _FakeCsg(), _FakeWeg(fail=weg_fail), _FakeItr(fail=itr_fail)
-    csg.templates_dir = install_spine / "config" / "color-scheme-generator" / "templates"
+    palette_producer, weg, itr = _FakeProducer(), _FakeWeg(fail=weg_fail), _FakeItr(fail=itr_fail)
+    palette_producer.templates_dir = install_spine / "config" / "theme-producer" / "templates"
     img = tmp_path / "wall.png"
     img.write_bytes(img_bytes)
 
     ApplyWallpaperUseCase(
         state_repo=repo,
-        csg=csg,
+        palette_producer=palette_producer,
         weg=weg,
         itr=itr,
         install_spine=install_spine,
@@ -287,13 +287,13 @@ def _apply_state(
         mutex=_FakeMutex(),
     ).run(img)
 
-    csg.calls = weg.calls = itr.calls = 0  # count reconcile invocations only
+    palette_producer.calls = weg.calls = itr.calls = 0  # count reconcile invocations only
     return _Applied(
         repo=repo,
         state_root=state_root,
         install_spine=install_spine,
         img=img,
-        csg=csg,
+        palette_producer=palette_producer,
         weg=weg,
         itr=itr,
     )
@@ -310,7 +310,7 @@ def _make_reconcile(
 
     return ReconcileDesktopStateUseCase(
         state_repo=repo if repo is not None else applied.repo,
-        csg=applied.csg,
+        palette_producer=applied.palette_producer,
         weg=applied.weg,
         itr=applied.itr,
         install_spine=applied.install_spine,
@@ -484,7 +484,7 @@ class TestReconcileIdempotence:
 
         result = use_case.run()
 
-        assert (applied.csg.calls, applied.weg.calls, applied.itr.calls) == (0, 0, 0)
+        assert (applied.palette_producer.calls, applied.weg.calls, applied.itr.calls) == (0, 0, 0)
         assert _symlink_map(applied.state_root / "current") == links_before
         second_run_lines = history.read_text().splitlines()
         assert len(second_run_lines) == 2  # append-only: one NEW line per run
@@ -599,10 +599,13 @@ class TestReconcileFailurePolicy:
         assert state_path.read_bytes() != before_state  # the seeded null state is readable
         assert not (applied.state_root / "history.jsonl").exists()
 
-    def test_missing_palette_artifact_triggers_regeneration(self, tmp_path: Path) -> None:
-        """AC 8 migration: an entry missing an artifact FILE is incomplete →
-        the shared completeness guard evicts + regenerates it (never a
-        dangling current/ link, never a false hit)."""
+    def test_missing_palette_artifact_fails_closed_before_swap(
+        self, tmp_path: Path
+    ) -> None:
+        """REQ-006: a damaged live palette must not be swapped or silently
+        healed by a reconcile — the vocabulary gate fails closed first."""
+        from runtime.domain.palette_vocabulary import PaletteVocabularyError
+
         applied = _apply_state(tmp_path)
         loaded = applied.repo.load_current()
         assert loaded is not None
@@ -611,13 +614,11 @@ class TestReconcileFailurePolicy:
         (palette_dir / "colors.gtk.css").unlink()
         use_case = _make_reconcile(applied)
 
-        result = use_case.run()
+        with pytest.raises(PaletteVocabularyError):
+            use_case.run()
 
-        links = _symlink_map(applied.state_root / "current")
-        assert (palette_dir / "colors.gtk.css").is_file()  # regenerated
-        assert links["colors.gtk.css"] == str(palette_dir / "colors.gtk.css")
-        assert result.cache_regenerated == ["palette"]
-        assert result.skipped == []
+        assert not (applied.state_root / "current").exists()
+        assert not (palette_dir / "colors.gtk.css").exists()
 
     def test_empty_monitors_default_to_dp1(self, tmp_path: Path) -> None:
         applied = _apply_state(tmp_path)
@@ -656,7 +657,7 @@ class TestReconcileFailurePolicy:
         restored = entry_dir / "wallpaper.png"
         assert restored.is_file()
         assert hash_file(restored) == wh
-        assert applied.csg.calls == 0  # derived layers were cache hits
+        assert applied.palette_producer.calls == 0  # derived layers were cache hits
 
     def test_missing_wallpaper_entry_with_empty_source_fails_loud(
         self, tmp_path: Path
@@ -713,7 +714,7 @@ class TestReconcileFailurePolicy:
         assert loaded is not None
         assert loaded.palette is not None
         shutil.rmtree(applied.state_root / "cache" / "palettes" / loaded.palette.entry_hash)
-        applied.csg.fail = True
+        applied.palette_producer.fail = True
         use_case = _make_reconcile(applied)
 
         with pytest.raises(RuntimeError, match="palette reconcile failed:"):
@@ -742,7 +743,7 @@ class TestReconcileCacheMissRegeneration:
         result = use_case.run()
 
         assert "palette" in result.cache_regenerated
-        assert applied.csg.calls == 1
+        assert applied.palette_producer.calls == 1
         assert entry_dir.is_dir()
         # state re-saved from real meta.json — recorded hash preserved, no sentinel
         saved_raw = json.loads((applied.state_root / "current.json").read_text())
@@ -761,9 +762,7 @@ class TestReconcileCacheMissRegeneration:
         entry_dir = applied.state_root / "cache" / "palettes" / recorded_peh
         shutil.rmtree(entry_dir)
         # mutate spine inputs (AD-2 invalidation) so the recomputed hash differs
-        templates = (
-            applied.install_spine / "config" / "color-scheme-generator" / "templates"
-        )
+        templates = applied.install_spine / "config" / "theme-producer" / "templates"
         (templates / "default.yaml").write_text("window: {border: 2}\n")
         use_case = _make_reconcile(applied)
 
@@ -772,7 +771,7 @@ class TestReconcileCacheMissRegeneration:
         ):
             use_case.run()
 
-        assert applied.csg.calls == 1  # regeneration ran, produced a different hash
+        assert applied.palette_producer.calls == 1  # regeneration ran, produced a different hash
         assert not (applied.state_root / "current").exists()  # no repoint
         assert not (applied.state_root / "history.jsonl").exists()
         assert applied.repo.load_current().applied_at == loaded.applied_at  # type: ignore[union-attr]
@@ -891,7 +890,7 @@ class TestReconcileStructuralScopeLock:
         assert params == {
             "self",
             "state_repo",
-            "csg",
+            "palette_producer",
             "weg",
             "itr",
             "install_spine",

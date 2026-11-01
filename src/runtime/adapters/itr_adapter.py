@@ -98,7 +98,7 @@ class ItrAdapter(IIconRenderer):
     """Adapter that invokes ``itr render`` via env overrides.
 
     Location: ``src/runtime/adapters/itr_adapter.py``
-    (mirrors ``csg_adapter.py``/``weg_adapter.py`` for layered cache).
+    (mirrors ``producer_process.py``/``weg_adapter.py`` for layered cache).
     """
 
     def __init__(
@@ -164,7 +164,7 @@ class ItrAdapter(IIconRenderer):
         """Render icons from palette via ``itr`` with env overrides.
 
         Args:
-            palette_hash: 64-char hex of palette entry (ph from CsgAdapter).
+            palette_hash: 64-char hex of palette entry (ph from the producer).
             templates_dir: path to icon templates dir (READ-ONLY spine).
             mappings_path: path to icon mappings file or dir (READ-ONLY).
             output_dir: target icons entry dir (state_root/cache/icons/<ih>),

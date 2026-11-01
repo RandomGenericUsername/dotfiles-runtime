@@ -8,9 +8,9 @@ PipeWire capture sessions owned by gpu-screen-recorder / wf-recorder).
 Failures are reported as ``False`` with warning logs; the
 reconcile use case collects them into ``ReconcileResult.reload_failures``.
 
-Binary resolution mirrors ``csg_adapter.py:135-163`` (path-separator
+Binary resolution mirrors ``producer_process.py`` (path-separator
 check → ``shutil.which`` → ``os.access`` executable verification).
-Subprocess handling mirrors ``csg_adapter.py:297-319`` (``text=True``,
+Subprocess handling mirrors ``producer_process.py`` (``text=True``,
 ``capture_output=True``, ``timeout=10``, exception set
 ``FileNotFoundError, PermissionError, TimeoutExpired, OSError`` plus
 ``ValueError`` so text-mode decode/argument errors still yield ``False``).
@@ -45,7 +45,7 @@ def _resolve_hyprctl(hyprctl_path: Path | None) -> Path | None:
 
     When ``hyprctl_path`` is ``None``, search ``PATH`` via
     ``shutil.which`` and verify executable access. When a path is
-    explicitly provided, mirror ``csg_adapter.py:135-163``: a path
+    explicitly provided, mirror ``producer_process.py``: a path
     containing separators is verified as an executable file, while a
     bare name is resolved via ``shutil.which``. Any unresolvable input
     yields ``None`` for fail-later behaviour.

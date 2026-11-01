@@ -16,13 +16,11 @@ import pytest
 from cli_invocation_contract import get as contract_record
 from cli_invocation_contract.testkit import assert_consumer_invocation
 
-from runtime.adapters.csg_adapter import CsgAdapter
 from runtime.adapters.hashing import (
     canonical_hash_dir,
     effects_entry_hash,
     hash_file,
     icons_entry_hash,
-    palette_entry_hash,
 )
 from runtime.adapters.itr_adapter import ItrAdapter
 from runtime.adapters.weg_adapter import WegAdapter
@@ -36,7 +34,7 @@ def _copy_wallpaper_fixture(tmp_path: Path) -> Path:
     return dest
 
 
-def _make_csg_templates_dir(tmp_path: Path) -> Path:
+def _make_producer_templates_dir(tmp_path: Path) -> Path:
     tdir = tmp_path / "templates"
     tdir.mkdir(parents=True)
     (tdir / "colors.yaml.j2").write_text("background: {{ bg }}\n")
@@ -91,7 +89,7 @@ def _output_dir_key(record: dict) -> str:
 def _recording_runner(record: dict) -> MagicMock:
     """Record argv/env and write artifacts for either runner shape.
 
-    ``CsgAdapter`` calls the ``_run_csg(args, env, timeout)`` seam; WEG/ITR
+    ``TprAdapter`` calls the ``run_producer(args, env, timeout)`` seam; WEG/ITR
     still call ``subprocess.run(..., capture_output=True, ...)``. Return the
     matching result type for each.
     """
@@ -110,9 +108,9 @@ def _recording_runner(record: dict) -> MagicMock:
         _write_contract_artifacts(record, output_dir)
         if capture_output:
             return subprocess.CompletedProcess(args, 0, "", "")
-        from runtime.adapters.csg_adapter import _CsgRunResult
+        from runtime.adapters.producer_process import ProducerRunResult
 
-        return _CsgRunResult(
+        return ProducerRunResult(
             returncode=0, stdout="", stderr="", timed_out=False, elapsed_seconds=0.01
         )
 
@@ -129,27 +127,12 @@ def _assert_invocation(record: dict, cli: str, fake: MagicMock) -> None:
     assert_consumer_invocation(record, cli, argv, env)
 
 
-def test_csg_invocation_matches_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    record = contract_record("csg")
-    wallpaper = _copy_wallpaper_fixture(tmp_path)
-    templates_dir = _make_csg_templates_dir(tmp_path)
-    entry_hash = palette_entry_hash(hash_file(wallpaper), canonical_hash_dir(templates_dir))
-    output_dir = tmp_path / "state" / "cache" / "palettes" / entry_hash
-
-    fake = _recording_runner(record)
-    monkeypatch.setattr("runtime.adapters.csg_adapter._run_csg", fake)
-
-    CsgAdapter(templates_dir=templates_dir).generate(wallpaper, output_dir)
-
-    _assert_invocation(record, "csg", fake)
-
-
 def test_tpr_invocation_matches_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from runtime.adapters.tpr_adapter import TprAdapter
 
     record = contract_record("tpr")
     wallpaper = _copy_wallpaper_fixture(tmp_path)
-    templates_dir = _make_csg_templates_dir(tmp_path)
+    templates_dir = _make_producer_templates_dir(tmp_path)
     adapter = TprAdapter(
         templates_dir=templates_dir, engine="native", version="v0.1.0"
     )
@@ -157,7 +140,7 @@ def test_tpr_invocation_matches_record(tmp_path: Path, monkeypatch: pytest.Monke
     output_dir = tmp_path / "state" / "cache" / "palettes" / entry_hash
 
     fake = _recording_runner(record)
-    monkeypatch.setattr("runtime.adapters.tpr_adapter._run_csg", fake)
+    monkeypatch.setattr("runtime.adapters.tpr_adapter.run_producer", fake)
 
     adapter.generate(wallpaper, output_dir)
 

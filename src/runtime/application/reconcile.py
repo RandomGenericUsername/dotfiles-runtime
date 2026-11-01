@@ -115,7 +115,7 @@ class ReconcileDesktopStateUseCase:
     def __init__(
         self,
         state_repo: IStateRepository,
-        csg: IColorSchemeGenerator,
+        palette_producer: IColorSchemeGenerator,
         weg: IEffectsGenerator,
         itr: IIconRenderer,
         install_spine: Path,
@@ -131,8 +131,8 @@ class ReconcileDesktopStateUseCase:
         self._install_spine = install_spine
         self._seeder = seeder
         self._mutex = mutex
-        #: Real producer identity for typed failures (tpr must never be csg).
-        self._producer_name = getattr(csg, "producer_name", "csg")
+        #: Real producer identity for typed failures.
+        self._producer_name = getattr(palette_producer, "producer_name", "tpr")
         self._reloaders: list[IDesktopReloader] = list(reloaders) if reloaders is not None else []
         self._wallpaper_applier = wallpaper_applier
         #: Manifest-driven AGS app refresh (AD-27…30). It owns both the live
@@ -142,7 +142,7 @@ class ReconcileDesktopStateUseCase:
         self._pipeline = DerivationPipeline(
             state_root=state_root,
             seeder=seeder,
-            csg=csg,
+            palette_producer=palette_producer,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -152,8 +152,6 @@ class ReconcileDesktopStateUseCase:
         self,
         trigger: str = "reconcile",
         *,
-        contrast_enabled: bool = True,
-        contrast_source: str = "default",
         wallpaper_already_applied: bool = False,
     ) -> ReconcileResult:
         """Reconcile: entries → symlinks → current.json → history → reload.
@@ -163,13 +161,6 @@ class ReconcileDesktopStateUseCase:
                 ``runtime.domain.history.HISTORY_TRIGGERS`` (the standalone
                 ``reconcile`` command keeps the default; the
                 ``wallpaper set`` capstone passes ``"set"``).
-            contrast_enabled: per-wallpaper icon-contrast policy, threaded
-                through from ``wallpaper set --contrast`` so a step-1
-                icons regeneration (miss after a degraded apply) honors
-                the same policy instead of falling back to default-ON.
-                Standalone callers keep the default (guard ON).
-            contrast_source: provenance of ``contrast_enabled``
-                (``"flag"``/``"store"``/``"default"``).
             wallpaper_already_applied: skip only the wallpaper stage when a
                 caller such as visible-first wallpaper set has already
                 applied the authoritative wallpaper.
@@ -207,9 +198,7 @@ class ReconcileDesktopStateUseCase:
         # Derivation (step 1) happens OUTSIDE the lock (staging is race-
         # safe; tool invocations stay parallel — same split as apply).
         regenerated: list[str] = []
-        palette, effects, icons = self._ensure_entries(
-            state, regenerated, contrast_enabled, contrast_source
-        )
+        palette, effects, icons = self._ensure_entries(state, regenerated)
         pre_lock_wallpaper_hash = state.wallpaper.content_hash
 
         # Re-read after derivation: state may have changed concurrently
@@ -229,9 +218,7 @@ class ReconcileDesktopStateUseCase:
             if state.wallpaper.content_hash != pre_lock_wallpaper_hash:
                 # Re-derive for the authoritative state inside the lock.
                 # This serializes tool invocations only on contention.
-                palette, effects, icons = self._ensure_entries(
-                    state, regenerated, contrast_enabled, contrast_source
-                )
+                palette, effects, icons = self._ensure_entries(state, regenerated)
             else:
                 # Re-validate palette/effects/icons hashes against reloaded
                 # state to catch stale derivation even when wallpaper hash
@@ -423,8 +410,6 @@ class ReconcileDesktopStateUseCase:
         self,
         state: DesktopState,
         regenerated: list[str],
-        contrast_enabled: bool = True,
-        contrast_source: str = "default",
     ) -> tuple[PaletteEntry, EffectsEntry | None, IconsEntry | None]:
         """Ensure every cache entry referenced by the state exists.
 
@@ -446,14 +431,13 @@ class ReconcileDesktopStateUseCase:
 
         palette = self._require_palette(state)
         palette_dir = cache_entry_path(self._state_root, "palettes", palette.entry_hash)
-        if self._producer_name == "tpr" and palette_dir.is_dir():
-            # REQ-006: a pre-existing tpr entry must conform BEFORE the
-            # visible swap. A miss/incomplete entry is evicted and
-            # regenerated below (the pipeline validates the fresh build).
+        if palette_dir.is_dir():
+            # REQ-006: a pre-existing entry must conform BEFORE the visible
+            # swap. A missing/nonconforming entry is fail-closed here; a
+            # missing entry dir is regenerated below (the pipeline validates
+            # the fresh build).
             require_palette_conformance(palette_dir)
-        if not ensure_palette_entry_complete(
-            palette_dir, self._seeder
-        ):
+        if not ensure_palette_entry_complete(palette_dir, self._seeder):
             try:
                 entry, _cache_hit = self._pipeline.ensure_palette(
                     cached_wallpaper_img, state.wallpaper.content_hash
@@ -487,11 +471,7 @@ class ReconcileDesktopStateUseCase:
             and not cache_entry_path(self._state_root, "icons", icons.entry_hash).exists()
         ):
             try:
-                entry_i, _cache_hit = self._pipeline.ensure_icons(
-                    palette.entry_hash,
-                    contrast_enabled=contrast_enabled,
-                    contrast_source=contrast_source,
-                )
+                entry_i, _cache_hit = self._pipeline.ensure_icons(palette.entry_hash)
             except Exception as exc:
                 logger.warning("reconcile: icons regeneration failed; continuing: %s", exc)
                 icons = None

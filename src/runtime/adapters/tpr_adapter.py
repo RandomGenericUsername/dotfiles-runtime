@@ -1,4 +1,4 @@
-"""TPR palette adapter — invokes ``tpr generate`` behind the CSG default.
+"""TPR palette adapter — invokes ``tpr generate``.
 
 ``tpr`` writes a canonical ``theme.json`` plus eight consumer projections. The
 runtime palette entry records only the eight projections (``PaletteArtifact``
@@ -9,7 +9,6 @@ copies exactly those eight files into the palette entry, and leaves
 The cache key carries a producer fingerprint: ``tpr`` seeds
 :func:`runtime.adapters.hashing.palette_entry_hash` with
 ``sha256("tpr:" + engine + ":" + version + ":" + template_set_hash)``.
-``csg`` keeps the legacy seed ``None``, so its keys are byte-identical.
 """
 
 from __future__ import annotations
@@ -24,19 +23,19 @@ import tempfile
 from pathlib import Path
 from typing import Final
 
-from runtime.adapters.csg_adapter import (
-    DEFAULT_TIMEOUT_SECONDS,
-    _artifact_failure,
-    _build_palette_entry,
-    _inspect_artifacts,
-    _run_csg,
-    _validate_output_dir,
-    _validate_wallpaper,
-)
 from runtime.adapters.env import build_env
 from runtime.adapters.hashing import (
     canonical_hash_dir,
     palette_entry_hash_for_producer,
+)
+from runtime.adapters.producer_process import (
+    DEFAULT_TIMEOUT_SECONDS,
+    artifact_failure,
+    build_palette_entry,
+    inspect_artifacts,
+    run_producer,
+    validate_output_dir,
+    validate_wallpaper,
 )
 from runtime.domain.models import (
     PALETTE_ARTIFACT_NAMES,
@@ -236,10 +235,10 @@ class TprAdapter(IColorSchemeGenerator):
         ``output_dir``. ``theme.json`` and any other producer-side output are
         intentionally not part of the palette entry.
         """
-        wallpaper_hash = _validate_wallpaper(wallpaper_path)
+        wallpaper_hash = validate_wallpaper(wallpaper_path)
         template_set_hash = self._resolve_template_set_hash()
         entry_hash = self.expected_entry_hash(wallpaper_hash)
-        _validate_output_dir(output_dir, entry_hash)
+        validate_output_dir(output_dir, entry_hash)
 
         try:
             output_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -295,7 +294,7 @@ class TprAdapter(IColorSchemeGenerator):
             ]
 
             try:
-                result = _run_csg(args, env, self._timeout)
+                result = run_producer(args, env, self._timeout)
             except FileNotFoundError as exc:
                 raise FileNotFoundError("tpr not on PATH") from exc
             except PermissionError as exc:
@@ -308,7 +307,7 @@ class TprAdapter(IColorSchemeGenerator):
                 raise RuntimeError(f"tpr generate failed to spawn: {exc}") from exc
 
             if result.timed_out:
-                missing, not_files = _inspect_artifacts(producer_dir)
+                missing, not_files = inspect_artifacts(producer_dir)
                 if not missing and not not_files:
                     logger.warning(
                         "tpr generate exceeded %ss (elapsed %.1fs, terminated_by=%s) "
@@ -318,7 +317,7 @@ class TprAdapter(IColorSchemeGenerator):
                         result.termination,
                     )
                     self._copy_artifacts(producer_dir, output_dir)
-                    return _build_palette_entry(
+                    return build_palette_entry(
                         output_dir,
                         entry_hash=entry_hash,
                         wallpaper_hash=wallpaper_hash,
@@ -392,9 +391,9 @@ class TprAdapter(IColorSchemeGenerator):
                     elapsed_seconds=result.elapsed_seconds,
                 )
 
-            missing, not_files = _inspect_artifacts(producer_dir)
+            missing, not_files = inspect_artifacts(producer_dir)
             if missing or not_files:
-                raise _artifact_failure(
+                raise artifact_failure(
                     producer=self.producer_name,
                     wallpaper_path=wallpaper_path,
                     wallpaper_hash=wallpaper_hash,
@@ -409,7 +408,7 @@ class TprAdapter(IColorSchemeGenerator):
                 )
 
             self._copy_artifacts(producer_dir, output_dir)
-            return _build_palette_entry(
+            return build_palette_entry(
                 output_dir,
                 entry_hash=entry_hash,
                 wallpaper_hash=wallpaper_hash,

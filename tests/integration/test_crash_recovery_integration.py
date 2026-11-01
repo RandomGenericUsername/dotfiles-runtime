@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tests.support.palette_fakes import PaletteProducerStub
+from tests.support.palette_fakes import PaletteProducerStub, v1_colors_yaml, v1_gtk_css
 
 import json
 import os
@@ -28,9 +28,9 @@ class _FakeCsg(PaletteProducerStub):
 
         self.calls += 1
         output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "colors.yaml").write_text("colors: []")
+        (output_dir / "colors.yaml").write_text(v1_colors_yaml())
         (output_dir / "colors.conf").write_text("colors {}")
-        (output_dir / "colors.gtk.css").write_text("colors {}")
+        (output_dir / "colors.gtk.css").write_text(v1_gtk_css())
         (output_dir / "colors.adw.css").write_text("colors {}")
         (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         (output_dir / "colors.rasi").write_text("* { background: #000; }")
@@ -118,7 +118,7 @@ def _setup(tmp_path: Path) -> tuple[JsonStateRepository, Path, Path, _FakeCsg, _
     wallpapers = install_spine / "wallpapers"
     wallpapers.mkdir(parents=True)
     (wallpapers / "default.png").write_bytes(WALLPAPER_PNG.read_bytes())
-    csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
+    csg_templates = install_spine / "config" / "theme-producer" / "templates"
     csg_templates.mkdir(parents=True)
     (csg_templates / "default.yaml").write_text("window: {}\n")
     weg_config = install_spine / "config" / "weg"
@@ -138,7 +138,7 @@ def _setup(tmp_path: Path) -> tuple[JsonStateRepository, Path, Path, _FakeCsg, _
     seeder = CacheSeeder(state_root)
     SeedCacheUseCase(
         state_repo=repo,
-        csg=csg,
+        palette_producer=csg,
         weg=weg,
         itr=itr,
         factory=_FakeFactory(),
@@ -151,7 +151,7 @@ def _setup(tmp_path: Path) -> tuple[JsonStateRepository, Path, Path, _FakeCsg, _
     img.write_bytes(b"user wallpaper bytes")
     ApplyWallpaperUseCase(
         state_repo=repo,
-        csg=csg,
+        palette_producer=csg,
         weg=weg,
         itr=itr,
         install_spine=install_spine,
@@ -171,7 +171,7 @@ class TestCrashRecoveryIntegration:
 
         ReconcileDesktopStateUseCase(
             state_repo=repo,
-            csg=csg,
+            palette_producer=csg,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -208,7 +208,7 @@ class TestCrashRecoveryIntegration:
 
         result = ReconcileDesktopStateUseCase(
             state_repo=repo,
-            csg=csg,
+            palette_producer=csg,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -232,7 +232,7 @@ class TestCrashRecoveryIntegration:
         # ensure current/
         ReconcileDesktopStateUseCase(
             state_repo=repo,
-            csg=csg,
+            palette_producer=csg,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -254,7 +254,7 @@ class TestCrashRecoveryIntegration:
 
         ReconcileDesktopStateUseCase(
             state_repo=repo,
-            csg=csg,
+            palette_producer=csg,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -287,7 +287,7 @@ class TestCrashRecoveryIntegration:
         fresh_seeder = CacheSeeder(state_root)
         ReconcileDesktopStateUseCase(
             state_repo=fresh_repo,
-            csg=csg,
+            palette_producer=csg,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -314,7 +314,7 @@ class TestCrashRecoveryIntegration:
 
         ReconcileDesktopStateUseCase(
             state_repo=repo,
-            csg=csg,
+            palette_producer=csg,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -332,7 +332,7 @@ class TestCrashRecoveryIntegration:
 
         ReconcileDesktopStateUseCase(
             state_repo=repo,
-            csg=csg,
+            palette_producer=csg,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -372,7 +372,7 @@ class TestCrashRecoveryIntegration:
         fresh_csg, fresh_weg, fresh_itr = _FakeCsg(), _FakeWeg(), _FakeItr()
         SeedCacheUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
-            csg=fresh_csg,
+            palette_producer=fresh_csg,
             weg=fresh_weg,
             itr=fresh_itr,
             factory=_FakeFactory(),
@@ -394,7 +394,7 @@ class TestCrashRecoveryIntegration:
         # A subsequent reconcile appends a "reconcile" line — never the lost seed line.
         ReconcileDesktopStateUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
-            csg=csg,
+            palette_producer=csg,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -411,7 +411,7 @@ class TestCrashRecoveryIntegration:
 
         ReconcileDesktopStateUseCase(
             state_repo=repo,
-            csg=csg,
+            palette_producer=csg,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -434,7 +434,7 @@ class TestCrashRecoveryIntegration:
             try:
                 ReconcileDesktopStateUseCase(
                     state_repo=repo,
-                    csg=_FakeCsg(),
+                    palette_producer=_FakeCsg(),
                     weg=_FakeWeg(),
                     itr=_FakeItr(),
                     install_spine=install_spine,

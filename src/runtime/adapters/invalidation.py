@@ -1,7 +1,7 @@
 """Spine input-hash walk adapter implementing IInvalidationQuery (Phase 3, Story 1.2).
 
 Implements AD-21 (invalidation is hash-compare only): recompute spine input
-hashes (csg templates, weg catalog, icon templates/mappings) with the Phase 2
+hashes (producer templates, weg catalog, icon templates/mappings) with the Phase 2
 canonicalization and compare against per-layer ``meta.json``.
 
 Recorded field map (cache.py docstring + shared-data-contract.md):
@@ -67,7 +67,7 @@ def _present_str(value: object) -> str | None:
 
 
 def _hash_dir_input(path: Path | None, what: str) -> str | None:
-    """Hash a dir-only spine input (csg templates, icon templates).
+    """Hash a dir-only spine input (producer templates, icon templates).
 
     ``None`` (unresolved discovery) -> ``None`` (absent fails loud as stale
     downstream). A non-dir path raises ``RuntimeError`` (wrong-kind inputs
@@ -126,14 +126,12 @@ class InvalidationQueryAdapter(IInvalidationQuery):
     def __init__(
         self,
         state_root: Path,
-        templates_dir: Path | None = None,
         catalog_path: Path | None = None,
         icon_templates: Path | None = None,
         icon_mappings: Path | None = None,
         palette_producer: IColorSchemeGenerator | None = None,
     ) -> None:
         self._state_root = state_root
-        self._templates_dir = templates_dir
         self._catalog_path = catalog_path
         self._icon_templates = icon_templates
         self._icon_mappings = icon_mappings
@@ -142,16 +140,13 @@ class InvalidationQueryAdapter(IInvalidationQuery):
     def _palette_input_hash(self) -> str | None:
         """Recompute the palette layer's recorded input hash.
 
-        When the composition root injects the active producer, its own
-        ``template_set_hash`` is used — the same value ``derive.ensure_palette``
-        records and folds into the entry key — so the two sides cannot drift
-        across ``csg``/``tpr``. The legacy ``templates_dir`` path remains for
-        callers that only need the CSG hash (and for absent-input reporting).
+        The active producer's own ``template_set_hash`` is used — the same
+        value ``derive.ensure_palette`` records and folds into the entry key —
+        so the two sides cannot drift. An absent producer or templates dir is
+        reported as an unresolved input (``None``).
         """
         producer = self._palette_producer
-        if producer is None:
-            return _hash_dir_input(self._templates_dir, "csg templates")
-        if producer.templates_dir is None:
+        if producer is None or producer.templates_dir is None:
             return None
         return producer.template_set_hash()
 

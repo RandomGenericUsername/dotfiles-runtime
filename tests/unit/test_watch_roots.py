@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from runtime.adapters.watch_roots import (
-    CSG_TEMPLATES_DEPTH,
+    THEME_PRODUCER_TEMPLATES_DEPTH,
     ICON_MAPPINGS_DEPTH,
     ICON_TEMPLATES_DEPTH,
     enumerate_watch_roots,
@@ -28,7 +28,7 @@ def test_exact_ad39_set_in_order() -> None:
     roots = _roots()
     paths = [r.path for r in roots]
     assert paths == [
-        Path("/install/config/color-scheme-generator/templates"),
+        Path("/install/config/theme-producer/templates"),
         Path("/install/config/weg/effects.yaml"),
         Path("/install/icon-templates"),
         Path("/install/icon-mappings"),
@@ -39,8 +39,8 @@ def test_exact_ad39_set_in_order() -> None:
 def test_bounded_depths() -> None:
     roots = _roots()
     by_path = {r.path: r for r in roots}
-    assert by_path[Path("/install/config/color-scheme-generator/templates")].depth == (
-        CSG_TEMPLATES_DEPTH
+    assert by_path[Path("/install/config/theme-producer/templates")].depth == (
+        THEME_PRODUCER_TEMPLATES_DEPTH
     )
     assert by_path[Path("/install/icon-templates")].depth == ICON_TEMPLATES_DEPTH
     assert by_path[Path("/install/icon-mappings")].depth == ICON_MAPPINGS_DEPTH

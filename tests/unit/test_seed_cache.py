@@ -7,7 +7,7 @@ domain purity, idempotency, single-flight mutex, and failure policy.
 
 from __future__ import annotations
 
-from tests.support.palette_fakes import PaletteProducerStub
+from tests.support.palette_fakes import PaletteProducerStub, v1_colors_yaml, v1_gtk_css
 
 import json
 import logging
@@ -98,7 +98,7 @@ class _FakeStateRepo:
 class _FakeCsg(PaletteProducerStub):
     """Contract-honest fake: echoes the output dir's name as entry hash.
 
-    The real CsgAdapter validates ``output_dir.name == entry_hash`` and
+    The real producer adapter validates ``output_dir.name == entry_hash`` and
     returns a PaletteEntry with real artifact hashes; fakes that ignore
     the name encode the old contract violation. Echoing the name keeps
     the fake consistent with the use case's hash verification.
@@ -112,11 +112,11 @@ class _FakeCsg(PaletteProducerStub):
         from runtime.domain.models import PaletteArtifacts
 
         if self.fail:
-            raise RuntimeError("csg exploded")
+            raise RuntimeError("palette_producer exploded")
         output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "colors.yaml").write_text("colors: []")
+        (output_dir / "colors.yaml").write_text(v1_colors_yaml())
         (output_dir / "colors.conf").write_text("colors {}")
-        (output_dir / "colors.gtk.css").write_text("colors {}")
+        (output_dir / "colors.gtk.css").write_text(v1_gtk_css())
         (output_dir / "colors.adw.css").write_text("colors {}")
         (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         (output_dir / "colors.rasi").write_text("* { background: #000; }")
@@ -214,7 +214,7 @@ def _make_use_case(
     repo: _FakeStateRepo,
     install_spine: Path,
     *,
-    csg: _FakeCsg | None = None,
+    palette_producer: _FakeCsg | None = None,
     weg: _FakeWeg | None = None,
     itr: _FakeItr | None = None,
     monitor_source: Any | None = None,
@@ -223,14 +223,14 @@ def _make_use_case(
     from runtime.application.seed_cache import SeedCacheUseCase
 
     state_root = tmp_path
-    csg_adapter = csg or _FakeCsg()
-    if getattr(csg_adapter, "templates_dir", None) is None:
-        csg_adapter.templates_dir = (
-            install_spine / "config" / "color-scheme-generator" / "templates"
+    producer_adapter = palette_producer or _FakeCsg()
+    if getattr(producer_adapter, "templates_dir", None) is None:
+        producer_adapter.templates_dir = (
+            install_spine / "config" / "theme-producer" / "templates"
         )
     return SeedCacheUseCase(
         state_repo=repo,
-        csg=csg_adapter,
+        palette_producer=producer_adapter,
         weg=weg or _FakeWeg(),
         itr=itr or _FakeItr(),
         factory=_FakeFactory(),
@@ -261,7 +261,7 @@ def _setup_install_spine(
     # consumer-pointer parent exists (compositor_configs role creates it).
     (install_spine / "config" / "rofi").mkdir(parents=True, exist_ok=True)
     if with_templates:
-        csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
+        csg_templates = install_spine / "config" / "theme-producer" / "templates"
         csg_templates.mkdir(parents=True)
         (csg_templates / "default.yaml").write_text("window: {}\n")
         weg_config = install_spine / "config" / "weg"
@@ -842,7 +842,7 @@ class TestSeedFailurePolicy:
         install_spine = tmp_path / "install"
         _setup_install_spine(install_spine)
         repo = _FakeStateRepo()
-        use_case = _make_use_case(tmp_path, repo, install_spine, csg=_FakeCsg(fail=True))
+        use_case = _make_use_case(tmp_path, repo, install_spine, palette_producer=_FakeCsg(fail=True))
         with pytest.raises(RuntimeError, match="palette seeding failed"):
             use_case.run()
         assert repo.saved == []
@@ -1272,7 +1272,7 @@ class TestPreGrowthPaletteEntryMigration:
         """Create a pre-growth partial palette entry at the correct <ph>."""
         from runtime.adapters.hashing import canonical_hash_dir, palette_entry_hash
 
-        templates = install_spine / "config" / "color-scheme-generator" / "templates"
+        templates = install_spine / "config" / "theme-producer" / "templates"
         wh = _make_wallpaper_hash()
         template_hash = canonical_hash_dir(templates)
         ph = palette_entry_hash(wh, template_hash)
@@ -1351,9 +1351,9 @@ class TestPreGrowthPaletteEntryMigration:
         pipeline = DerivationPipeline(
             state_root=tmp_path,
             seeder=CacheSeeder(tmp_path),
-            csg=_FakeCsg(
+            palette_producer=_FakeCsg(
                 templates_dir=(
-                    install_spine / "config" / "color-scheme-generator" / "templates"
+                    install_spine / "config" / "theme-producer" / "templates"
                 )
             ),
             weg=_FakeWeg(),
@@ -1396,9 +1396,9 @@ class TestPreGrowthPaletteEntryMigration:
         pipeline = DerivationPipeline(
             state_root=tmp_path,
             seeder=CacheSeeder(tmp_path),
-            csg=_FakeCsg(
+            palette_producer=_FakeCsg(
                 templates_dir=(
-                    install_spine / "config" / "color-scheme-generator" / "templates"
+                    install_spine / "config" / "theme-producer" / "templates"
                 )
             ),
             weg=_FakeWeg(),
@@ -1434,7 +1434,7 @@ class TestPreGrowthPaletteEntryMigration:
 
         install_spine = tmp_path / "install"
         _setup_install_spine(install_spine)
-        templates = install_spine / "config" / "color-scheme-generator" / "templates"
+        templates = install_spine / "config" / "theme-producer" / "templates"
         wh = _make_wallpaper_hash()
         template_hash = canonical_hash_dir(templates)
         ph = palette_entry_hash(wh, template_hash)
@@ -1471,9 +1471,9 @@ class TestPreGrowthPaletteEntryMigration:
         entry2, hit = DerivationPipeline(
             state_root=tmp_path,
             seeder=CacheSeeder(tmp_path),
-            csg=_FakeCsg(
+            palette_producer=_FakeCsg(
                 templates_dir=(
-                    install_spine / "config" / "color-scheme-generator" / "templates"
+                    install_spine / "config" / "theme-producer" / "templates"
                 )
             ),
             weg=_FakeWeg(),
@@ -1502,9 +1502,9 @@ class TestPreGrowthPaletteEntryMigration:
         entry3, hit3 = DerivationPipeline(
             state_root=tmp_path,
             seeder=CacheSeeder(tmp_path),
-            csg=_FakeCsg(
+            palette_producer=_FakeCsg(
                 templates_dir=(
-                    install_spine / "config" / "color-scheme-generator" / "templates"
+                    install_spine / "config" / "theme-producer" / "templates"
                 )
             ),
             weg=_FakeWeg(),

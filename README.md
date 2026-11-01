@@ -5,7 +5,7 @@ content-addressed cache, the state/history store, the D-Bus daemon and the clipb
 
 This is the program the composition installs (`dotfiles-v3` → `dotfiles/provisioning/cli-tools.yaml`)
 and the systemd user units run. It is **not** the installer, the asset corpus, the GUI, or a CLI
-tool: it consumes those by pin and drives `csg` / `weg` / `itr` as subprocesses.
+tool: it consumes those by pin and drives `tpr` / `weg` / `itr` as subprocesses.
 
 ## Public surface
 
@@ -16,7 +16,6 @@ dotfiles-runtime doctor [--repair]        # store vs symlinks vs cache drift
 dotfiles-runtime capture                  # resident capture job (hub Control)
 dotfiles-runtime clipboard                # resident clipboard watcher
 dotfiles-runtime icons regenerate         # re-render the icon set
-dotfiles-runtime icons preference …       # light/dark icon preference
 dotfiles-runtime gtk4 restart             # reload GTK4 subscribers
 dotfiles-runtime daemon run               # systemd ExecStart: org.dotfiles.Events owner
 dotfiles-runtime inspect status|daemon|history|failures|producer
@@ -28,6 +27,15 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**0.5.1** — seam cleanup: the icon-contrast guard and the CSG producer are retired.
+
+- Icons render exactly what the manifest resolves; no runtime retargeting, no
+  per-wallpaper contrast store, and no `--contrast` flag.
+- `producer.json` accepts only the registered, vocabulary-conformant `tpr`
+  producer. `csg` and other unknown values fail with a typed error naming the
+  supported set; the ambient `RUNTIME__PALETTE__*` variables remain ignored and
+  reported.
+
 **0.4.1** — runtime-owned producer config, tpr container runtime, and palette-failure
 diagnostics.
 
@@ -37,7 +45,7 @@ diagnostics.
   with `dotfiles-runtime inspect producer --format json`.
 - `tpr` runs in its container runtime by default with the spine templates and provisioned
   settings pinned; no host `tpr-native` is required.
-- CSG pins the same templates dir it hashes, and incomplete exit-0 runs carry the producer's
+- The producer pins the same templates dir it hashes, and incomplete exit-0 runs carry its
   rc/stdout/stderr/elapsed/timeout/missing-artifact diagnostics into `failures.jsonl`.
 
 **0.3.0** — manifest-driven AGS refresh plus confirmed restart liveness.
@@ -73,14 +81,14 @@ The package is a hexagon: `domain` (pure, zero-I/O) → `ports` → `adapters` �
 ```text
 src/runtime/
   domain/       models, hub/job tables, vendored generated event binding (pure)
-  ports/        protocols: event bus, state, history, reloaders, CSG/WEG/ITR
+  ports/        protocols: event bus, state, history, reloaders, palette/WEG/ITR
   adapters/     subprocess adapters, JSON store, cache, D-Bus, Hyprland/AGS/GTK4 reloaders
   application/  apply_wallpaper, derive, seed_cache, reconcile, doctor, inspect, clipboard
   cli/          Typer app: wallpaper / reconcile / doctor / icons / inspect / daemon / …
 ```
 
 `application/apply_wallpaper.py` is the visible-first chain: apply the wallpaper immediately, then
-generate the palette (csg), effects (weg) and icons (itr), hash the artifacts into
+generate the palette (tpr), effects (weg) and icons (itr), hash the artifacts into
 `$XDG_STATE_HOME/dotfiles/cache/<layer>/<sha256>/`, atomically repoint `current/`, and reload the
 consumers. A cache hit must invoke **zero** CLI subprocesses.
 
@@ -107,7 +115,7 @@ make sync                 # uv sync --frozen
 make test                 # fast suite (integration excluded)
 make gates                # test + lint (src/) + contracts-check + hermetic + lock-check + docs-check
 make build                # sdist + wheel in dist/
-make test-integration     # needs a real csg/weg/itr or a provisioned spine
+make test-integration     # needs a real tpr/weg/itr or a provisioned spine
 ```
 
 As a consumer, pin an immutable tag — never a path and never a branch:
@@ -127,7 +135,7 @@ A published tag is never moved or deleted; a fix ships as a new tag.
 ## What `dotfiles-v3` pins
 
 `dotfiles-v3` addresses this repo as a `{name, repo, tag}` entry in
-`dotfiles/provisioning/cli-tools.yaml`, next to `csg`, `weg` and `itr`:
+`dotfiles/provisioning/cli-tools.yaml`, next to `tpr`, `weg` and `itr`:
 
 ```yaml
 - name: dotfiles-runtime

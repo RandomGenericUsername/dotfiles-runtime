@@ -9,7 +9,7 @@ the I/O boundary.
 
 from __future__ import annotations
 
-from tests.support.palette_fakes import PaletteProducerStub
+from tests.support.palette_fakes import PaletteProducerStub, v1_colors_yaml, v1_gtk_css
 
 import logging
 import os
@@ -316,9 +316,9 @@ class _FakeCsg(PaletteProducerStub):
         from runtime.domain.models import PaletteArtifacts, PaletteEntry
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "colors.yaml").write_text(_canonical())
+        (output_dir / "colors.yaml").write_text(v1_colors_yaml())
         (output_dir / "colors.conf").write_text("colors {}")
-        (output_dir / "colors.gtk.css").write_text("colors {}")
+        (output_dir / "colors.gtk.css").write_text(v1_gtk_css())
         (output_dir / "colors.adw.css").write_text("colors {}")
         (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         (output_dir / "colors.rasi").write_text("* { background: #000; }")
@@ -391,7 +391,7 @@ def _now_z() -> str:
 
 
 def _setup_spine(install_spine: Path) -> None:
-    csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
+    csg_templates = install_spine / "config" / "theme-producer" / "templates"
     csg_templates.mkdir(parents=True)
     (csg_templates / "default.yaml").write_text("window: {}\n")
     weg_cfg = install_spine / "config" / "weg"
@@ -417,7 +417,7 @@ def _make_applied(tmp_path: Path) -> tuple[object, Path, Path]:
     img.write_bytes(b"terminal applier unit wallpaper")
     ApplyWallpaperUseCase(
         state_repo=repo,
-        csg=_FakeCsg(),  # type: ignore[arg-type]
+        palette_producer=_FakeCsg(),  # type: ignore[arg-type]
         weg=_FakeWeg(),  # type: ignore[arg-type]
         itr=_FakeItr(),  # type: ignore[arg-type]
         install_spine=install_spine,
@@ -439,7 +439,7 @@ def _make_reconcile_with_reloaders(
 
     return ReconcileDesktopStateUseCase(
         state_repo=repo,  # type: ignore[arg-type]
-        csg=_FakeCsg(),  # type: ignore[arg-type]
+        palette_producer=_FakeCsg(),  # type: ignore[arg-type]
         weg=_FakeWeg(),  # type: ignore[arg-type]
         itr=_FakeItr(),  # type: ignore[arg-type]
         install_spine=install_spine,

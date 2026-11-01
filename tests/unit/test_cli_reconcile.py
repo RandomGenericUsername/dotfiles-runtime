@@ -217,17 +217,13 @@ class TestReconcileCompositionRootWiring:
         # must already have repointed the consumer pointers.
         assert names[-2:] == [KittyReloader.__name__, BtopReloader.__name__]
 
-    def test_composition_root_passes_spine_templates_dir_to_csg(
+    def test_composition_root_passes_spine_templates_dir_to_producer(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Regression: the CSG adapter must receive the spine-resolved
-        templates dir. Its own discovery walks up from ``__file__``, which only
-        finds the repo templates when the runtime runs from a checkout; the
-        installed uv tool (what the daemon executes) finds nothing, so a bare
-        ``CsgAdapter()`` makes every reactive converge die with ``CSG templates
-        dir not found: no default templates dir discovered``."""
+        """Regression: the producer adapter must receive the spine-resolved
+        templates dir, never discover one from the runtime's own CWD."""
         spine = tmp_path / "spine"
-        templates_dir = spine / "config" / "color-scheme-generator" / "templates"
+        templates_dir = spine / "config" / "theme-producer" / "templates"
         templates_dir.mkdir(parents=True)
         (templates_dir / "colors.kitty.j2").write_text("background #000000\n")
         monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(spine))
@@ -237,7 +233,7 @@ class TestReconcileCompositionRootWiring:
 
         class _FakeUseCase:
             def __init__(self, **kwargs: Any) -> None:
-                captured["csg"] = kwargs.get("csg")
+                captured["palette_producer"] = kwargs.get("palette_producer")
 
             def run(self) -> Any:
                 return _reconcile_result()
@@ -247,9 +243,9 @@ class TestReconcileCompositionRootWiring:
         )
         cli_main._run_reconcile()
 
-        csg = captured["csg"]
-        assert csg is not None
-        assert csg._templates_dir == templates_dir.resolve()  # type: ignore[attr-defined]
+        producer = captured["palette_producer"]
+        assert producer is not None
+        assert producer.templates_dir == templates_dir
 
     def test_build_reloaders_include_terminal_flag(self) -> None:
         from runtime.adapters.btop_reloader import BtopReloader

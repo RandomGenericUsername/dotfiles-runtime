@@ -11,15 +11,11 @@ template_set_hash / templates_hash = canonical_hash_dir(sorted relpath:sha)
 catalog_hash = hash_file (single file).
 
 Determinism contract (FR-8, Story 1.4):
-  Option A (current, proven 2026-08-28): CSG deterministic
-  (``tests/integration/.csg_determinism.json`` deterministic:true,
-  ``custom`` KMeans(random_state=0)). Cache key stays
-  ``sha256(wallpaper_hash || template_set_hash)`` per shared-data-contract.
-  Option B (future): if double-run fails, amend to
-  ``sha256(... || pinned_seed)`` where pinned_seed is a literal
-  (e.g. "v1-seed-0") pinned in runtime.domain + shared-data-contract +
-  meta.json. Seam: palette_entry_hash(..., seed=None) would append seed
-  before hashing; ``None`` today, spine change if added.
+  The palette producer must be deterministic: the same wallpaper + template set
+  + engine/version yields the same artifacts. The cache key is the producer's
+  content-addressed entry hash (``sha256`` over the wallpaper, template-set
+  hash and producer fingerprint), so a divergent run is a new entry rather
+  than a poisoned hit.
 
 Cache entry contract (Task 4):
   Entry dir = ``cache/<layer>/<hash>/`` where <hash> is the per-layer
@@ -27,10 +23,9 @@ Cache entry contract (Task 4):
   ``hash_algorithm == HASH_ALGORITHM == "sha256"`` plus per-layer input
   hashes and artifact_hashes per shared-data-contract schemas.
 
-``NondeterministicCSGError`` linkage: later cache consumers should raise
-``NondeterministicCSGError(AssertionError)`` with
-``"cache key must include pinned seed"`` if divergence is observed;
-definition lives in ``tests/integration/test_csg_determinism.py``.
+``NondeterministicProducerError`` linkage: later cache consumers should raise
+``NondeterministicProducerError(AssertionError)`` with
+``"cache key must include pinned seed"`` if divergence is observed.
 
 D2 decision 2026-08-28: join changed from ``"\\n".join(f"{rel}:{hex}")``
 to ``"\\x00".join(f"{rel}\\x00{hex}")`` to avoid ``:``/``\\n`` injection.
@@ -264,8 +259,8 @@ def palette_entry_hash(wallpaper_hash: str, template_set_hash: str, seed: str | 
     ``sha256(wallpaper_hash || template_set_hash [|| seed])`` as UTF-8 of the
     concatenated 64-char hex strings. Fixed-length hex → no separator
     needed; if inputs ever become variable-length, add ``\\x00``.
-    Seed seam (Task 5 / D1): ``seed=None`` today; if a future determinism
-    run fails, callers pass a literal pinned_seed (e.g. ``"v1-seed-0"``).
+    The producer-aware caller passes the fingerprint from
+    :func:`palette_producer_seed` as ``seed``.
 
     ``wallpaper_hash`` and ``template_set_hash`` are each expected to be
     64-char lowercase hex.
@@ -288,18 +283,15 @@ def palette_producer_seed(
 ) -> str | None:
     """Seed that folds a palette producer's identity into the entry key.
 
-    ``csg`` keeps today's formula exactly: seed ``None``, so the entry hash is
-    ``sha256(wallpaper_hash || template_set_hash)``. ``tpr`` adds a 64-char hex
-    fingerprint over its engine, version and template set:
+    ``tpr`` adds a 64-char hex fingerprint over its engine, version and
+    template set:
 
     ``sha256("tpr:" + engine + ":" + version + ":" + template_set_hash)``
 
     Single source for the seed formula (``TprAdapter`` and any caller that
     recomputes the key). Unknown producers fail loud rather than silently
-    reusing the CSG key.
+    reusing another producer's key.
     """
-    if producer_name == "csg":
-        return None
     if producer_name == "tpr":
         _validate_hex64("template_set_hash", template_set_hash)
         if not engine:

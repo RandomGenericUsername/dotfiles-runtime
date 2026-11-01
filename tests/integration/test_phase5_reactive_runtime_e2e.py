@@ -30,7 +30,7 @@ External prerequisites (missing → ``pytest.skip``):
 
 from __future__ import annotations
 
-from tests.support.palette_fakes import PaletteProducerStub
+from tests.support.palette_fakes import PaletteProducerStub, v1_colors_yaml, v1_gtk_css
 
 import dataclasses
 import json
@@ -181,7 +181,7 @@ class _Sandbox:
     def _build_tree(self) -> None:
         (self.spine / "wallpapers").mkdir(parents=True)
         (self.spine / "wallpapers" / "default.png").write_bytes(b"\x89PNG-e2e-default")
-        templates = self.spine / "config" / "color-scheme-generator" / "templates"
+        templates = self.spine / "config" / "theme-producer" / "templates"
         templates.mkdir(parents=True)
         (templates / "default.yaml").write_text("window: {}\n")
         (self.spine / "config" / "weg").mkdir(parents=True)
@@ -238,7 +238,7 @@ class _Sandbox:
         state_repo = JsonStateRepository(state_root=self.state_root)
         SeedCacheUseCase(
             state_repo=state_repo,
-            csg=_FakeCsg(),
+            palette_producer=_FakeCsg(),
             weg=_FakeWeg(),
             itr=_FakeItr(),
             factory=_FakeFactory(),
@@ -275,12 +275,13 @@ class _Sandbox:
             find_effects_catalog,
             find_icon_mappings,
             find_icon_templates,
-            find_templates_dir,
         )
 
+        producer = _FakeCsg()
+        producer.templates_dir = self.spine / "config" / "theme-producer" / "templates"
         adapter = InvalidationQueryAdapter(
             state_root=self.state_root,
-            templates_dir=find_templates_dir(self.spine),
+            palette_producer=producer,
             catalog_path=find_effects_catalog(self.spine),
             icon_templates=find_icon_templates(self.spine),
             icon_mappings=find_icon_mappings(self.spine),
@@ -433,6 +434,8 @@ class _FakeCsg(PaletteProducerStub):
         ]
         for name in names:
             (output_dir / name).write_text("x")
+        (output_dir / "colors.yaml").write_text(v1_colors_yaml())
+        (output_dir / "colors.gtk.css").write_text(v1_gtk_css())
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",

@@ -19,7 +19,7 @@ Covers the layers the composition tests cannot reach in isolation:
 
 from __future__ import annotations
 
-from tests.support.palette_fakes import PaletteProducerStub
+from tests.support.palette_fakes import PaletteProducerStub, v1_colors_yaml, v1_gtk_css
 
 from datetime import UTC, datetime
 from pathlib import Path
@@ -308,12 +308,10 @@ class _FakeCsg(PaletteProducerStub):
 
         self.calls += 1
         if self.fail:
-            raise RuntimeError("csg exploded")
+            raise RuntimeError("palette_producer exploded")
         output_dir.mkdir(parents=True, exist_ok=True)
         for name in (
-            "colors.yaml",
             "colors.conf",
-            "colors.gtk.css",
             "colors.adw.css",
             "colors.sequences",
             "colors.rasi",
@@ -321,6 +319,8 @@ class _FakeCsg(PaletteProducerStub):
             "colors.btop.theme",
         ):
             (output_dir / name).write_text(f"{name} content")
+        (output_dir / "colors.yaml").write_text(v1_colors_yaml())
+        (output_dir / "colors.gtk.css").write_text(v1_gtk_css())
         return PaletteEntry(
             hash_algorithm="sha256",
             kind="palette",
@@ -398,7 +398,7 @@ class _FakeItr:
 
 
 def _setup_spine(install_spine: Path) -> None:
-    csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
+    csg_templates = install_spine / "config" / "theme-producer" / "templates"
     csg_templates.mkdir(parents=True)
     (csg_templates / "default.yaml").write_text("window: {}\n")
     weg_config = install_spine / "config" / "weg"
@@ -415,7 +415,7 @@ class TestApplyDerivationOnlyDuty:
     """``ApplyWallpaperUseCase`` takes the imported wallpaper + hash."""
 
     def _make_apply(
-        self, tmp_path: Path, *, csg: Any | None = None
+        self, tmp_path: Path, *, palette_producer: Any | None = None
     ) -> tuple[Any, _SpySeeder, Path, Path]:
         from runtime.application.apply_wallpaper import ApplyWallpaperUseCase
 
@@ -425,7 +425,7 @@ class TestApplyDerivationOnlyDuty:
         seeder = _SpySeeder(state_root)
         use_case = ApplyWallpaperUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
-            csg=csg or _FakeCsg(),
+            palette_producer=palette_producer or _FakeCsg(),
             weg=_FakeWeg(),
             itr=_FakeItr(),
             install_spine=install_spine,
@@ -472,13 +472,13 @@ class TestApplyDerivationOnlyDuty:
         assert prepared.palette.entry_hash == result.state.palette.entry_hash
         assert prepared.cache_hit is False
         # ONE import during prepare_palette; the themed pass does not re-import
-        # and does not re-invoke csg.
+        # and does not re-invoke palette_producer.
         assert seeder.imports == [(str(img.expanduser().resolve()), wh)]
 
     def test_preimported_palette_failure_still_hard_fails(self, tmp_path: Path) -> None:
         img = tmp_path / "wall.png"
         img.write_bytes(b"palette down bytes")
-        use_case, seeder, state_root, _ = self._make_apply(tmp_path, csg=_FakeCsg(fail=True))
+        use_case, seeder, state_root, _ = self._make_apply(tmp_path, palette_producer=_FakeCsg(fail=True))
 
         with pytest.raises(RuntimeError, match="palette apply failed"):
             use_case.run(img, wallpaper_hash=hash_file(img))
@@ -551,8 +551,6 @@ class TestConvergeCompositionRegression:
                 *,
                 wallpaper_hash: str | None = None,
                 prepared_palette: Any | None = None,
-                contrast_enabled: bool = True,
-                contrast_source: str = "default",
                 on_progress: Any | None = None,
             ) -> Any:
                 return SimpleNamespace(
@@ -571,8 +569,6 @@ class TestConvergeCompositionRegression:
                 self,
                 trigger: str = "reconcile",
                 *,
-                contrast_enabled: bool = True,
-                contrast_source: str = "default",
                 wallpaper_already_applied: bool = False,
             ) -> Any:
                 return SimpleNamespace(

@@ -61,9 +61,6 @@ def _write_config(spine: Path) -> Path:
 
 def _spine(tmp_path: Path) -> Path:
     spine = tmp_path / "install"
-    csg = spine / "config" / "color-scheme-generator" / "templates"
-    csg.mkdir(parents=True)
-    (csg / "default.yaml").write_text("window: {}\n", encoding="utf-8")
     tpr = tpr_templates_dir(spine)
     tpr.mkdir(parents=True)
     (tpr / "colors.yaml.j2").write_text("background: {{ bg }}\n", encoding="utf-8")
@@ -203,7 +200,7 @@ def test_daemon_reconcile_composition_uses_config_tpr(
     monkeypatch.setattr(cli_main, "_build_app_refresher", lambda *a, **k: None)
 
     assert cli_main._run_reconcile() == "reconciled"
-    producer = captured["csg"]
+    producer = captured["palette_producer"]
     assert isinstance(producer, TprAdapter)
     assert producer.runtime == "container"
     assert producer.engine == "native"

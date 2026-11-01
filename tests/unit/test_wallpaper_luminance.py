@@ -1,4 +1,4 @@
-"""Unit tests for the icon-contrast sampler adapter."""
+"""Unit tests for the wallpaper top-strip luminance adapter."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from runtime.adapters.icon_contrast_sampler import sample_top_strip_luminance
+from runtime.adapters.wallpaper_luminance import sample_top_strip_luminance
 
 
 def test_sampler_none_on_missing() -> None:

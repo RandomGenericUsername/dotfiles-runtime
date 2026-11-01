@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
-from runtime.adapters.icon_contrast_sampler import sample_top_strip_luminance
+from runtime.adapters.wallpaper_luminance import sample_top_strip_luminance
 from runtime.domain.models import MonitorWallpaperConfig
 
 

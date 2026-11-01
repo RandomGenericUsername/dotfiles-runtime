@@ -10,7 +10,7 @@ the output-dir override must be passed **INTO** the container environment,
 not just the host process. This adapter only sets the host env dict and
 passes it to ``subprocess.run(env=)`` — ``weg``'s own
 ``container_processor`` forwards the env into ``RunConfig`` via
-``oci_runtime.ContainerRuntimePort``. Verified by CSG determinism zero
+``oci_runtime.ContainerRuntimePort``. Verified by the producer determinism zero
 ``-o`` flag pattern where host ``tmp/out`` still receives artifacts when
 ``runtime.mode == container``. This adapter never sets Docker/Podman
 ``-e`` flags or mounts volumes itself.
@@ -156,7 +156,7 @@ class WegAdapter(IEffectsGenerator):
     """Adapter that invokes ``weg batch all`` via env override.
 
     Location: ``src/runtime/adapters/weg_adapter.py``
-    (mirrors ``csg_adapter.py`` for layered cache).
+    (mirrors ``producer_process.py`` for layered cache).
     """
 
     # Container mode runs one ``podman run`` per effect/preset/composite

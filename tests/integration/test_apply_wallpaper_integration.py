@@ -8,7 +8,7 @@ filesystem outcomes end-to-end.
 
 from __future__ import annotations
 
-from tests.support.palette_fakes import PaletteProducerStub
+from tests.support.palette_fakes import PaletteProducerStub, v1_colors_yaml, v1_gtk_css
 
 import json
 from pathlib import Path
@@ -34,9 +34,9 @@ class _FakeCsg(PaletteProducerStub):
 
         self.calls += 1
         output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "colors.yaml").write_text("colors: []")
+        (output_dir / "colors.yaml").write_text(v1_colors_yaml())
         (output_dir / "colors.conf").write_text("colors {}")
-        (output_dir / "colors.gtk.css").write_text("colors {}")
+        (output_dir / "colors.gtk.css").write_text(v1_gtk_css())
         (output_dir / "colors.adw.css").write_text("colors {}")
         (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         (output_dir / "colors.rasi").write_text("* { background: #000; }")
@@ -137,7 +137,7 @@ class TestApplyWallpaperIntegration:
         wallpapers.mkdir(parents=True)
         (wallpapers / "default.png").write_bytes(WALLPAPER_PNG.read_bytes())
         # Templates/catalog/icon assets so palette/effects/icons derive fully
-        csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
+        csg_templates = install_spine / "config" / "theme-producer" / "templates"
         csg_templates.mkdir(parents=True)
         (csg_templates / "default.yaml").write_text("window: {}\n")
         weg_config = install_spine / "config" / "weg"
@@ -161,7 +161,7 @@ class TestApplyWallpaperIntegration:
         seeder = CacheSeeder(state_root)
         SeedCacheUseCase(
             state_repo=state_repo,
-            csg=csg,
+            palette_producer=csg,
             weg=weg,
             itr=itr,
             factory=_FakeFactory(),
@@ -173,7 +173,7 @@ class TestApplyWallpaperIntegration:
 
         use_case = ApplyWallpaperUseCase(
             state_repo=state_repo,
-            csg=csg,
+            palette_producer=csg,
             weg=weg,
             itr=itr,
             install_spine=install_spine,

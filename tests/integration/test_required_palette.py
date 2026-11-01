@@ -2,7 +2,7 @@
 
 Composes the REAL CLI composition root on a REAL filesystem (real
 ``JsonStateRepository``/``CacheSeeder``/spine, contract-honest fake
-csg/weg/itr, fake wallpaper applier/reloaders) and proves the new
+producer/WEG/ITR, fake wallpaper applier/reloaders) and proves the new
 contract:
 
 - a palette failure aborts BEFORE the visible swap: non-zero exit,
@@ -13,7 +13,7 @@ contract:
 
 from __future__ import annotations
 
-from tests.support.palette_fakes import PaletteProducerStub
+from tests.support.palette_fakes import PaletteProducerStub, v1_colors_yaml, v1_gtk_css
 
 import json
 import os
@@ -65,7 +65,7 @@ def _now_z() -> str:
 
 
 def _setup_spine(install_spine: Path) -> None:
-    templates = install_spine / "config" / "color-scheme-generator" / "templates"
+    templates = install_spine / "config" / "theme-producer" / "templates"
     templates.mkdir(parents=True)
     (templates / "default.yaml").write_text("window: {}\n")
     weg = install_spine / "config" / "weg"
@@ -106,10 +106,12 @@ def _write_palette_artifacts(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for name in PALETTE_ARTIFACTS:
         (output_dir / name).write_text(f"{name} content")
+    (output_dir / "colors.yaml").write_text(v1_colors_yaml())
+    (output_dir / "colors.gtk.css").write_text(v1_gtk_css())
 
 
-class _FakeCsg(PaletteProducerStub):
-    """Contract-honest csg fake: echoes the output dir name as entry hash."""
+class _FakeProducer(PaletteProducerStub):
+    """Contract-honest producer fake: echoes the output dir name as entry hash."""
 
     def __init__(self, **kwargs: Any) -> None:
         self.templates_dir = kwargs.get("templates_dir")
@@ -119,7 +121,7 @@ class _FakeCsg(PaletteProducerStub):
         return _palette_entry(output_dir, hash_file(wallpaper_path))
 
 
-class _FailingCsg(PaletteProducerStub):
+class _FailingProducer(PaletteProducerStub):
     def __init__(self, **kwargs: Any) -> None:
         pass
 
@@ -127,11 +129,11 @@ class _FailingCsg(PaletteProducerStub):
         from runtime.domain.models import PaletteUnavailableError
 
         raise PaletteUnavailableError(
-            "csg generate failed (exit 7): csg exploded",
+            "tpr generate failed (exit 7): tpr exploded",
             wallpaper_path=str(wallpaper_path),
             wallpaper_hash=hash_file(wallpaper_path),
             returncode=7,
-            stderr="csg exploded",
+            stderr="tpr exploded",
         )
 
 
@@ -296,7 +298,7 @@ class TestPaletteFailureAbortsBeforeSwap:
 
         applier = _RecordingApplier()
         client = _RecordingClient()
-        monkeypatch.setattr("runtime.adapters.csg_adapter.CsgAdapter", _FailingCsg)
+        monkeypatch.setattr("runtime.adapters.tpr_adapter.TprAdapter", _FailingProducer)
         monkeypatch.setattr("runtime.adapters.weg_adapter.WegAdapter", _FakeWeg)
         monkeypatch.setattr("runtime.adapters.itr_adapter.ItrAdapter", _FakeItr)
         monkeypatch.setattr("runtime.cli.main._build_wallpaper_applier", lambda root: applier)
@@ -327,7 +329,7 @@ class TestPaletteFailureAbortsBeforeSwap:
         assert first["stage"] == "generating_palette"
         assert last["stage"] == "generating_palette"
         assert last["wallpaper_hash"] == expected_hash
-        assert "csg exploded" in str(last["error"])
+        assert "tpr exploded" in str(last["error"])
         assert "exit 7" in str(last["error"])
 
         # Traceable failure record (history schema rejects extra fields, so
@@ -339,9 +341,9 @@ class TestPaletteFailureAbortsBeforeSwap:
         assert record["wallpaper_path"] == str(img.resolve())
         assert record["wallpaper_hash"] == expected_hash
         assert record["stage"] == "palette"
-        assert record["tool"] == "csg"
+        assert record["tool"] == "tpr"
         assert record["returncode"] == 7
-        assert record["stderr"] == "csg exploded"
+        assert record["stderr"] == "tpr exploded"
 
         # The CLI error is structured with the same traceability fields.
         text = _error_output(result) + result.output
@@ -350,9 +352,9 @@ class TestPaletteFailureAbortsBeforeSwap:
             str(img.resolve()),
             expected_hash,
             "palette",
-            "csg",
+            "tpr",
             "7",
-            "csg exploded",
+            "tpr exploded",
         ):
             assert needle in text
 
@@ -369,7 +371,7 @@ class TestSuccessStillPersistsRealPalette:
         img.write_bytes(b"successful wallpaper bytes")
         applier = _RecordingApplier()
         client = _RecordingClient()
-        monkeypatch.setattr("runtime.adapters.csg_adapter.CsgAdapter", _FakeCsg)
+        monkeypatch.setattr("runtime.adapters.tpr_adapter.TprAdapter", _FakeProducer)
         monkeypatch.setattr("runtime.adapters.weg_adapter.WegAdapter", _FakeWeg)
         monkeypatch.setattr("runtime.adapters.itr_adapter.ItrAdapter", _FakeItr)
         monkeypatch.setattr("runtime.cli.main._build_wallpaper_applier", lambda root: applier)
@@ -385,7 +387,7 @@ class TestSuccessStillPersistsRealPalette:
         assert loaded.palette is not None
         expected_ph = palette_entry_hash(
             hash_file(img),
-            _canonical_hash_dir(install_spine / "config" / "color-scheme-generator" / "templates"),
+            _canonical_hash_dir(install_spine / "config" / "theme-producer" / "templates"),
         )
         assert loaded.palette.entry_hash == expected_ph
         palette_dir = state_root / "cache" / "palettes" / expected_ph

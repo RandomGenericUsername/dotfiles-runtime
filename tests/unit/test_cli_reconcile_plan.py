@@ -234,7 +234,7 @@ def _snapshot(root: Path) -> dict[str, str]:
 
 
 def _build_spine(install: Path) -> dict[str, Path]:
-    templates = install / "config" / "color-scheme-generator" / "templates"
+    templates = install / "config" / "theme-producer" / "templates"
     templates.mkdir(parents=True)
     (templates / "a.j2").write_text("template-a", encoding="utf-8")
     catalog = install / "config" / "weg" / "effects.yaml"

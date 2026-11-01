@@ -75,8 +75,10 @@ def test_absent_palette_is_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None
     assert "no palette recorded" in result.output
 
 
-def test_legacy_csg_palette_is_reported_na(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    entry = tmp_path / "csg"
+def test_non_v1_palette_is_nonconforming_not_na(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    entry = tmp_path / "legacy-palette"
     entry.mkdir()
     (entry / "colors.yaml").write_text('background: "#000000"\n', encoding="utf-8")
     (entry / "colors.gtk.css").write_text(
@@ -91,5 +93,6 @@ def test_legacy_csg_palette_is_reported_na(monkeypatch: pytest.MonkeyPatch, tmp_
         ),
     )
     result = runner.invoke(app, ["inspect", "palette"])
-    assert result.exit_code == 0
-    assert "n/a (legacy csg palette" in result.output
+    assert result.exit_code == 1
+    assert "NONCONFORMING" in result.output
+    assert "missing:" in result.output

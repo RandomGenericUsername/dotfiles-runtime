@@ -16,7 +16,7 @@ It owns:
 
 It does **not** own: the installer engine (`dotfiles-provision`), the composition manifests
 (`dotfiles-v3`), the asset corpus (`dotfiles-assets`), the AGS apps/platform, or the CLI sources
-(`csg`/`weg`/`itr`).
+(`tpr`/`weg`/`itr`).
 
 ## 2. Layering
 
@@ -25,7 +25,7 @@ domain        pure, zero-I/O models, hub/job tables, vendored generated event bi
   ↑
 ports         protocols for the event bus, state/history, cache, reloaders, CLI providers
   ↑
-adapters      JSON store, cache, D-Bus, Hyprland/AGS/GTK4 reloaders, csg/weg/itr subprocesses
+adapters      JSON store, cache, D-Bus, Hyprland/AGS/GTK4 reloaders, tpr/weg/itr subprocesses
   ↑
 application   apply_wallpaper, derive, seed_cache, reconcile, doctor, inspect, clipboard
   ↑
@@ -40,7 +40,7 @@ not import `os`, `pathlib`, `io`, `subprocess`, `socket` or `shutil`.
 
 1. **Apply** the image immediately (visible-first), so the desktop never waits on derivation.
 2. **Derive** the wallpaper entry, palette, effects and icons:
-   - `csg generate <wallpaper> --format …` (8 formats),
+   - `tpr generate <wallpaper> --format …` (8 formats),
    - `weg batch all -- <wallpaper>`,
    - `itr render [<icons.yaml>]`.
 3. **Cache** every artifact by its content hash under
@@ -49,7 +49,7 @@ not import `os`, `pathlib`, `io`, `subprocess`, `socket` or `shutil`.
 5. **Reload** Hyprland, AGS, kitty and the terminal palette.
 6. **Persist** `current.json` and append a `history.jsonl` record.
 
-A cache hit is detected before the subprocess spawn and must invoke **zero** `csg`/`weg`/`itr`
+A cache hit is detected before the subprocess spawn and must invoke **zero** `tpr`/`weg`/`itr`
 processes. Incomplete legacy entries are evicted and regenerated at the same key
 (`application/derive.py`).
 
@@ -60,12 +60,12 @@ not import the CLI, parse stdout as JSON, or `command -v` to choose a binary.
 
 | Adapter | argv | Injected env | Artifacts |
 | --- | --- | --- | --- |
-| `csg_adapter.py` | `csg generate <wallpaper> --format …` | `COLORSCHEME__OUTPUT__DIRECTORY`, `COLORSCHEME__OUTPUT__OVERWRITE=true` | eight palette files, hashed |
+| `tpr_adapter.py` | `tpr generate <wallpaper> --format …` (8 formats) | `THEME__OUTPUT__DIRECTORY`, `THEME__OUTPUT__OVERWRITE=true`, `THEME__GENERATION__ENGINE`, `THEME__RUNTIME__MODE`, `THEME__TEMPLATES__DIRECTORY` | eight palette files, hashed |
 | `weg_adapter.py` | `weg batch all -- <wallpaper>` | `WALLPAPER__OUTPUT__DIRECTORY` | effect images, hashed |
 | `itr_adapter.py` | `itr render [<icons.yaml>]` | `ICON_RENDERER__OUTPUT__OUTPUT_DIR`, `ICON_RENDERER__COLOR_SCHEME__PATH`, `ICON_RENDERER__TEMPLATES__DIR` | SVGs, hashed |
 
 The env is an allowlist (`adapters/env.py`): exact keys (`PATH`, `HOME`, `XDG_*`, locale, TLS,
-proxy), prefixes `COLORSCHEME__`, `WALLPAPER__`, `ICON_RENDERER__`, `XDG_`, and a secret blocklist
+proxy), prefixes `THEME__`, `WALLPAPER__`, `ICON_RENDERER__`, `XDG_`, and a secret blocklist
 (`TOKEN`, `SECRET`, `PASSWORD`, `AWS_`, `GITHUB_`).
 
 The record in `contracts/invocation-contract.json` is the source of truth; conformance tests call
@@ -140,7 +140,7 @@ The CLI invocation contract is the `cli-invocation-contract` distribution from t
   its code (`tests/architecture/test_layering.py`, `_FORBIDDEN_CROSS_PACKAGE`).
 - **No composition read.** Input resolution is spine-only; `DOTFILES_DEV_INPUTS_ROOT` is the
   explicit, logged development override (`application/derive.py`).
-- **No CLI import.** `csg`, `weg` and `itr` are spawned, never imported; no CLI imports another.
+- **No CLI import.** `tpr`, `weg` and `itr` are spawned, never imported; no CLI imports another.
 - **No app dependency.** The bar and sibling apps depend on `ags-platform`; the runtime exposes
   events/assets to them over D-Bus and the spine, and imports neither.
 - **No container mode.** No Dockerfile and no `oci-runtime` dependency in this repo.

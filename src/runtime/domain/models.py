@@ -62,7 +62,7 @@ class PaletteArtifacts(TypedDict):
     colors_btop: str  # key: "colors.btop.theme"
 
 
-#: The complete palette artifact set csg must produce (BUG-002).
+#: The complete palette artifact set a producer must emit (BUG-002).
 #: Single source of truth for the adapter's success/timeout verification and
 #: the cache completeness guard in ``runtime.application.derive``.
 PALETTE_ARTIFACT_NAMES: Final[tuple[str, ...]] = (
@@ -79,13 +79,13 @@ PALETTE_ARTIFACT_NAMES: Final[tuple[str, ...]] = (
 
 @dataclass(frozen=True, slots=True)
 class PaletteEntry:
-    """A color palette derived from a wallpaper via CSG templates."""
+    """A color palette derived from a wallpaper by the active producer."""
 
     hash_algorithm: Literal["sha256"]
     kind: Literal["palette"]
     entry_hash: str  # SHA-256 hex of (wallpaper_hash || template_set_hash)
     source_wallpaper_hash: str  # reference to WallpaperEntry.content_hash
-    input_template_hash: str  # canonicalized hash of CSG templates dir
+    input_template_hash: str  # canonicalized hash of the producer templates dir
     artifact_hashes: PaletteArtifacts
     generated_at: str  # ISO-8601 UTC timestamp
 
@@ -219,7 +219,7 @@ class PaletteUnavailableError(RuntimeError):
         wallpaper_path: str,
         wallpaper_hash: str,
         stage: str = "palette",
-        tool: str = "csg",
+        tool: str = "tpr",
         returncode: int | None = None,
         stdout: str = "",
         stderr: str = "",
@@ -227,7 +227,7 @@ class PaletteUnavailableError(RuntimeError):
         timed_out: bool = False,
         termination: str | None = None,
         missing_artifacts: tuple[str, ...] = (),
-        hint: str = "re-set the wallpaper / check csg",
+        hint: str = "re-set the wallpaper / check tpr",
     ) -> None:
         super().__init__(message)
         self.wallpaper_path = wallpaper_path

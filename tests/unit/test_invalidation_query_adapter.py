@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from runtime.adapters.hashing import canonical_hash_dir, hash_file
+from runtime.adapters.tpr_adapter import TprAdapter
 from runtime.adapters.invalidation import InvalidationQueryAdapter
 from runtime.domain.invalidation import DerivationLayer
 
@@ -59,8 +60,10 @@ def _make_adapter(
     """Build adapter + spine; pass None for any input to simulate absence."""
     spine = _make_spine(tmp_path / "spine")
     state_root = tmp_path / "state"
-    kwargs: dict[str, Path | None] = {
-        "templates_dir": spine["templates"],
+    kwargs: dict[str, object] = {
+        "palette_producer": TprAdapter(
+            templates_dir=spine["templates"], engine="native", version="v0.1.0"
+        ),
         "catalog_path": spine["catalog"],
         "icon_templates": spine["icon_templates"],
         "icon_mappings": spine["icon_mappings"],
@@ -151,7 +154,7 @@ class TestStaleDetection:
         assert stale == frozenset({"icons"})
 
     def test_absent_spine_input_is_stale(self, tmp_path: Path) -> None:
-        adapter, _ = _make_adapter(tmp_path, templates_dir=None)
+        adapter, _ = _make_adapter(tmp_path, palette_producer=None)
         recorded = {
             "palettes": "bb" * 32,
             "effects": "cc" * 32,
@@ -163,7 +166,7 @@ class TestStaleDetection:
     @pytest.mark.parametrize(
         ("absent_kwarg", "expected_stale"),
         [
-            ("templates_dir", frozenset({"palettes", "icons"})),
+            ("palette_producer", frozenset({"palettes", "icons"})),
             ("catalog_path", frozenset({"effects"})),
             ("icon_templates", frozenset({"icons"})),
             ("icon_mappings", frozenset({"icons"})),
@@ -321,7 +324,7 @@ class TestRecordedInputs:
 
         adapter, spine = _make_adapter(tmp_path)
         with pytest.raises(RuntimeError, match="must be a dir"):
-            _hash_dir_input(spine["catalog"], "csg templates")
+            _hash_dir_input(spine["catalog"], "producer templates")
         with pytest.raises(RuntimeError, match="must be a file"):
             _hash_file_input(spine["templates"], "weg catalog")
         _ = adapter
@@ -329,7 +332,7 @@ class TestRecordedInputs:
     def test_all_none_spine_recomputes_none(self, tmp_path: Path) -> None:
         adapter = InvalidationQueryAdapter(
             state_root=tmp_path / "state",
-            templates_dir=None,
+            palette_producer=None,
             catalog_path=None,
             icon_templates=None,
             icon_mappings=None,

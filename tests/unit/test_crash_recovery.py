@@ -8,7 +8,7 @@ Mirrors test_reconcile.py fake-adapter patterns.
 
 from __future__ import annotations
 
-from tests.support.palette_fakes import PaletteProducerStub
+from tests.support.palette_fakes import PaletteProducerStub, v1_colors_yaml, v1_gtk_css
 
 import json
 import logging
@@ -53,11 +53,11 @@ class _FakeCsg(PaletteProducerStub):
 
         self.calls += 1
         if self.fail:
-            raise RuntimeError("csg exploded")
+            raise RuntimeError("palette_producer exploded")
         output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "colors.yaml").write_text("colors: []")
+        (output_dir / "colors.yaml").write_text(v1_colors_yaml())
         (output_dir / "colors.conf").write_text("colors {}")
-        (output_dir / "colors.gtk.css").write_text("colors {}")
+        (output_dir / "colors.gtk.css").write_text(v1_gtk_css())
         (output_dir / "colors.adw.css").write_text("colors {}")
         (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         (output_dir / "colors.rasi").write_text("* { background: #000; }")
@@ -142,7 +142,7 @@ class _FakeItr:
 
 
 def _setup_spine(install_spine: Path) -> None:
-    csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
+    csg_templates = install_spine / "config" / "theme-producer" / "templates"
     csg_templates.mkdir(parents=True)
     (csg_templates / "default.yaml").write_text("window: {}\n")
     weg_config = install_spine / "config" / "weg"
@@ -162,12 +162,12 @@ def _apply_state(tmp_path: Path, *, img_bytes: bytes = b"user wallpaper bytes") 
     _setup_spine(install_spine)
     state_root = tmp_path / "state"
     repo = JsonStateRepository(state_root=state_root)
-    csg, weg, itr = _FakeCsg(), _FakeWeg(), _FakeItr()
+    palette_producer, weg, itr = _FakeCsg(), _FakeWeg(), _FakeItr()
     img = tmp_path / "wall.png"
     img.write_bytes(img_bytes)
     ApplyWallpaperUseCase(
         state_repo=repo,
-        csg=csg,
+        palette_producer=palette_producer,
         weg=weg,
         itr=itr,
         install_spine=install_spine,
@@ -175,16 +175,16 @@ def _apply_state(tmp_path: Path, *, img_bytes: bytes = b"user wallpaper bytes") 
         seeder=CacheSeeder(state_root),
         mutex=_FakeMutex(),
     ).run(img)
-    csg.calls = weg.calls = itr.calls = 0
-    return repo, state_root, install_spine, csg, weg, itr
+    palette_producer.calls = weg.calls = itr.calls = 0
+    return repo, state_root, install_spine, palette_producer, weg, itr
 
 
-def _make_reconcile(repo: JsonStateRepository, state_root: Path, install_spine: Path, csg: _FakeCsg, weg: _FakeWeg, itr: _FakeItr, tmp_path: Path | None = None) -> object:
+def _make_reconcile(repo: JsonStateRepository, state_root: Path, install_spine: Path, palette_producer: _FakeCsg, weg: _FakeWeg, itr: _FakeItr, tmp_path: Path | None = None) -> object:
     from runtime.application.reconcile import ReconcileDesktopStateUseCase
 
     return ReconcileDesktopStateUseCase(
         state_repo=repo,
-        csg=csg,
+        palette_producer=palette_producer,
         weg=weg,
         itr=itr,
         install_spine=install_spine,
@@ -196,10 +196,10 @@ def _make_reconcile(repo: JsonStateRepository, state_root: Path, install_spine: 
 
 def _reconcile_and_repoint(tmp_path: Path) -> tuple[JsonStateRepository, Path, Path, _FakeCsg, _FakeWeg, _FakeItr]:
     """Apply then reconcile once so current/ exists with correct targets."""
-    repo, state_root, install_spine, csg, weg, itr = _apply_state(tmp_path)
-    _make_reconcile(repo, state_root, install_spine, csg, weg, itr).run()  # type: ignore[attr-defined]
-    csg.calls = weg.calls = itr.calls = 0
-    return repo, state_root, install_spine, csg, weg, itr
+    repo, state_root, install_spine, palette_producer, weg, itr = _apply_state(tmp_path)
+    _make_reconcile(repo, state_root, install_spine, palette_producer, weg, itr).run()  # type: ignore[attr-defined]
+    palette_producer.calls = weg.calls = itr.calls = 0
+    return repo, state_root, install_spine, palette_producer, weg, itr
 
 
 def _symlink_target(link: Path) -> str:
@@ -238,7 +238,7 @@ def _make_stale_palette_entry(state_root: Path, stale_hash: str) -> Path:
 
 class TestCrashPartialSwap:
     def test_partial_swap_wallpaper_only_reverted(self, tmp_path: Path) -> None:
-        repo, state_root, install_spine, csg, weg, itr = _reconcile_and_repoint(tmp_path)
+        repo, state_root, install_spine, palette_producer, weg, itr = _reconcile_and_repoint(tmp_path)
         loaded = repo.load_current()
         assert loaded is not None
         wh = loaded.wallpaper.content_hash
@@ -249,14 +249,14 @@ class TestCrashPartialSwap:
         _repoint_symlink(link, stale_target)
         assert "wallpapers" in _symlink_target(link) and stale in _symlink_target(link)
 
-        _make_reconcile(repo, state_root, install_spine, csg, weg, itr).run()  # type: ignore[attr-defined]
+        _make_reconcile(repo, state_root, install_spine, palette_producer, weg, itr).run()  # type: ignore[attr-defined]
 
         assert Path(_symlink_target(link)).resolve() == (state_root / "cache" / "wallpapers" / wh / "wallpaper.png").resolve()
         # other symlinks unchanged
         assert (state_root / "current" / "colors.conf").is_symlink()
 
     def test_partial_swap_palette_only_reverted(self, tmp_path: Path) -> None:
-        repo, state_root, install_spine, csg, weg, itr = _reconcile_and_repoint(tmp_path)
+        repo, state_root, install_spine, palette_producer, weg, itr = _reconcile_and_repoint(tmp_path)
         loaded = repo.load_current()
         assert loaded is not None
         assert loaded.palette is not None
@@ -266,13 +266,13 @@ class TestCrashPartialSwap:
         link = state_root / "current" / "colors.conf"
         _repoint_symlink(link, stale_entry / "colors.conf")
 
-        _make_reconcile(repo, state_root, install_spine, csg, weg, itr).run()  # type: ignore[attr-defined]
+        _make_reconcile(repo, state_root, install_spine, palette_producer, weg, itr).run()  # type: ignore[attr-defined]
 
         expected = state_root / "cache" / "palettes" / peh / "colors.conf"
         assert Path(_symlink_target(link)).resolve() == expected.resolve()
 
     def test_partial_swap_effects_dir_reverted(self, tmp_path: Path) -> None:
-        repo, state_root, install_spine, csg, weg, itr = _reconcile_and_repoint(tmp_path)
+        repo, state_root, install_spine, palette_producer, weg, itr = _reconcile_and_repoint(tmp_path)
         loaded = repo.load_current()
         assert loaded is not None
         assert loaded.effects is not None
@@ -284,14 +284,14 @@ class TestCrashPartialSwap:
         link = state_root / "current" / "effects"
         _repoint_symlink(link, stale_dir)
 
-        _make_reconcile(repo, state_root, install_spine, csg, weg, itr).run()  # type: ignore[attr-defined]
+        _make_reconcile(repo, state_root, install_spine, palette_producer, weg, itr).run()  # type: ignore[attr-defined]
 
         expected = state_root / "cache" / "effects" / eeh
         assert Path(_symlink_target(link)).resolve() == expected.resolve()
 
     def test_crash_between_symlink_and_current_json(self, tmp_path: Path) -> None:
         """Old current.json, 2 of 4 symlinks already new — recovery reverts to old."""
-        repo, state_root, install_spine, csg, weg, itr = _reconcile_and_repoint(tmp_path)
+        repo, state_root, install_spine, palette_producer, weg, itr = _reconcile_and_repoint(tmp_path)
         old_loaded = repo.load_current()
         assert old_loaded is not None
         old_wh = old_loaded.wallpaper.content_hash
@@ -305,14 +305,14 @@ class TestCrashPartialSwap:
         _repoint_symlink(state_root / "current" / "wallpaper-DP-1.png", state_root / "cache" / "wallpapers" / new_wh / "wallpaper.png")
         _repoint_symlink(state_root / "current" / "colors.conf", state_root / "cache" / "palettes" / new_peh / "colors.conf")
 
-        _make_reconcile(repo, state_root, install_spine, csg, weg, itr).run()  # type: ignore[attr-defined]
+        _make_reconcile(repo, state_root, install_spine, palette_producer, weg, itr).run()  # type: ignore[attr-defined]
 
         # Both should be reverted to old
         assert old_wh in _symlink_target(state_root / "current" / "wallpaper-DP-1.png")
         assert old_peh in _symlink_target(state_root / "current" / "colors.conf")  # type: ignore[operator]
 
     def test_full_swap_interrupted_all_symlinks_reverted(self, tmp_path: Path) -> None:
-        repo, state_root, install_spine, csg, weg, itr = _reconcile_and_repoint(tmp_path)
+        repo, state_root, install_spine, palette_producer, weg, itr = _reconcile_and_repoint(tmp_path)
         loaded = repo.load_current()
         assert loaded is not None
         wh = loaded.wallpaper.content_hash
@@ -354,7 +354,7 @@ class TestCrashPartialSwap:
             (sd / "icon.svg").write_text("<svg/>")
             _repoint_symlink(state_root / "current" / "icons", sd)
 
-        _make_reconcile(repo, state_root, install_spine, csg, weg, itr).run()  # type: ignore[attr-defined]
+        _make_reconcile(repo, state_root, install_spine, palette_producer, weg, itr).run()  # type: ignore[attr-defined]
 
         assert wh in _symlink_target(state_root / "current" / "wallpaper-DP-1.png")
         if peh:
@@ -375,12 +375,12 @@ class TestCrashPartialSwap:
 
 class TestCrashIdempotency:
     def test_no_crash_is_noop(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-        repo, state_root, install_spine, csg, weg, itr = _reconcile_and_repoint(tmp_path)
+        repo, state_root, install_spine, palette_producer, weg, itr = _reconcile_and_repoint(tmp_path)
         from runtime.application.reconcile import ReconcileDesktopStateUseCase
 
         use_case = ReconcileDesktopStateUseCase(
             state_repo=repo,
-            csg=csg,
+            palette_producer=palette_producer,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -393,10 +393,10 @@ class TestCrashIdempotency:
         assert state is not None
         reverted = use_case._revert_stale_symlinks(state)  # type: ignore[attr-defined]
         assert reverted == []
-        assert csg.calls == 0 and weg.calls == 0 and itr.calls == 0
+        assert palette_producer.calls == 0 and weg.calls == 0 and itr.calls == 0
 
     def test_double_recovery_noop(self, tmp_path: Path) -> None:
-        repo, state_root, install_spine, csg, weg, itr = _reconcile_and_repoint(tmp_path)
+        repo, state_root, install_spine, palette_producer, weg, itr = _reconcile_and_repoint(tmp_path)
         from runtime.application.reconcile import ReconcileDesktopStateUseCase
 
         loaded = repo.load_current()
@@ -407,7 +407,7 @@ class TestCrashIdempotency:
 
         use_case = ReconcileDesktopStateUseCase(
             state_repo=repo,
-            csg=csg,
+            palette_producer=palette_producer,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -425,16 +425,16 @@ class TestCrashIdempotency:
 
 class TestCacheHitAfterRecovery:
     def test_recover_then_reconcile_is_cache_hit(self, tmp_path: Path) -> None:
-        repo, state_root, install_spine, csg, weg, itr = _reconcile_and_repoint(tmp_path)
+        repo, state_root, install_spine, palette_producer, weg, itr = _reconcile_and_repoint(tmp_path)
         loaded = repo.load_current()
         assert loaded is not None
         stale = _stale_hash(loaded.wallpaper.content_hash)
         _make_stale_wallpaper_entry(state_root, stale)
         _repoint_symlink(state_root / "current" / "wallpaper-DP-1.png", state_root / "cache" / "wallpapers" / stale / "wallpaper.png")
 
-        result = _make_reconcile(repo, state_root, install_spine, csg, weg, itr).run()  # type: ignore[attr-defined]
+        result = _make_reconcile(repo, state_root, install_spine, palette_producer, weg, itr).run()  # type: ignore[attr-defined]
 
-        assert csg.calls == 0
+        assert palette_producer.calls == 0
         assert weg.calls == 0
         assert itr.calls == 0
         assert result.cache_regenerated == []  # type: ignore[attr-defined]
@@ -446,12 +446,12 @@ class TestAbsentAndCorrupt:
         repo = JsonStateRepository(state_root=state_root)
         install_spine = tmp_path / "install"
         _setup_spine(install_spine)
-        csg, weg, itr = _FakeCsg(), _FakeWeg(), _FakeItr()
+        palette_producer, weg, itr = _FakeCsg(), _FakeWeg(), _FakeItr()
         from runtime.application.reconcile import ReconcileDesktopStateUseCase
 
         use_case = ReconcileDesktopStateUseCase(
             state_repo=repo,
-            csg=csg,
+            palette_producer=palette_producer,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -463,13 +463,13 @@ class TestAbsentAndCorrupt:
             use_case.run()
 
     def test_recovery_corrupt_current_json_propagates(self, tmp_path: Path) -> None:
-        repo, state_root, install_spine, csg, weg, itr = _apply_state(tmp_path)
+        repo, state_root, install_spine, palette_producer, weg, itr = _apply_state(tmp_path)
         (state_root / "current.json").write_text("{not json")
         from runtime.application.reconcile import ReconcileDesktopStateUseCase
 
         use_case = ReconcileDesktopStateUseCase(
             state_repo=repo,
-            csg=csg,
+            palette_producer=palette_producer,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -483,7 +483,7 @@ class TestAbsentAndCorrupt:
 
 class TestStructuralScope:
     def test_recovery_writes_only_inside_current(self, tmp_path: Path) -> None:
-        repo, state_root, install_spine, csg, weg, itr = _reconcile_and_repoint(tmp_path)
+        repo, state_root, install_spine, palette_producer, weg, itr = _reconcile_and_repoint(tmp_path)
         loaded = repo.load_current()
         assert loaded is not None
         stale = _stale_hash(loaded.wallpaper.content_hash)
@@ -495,7 +495,7 @@ class TestStructuralScope:
 
         use_case = ReconcileDesktopStateUseCase(
             state_repo=repo,
-            csg=csg,
+            palette_producer=palette_producer,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -518,7 +518,7 @@ class TestStructuralScope:
         assert (state_root / "current" / "wallpaper-DP-1.png").is_symlink()
 
     def test_recovery_missing_current_dir_is_noop(self, tmp_path: Path) -> None:
-        repo, state_root, install_spine, csg, weg, itr = _apply_state(tmp_path)
+        repo, state_root, install_spine, palette_producer, weg, itr = _apply_state(tmp_path)
         # remove current/ before reconcile — recovery should be noop not crash
         import shutil
 
@@ -527,7 +527,7 @@ class TestStructuralScope:
 
         use_case = ReconcileDesktopStateUseCase(
             state_repo=repo,
-            csg=csg,
+            palette_producer=palette_producer,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -541,7 +541,7 @@ class TestStructuralScope:
         assert reverted == []
 
     def test_recovery_dangling_symlink_reverted(self, tmp_path: Path) -> None:
-        repo, state_root, install_spine, csg, weg, itr = _reconcile_and_repoint(tmp_path)
+        repo, state_root, install_spine, palette_producer, weg, itr = _reconcile_and_repoint(tmp_path)
         loaded = repo.load_current()
         assert loaded is not None
         wh = loaded.wallpaper.content_hash
@@ -555,7 +555,7 @@ class TestStructuralScope:
 
         use_case = ReconcileDesktopStateUseCase(
             state_repo=repo,
-            csg=csg,
+            palette_producer=palette_producer,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -570,7 +570,7 @@ class TestStructuralScope:
         assert wh in _symlink_target(link)
 
     def test_recovery_monitor_name_traversal_rejected(self, tmp_path: Path) -> None:
-        repo, state_root, install_spine, csg, weg, itr = _apply_state(tmp_path)
+        repo, state_root, install_spine, palette_producer, weg, itr = _apply_state(tmp_path)
         loaded = repo.load_current()
         assert loaded is not None
         from runtime.domain.models import DesktopState
@@ -587,7 +587,7 @@ class TestStructuralScope:
 
         use_case = ReconcileDesktopStateUseCase(
             state_repo=repo,
-            csg=csg,
+            palette_producer=palette_producer,
             weg=weg,
             itr=itr,
             install_spine=install_spine,

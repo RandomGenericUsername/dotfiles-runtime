@@ -291,7 +291,7 @@ def _run_seed_if_needed(*, producer: str | None = None) -> None:
         )
 
         state_repo = JsonStateRepository(state_root=state_root)
-        csg = create_palette_producer(install_spine, producer=producer)
+        palette_producer = create_palette_producer(install_spine, producer=producer)
         weg = WegAdapter()
         itr = ItrAdapter()
         seeder = CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec())
@@ -320,7 +320,7 @@ def _run_seed_if_needed(*, producer: str | None = None) -> None:
 
         use_case = SeedCacheUseCase(
             state_repo=state_repo,
-            csg=csg,
+            palette_producer=palette_producer,
             weg=weg,
             itr=itr,
             factory=_NoOpFactory(),
@@ -363,7 +363,7 @@ def main_callback(
     # P3 — do not auto-seed before reconcile (reconcile must fail loud on
     # absent state). Same for the read-only inspect commands (Story 3.2,
     # AC 3): auto-seeding would mask the absent-state error on provisioned
-    # machines and invoke csg/weg/itr for free behind a read command.
+    # machines and invoke tpr/weg/itr for free behind a read command.
     # The COMMAND comes from typer's resolved context (never argv parsing:
     # operands named "reconcile"/flag values must not skip seeding, and
     # flag-first invocations must).
@@ -541,7 +541,6 @@ def _run_wallpaper_set(
     suppress_history: bool = False,
     include_terminal: bool = True,
     client: IJobClient | None = None,
-    contrast: str = "auto",
     producer: str | None = None,
 ) -> _WallpaperSetResult:
     """Compose the required-palette ``wallpaper set`` pipeline (D1/BUG-001).
@@ -589,22 +588,8 @@ def _run_wallpaper_set(
     ``wallpaper.state`` transitions; the CLI passes none and the
     production client is built (D-Bus when the daemon owns the hub
     name, no-op otherwise).
-
-    ``contrast`` (``icon-contrast-opt-out`` D2): ``"auto"`` follows the
-    stored per-wallpaper preference (default ON); ``"on"``/``"off"``
-    force the guard for this run AND persist the choice for the
-    governing wallpaper hash (D2a: a variant input persists to its
-    parent) BEFORE deriving. Resolution + persistence hook into
-    ``_phase_themed`` — orchestration stays in this CLI root per AD-12.
     """
     from runtime.adapters.dbus_job_client import DbusJobClient
-    from runtime.domain.icon_contrast_policy import CONTRAST_FLAGS
-
-    if contrast not in CONTRAST_FLAGS:
-        raise ValueError(
-            f"invalid contrast flag: {contrast!r} "
-            f"(expected one of {', '.join(CONTRAST_FLAGS)})"
-        )
 
     state_root = _resolve_state_root()
     install_spine = _resolve_install_spine()
@@ -649,7 +634,7 @@ def _run_wallpaper_set(
 
     apply_use_case = ApplyWallpaperUseCase(
         state_repo=JsonStateRepository(state_root=state_root),
-        csg=palette_producer,
+        palette_producer=palette_producer,
         weg=WegAdapter(),
         itr=ItrAdapter(),
         install_spine=install_spine,
@@ -691,46 +676,17 @@ def _run_wallpaper_set(
                 client, "visible", prepared.wallpaper_hash, "set", stage=stage
             )
 
-        from runtime.adapters.icon_contrast_prefs_store import (
-            governing_wallpaper_hash,
-            resolve_contrast,
-            store_path,
-            write_pref,
-        )
-
-        prefs_file = store_path(state_root)
-        governing = governing_wallpaper_hash(
-            image_path.expanduser().resolve(),
-            state_root,
-            fallback_hash=prepared.wallpaper_hash,
-        )
-        if contrast == "auto":
-            contrast_enabled, contrast_source = resolve_contrast(
-                flag="auto", governing_hash=governing, store_file=prefs_file
-            )
-        else:
-            contrast_enabled, contrast_source = (contrast == "on"), "flag"
-            try:
-                write_pref(prefs_file, governing, contrast_enabled)
-            except OSError as exc:
-                logger.warning(
-                    "wallpaper set: contrast pref persist failed (%s); "
-                    "continuing with the forced value",
-                    exc,
-                )
         apply_result = apply_use_case.run(
             image_path,
             wallpaper_hash=prepared.wallpaper_hash,
             prepared_palette=prepared,
-            contrast_enabled=contrast_enabled,
-            contrast_source=contrast_source,
             on_progress=publish_stage,
         )
 
         publish_stage("reconciling_consumers")
         reconcile_result = ReconcileDesktopStateUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
-            csg=palette_producer,
+            palette_producer=palette_producer,
             weg=WegAdapter(),
             itr=ItrAdapter(),
             install_spine=install_spine,
@@ -739,12 +695,7 @@ def _run_wallpaper_set(
             mutex=inner_mutex,
             reloaders=_build_reloaders(state_root, include_terminal=include_terminal),
             app_refresher=_build_app_refresher(state_root, install_spine),
-        ).run(
-            trigger="set",
-            contrast_enabled=contrast_enabled,
-            contrast_source=contrast_source,
-            wallpaper_already_applied=True,
-        )
+        ).run(trigger="set", wallpaper_already_applied=True)
         return apply_result, reconcile_result
 
     def _record_palette_failure(exc: PaletteUnavailableError) -> None:
@@ -895,18 +846,11 @@ _CAPTURE_OUTPUT_PATH_OPTION = typer.Option(
 def wallpaper_set(
     image_path: Path = _IMAGE_PATH_ARG,
     output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
-    contrast: str = typer.Option(
-        "auto",
-        "--contrast",
-        help="Icon-contrast guard policy: 'auto' follows the stored per-wallpaper "
-        "preference (default ON); 'on'/'off' force the guard for this run and "
-        "persist the choice for the wallpaper.",
-    ),
     producer: str | None = typer.Option(
         None,
         "--producer",
-        help="One-shot palette producer override (csg|tpr); the runtime-owned "
-        "producer config is authoritative otherwise",
+        help="One-shot palette producer override (only 'tpr' is supported); the "
+        "runtime-owned producer config is authoritative otherwise",
     ),
 ) -> None:
     """Derive, cache, swap, reload, and persist state for a wallpaper.
@@ -925,9 +869,7 @@ def wallpaper_set(
     """
     renderer = create_renderer(output_format)
     try:
-        result = _call_with_producer(
-            _run_wallpaper_set, image_path, contrast=contrast, producer=producer
-        )
+        result = _call_with_producer(_run_wallpaper_set, image_path, producer=producer)
     except PaletteUnavailableError as exc:
         logger.error("wallpaper set failed: palette unavailable: %s", exc)
         renderer.error(
@@ -1024,14 +966,13 @@ def wallpaper_set(
 
 def _run_icons_regenerate(
     *,
-    contrast: str = "auto",
     client: IJobClient | None = None,
     producer: str | None = None,
 ) -> RegenerateIconsResult:
     """Compose the icons-only ``icons regenerate`` pipeline (D3).
 
     The GUI's live-toggle path: re-derives ONLY the icons layer from the
-    CURRENT palette under the resolved contrast policy, repoints the
+    CURRENT palette, repoints the
     ``current/icons`` symlink (+ spine consumer pointers), appends one
     ``history.jsonl`` line (trigger ``"regenerate"``), and reloads AGS
     only — wallpaper/palette/effects bytes are never touched (no
@@ -1060,14 +1001,7 @@ def _run_icons_regenerate(
     from runtime.adapters.weg_adapter import WegAdapter
     from runtime.application.palette_producer import create_palette_producer
     from runtime.application.regenerate_icons import RegenerateIconsUseCase
-    from runtime.domain.icon_contrast_policy import CONTRAST_FLAGS
     from runtime.domain.models import SeedLockedError
-
-    if contrast not in CONTRAST_FLAGS:
-        raise ValueError(
-            f"invalid contrast flag: {contrast!r} "
-            f"(expected one of {', '.join(CONTRAST_FLAGS)})"
-        )
 
     state_root = _resolve_state_root()
     install_spine = _resolve_install_spine()
@@ -1094,7 +1028,7 @@ def _run_icons_regenerate(
         with FlockSeedMutex(state_root / ".seed.lock").hold(blocking=False):
             result = RegenerateIconsUseCase(
                 state_repo=JsonStateRepository(state_root=state_root),
-                csg=palette_producer,
+                palette_producer=palette_producer,
                 weg=WegAdapter(),
                 itr=ItrAdapter(),
                 install_spine=install_spine,
@@ -1105,7 +1039,7 @@ def _run_icons_regenerate(
                 mutex=inner_mutex,
                 reloaders=[],
                 app_refresher=_build_app_refresher(state_root, install_spine),
-            ).run(contrast=contrast)
+            ).run()
     except SeedLockedError as exc:
         _publish_wallpaper_state(client, "error", "", "regenerate")
         raise SeedLockedError(
@@ -1123,34 +1057,24 @@ def _run_icons_regenerate(
 @icons_app.command("regenerate")
 def icons_regenerate(
     output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
-    contrast: str = typer.Option(
-        "auto",
-        "--contrast",
-        help="Icon-contrast guard policy: 'auto' follows the stored per-wallpaper "
-        "preference (default ON); 'on'/'off' force the guard for this run and "
-        "persist the choice for the live wallpaper.",
-    ),
     producer: str | None = typer.Option(
         None,
         "--producer",
-        help="One-shot palette producer override (csg|tpr); the runtime-owned "
-        "producer config is authoritative otherwise",
+        help="One-shot palette producer override (only 'tpr' is supported); the "
+        "runtime-owned producer config is authoritative otherwise",
     ),
 ) -> None:
     """Re-render ONLY the icons layer from the live palette and reconverge.
 
-    The live-toggle path (D3): resolves the contrast policy for the live
-    wallpaper (explicit flag > stored preference > default ON), re-derives
-    icons from the current palette, repoints ``current/icons``, appends a
-    ``history.jsonl`` line (trigger ``"regenerate"``), and reloads AGS
-    only. Wallpaper pixels, palette, and effects are untouched (no
-    flicker). Fails loud when no state has been recorded yet.
+    The live-toggle path (D3): re-derives icons from the current palette,
+    repoints ``current/icons``, appends a ``history.jsonl`` line (trigger
+    ``"regenerate"``), and reloads AGS only. Wallpaper pixels, palette, and
+    effects are untouched (no flicker). Fails loud when no state has been
+    recorded yet.
     """
     renderer = create_renderer(output_format)
     try:
-        result = _call_with_producer(
-            _run_icons_regenerate, contrast=contrast, producer=producer
-        )
+        result = _call_with_producer(_run_icons_regenerate, producer=producer)
     except (ValueError, RuntimeError, OSError) as exc:
         logger.error("icons regenerate failed: %s", exc)
         renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
@@ -1176,10 +1100,8 @@ def icons_regenerate(
         )
         raise typer.Exit(code=1) from None
 
-    guard_desc = "ON" if result.contrast_enabled else "OFF"
     summary = (
         f"icons regenerated: {result.icons.entry_hash[:12]}"
-        f" (contrast guard {guard_desc}, {result.contrast_source})"
         f", {len(result.repointed)} symlink(s) repointed"
         + (
             f", {len(result.consumer_symlinks)} consumer link(s)"
@@ -1193,8 +1115,6 @@ def icons_regenerate(
             object={
                 "icons": result.icons.entry_hash,
                 "cache_hit": result.cache_hit,
-                "contrast_enabled": result.contrast_enabled,
-                "contrast_source": result.contrast_source,
                 "repointed": [str(p) for p in result.repointed],
                 "consumer_symlinks": [str(p) for p in result.consumer_symlinks],
                 "reload_failures": list(result.reload_failures),
@@ -1202,115 +1122,6 @@ def icons_regenerate(
             rich=summary,
         )
     )
-
-
-def _run_icons_preference(
-    hash_arg: str | None, set_value: str | None
-) -> dict[str, object]:
-    """Resolve (and optionally persist) the contrast preference (D1b, D2a).
-
-    The GUI's exclusive store interface: show prints the resolved
-    ``{hash, enabled, source}`` for ``hash_arg`` (default: the LIVE
-    wallpaper's governing hash — a live variant resolves to its parent,
-    so one toggle governs the original and all its variants); ``--set``
-    persists the choice first, then the resolved value is returned (its
-    source is then ``"store"``). A missing store file is NOT an error
-    (all defaults). An absent/corrupt ``current.json`` fails loud, but
-    only when the default (live) hash is needed — an explicit HASH never
-    touches state.
-
-    Raises:
-        ValueError: on an invalid HASH, an invalid ``--set`` value, or a
-            corrupt ``current.json``.
-        RuntimeError: when the live hash is needed but no state exists.
-        OSError: when persisting ``--set`` fails.
-    """
-    from runtime.adapters.icon_contrast_prefs_store import (
-        governing_wallpaper_hash,
-        resolve_contrast,
-        store_path,
-        write_pref,
-    )
-    from runtime.adapters.json_state_repository import JsonStateRepository
-    from runtime.domain.icon_contrast_policy import is_wallpaper_hash
-
-    if set_value is not None and set_value not in ("on", "off"):
-        raise ValueError(
-            f"invalid --set value: {set_value!r} (expected 'on' or 'off')"
-        )
-    state_root = _resolve_state_root()
-    prefs_file = store_path(state_root)
-    if hash_arg is not None:
-        if not is_wallpaper_hash(hash_arg):
-            raise ValueError(
-                f"invalid wallpaper hash: {hash_arg!r} (expected 64 hex characters)"
-            )
-        target = hash_arg.lower()
-    else:
-        state = JsonStateRepository(state_root).load_current()
-        if state is None:
-            raise RuntimeError(
-                "no runtime state recorded yet "
-                "(run `dotfiles-runtime wallpaper set <img>` first or pass an explicit HASH)"
-            )
-        target = governing_wallpaper_hash(
-            Path(state.wallpaper.source_path),
-            state_root,
-            fallback_hash=state.wallpaper.content_hash,
-        )
-    if set_value is not None:
-        write_pref(prefs_file, target, set_value == "on")
-    enabled, source = resolve_contrast(
-        flag="auto", governing_hash=target, store_file=prefs_file
-    )
-    return {"hash": target, "enabled": enabled, "source": source}
-
-
-@icons_app.command("preference")
-def icons_preference(
-    wallpaper_hash: str | None = typer.Argument(
-        None,
-        help="Wallpaper content hash (64 hex). Defaults to the live wallpaper's "
-        "governing hash (a live variant resolves to its parent wallpaper).",
-    ),
-    set_value: str | None = typer.Option(
-        None,
-        "--set",
-        help="Persist the choice for the hash ('on' or 'off') and print the result.",
-    ),
-    output_format: OutputFormat = _OUTPUT_FORMAT_OPTION,
-) -> None:
-    """Show or persist the per-wallpaper icon-contrast preference.
-
-    Without ``--set``: prints the resolved ``{hash, enabled, source}``
-    (explicit flag n/a here — ``enabled`` follows store → default ON).
-    With ``--set on|off``: persists the choice, then prints the resolved
-    value. The GUI's sole store interface — it never writes the state
-    file directly.
-    """
-    renderer = create_renderer(output_format)
-    try:
-        resolved = _run_icons_preference(wallpaper_hash, set_value)
-    except (ValueError, RuntimeError, OSError) as exc:
-        logger.error("icons preference failed: %s", exc)
-        renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
-        raise typer.Exit(code=1) from None
-    except Exception:
-        logger.exception("icons preference failed unexpectedly")
-        renderer.error(
-            ErrorView(
-                kind="UnexpectedError",
-                message="icons preference failed unexpectedly; see logs",
-            )
-        )
-        raise typer.Exit(code=1) from None
-
-    enabled = bool(resolved["enabled"])
-    summary = (
-        f"icon contrast for {resolved['hash']}: {'on' if enabled else 'off'} "
-        f"(source: {resolved['source']})"
-    )
-    renderer.custom(CustomView(plain=summary, object=resolved, rich=summary))
 
 
 def _run_gtk4_restart() -> list[str]:
@@ -1403,7 +1214,7 @@ def _run_reconcile(
 
     Mirrors ``_run_wallpaper_set``'s wiring: resolve state_root /
     install_spine (both absolute), construct the JSON state repository,
-    the CSG/WEG/ITR adapters, the ``CacheSeeder``, and the state mutex,
+    the palette/WEG/ITR adapters, the ``CacheSeeder``, and the state mutex,
     then inject all of them into ``ReconcileDesktopStateUseCase``. The
     mutex is the same flock file the seeder and apply use: reconcile
     serializes against concurrent ``wallpaper set`` (Story 1.13 review,
@@ -1426,7 +1237,7 @@ def _run_reconcile(
 
     use_case = ReconcileDesktopStateUseCase(
         state_repo=JsonStateRepository(state_root=state_root),
-        csg=create_palette_producer(install_spine, producer=producer),
+        palette_producer=create_palette_producer(install_spine, producer=producer),
         weg=WegAdapter(),
         itr=ItrAdapter(),
         install_spine=install_spine,
@@ -1469,7 +1280,6 @@ def _run_check_inputs(*, producer: str | None = None) -> CheckInputsResult:
     palette_producer = create_palette_producer(install_spine, producer=producer)
     invalidation = InvalidationQueryAdapter(
         state_root=state_root,
-        templates_dir=palette_producer.templates_dir,
         catalog_path=find_effects_catalog(install_spine),
         icon_templates=find_icon_templates(install_spine),
         icon_mappings=find_icon_mappings(install_spine),
@@ -1561,7 +1371,6 @@ def _run_reconcile_plan(
     palette_producer = create_palette_producer(install_spine, producer=producer)
     invalidation = InvalidationQueryAdapter(
         state_root=state_root,
-        templates_dir=palette_producer.templates_dir,
         catalog_path=find_effects_catalog(install_spine),
         icon_templates=find_icon_templates(install_spine),
         icon_mappings=find_icon_mappings(install_spine),
@@ -1629,7 +1438,7 @@ def _run_regenerate_stale(
 
     Mirrors ``_run_wallpaper_set``'s construction: resolve state_root /
     install_spine (both absolute), build one shared set of adapters
-    (``CacheSeeder``, CSG/WEG/ITR, ``FlockSeedMutex``), resolve the four spine
+    (``CacheSeeder``, palette/WEG/ITR, ``FlockSeedMutex``), resolve the four spine
     inputs via ``derive.find_*`` (composition owns discovery), then wire
     ``CheckInputsUseCase`` + ``DerivationPipeline`` + ``ReconcileDesktopState-
     UseCase`` (with ``_build_reloaders``) into ``RegenerateStaleUseCase``.
@@ -1665,15 +1474,14 @@ def _run_regenerate_stale(
         state_root, consumer_spec=StaticConsumerPathSpec(), suppress_history=suppress_history
     )
     mutex = FlockSeedMutex(state_root / ".seed.lock")
-    csg = create_palette_producer(install_spine, producer=producer)
+    palette_producer = create_palette_producer(install_spine, producer=producer)
     weg, itr = WegAdapter(), ItrAdapter()
     invalidation = InvalidationQueryAdapter(
         state_root=state_root,
-        templates_dir=csg.templates_dir,
         catalog_path=find_effects_catalog(install_spine),
         icon_templates=find_icon_templates(install_spine),
         icon_mappings=find_icon_mappings(install_spine),
-        palette_producer=csg,
+        palette_producer=palette_producer,
     )
     use_case = RegenerateStaleUseCase(
         check=CheckInputsUseCase(
@@ -1684,7 +1492,7 @@ def _run_regenerate_stale(
         pipeline=DerivationPipeline(
             state_root=state_root,
             seeder=seeder,
-            csg=csg,
+            palette_producer=palette_producer,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -1692,7 +1500,7 @@ def _run_regenerate_stale(
         state_repo=state_repo,
         reconcile=ReconcileDesktopStateUseCase(
             state_repo=state_repo,
-            csg=csg,
+            palette_producer=palette_producer,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -1737,7 +1545,7 @@ def _run_doctor_repair(*, producer: str | None = None) -> RepairResult:
     Mutation wiring (Story 2.2), sharing ONE set of adapters with the
     composed reconcile (mirrors ``_run_regenerate_stale``): resolve
     state_root / install_spine (absolute), build the JSON repository, the
-    seeder, the flock mutex, the CSG/WEG/ITR adapters, the derivation
+    seeder, the flock mutex, the palette/WEG/ITR adapters, the derivation
     pipeline, and the reconcile use case (with ``_build_reloaders``), then
     inject the read-only ``DoctorUseCase``, the ``quarantine_entry`` seam,
     and reconcile into ``DoctorRepairUseCase``.
@@ -1759,7 +1567,7 @@ def _run_doctor_repair(*, producer: str | None = None) -> RepairResult:
     state_repo = JsonStateRepository(state_root=state_root)
     seeder = CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec())
     mutex = FlockSeedMutex(state_root / ".seed.lock")
-    csg = create_palette_producer(install_spine, producer=producer)
+    palette_producer = create_palette_producer(install_spine, producer=producer)
     weg, itr = WegAdapter(), ItrAdapter()
     use_case = DoctorRepairUseCase(
         doctor=DoctorUseCase(
@@ -1768,7 +1576,7 @@ def _run_doctor_repair(*, producer: str | None = None) -> RepairResult:
         quarantine=lambda layer, entry_hash: quarantine_entry(state_root, layer, entry_hash),
         reconcile=ReconcileDesktopStateUseCase(
             state_repo=state_repo,
-            csg=csg,
+            palette_producer=palette_producer,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -1798,7 +1606,7 @@ def doctor(
     producer: str | None = typer.Option(
         None,
         "--producer",
-        help="One-shot palette producer override (csg|tpr); the runtime-owned "
+        help="One-shot palette producer override (only 'tpr' is supported); the runtime-owned "
         "producer config is authoritative otherwise",
     ),
 ) -> None:
@@ -1912,9 +1720,6 @@ def doctor(
             f"; OPTIONAL (absent, not watched) {path}" for path in health.optional_absent
         )
     plain = f"{plain}; {watch_desc}{optional_desc}"
-    icons_policy = _read_live_icons_policy()
-    if icons_policy is not None:
-        plain = f"{plain}; {_describe_icons_policy(icons_policy)}"
     vocabulary_item = next(
         (item for item in report.items if item.kind == "vocabulary"),
         None,
@@ -1926,7 +1731,6 @@ def doctor(
             plain=plain,
             object={
                 "clean": report.clean,
-                "icons_contrast": icons_policy,
                 "palette_vocabulary": (
                     None
                     if vocabulary_item is None
@@ -3153,7 +2957,7 @@ def reconcile(
     producer: str | None = typer.Option(
         None,
         "--producer",
-        help="One-shot palette producer override (csg|tpr); the runtime-owned "
+        help="One-shot palette producer override (only 'tpr' is supported); the runtime-owned "
         "producer config is authoritative otherwise",
     ),
 ) -> None:
@@ -3510,34 +3314,6 @@ def _run_converge(
     ).run(changeset)
 
 
-def _read_live_icons_policy() -> dict[str, object] | None:
-    """Return the live icons entry's ``contrast.policy``, or ``None``.
-
-    Read-only projection for ``doctor`` wording (``inspect status``
-    carries the same data via ``InspectStatusResult.icons_contrast``).
-    Never raises: absent/corrupt state, null icons, or a pre-policy
-    entry all yield ``None`` (wording omitted, never guessed).
-    """
-    from runtime.adapters.icon_contrast_prefs_store import read_icons_policy
-    from runtime.adapters.json_state_repository import JsonStateRepository
-
-    state_root = _resolve_state_root()
-    try:
-        state = JsonStateRepository(state_root).load_current()
-    except (ValueError, RuntimeError, OSError):
-        return None
-    if state is None or state.icons is None:
-        return None
-    return read_icons_policy(state_root, state.icons.entry_hash)
-
-
-def _describe_icons_policy(policy: dict[str, object]) -> str:
-    """Render a ``contrast.policy`` dict as the inspect/doctor one-liner."""
-    from runtime.domain.icon_contrast_policy import describe
-
-    return describe(enabled=bool(policy["enabled"]), source=str(policy["source"]))
-
-
 def _run_inspect_status() -> InspectStatusResult:
     """Compose and run InspectStateUseCase (inspect status command).
 
@@ -3648,8 +3424,6 @@ def inspect_status(
         f" (palette {palette_desc}, effects {effects_desc}, icons {icons_desc})"
         f", {len(result.current_symlinks)} symlink(s) checked"
     )
-    if result.icons_contrast is not None:
-        summary = f"{summary}; {_describe_icons_policy(result.icons_contrast)}"
     renderer.custom(
         CustomView(
             plain=summary,
@@ -3660,7 +3434,6 @@ def inspect_status(
                 "palette": result.palette,
                 "effects": result.effects,
                 "icons": result.icons,
-                "icons_contrast": result.icons_contrast,
                 "applied_at": result.applied_at,
                 "current_symlinks": {
                     name: {"status": status.status, "target": status.target}
@@ -3685,8 +3458,7 @@ def inspect_palette(
     Read-only: reads ``current.json`` and the live palette entry's
     ``colors.yaml``/``colors.gtk.css``, reports the declared vocabulary
     version, per-artifact conformance, and additive extra roles (information
-    only). Exits 1 when a semantic (tpr) palette is nonconforming; a legacy
-    csg palette is reported ``n/a`` (csg is not a ``palette.v1`` producer).
+    only). Exits 1 when the palette is nonconforming.
     """
     renderer = create_renderer(output_format)
     try:
@@ -3718,13 +3490,7 @@ def inspect_palette(
         return
 
     extras = ", ".join(conformance.extra_roles) or "none"
-    if not conformance.semantic:
-        plain = (
-            f"palette vocabulary v{conformance.vocabulary_version}: n/a "
-            "(legacy csg palette, not a palette.v1 producer); "
-            f"extra roles: {extras}"
-        )
-    elif conformance.conforming:
+    if conformance.conforming:
         from runtime.domain.palette_vocabulary import PALETTE_VOCABULARY_V1
 
         plain = (
@@ -3755,7 +3521,7 @@ def inspect_palette(
             rich=plain,
         )
     )
-    if conformance.semantic and not conformance.conforming:
+    if not conformance.conforming:
         raise typer.Exit(code=1) from None
 
 
@@ -4026,9 +3792,9 @@ def inspect_producer(
 
     Read-only (REQ-004): reports the resolved producer/source/engine/runtime,
     the config path, ambient producer/engine env, any ignored ambient values,
-    and the warnings a composition root would log. An absent config is the
-    documented default (``csg``) and exits 0 with a warning; a malformed
-    config fails loud.
+    and the warnings a composition root would log. An absent config uses the
+    documented default (``tpr``) and exits 0 with a warning; a malformed
+    config or an unregistered producer fails loud.
     """
     renderer = create_renderer(output_format)
     try:

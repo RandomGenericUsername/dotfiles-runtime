@@ -10,7 +10,7 @@ idempotency, no spine writes. CLI shape via monkeypatched composition.
 
 from __future__ import annotations
 
-from tests.support.palette_fakes import PaletteProducerStub
+from tests.support.palette_fakes import PaletteProducerStub, v1_colors_yaml, v1_gtk_css
 
 import hashlib
 import json
@@ -76,9 +76,9 @@ class _Csg(PaletteProducerStub):
         self.calls += 1
         output_dir.mkdir(parents=True, exist_ok=True)
         artifacts = {
-            "colors.yaml": b"yaml",
+            "colors.yaml": v1_colors_yaml().encode(),
             "colors.conf": b"conf",
-            "colors.gtk.css": b"gtk",
+            "colors.gtk.css": v1_gtk_css().encode(),
             "colors.adw.css": b"adw",
             "colors.sequences": b"seq",
             "colors.rasi": b"rasi",
@@ -174,7 +174,7 @@ class _Env:
         self.reloaders = [_Reloader()]
 
     def build_spine(self) -> None:
-        templates = self.install / "config" / "color-scheme-generator" / "templates"
+        templates = self.install / "config" / "theme-producer" / "templates"
         templates.mkdir(parents=True)
         (templates / "a.j2").write_text("template-a", encoding="utf-8")
         catalog = self.install / "config" / "weg" / "effects.yaml"
@@ -201,7 +201,7 @@ class _Env:
         self.img.write_bytes(b"wallpaper bytes")
         ApplyWallpaperUseCase(
             state_repo=self.repo,
-            csg=self.csg,
+            palette_producer=self.csg,
             weg=self.weg,
             itr=self.itr,
             install_spine=self.install,
@@ -218,17 +218,16 @@ class _Env:
         self.csg.calls = self.weg.calls = self.itr.calls = 0
 
     def reconcile(self) -> Any:
-        from runtime.adapters.csg_adapter import CsgAdapter
         from runtime.adapters.itr_adapter import ItrAdapter
         from runtime.adapters.json_state_repository import JsonStateRepository
         from runtime.adapters.seeder import CacheSeeder
         from runtime.adapters.weg_adapter import WegAdapter
         from runtime.application.reconcile import ReconcileDesktopStateUseCase
 
-        _ = (CsgAdapter, ItrAdapter, WegAdapter)
+        _ = (ItrAdapter, WegAdapter)
         return ReconcileDesktopStateUseCase(
             state_repo=JsonStateRepository(state_root=self.state_root),
-            csg=self.csg,
+            palette_producer=self.csg,
             weg=self.weg,
             itr=self.itr,
             install_spine=self.install,

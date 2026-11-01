@@ -9,7 +9,7 @@ ACs: minimality + cascade, reconverge, idempotency, absent loudness.
 
 from __future__ import annotations
 
-from tests.support.palette_fakes import PaletteProducerStub
+from tests.support.palette_fakes import PaletteProducerStub, v1_colors_yaml, v1_gtk_css
 
 import json
 from contextlib import contextmanager
@@ -536,14 +536,13 @@ class TestRegenerateEndToEnd:
             find_effects_catalog,
             find_icon_mappings,
             find_icon_templates,
-            find_templates_dir,
         )
         from runtime.application.reconcile import ReconcileDesktopStateUseCase
         from runtime.domain.models import EffectsEntry, IconsEntry, PaletteEntry
         from runtime.ports.desktop_reloader import IDesktopReloader
 
         install = tmp_path / "install"
-        templates = install / "config" / "color-scheme-generator" / "templates"
+        templates = install / "config" / "theme-producer" / "templates"
         templates.mkdir(parents=True)
         (templates / "a.j2").write_text("template-a", encoding="utf-8")
         catalog = install / "config" / "weg" / "effects.yaml"
@@ -571,9 +570,9 @@ class TestRegenerateEndToEnd:
                 self.calls += 1
                 output_dir.mkdir(parents=True, exist_ok=True)
                 artifacts = {
-                    "colors.yaml": b"yaml",
+                    "colors.yaml": v1_colors_yaml().encode(),
                     "colors.conf": b"conf",
-                    "colors.gtk.css": b"gtk",
+                    "colors.gtk.css": v1_gtk_css().encode(),
                     "colors.adw.css": b"adw",
                     "colors.sequences": b"seq",
                     "colors.rasi": b"rasi",
@@ -668,7 +667,6 @@ class TestRegenerateEndToEnd:
                 "DerivationPipeline": DerivationPipeline,
                 "ReconcileDesktopStateUseCase": ReconcileDesktopStateUseCase,
                 "ApplyWallpaperUseCase": ApplyWallpaperUseCase,
-                "find_templates_dir": find_templates_dir,
                 "find_effects_catalog": find_effects_catalog,
                 "find_icon_templates": find_icon_templates,
                 "find_icon_mappings": find_icon_mappings,
@@ -689,7 +687,7 @@ class TestRegenerateEndToEnd:
         mutex = helpers["FlockSeedMutex"](state_root / ".seed.lock")
         helpers["ApplyWallpaperUseCase"](
             state_repo=repo,
-            csg=env["csg"],
+            palette_producer=env["csg"],
             weg=env["weg"],
             itr=env["itr"],
             install_spine=install,
@@ -705,7 +703,7 @@ class TestRegenerateEndToEnd:
 
         invalidation = helpers["InvalidationQueryAdapter"](
             state_root=state_root,
-            templates_dir=helpers["find_templates_dir"](install),
+            palette_producer=env["csg"],
             catalog_path=helpers["find_effects_catalog"](install),
             icon_templates=helpers["find_icon_templates"](install),
             icon_mappings=helpers["find_icon_mappings"](install),
@@ -719,7 +717,7 @@ class TestRegenerateEndToEnd:
             pipeline=helpers["DerivationPipeline"](
                 state_root=state_root,
                 seeder=seeder,
-                csg=env["csg"],
+                palette_producer=env["csg"],
                 weg=env["weg"],
                 itr=env["itr"],
                 install_spine=install,
@@ -727,7 +725,7 @@ class TestRegenerateEndToEnd:
             state_repo=repo,
             reconcile=helpers["ReconcileDesktopStateUseCase"](
                 state_repo=repo,
-                csg=env["csg"],
+                palette_producer=env["csg"],
                 weg=env["weg"],
                 itr=env["itr"],
                 install_spine=install,

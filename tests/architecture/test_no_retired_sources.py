@@ -19,8 +19,7 @@ both the contiguous literal (``src/cli-tools``) and the split path-join form
 (``"src" / "cli-tools"``) that ``rg`` misses.
 
 Fix an offender by resolving the input from the provisioning spine
-(``runtime.application.derive.resolve_input`` / ``find_templates_dir`` /
-``find_icon_templates``) or from the pinned repo / checked-in asset — never by
+(``runtime.application.derive.resolve_input`` / ``find_icon_templates``) or from the pinned repo / checked-in asset — never by
 walking ancestors for a retired tree.
 """
 
@@ -49,8 +48,7 @@ _FORBIDDEN_SPLIT = re.compile(
 
 _GUIDANCE = (
     "Retired in-repo trees must not be referenced. Resolve the input from the "
-    "provisioning spine (runtime.application.derive.resolve_input / "
-    "find_templates_dir / find_icon_templates) or the pinned repo / checked-in "
+    "provisioning spine (runtime.application.derive.resolve_input / find_icon_templates) or the pinned repo / checked-in "
     "asset — never by walking ancestors for a retired tree. See ARCHITECTURE.md "
     "§12 and the cli-tools-repos split."
 )

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -38,12 +37,9 @@ import pytest
 # retired-tree literal.
 #
 # Env names:
-#   DOTFILES_CSG_TEMPLATES_DIR  — CSG palette templates dir (production resolves
-#                                 it from the spine: ``find_templates_dir``).
 #   DOTFILES_ICON_TEMPLATES_DIR — ITR icon templates dir, an assets checkout
 #                                 override (production resolves it from the
 #                                 spine: ``find_icon_templates``).
-CSG_TEMPLATES_DIR_ENV = "DOTFILES_CSG_TEMPLATES_DIR"
 ICON_TEMPLATES_DIR_ENV = "DOTFILES_ICON_TEMPLATES_DIR"
 
 #: Repo root, located by walking up for the conformance copies. Avoids a
@@ -64,34 +60,6 @@ def _env_dir(name: str) -> Path | None:
         return None
     candidate = Path(raw).expanduser()
     return candidate if candidate.is_dir() else None
-
-
-def resolve_csg_templates_dir(csg_bin: str, dest: Path) -> Path | None:
-    """Resolve a CSG templates dir for a test — never via a retired repo tree.
-
-    Production resolves the dir from the provisioning spine
-    (``find_templates_dir(install_spine)``) and passes it to ``CsgAdapter``.
-    A test can point at one explicitly with ``DOTFILES_CSG_TEMPLATES_DIR``;
-    otherwise dump the on-PATH binary's own bundled templates (the corpus it
-    actually generates from) into ``dest``. ``None`` means "not provided" —
-    the caller must skip loudly.
-    """
-    if (env_dir := _env_dir(CSG_TEMPLATES_DIR_ENV)) is not None:
-        return env_dir
-    out = dest / "templates-dump"
-    try:
-        result = subprocess.run(
-            [csg_bin, "dump-templates", "-o", str(out)],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    dumped = out / "templates"
-    return dumped if dumped.is_dir() else None
 
 
 def _resolve_install_spine() -> Path | None:

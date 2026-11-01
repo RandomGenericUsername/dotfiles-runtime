@@ -3,12 +3,12 @@
 Composes the use cases DIRECTLY (never through the CLI in integration):
 ApplyWallpaperUseCase → ReconcileDesktopStateUseCase(trigger="set") on a
 REAL filesystem (real ``JsonStateRepository``/``CacheSeeder``/spine, fake
-contract-honest csg/weg/itr with ``calls`` counters, fake mutex).
+contract-honest palette_producer/weg/itr with ``calls`` counters, fake mutex).
 
 Covers the capstone ACs:
 - FR-1: full pipeline — swap, reload, ``current.json``, one
   ``history.jsonl`` line with trigger ``"set"``, every reloader invoked.
-- FR-2: repeat set on the same image = zero csg/weg/itr tool invocations
+- FR-2: repeat set on the same image = zero palette_producer/weg/itr tool invocations
   in BOTH passes (counting ONLY the fake ``.calls`` counters —
   reconcile's ``hash_file`` read is a file read, not a tool invocation),
   while swap/history/reload still run.
@@ -24,7 +24,7 @@ Covers the capstone ACs:
 
 from __future__ import annotations
 
-from tests.support.palette_fakes import PaletteProducerStub
+from tests.support.palette_fakes import PaletteProducerStub, v1_colors_yaml, v1_gtk_css
 
 import json
 import logging
@@ -70,7 +70,7 @@ class _FakeMutex:
 
 
 class _FakeCsg(PaletteProducerStub):
-    def __init__(self, templates_dir: Path | None = None) -> None:
+    def __init__(self, templates_dir: Path | None = None, **_kwargs: object) -> None:
         self.calls = 0
         self.templates_dir = templates_dir
 
@@ -79,9 +79,9 @@ class _FakeCsg(PaletteProducerStub):
 
         self.calls += 1
         output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "colors.yaml").write_text("colors: []")
+        (output_dir / "colors.yaml").write_text(v1_colors_yaml())
         (output_dir / "colors.conf").write_text("colors {}")
-        (output_dir / "colors.gtk.css").write_text("colors {}")
+        (output_dir / "colors.gtk.css").write_text(v1_gtk_css())
         (output_dir / "colors.adw.css").write_text("colors {}")
         (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         (output_dir / "colors.rasi").write_text("* { background: #000; }")
@@ -199,7 +199,7 @@ class _HistoryProbeReloader:
 
 
 def _setup_spine(install_spine: Path) -> None:
-    csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
+    csg_templates = install_spine / "config" / "theme-producer" / "templates"
     csg_templates.mkdir(parents=True)
     (csg_templates / "default.yaml").write_text("window: {}\n")
     weg_config = install_spine / "config" / "weg"
@@ -220,7 +220,7 @@ class _Capstone:
     state_root: Path
     install_spine: Path
     img: Path
-    csg: _FakeCsg
+    palette_producer: _FakeCsg
     weg: _FakeWeg
     itr: _FakeItr
 
@@ -241,8 +241,8 @@ def _setup(tmp_path: Path, *, img_bytes: bytes | None = None, fixture_img: bool 
         state_root=state_root,
         install_spine=install_spine,
         img=img,
-        csg=_FakeCsg(
-            templates_dir=install_spine / "config" / "color-scheme-generator" / "templates"
+        palette_producer=_FakeCsg(
+            templates_dir=install_spine / "config" / "theme-producer" / "templates"
         ),
         weg=_FakeWeg(),
         itr=_FakeItr(),
@@ -256,7 +256,7 @@ def _full_set(applied: _Capstone, reloaders: list[Any] | None = None, img: Path 
     image = img if img is not None else applied.img
     ApplyWallpaperUseCase(
         state_repo=applied.repo,
-        csg=applied.csg,
+        palette_producer=applied.palette_producer,
         weg=applied.weg,
         itr=applied.itr,
         install_spine=applied.install_spine,
@@ -266,7 +266,7 @@ def _full_set(applied: _Capstone, reloaders: list[Any] | None = None, img: Path 
     ).run(image)
     return ReconcileDesktopStateUseCase(
         state_repo=applied.repo,
-        csg=applied.csg,
+        palette_producer=applied.palette_producer,
         weg=applied.weg,
         itr=applied.itr,
         install_spine=applied.install_spine,
@@ -364,12 +364,12 @@ class TestCapstoneCacheHit:
         _full_set(applied, reloaders=reloaders)
         links_after_first = _symlink_map(applied.state_root / "current")
         first_history_line = (applied.state_root / "history.jsonl").read_text().splitlines()[0]
-        applied.csg.calls = applied.weg.calls = applied.itr.calls = 0
+        applied.palette_producer.calls = applied.weg.calls = applied.itr.calls = 0
 
         result = _full_set(applied, reloaders=reloaders)
 
-        # zero csg/weg/itr invocations across apply AND reconcile passes
-        assert (applied.csg.calls, applied.weg.calls, applied.itr.calls) == (0, 0, 0)
+        # zero palette_producer/weg/itr invocations across apply AND reconcile passes
+        assert (applied.palette_producer.calls, applied.weg.calls, applied.itr.calls) == (0, 0, 0)
         # swap, history, and reload still ran
         assert result.repointed
         assert _symlink_map(applied.state_root / "current") == links_after_first
@@ -669,7 +669,7 @@ class TestCapstoneCliExitCode:
         from runtime.application.apply_wallpaper import ApplyWallpaperUseCase
 
         # Prepare state with fake adapters so the real-adapter CLI pass is
-        # a full cache hit (real csg/weg/itr never invoked).
+        # a full cache hit (real palette_producer/weg/itr never invoked).
         state_root = tmp_path / "dotfiles"  # XDG_STATE_HOME=str(tmp_path)
         install_spine = tmp_path / "install"
         _setup_spine(install_spine)
@@ -678,8 +678,8 @@ class TestCapstoneCliExitCode:
         img.write_bytes(b"cli capstone exit-code evidence")
         ApplyWallpaperUseCase(
             state_repo=repo,
-            csg=_FakeCsg(
-            templates_dir=install_spine / "config" / "color-scheme-generator" / "templates"
+            palette_producer=_FakeCsg(
+            templates_dir=install_spine / "config" / "theme-producer" / "templates"
         ),
             weg=_FakeWeg(),
             itr=_FakeItr(),
@@ -691,6 +691,10 @@ class TestCapstoneCliExitCode:
 
         monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(install_spine))
         monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        # The seeded cache entry was produced by the contract-honest fake;
+        # keep the CLI composition on the same fake (real tpr would probe a
+        # host binary/version and cannot hit the fake's entry key).
+        monkeypatch.setattr("runtime.adapters.tpr_adapter.TprAdapter", _FakeCsg)
         monkeypatch.setattr(
             "runtime.adapters.hyprland_reloader.HyprlandReloader", _PassingHostReloader
         )

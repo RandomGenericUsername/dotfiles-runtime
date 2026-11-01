@@ -393,7 +393,6 @@ class CacheSeeder:
         input_mappings_hash: str,
         artifact_hashes: dict[str, str],
         generated_at: str | None = None,
-        contrast: dict[str, Any] | None = None,
     ) -> None:
         """Write icons cache meta.json to its final cache entry dir."""
         entry_dir = self._state_root / "cache" / "icons" / entry_hash
@@ -405,7 +404,6 @@ class CacheSeeder:
             input_mappings_hash=input_mappings_hash,
             artifact_hashes=artifact_hashes,
             generated_at=generated_at,
-            contrast=contrast,
         )
 
     def write_icons_meta_in(
@@ -418,21 +416,12 @@ class CacheSeeder:
         input_mappings_hash: str,
         artifact_hashes: dict[str, str],
         generated_at: str | None = None,
-        contrast: dict[str, Any] | None = None,
     ) -> None:
         """Write icons cache meta.json into ``entry_dir`` (staging or final).
 
         Schema per shared-data-contract:
         {hash_algorithm, kind: "icons", entry_hash, source_palette_hash,
          input_templates_hash, input_mappings_hash, artifact_hashes, generated_at}
-        plus the additive ``contrast`` field when the icon-contrast guard
-        retargeted placeholders ({backdrop_source, threshold,
-        decisions[{group, placeholder, from, to, ratio_before,
-        ratio_after}]}). The field is omitted (not null) when the guard
-        passed the spine mappings through, so pre-guard entries stay
-        byte-identical; ``load_icons_entry`` tolerates its absence (old
-        entries stay valid) and ignores it when present (no ``IconsEntry``
-        shape change).
         """
         if generated_at is None:
             generated_at = _now_iso_z()
@@ -446,8 +435,6 @@ class CacheSeeder:
             "artifact_hashes": artifact_hashes,
             "generated_at": generated_at,
         }
-        if contrast is not None:
-            payload["contrast"] = contrast
         _write_meta_json(entry_dir / "meta.json", payload)
 
     def read_entry_meta(self, entry_dir: Path) -> dict[str, Any]:
@@ -520,9 +507,6 @@ class CacheSeeder:
     def load_icons_entry(self, entry_dir: Path) -> IconsEntry:
         """Rebuild an IconsEntry from a cache entry's meta.json (real hashes).
 
-        The additive ``contrast`` field (icon-contrast guard) is tolerated
-        both absent (pre-guard entries) and present (projected out — it is
-        inspection metadata, not derivation state).
         """
         meta = self.read_entry_meta(entry_dir)
         _validate_meta(meta, entry_dir)
@@ -546,7 +530,7 @@ class CacheSeeder:
     def drain_work_dir(self, work_dir: Path, staging_dir: Path) -> None:
         """Move adapter-generated artifacts from work dir into the staging dir.
 
-        Real CSG/WEG/ITR adapters validate that their output dir's *name*
+        Real palette/WEG/ITR adapters validate that their output dir's *name*
         equals the expected entry hash, so they must be given
         ``staging_dir / <entry_hash>``. After generation, the artifacts are
         drained (structure-preserving) into the staging dir root where

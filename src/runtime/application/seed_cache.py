@@ -21,7 +21,7 @@ Architecture:
   ``load_current()`` inside the critical section (double-checked locking),
   so concurrent CLI invocations cannot double-seed
 - Failure policy: the palette is a hard dependency (consumers and icon
-  rendering both require it) — a CSG failure aborts seeding entirely so
+  rendering both require it) — a palette-producer failure aborts seeding entirely so
   the next command retries. Effects/icons degrade gracefully with a
   visible warning.
 - No raw ``os``/``json`` I/O in use case (delegated to adapters)
@@ -81,7 +81,7 @@ class SeedCacheUseCase:
     def __init__(
         self,
         state_repo: IStateRepository,
-        csg: IColorSchemeGenerator,
+        palette_producer: IColorSchemeGenerator,
         weg: IEffectsGenerator,
         itr: IIconRenderer,
         factory: IWallpaperBackendFactory,
@@ -104,7 +104,7 @@ class SeedCacheUseCase:
         self._pipeline = DerivationPipeline(
             state_root=state_root,
             seeder=seeder,
-            csg=csg,
+            palette_producer=palette_producer,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -141,7 +141,7 @@ class SeedCacheUseCase:
         # including ``default.png``. The cached-model spec pins this
         # location: ``Hash <install>/wallpapers/default.png → wh``.
         # Palette/effects/icons are re-derived here via the shared
-        # DerivationPipeline (CSG/WEG/ITR subprocess calls), NOT imported
+        # DerivationPipeline (palette/WEG/ITR subprocess calls), NOT imported
         # from ``<install>/generated/`` — the seed re-runs the
         # derivations so the cache entry hashes match the inputs WEG/ITR
         # will use at runtime (same hash formula).
@@ -181,7 +181,7 @@ class SeedCacheUseCase:
             source_path=str(default_png),
         )
 
-        # 5b. Palette via CSG — hard dependency (AC 2): failure aborts seeding
+        # 5b. Palette via the active producer — hard dependency (AC 2): failure aborts seeding
         palette_entry = self._populate_palette(default_png, wallpaper_hash)
 
         # 5c/5d. Effects via WEG, icons via ITR — degrade gracefully with a

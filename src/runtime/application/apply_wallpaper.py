@@ -117,7 +117,7 @@ class ApplyWallpaperUseCase:
     def __init__(
         self,
         state_repo: IStateRepository,
-        csg: IColorSchemeGenerator,
+        palette_producer: IColorSchemeGenerator,
         weg: IEffectsGenerator,
         itr: IIconRenderer,
         install_spine: Path,
@@ -132,12 +132,12 @@ class ApplyWallpaperUseCase:
         self._seeder = seeder
         self._mutex = mutex
         self._monitor_source = monitor_source
-        #: Real producer identity for typed failures (tpr must never be csg).
-        self._producer_name = getattr(csg, "producer_name", "csg")
+        #: Real producer identity for typed failures.
+        self._producer_name = getattr(palette_producer, "producer_name", "tpr")
         self._pipeline = DerivationPipeline(
             state_root=state_root,
             seeder=seeder,
-            csg=csg,
+            palette_producer=palette_producer,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -205,8 +205,6 @@ class ApplyWallpaperUseCase:
         *,
         wallpaper_hash: str | None = None,
         prepared_palette: PreparedPalette | None = None,
-        contrast_enabled: bool = True,
-        contrast_source: str = "default",
         on_progress: Callable[[str], None] | None = None,
     ) -> ApplyWallpaperResult:
         """Apply a wallpaper: derive → cache → persist ``current.json``.
@@ -228,13 +226,6 @@ class ApplyWallpaperUseCase:
             prepared_palette: palette prepared (hard) BEFORE the swap by
                 :meth:`prepare_palette`. ``None`` keeps the standalone
                 derivation path (hash + import + ensure_palette).
-            contrast_enabled: per-wallpaper icon-contrast policy for this
-                run (resolved by the composition root from ``--contrast``
-                + the prefs store). ``False`` renders the spine mappings
-                unchanged.
-            contrast_source: provenance of ``contrast_enabled``
-                (``"flag"``/``"store"``/``"default"``), recorded in the
-                icons entry ``contrast.policy``.
 
         Raises:
             ValueError: if the input path is missing, empty, or not a
@@ -292,7 +283,7 @@ class ApplyWallpaperUseCase:
                     wallpaper_hash=wallpaper_hash,
                     returncode=getattr(exc, "returncode", None),
                     stderr=stderr[-2048:],
-                    hint="re-set the wallpaper / check csg",
+                    hint=f"re-set the wallpaper / check {self._producer_name}",
                 ) from exc
 
             # Informational callback only: the CLI adapts this application-
@@ -324,9 +315,7 @@ class ApplyWallpaperUseCase:
         cache_hit_icons = False
         try:
             icons, cache_hit_icons = self._pipeline.ensure_icons(
-                palette.entry_hash,
-                contrast_enabled=contrast_enabled,
-                contrast_source=contrast_source,
+                palette.entry_hash
             )
         except Exception as exc:
             logger.warning("apply: icon rendering failed; continuing: %s", exc)

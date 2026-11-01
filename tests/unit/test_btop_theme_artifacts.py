@@ -22,7 +22,7 @@ case rather than a unit-level fake.
 
 from __future__ import annotations
 
-from tests.support.palette_fakes import PaletteProducerStub
+from tests.support.palette_fakes import PaletteProducerStub, v1_colors_yaml, v1_gtk_css
 
 import json
 import logging
@@ -33,7 +33,6 @@ from unittest.mock import MagicMock
 import fastjsonschema
 import pytest
 
-from runtime.adapters.csg_adapter import _CsgRunResult
 from runtime.adapters.hashing import canonical_hash_dir, hash_file, palette_entry_hash
 from runtime.adapters.json_state_repository import JsonStateRepository
 from runtime.adapters.seeder import CacheSeeder
@@ -94,155 +93,6 @@ def _populate_entry(entry: Path, names: tuple[str, ...]) -> dict[str, str]:
         (entry / name).write_text(f"# {name}\n")
         hashes[name] = hash_file(entry / name)
     return hashes
-
-
-# ---------------------------------------------------------------------------
-# 5.4 — the CSG invocation carries the --format flag
-# ---------------------------------------------------------------------------
-
-
-def _fake_csg_run(tmp_path: Path) -> MagicMock:
-    """``_run_csg`` stand-in that records argv and writes all eight outputs."""
-
-    def fake_run(
-        args: list[str],
-        env: dict[str, str],
-        timeout: int,  # noqa: ARG001
-    ) -> _CsgRunResult:
-        out = Path(env["COLORSCHEME__OUTPUT__DIRECTORY"])
-        out.mkdir(parents=True, exist_ok=True)
-        for name in ALL_ARTIFACTS:
-            (out / name).write_text(f"# {name}\n")
-        return _CsgRunResult(
-            returncode=0, stdout="", stderr="", timed_out=False, elapsed_seconds=0.01
-        )
-
-    return MagicMock(side_effect=fake_run)
-
-
-def _fixture_wallpaper(tmp_path: Path) -> Path:
-    wallpaper = tmp_path / "wallpaper.png"
-    wallpaper.write_bytes(b"\x89PNG\r\n\x1a\nfake")
-    return wallpaper
-
-
-def _fixture_templates(tmp_path: Path) -> Path:
-    templates = tmp_path / "templates"
-    templates.mkdir()
-    (templates / "default.yaml").write_text("window: {}\n")
-    return templates
-
-
-def _palette_output_dir(tmp_path: Path, wallpaper: Path, templates: Path) -> Path:
-    """The adapter asserts output_dir's basename is the palette entry hash."""
-    ph = palette_entry_hash(hash_file(wallpaper), canonical_hash_dir(templates))
-    return tmp_path / "cache" / "palettes" / ph
-
-
-def _generate_and_capture_argv(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    wallpaper: Path,
-    templates: Path,
-) -> list[str]:
-    from runtime.adapters.csg_adapter import CsgAdapter
-
-    fake = _fake_csg_run(tmp_path)
-    monkeypatch.setattr("runtime.adapters.csg_adapter._run_csg", fake)
-    CsgAdapter(templates_dir=templates).generate(
-        wallpaper, _palette_output_dir(tmp_path, wallpaper, templates)
-    )
-    argv = fake.call_args[0][0]
-    assert isinstance(argv, list)
-    return argv
-
-
-@pytest.mark.parametrize("fmt", ["btop.theme"])
-def test_csg_argv_requests_each_btop_format(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fmt: str
-) -> None:
-    """5.4: asserted against the recorded argv, not a log read.
-
-    ``--format <fmt>`` must appear as an adjacent pair in the argv the adapter
-    actually handed to ``subprocess.run``.
-    """
-    wallpaper = _fixture_wallpaper(tmp_path)
-    templates = _fixture_templates(tmp_path)
-
-    argv = _generate_and_capture_argv(monkeypatch, tmp_path, wallpaper, templates)
-    pairs = list(zip(argv, argv[1:], strict=False))
-    assert ("--format", fmt) in pairs, f"--format {fmt} missing from CSG argv: {argv}"
-
-
-def test_csg_argv_requests_exactly_eight_formats(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The full requested set, asserted as an ordered format list."""
-    wallpaper = _fixture_wallpaper(tmp_path)
-    templates = _fixture_templates(tmp_path)
-
-    argv = _generate_and_capture_argv(monkeypatch, tmp_path, wallpaper, templates)
-    formats = [argv[i + 1] for i, tok in enumerate(argv) if tok == "--format"]
-    assert formats == [
-        "yaml",
-        "conf",
-        "gtk.css",
-        "adw.css",
-        "sequences",
-        "rasi",
-        "kitty",
-        "btop.theme",
-    ]
-
-
-def test_csg_adapter_hashes_the_btop_output(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """1.3: the produced PaletteArtifacts carries real hashes for all three."""
-    from runtime.adapters.csg_adapter import CsgAdapter
-
-    wallpaper = _fixture_wallpaper(tmp_path)
-    templates = _fixture_templates(tmp_path)
-
-    fake = _fake_csg_run(tmp_path)
-    monkeypatch.setattr("runtime.adapters.csg_adapter._run_csg", fake)
-    out = _palette_output_dir(tmp_path, wallpaper, templates)
-    entry = CsgAdapter(templates_dir=templates).generate(wallpaper, out)
-
-    for name in BTOP_ARTIFACTS:
-        assert entry.artifact_hashes[_artifact_key(name)] == hash_file(out / name)
-
-
-def test_csg_adapter_fails_loud_when_a_btop_output_is_missing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """1.2: the existence assert covers the btop artifacts too.
-
-    A csg that silently stops emitting ``colors.btop.theme`` must fail the
-    derivation, not produce an entry with a silently-missing hash.
-    """
-    from runtime.adapters.csg_adapter import CsgAdapter
-
-    wallpaper = _fixture_wallpaper(tmp_path)
-    templates = _fixture_templates(tmp_path)
-
-    full = _fake_csg_run(tmp_path)
-    real_side_effect = full.side_effect
-
-    def dropping_run(args: list[str], env: dict[str, str], timeout: int) -> _CsgRunResult:
-        result = real_side_effect(args, env, timeout)
-        (Path(env["COLORSCHEME__OUTPUT__DIRECTORY"]) / "colors.btop.theme").unlink()
-        return result
-
-    monkeypatch.setattr(
-        "runtime.adapters.csg_adapter._run_csg",
-        MagicMock(side_effect=dropping_run),
-    )
-
-    with pytest.raises(RuntimeError, match="did not write expected artifact"):
-        CsgAdapter(templates_dir=templates).generate(
-            wallpaper, _palette_output_dir(tmp_path, wallpaper, templates)
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -497,7 +347,7 @@ def test_missing_btop_source_is_skipped_with_a_warning_and_no_dangling_link(
 # ---------------------------------------------------------------------------
 
 
-class _FakeCsg(PaletteProducerStub):
+class _FakeProducer(PaletteProducerStub):
     """Contract-honest fake: writes all ten artifacts, returns real hashes."""
 
     def __init__(self) -> None:
@@ -511,6 +361,9 @@ class _FakeCsg(PaletteProducerStub):
         hashes: dict[str, str] = {}
         for name in ALL_ARTIFACTS:
             (output_dir / name).write_text(f"# {name}\n")
+        (output_dir / "colors.yaml").write_text(v1_colors_yaml())
+        (output_dir / "colors.gtk.css").write_text(v1_gtk_css())
+        for name in ALL_ARTIFACTS:
             hashes[name] = hash_file(output_dir / name)
         return PaletteEntry(
             hash_algorithm="sha256",
@@ -563,9 +416,6 @@ class _FakeItr:
 
 
 def _setup_spine(install_spine: Path) -> None:
-    templates = install_spine / "config" / "color-scheme-generator" / "templates"
-    templates.mkdir(parents=True)
-    (templates / "default.yaml").write_text("window: {}\n")
     weg = install_spine / "config" / "weg"
     weg.mkdir(parents=True)
     (weg / "effects.yaml").write_text("effects: []\n")
@@ -597,11 +447,11 @@ def test_wallpaper_set_exposes_the_three_btop_current_symlinks(
     img = tmp_path / "wallpaper.png"
     img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
 
-    csg, weg, itr = _FakeCsg(), _FakeWeg(), _FakeItr()
+    producer, weg, itr = _FakeProducer(), _FakeWeg(), _FakeItr()
     with FlockSeedMutex(state_root / ".seed.lock").hold(blocking=False):
         ApplyWallpaperUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
-            csg=csg,
+            palette_producer=producer,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -611,7 +461,7 @@ def test_wallpaper_set_exposes_the_three_btop_current_symlinks(
         ).run(img)
         ReconcileDesktopStateUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
-            csg=csg,
+            palette_producer=producer,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
@@ -621,7 +471,7 @@ def test_wallpaper_set_exposes_the_three_btop_current_symlinks(
             reloaders=[],
         ).run(trigger="set")
 
-    assert csg.calls == 1, "the palette must be derived once"
+    assert producer.calls == 1, "the palette must be derived once"
 
     state = JsonStateRepository(state_root=state_root).load_current()
     assert state.palette is not None
@@ -699,7 +549,7 @@ def _synthetic_state(palette_hash: str = "b" * 64) -> Any:
         pytest.param(
             lambda root: ReconcileDesktopStateUseCase(
                 state_repo=MagicMock(),
-                csg=MagicMock(),
+                palette_producer=MagicMock(),
                 weg=MagicMock(),
                 itr=MagicMock(),
                 install_spine=root / "install",
@@ -736,7 +586,7 @@ def test_reconcile_prune_set_names_all_ten(tmp_path: Path) -> None:
 
     use_case = ReconcileDesktopStateUseCase(
         state_repo=MagicMock(),
-        csg=MagicMock(),
+        palette_producer=MagicMock(),
         weg=MagicMock(),
         itr=MagicMock(),
         install_spine=tmp_path / "install",

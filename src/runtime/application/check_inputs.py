@@ -3,7 +3,7 @@
 ``CheckInputsUseCase`` answers "which derivation layers are stale?" without
 mutating anything: no seeder, no mutex, no derivation adapters, no reloaders —
 the constructor signature IS the read-only guarantee. Hash walk only, so a
-warm cache completes with zero csg/weg/itr invocations (NFR-4).
+warm cache completes with zero producer/weg/itr invocations (NFR-4).
 """
 
 from __future__ import annotations

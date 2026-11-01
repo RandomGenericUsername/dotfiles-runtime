@@ -16,7 +16,7 @@ seeded artifact).
 
 from __future__ import annotations
 
-from tests.support.palette_fakes import PaletteProducerStub
+from tests.support.palette_fakes import PaletteProducerStub, v1_colors_yaml, v1_gtk_css
 
 from datetime import UTC, datetime
 from pathlib import Path
@@ -79,11 +79,11 @@ class _FakeMutex:
 class _FakeCsg(PaletteProducerStub):
     def generate(self, wallpaper_path: Path, output_dir: Path) -> object:
         output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "colors.yaml").write_text(_pinned_colors_yaml())
+        (output_dir / "colors.yaml").write_text(v1_colors_yaml())
         (output_dir / "colors.conf").write_text(
             f"background: {_PALETTE_BG}\nforeground: {_PALETTE_FG}\n"
         )
-        (output_dir / "colors.gtk.css").write_text("/* palette */")
+        (output_dir / "colors.gtk.css").write_text(v1_gtk_css())
         (output_dir / "colors.adw.css").write_text("/* palette */")
         # REALISTIC artifact: the full 19-sequence LF-terminated payload the
         # pinned colors.sequences.j2 template + Jinja post-processing produce.
@@ -152,7 +152,7 @@ class _FakeItr:
 
 
 def _setup_spine(install_spine: Path) -> None:
-    csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
+    csg_templates = install_spine / "config" / "theme-producer" / "templates"
     csg_templates.mkdir(parents=True)
     (csg_templates / "default.yaml").write_text("window: {}\n")
     weg_cfg = install_spine / "config" / "weg"
@@ -168,7 +168,7 @@ def _setup_spine(install_spine: Path) -> None:
 def _make_reconcile(repo: object, state_root: Path, install_spine: Path, reloaders: list) -> object:
     return ReconcileDesktopStateUseCase(
         state_repo=repo,  # type: ignore[arg-type]
-        csg=_FakeCsg(),  # type: ignore[arg-type]
+        palette_producer=_FakeCsg(),  # type: ignore[arg-type]
         weg=_FakeWeg(),  # type: ignore[arg-type]
         itr=_FakeItr(),  # type: ignore[arg-type]
         install_spine=install_spine,
@@ -187,7 +187,7 @@ def _apply_wallpaper(tmp_path: Path, install_spine: Path, state_root: Path) -> N
     img.write_bytes(b"e2e wallpaper for terminal palette applier")
     ApplyWallpaperUseCase(
         state_repo=repo,
-        csg=_FakeCsg(),  # type: ignore[arg-type]
+        palette_producer=_FakeCsg(),  # type: ignore[arg-type]
         weg=_FakeWeg(),  # type: ignore[arg-type]
         itr=_FakeItr(),  # type: ignore[arg-type]
         install_spine=install_spine,

@@ -1,11 +1,12 @@
-"""Palette producer fingerprint: CSG key frozen, TPR key producer-specific."""
+"""Palette producer fingerprint: TPR keys are producer-specific (REQ-007)."""
 
 from __future__ import annotations
 
 import hashlib
 from pathlib import Path
 
-from runtime.adapters.csg_adapter import CsgAdapter
+import pytest
+
 from runtime.adapters.hashing import (
     canonical_hash_dir,
     palette_entry_hash,
@@ -22,19 +23,6 @@ def _templates(tmp_path: Path) -> Path:
     tdir.mkdir(parents=True)
     (tdir / "a.j2").write_text("a\n")
     return tdir
-
-
-def test_csg_key_is_byte_identical_to_legacy_formula(tmp_path: Path) -> None:
-    templates = _templates(tmp_path)
-    template_hash = canonical_hash_dir(templates)
-    adapter = CsgAdapter(templates_dir=templates)
-
-    legacy = hashlib.sha256((_WALLPAPER_HASH + template_hash).encode("utf-8")).hexdigest()
-    assert adapter.expected_entry_hash(_WALLPAPER_HASH) == legacy
-    assert adapter.expected_entry_hash(_WALLPAPER_HASH) == palette_entry_hash(
-        _WALLPAPER_HASH, template_hash
-    )
-    assert palette_producer_seed("csg", template_hash) is None
 
 
 def test_tpr_key_includes_engine_version_and_templates(tmp_path: Path) -> None:
@@ -58,11 +46,24 @@ def test_tpr_key_includes_engine_version_and_templates(tmp_path: Path) -> None:
     )
 
 
-def test_producer_switch_cannot_hit_the_other_entry(tmp_path: Path) -> None:
+def test_engine_and_version_change_the_entry_key(tmp_path: Path) -> None:
     templates = _templates(tmp_path)
-    csg = CsgAdapter(templates_dir=templates)
-    tpr = TprAdapter(templates_dir=templates, engine="native", version="v0.1.0")
+    native = TprAdapter(templates_dir=templates, engine="native", version="v0.1.0")
+    matugen = TprAdapter(templates_dir=templates, engine="matugen", version="v0.1.0")
+    newer = TprAdapter(templates_dir=templates, engine="native", version="v0.2.0")
 
-    assert csg.expected_entry_hash(_WALLPAPER_HASH) != tpr.expected_entry_hash(
-        _WALLPAPER_HASH
-    )
+    keys = {
+        native.expected_entry_hash(_WALLPAPER_HASH),
+        matugen.expected_entry_hash(_WALLPAPER_HASH),
+        newer.expected_entry_hash(_WALLPAPER_HASH),
+    }
+    assert len(keys) == 3
+
+
+@pytest.mark.parametrize("producer", ["csg", "bogus"])
+def test_unregistered_producer_seed_fails_loud(
+    tmp_path: Path, producer: str
+) -> None:
+    template_hash = canonical_hash_dir(_templates(tmp_path))
+    with pytest.raises(ValueError, match="unknown palette producer"):
+        palette_producer_seed(producer, template_hash)

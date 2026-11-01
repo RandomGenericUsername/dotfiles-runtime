@@ -318,13 +318,10 @@ class TestWallpaperSetCompositionRootWiring:
                 *,
                 wallpaper_hash: str | None = None,
                 prepared_palette: Any = None,
-                contrast_enabled: bool = True,
-                contrast_source: str = "default",
                 on_progress: Any = None,
             ) -> Any:
                 captured["apply_hash"] = wallpaper_hash
                 captured["prepared_palette"] = prepared_palette
-                captured["apply_contrast"] = (contrast_enabled, contrast_source)
                 return _result()
 
         class _FakeReconcileUseCase:
@@ -335,12 +332,9 @@ class TestWallpaperSetCompositionRootWiring:
                 self,
                 trigger: str = "reconcile",
                 *,
-                contrast_enabled: bool = True,
-                contrast_source: str = "default",
                 wallpaper_already_applied: bool = False,
             ) -> Any:
                 captured["trigger"] = trigger
-                captured["reconcile_contrast"] = (contrast_enabled, contrast_source)
                 return _reconcile_result()
 
         monkeypatch.setattr("runtime.application.swap_visible.SwapVisibleUseCase", _FakeSwapUseCase)
@@ -364,7 +358,7 @@ class TestWallpaperSetCompositionRootWiring:
         cli_main._run_wallpaper_set(Path("/img/wall.png"))
 
         from runtime.adapters.ags_app_refresh import AgsAppRefreshCoordinator
-        from runtime.adapters.csg_adapter import CsgAdapter
+        from runtime.adapters.tpr_adapter import TprAdapter
         from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
         from runtime.adapters.gtk4_app_reloader import Gtk4AppReloader
         from runtime.adapters.hyprland_monitor_source import HyprlandMonitorSource
@@ -383,9 +377,6 @@ class TestWallpaperSetCompositionRootWiring:
         # ONE outer acquire, non-blocking (fail-busy), across both phases.
         assert holds == [False]
         assert captured["trigger"] == "set"
-        # Default policy threads through both phases (guard ON, default source).
-        assert captured["apply_contrast"] == (True, "default")
-        assert captured["reconcile_contrast"] == (True, "default")
         # The prepared hash threads into the derivation-only apply (no re-import)
         # and into the swap that persists the real palette.
         assert captured["apply_hash"] == "f" * 64
@@ -394,7 +385,7 @@ class TestWallpaperSetCompositionRootWiring:
         assert captured["prepare_image"] == Path("/img/wall.png")
         assert captured["swap_image"] == Path("/img/wall.png")
         # The SAME real adapter family is wired into ALL THREE use cases — a
-        # swapped/missing/forgotten adapter (e.g. weg=CsgAdapter()) fails here.
+        # swapped/missing/forgotten adapter (e.g. weg=TprAdapter()) fails here.
         for side in ("swap_kwargs", "apply_kwargs", "reconcile_kwargs"):
             kwargs = captured[side]
             assert isinstance(kwargs["state_repo"], JsonStateRepository)
@@ -409,7 +400,7 @@ class TestWallpaperSetCompositionRootWiring:
         )
         for side in ("apply_kwargs", "reconcile_kwargs"):
             kwargs = captured[side]
-            assert isinstance(kwargs["csg"], CsgAdapter)
+            assert isinstance(kwargs["palette_producer"], TprAdapter)
             assert isinstance(kwargs["weg"], WegAdapter)
             assert isinstance(kwargs["itr"], ItrAdapter)
         assert isinstance(captured["swap_kwargs"]["hyprpaper"], HyprpaperWallpaperApplier)
@@ -430,168 +421,6 @@ class TestWallpaperSetCompositionRootWiring:
         )
 
 
-class TestWallpaperSetContrastFlag:
-    """``wallpaper set --contrast`` (icon-contrast-opt-out §2.2).
-
-    Drives the REAL ``_run_wallpaper_set`` through capturing use-case
-    fakes: explicit flags persist to the governing hash BEFORE deriving
-    and thread ``(enabled, "flag")`` into both phases; ``auto`` resolves
-    store → default ON and never writes.
-    """
-
-    def _capturing_use_cases(
-        self, monkeypatch: pytest.MonkeyPatch, captured: dict[str, Any]
-    ) -> None:
-        class _FakeSwapUseCase:
-            def __init__(self, **kwargs: Any) -> None:
-                pass
-
-            def run(
-                self,
-                image_path: Path,
-                *,
-                palette: Any = None,
-                wallpaper_hash: str | None = None,
-            ) -> Any:
-                return _swap_result()
-
-        class _FakeApplyUseCase:
-            def __init__(self, **kwargs: Any) -> None:
-                pass
-
-            def prepare_palette(self, image_path: Path, *, on_progress: Any = None) -> Any:
-                return _prepared()
-
-            def run(
-                self,
-                image_path: Path,
-                *,
-                wallpaper_hash: str | None = None,
-                prepared_palette: Any = None,
-                contrast_enabled: bool = True,
-                contrast_source: str = "default",
-                on_progress: Any = None,
-            ) -> Any:
-                captured["apply"] = (contrast_enabled, contrast_source)
-                return _result()
-
-        class _FakeReconcileUseCase:
-            def __init__(self, **kwargs: Any) -> None:
-                pass
-
-            def run(
-                self,
-                trigger: str = "reconcile",
-                *,
-                contrast_enabled: bool = True,
-                contrast_source: str = "default",
-                wallpaper_already_applied: bool = False,
-            ) -> Any:
-                captured["reconcile"] = (contrast_enabled, contrast_source)
-                return _reconcile_result()
-
-        monkeypatch.setattr("runtime.application.swap_visible.SwapVisibleUseCase", _FakeSwapUseCase)
-        monkeypatch.setattr(
-            "runtime.application.apply_wallpaper.ApplyWallpaperUseCase", _FakeApplyUseCase
-        )
-        monkeypatch.setattr(
-            "runtime.application.reconcile.ReconcileDesktopStateUseCase",
-            _FakeReconcileUseCase,
-        )
-
-    def _store_file(self, tmp_path: Path) -> Path:
-        # Mirrors the autouse ``_quiet_seed_hook`` env (XDG_STATE_HOME).
-        return tmp_path / "state-home" / "dotfiles" / "icon-contrast.json"
-
-    def test_off_persists_false_and_threads_flag(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        import runtime.cli.main as cli_main
-        from runtime.adapters.hashing import hash_file
-        from runtime.adapters.icon_contrast_prefs_store import read_prefs
-
-        captured: dict[str, Any] = {}
-        self._capturing_use_cases(monkeypatch, captured)
-        img = tmp_path / "wall.png"
-        img.write_bytes(b"contrast off bytes")
-
-        cli_main._run_wallpaper_set(img, contrast="off", client=_RecordingClient())
-
-        assert read_prefs(self._store_file(tmp_path)) == {hash_file(img): False}
-        assert captured["apply"] == (False, "flag")
-        assert captured["reconcile"] == (False, "flag")
-
-    def test_on_persists_true(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        import runtime.cli.main as cli_main
-        from runtime.adapters.hashing import hash_file
-        from runtime.adapters.icon_contrast_prefs_store import read_prefs
-
-        captured: dict[str, Any] = {}
-        self._capturing_use_cases(monkeypatch, captured)
-        img = tmp_path / "wall.png"
-        img.write_bytes(b"contrast on bytes")
-
-        cli_main._run_wallpaper_set(img, contrast="on", client=_RecordingClient())
-
-        assert read_prefs(self._store_file(tmp_path)) == {hash_file(img): True}
-        assert captured["apply"] == (True, "flag")
-
-    def test_auto_follows_stored_opt_out_without_writing(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        import runtime.cli.main as cli_main
-        from runtime.adapters.hashing import hash_file
-        from runtime.adapters.icon_contrast_prefs_store import write_pref
-
-        captured: dict[str, Any] = {}
-        self._capturing_use_cases(monkeypatch, captured)
-        img = tmp_path / "wall.png"
-        img.write_bytes(b"stored opt-out bytes")
-        store = self._store_file(tmp_path)
-        write_pref(store, hash_file(img), False)
-        before = store.read_text(encoding="utf-8")
-
-        cli_main._run_wallpaper_set(img, client=_RecordingClient())
-
-        assert captured["apply"] == (False, "store")
-        assert captured["reconcile"] == (False, "store")
-        assert store.read_text(encoding="utf-8") == before  # auto never writes
-
-    def test_auto_absent_entry_defaults_on_without_creating_store(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        import runtime.cli.main as cli_main
-
-        captured: dict[str, Any] = {}
-        self._capturing_use_cases(monkeypatch, captured)
-        img = tmp_path / "wall.png"
-        img.write_bytes(b"no pref bytes")
-
-        cli_main._run_wallpaper_set(img, client=_RecordingClient())
-
-        assert captured["apply"] == (True, "default")
-        assert not self._store_file(tmp_path).exists()
-
-    def test_invalid_flag_rejected_at_cli(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # No composition fake: validation fires before any FS/mutex work.
-        result = runner.invoke(app, ["wallpaper", "set", "/img/wall.png", "--contrast", "x"])
-        assert result.exit_code == 1
-        assert "invalid contrast flag" in result.output
-
-    def test_cli_option_threads_into_composition(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        seen: dict[str, Any] = {}
-
-        def _run(image_path: Path, **kwargs: Any) -> Any:
-            seen.update(kwargs)
-            return _set_result()
-
-        monkeypatch.setattr("runtime.cli.main._run_wallpaper_set", _run)
-        result = runner.invoke(app, ["wallpaper", "set", "/img/wall.png", "--contrast", "off"])
-
-        assert result.exit_code == 0
-        assert seen.get("contrast") == "off"
-
-
 class TestWallpaperSetCliErrorMapping:
     def test_value_error_maps_to_exit_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(img: Path) -> Any:
@@ -605,7 +434,7 @@ class TestWallpaperSetCliErrorMapping:
 
     def test_runtime_error_maps_to_exit_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(img: Path) -> Any:
-            raise RuntimeError("palette apply failed: csg exploded")
+            raise RuntimeError("palette apply failed: tpr exploded")
 
         _fake_composition(monkeypatch, _boom)
         result = runner.invoke(app, ["wallpaper", "set", "/img/wall.png"])
@@ -617,7 +446,7 @@ class TestWallpaperSetCliErrorMapping:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         exc = PaletteUnavailableError(
-            "csg generate failed (exit 7): boom",
+            "tpr generate failed (exit 7): boom",
             wallpaper_path="/img/wall.png",
             wallpaper_hash="a" * 64,
             returncode=7,
@@ -637,7 +466,7 @@ class TestWallpaperSetCliErrorMapping:
             "/img/wall.png",
             "a" * 64,
             "stage: palette",
-            "tool: csg",
+            "tool: tpr",
             "returncode: 7",
             "stderr: boom",
         ):
@@ -647,7 +476,7 @@ class TestWallpaperSetCliErrorMapping:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         exc = PaletteUnavailableError(
-            "csg generate failed (exit 7): boom",
+            "tpr generate failed (exit 7): boom",
             wallpaper_path="/img/wall.png",
             wallpaper_hash="a" * 64,
             returncode=7,
@@ -667,7 +496,7 @@ class TestWallpaperSetCliErrorMapping:
         assert details["wallpaper_path"] == "/img/wall.png"
         assert details["wallpaper_hash"] == "a" * 64
         assert details["stage"] == "palette"
-        assert details["tool"] == "csg"
+        assert details["tool"] == "tpr"
         assert details["returncode"] == "7"
         assert details["stderr"] == "boom"
 
@@ -678,29 +507,27 @@ class TestWallpaperSetCliErrorMapping:
         from runtime.adapters.hashing import hash_file
 
         install = tmp_path / "install"
-        templates = install / "config" / "color-scheme-generator" / "templates"
-        templates.mkdir(parents=True)
-        (templates / "default.yaml").write_text("window: {}\n")
+        install.mkdir(parents=True)
         monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(install))
         monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
 
         img = tmp_path / "wall.png"
         img.write_bytes(b"recorded failure bytes")
 
-        class _FailingCsg(PaletteProducerStub):
+        class _FailingProducer(PaletteProducerStub):
             def __init__(self, **kwargs: Any) -> None:
                 pass
 
             def generate(self, wallpaper_path: Path, output_dir: Path) -> Any:
                 raise PaletteUnavailableError(
-                    "csg generate failed (exit 7): boom",
+                    "tpr generate failed (exit 7): boom",
                     wallpaper_path=str(wallpaper_path),
                     wallpaper_hash=hash_file(wallpaper_path),
                     returncode=7,
                     stderr="boom",
                 )
 
-        monkeypatch.setattr("runtime.adapters.csg_adapter.CsgAdapter", _FailingCsg)
+        monkeypatch.setattr("runtime.adapters.tpr_adapter.TprAdapter", _FailingProducer)
 
         with pytest.raises(PaletteUnavailableError):
             cli_main._run_wallpaper_set(img, client=_RecordingClient())
@@ -713,7 +540,7 @@ class TestWallpaperSetCliErrorMapping:
         assert record["wallpaper_path"] == str(img.resolve())
         assert record["wallpaper_hash"] == hash_file(img)
         assert record["stage"] == "palette"
-        assert record["tool"] == "csg"
+        assert record["tool"] == "tpr"
         assert record["returncode"] == 7
         assert record["stderr"] == "boom"
         assert not (tmp_path / "state-home" / "dotfiles" / "current.json").exists()
@@ -802,8 +629,6 @@ def _fake_set_use_cases(
             *,
             wallpaper_hash: str | None = None,
             prepared_palette: Any = None,
-            contrast_enabled: bool = True,
-            contrast_source: str = "default",
             on_progress: Any = None,
         ) -> Any:
             if apply_error is not None:
@@ -821,8 +646,6 @@ def _fake_set_use_cases(
             self,
             trigger: str = "reconcile",
             *,
-            contrast_enabled: bool = True,
-            contrast_source: str = "default",
             wallpaper_already_applied: bool = False,
         ) -> Any:
             if reconcile_error is not None:
@@ -958,7 +781,7 @@ class TestWallpaperStateEmission:
         _fake_set_use_cases(
             monkeypatch,
             prepare_error=PaletteUnavailableError(
-                "csg generate failed (exit 7): boom",
+                "tpr generate failed (exit 7): boom",
                 wallpaper_path=str(img),
                 wallpaper_hash=hash_file(img),
                 returncode=7,
@@ -967,7 +790,7 @@ class TestWallpaperStateEmission:
         )
         client = _RecordingClient()
 
-        with pytest.raises(PaletteUnavailableError, match="csg generate failed"):
+        with pytest.raises(PaletteUnavailableError, match="tpr generate failed"):
             cli_main._run_wallpaper_set(img, client=client)
 
         assert client.published == [
@@ -987,7 +810,7 @@ class TestWallpaperStateEmission:
                     "wallpaper_hash": hash_file(img),
                     "trigger": "set",
                     "stage": "generating_palette",
-                    "error": "csg generate failed (exit 7): boom",
+                    "error": "tpr generate failed (exit 7): boom",
                 },
             ),
         ]

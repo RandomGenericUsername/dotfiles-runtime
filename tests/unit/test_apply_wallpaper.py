@@ -1,6 +1,6 @@
 """Unit tests for ApplyWallpaperUseCase (Story 1.13).
 
-Covers: new-wallpaper happy path (entries created, csg/weg/itr invoked
+Covers: new-wallpaper happy path (entries created, palette_producer/weg/itr invoked
 once each, current.json updated with real hashes + absolute source_path);
 same-img re-set (cache hits, applied_at refreshed); previously-used
 wallpaper re-set; palette failure aborts (current.json unchanged);
@@ -11,7 +11,7 @@ no history append).
 
 from __future__ import annotations
 
-from tests.support.palette_fakes import PaletteProducerStub
+from tests.support.palette_fakes import PaletteProducerStub, v1_colors_yaml, v1_gtk_css
 
 import json
 import logging
@@ -108,13 +108,13 @@ class _FakeCsg(PaletteProducerStub):
 
         self.calls += 1
         if self.events is not None:
-            self.events.append("csg")
+            self.events.append("palette_producer")
         if self.fail:
-            raise RuntimeError("csg exploded")
+            raise RuntimeError("palette_producer exploded")
         output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "colors.yaml").write_text("colors: []")
+        (output_dir / "colors.yaml").write_text(v1_colors_yaml())
         (output_dir / "colors.conf").write_text("colors {}")
-        (output_dir / "colors.gtk.css").write_text("colors {}")
+        (output_dir / "colors.gtk.css").write_text(v1_gtk_css())
         (output_dir / "colors.adw.css").write_text("colors {}")
         (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
         (output_dir / "colors.rasi").write_text("* { background: #000; }")
@@ -200,7 +200,7 @@ class _FakeItr:
 
 def _setup_spine(install_spine: Path) -> None:
     """Create spine config inputs (templates/catalog/icon assets)."""
-    csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
+    csg_templates = install_spine / "config" / "theme-producer" / "templates"
     csg_templates.mkdir(parents=True)
     (csg_templates / "default.yaml").write_text("window: {}\n")
     weg_config = install_spine / "config" / "weg"
@@ -217,7 +217,7 @@ def _make_use_case(
     tmp_path: Path,
     repo: Any,
     *,
-    csg: _FakeCsg | None = None,
+    palette_producer: _FakeCsg | None = None,
     weg: _FakeWeg | None = None,
     itr: _FakeItr | None = None,
     install_spine: Path | None = None,
@@ -228,12 +228,12 @@ def _make_use_case(
 
     state_root = tmp_path / "state"
     spine = install_spine if install_spine is not None else tmp_path / "install"
-    csg_adapter = csg or _FakeCsg()
-    if getattr(csg_adapter, "templates_dir", None) is None:
-        csg_adapter.templates_dir = spine / "config" / "color-scheme-generator" / "templates"
+    producer_adapter = palette_producer or _FakeCsg()
+    if getattr(producer_adapter, "templates_dir", None) is None:
+        producer_adapter.templates_dir = spine / "config" / "theme-producer" / "templates"
     return ApplyWallpaperUseCase(
         state_repo=repo,
-        csg=csg_adapter,
+        palette_producer=producer_adapter,
         weg=weg or _FakeWeg(),
         itr=itr or _FakeItr(),
         install_spine=spine,
@@ -254,7 +254,7 @@ def _spine_paths(tmp_path: Path) -> dict[str, str]:
     install_spine = tmp_path / "install"
     return {
         "template_set_hash": canonical_hash_dir(
-            install_spine / "config" / "color-scheme-generator" / "templates"
+            install_spine / "config" / "theme-producer" / "templates"
         ),
         "catalog_hash": hash_file(install_spine / "config" / "weg" / "effects.yaml"),
     }
@@ -294,13 +294,13 @@ class TestApplyWallpaperHappyPath:
     def test_new_wallpaper_invokes_each_tool_once(self, tmp_path: Path) -> None:
         _setup_spine(tmp_path / "install")
         repo = _FakeStateRepo()
-        csg, weg, itr = _FakeCsg(), _FakeWeg(), _FakeItr()
-        use_case = _make_use_case(tmp_path, repo, csg=csg, weg=weg, itr=itr)
+        palette_producer, weg, itr = _FakeCsg(), _FakeWeg(), _FakeItr()
+        use_case = _make_use_case(tmp_path, repo, palette_producer=palette_producer, weg=weg, itr=itr)
         img = _img_in(tmp_path, "wall.png", b"new wallpaper bytes")
 
         result = use_case.run(img)
 
-        assert (csg.calls, weg.calls, itr.calls) == (1, 1, 1)
+        assert (palette_producer.calls, weg.calls, itr.calls) == (1, 1, 1)
         assert not result.cache_hit_palette
         assert not result.cache_hit_effects
         assert not result.cache_hit_icons
@@ -311,14 +311,14 @@ class TestApplyWallpaperHappyPath:
     ) -> None:
         _setup_spine(tmp_path / "install")
         repo = _FakeStateRepo()
-        csg, weg, itr = _FakeCsg(), _FakeWeg(), _FakeItr()
-        use_case = _make_use_case(tmp_path, repo, csg=csg, weg=weg, itr=itr)
+        palette_producer, weg, itr = _FakeCsg(), _FakeWeg(), _FakeItr()
+        use_case = _make_use_case(tmp_path, repo, palette_producer=palette_producer, weg=weg, itr=itr)
         img = _img_in(tmp_path, "wall.png", b"progress boundary bytes")
         seen: list[tuple[str, int, int, int]] = []
 
         use_case.run(
             img,
-            on_progress=lambda stage: seen.append((stage, csg.calls, weg.calls, itr.calls)),
+            on_progress=lambda stage: seen.append((stage, palette_producer.calls, weg.calls, itr.calls)),
         )
 
         assert seen == [
@@ -442,15 +442,15 @@ class TestApplyWallpaperCacheHits:
     def test_same_image_reset_is_full_cache_hit(self, tmp_path: Path) -> None:
         _setup_spine(tmp_path / "install")
         repo = _FakeStateRepo()
-        csg, weg, itr = _FakeCsg(), _FakeWeg(), _FakeItr()
-        use_case = _make_use_case(tmp_path, repo, csg=csg, weg=weg, itr=itr)
+        palette_producer, weg, itr = _FakeCsg(), _FakeWeg(), _FakeItr()
+        use_case = _make_use_case(tmp_path, repo, palette_producer=palette_producer, weg=weg, itr=itr)
         img = _img_in(tmp_path, "wall.png", b"repeat bytes")
 
         first = use_case.run(img)
-        csg.calls = weg.calls = itr.calls = 0
+        palette_producer.calls = weg.calls = itr.calls = 0
         second = use_case.run(img)
 
-        assert (csg.calls, weg.calls, itr.calls) == (0, 0, 0)
+        assert (palette_producer.calls, weg.calls, itr.calls) == (0, 0, 0)
         assert second.cache_hit_palette
         assert second.cache_hit_effects
         assert second.cache_hit_icons
@@ -460,17 +460,17 @@ class TestApplyWallpaperCacheHits:
     def test_previously_used_wallpaper_reset_is_cache_hit(self, tmp_path: Path) -> None:
         _setup_spine(tmp_path / "install")
         repo = _FakeStateRepo()
-        csg, weg, itr = _FakeCsg(), _FakeWeg(), _FakeItr()
-        use_case = _make_use_case(tmp_path, repo, csg=csg, weg=weg, itr=itr)
+        palette_producer, weg, itr = _FakeCsg(), _FakeWeg(), _FakeItr()
+        use_case = _make_use_case(tmp_path, repo, palette_producer=palette_producer, weg=weg, itr=itr)
         img_a = _img_in(tmp_path, "a.png", b"wallpaper a")
         img_b = _img_in(tmp_path, "b.png", b"wallpaper b")
 
         first = use_case.run(img_a)
         use_case.run(img_b)
-        csg.calls = weg.calls = itr.calls = 0
+        palette_producer.calls = weg.calls = itr.calls = 0
         restored = use_case.run(img_a)
 
-        assert (csg.calls, weg.calls, itr.calls) == (0, 0, 0)
+        assert (palette_producer.calls, weg.calls, itr.calls) == (0, 0, 0)
         assert restored.state.wallpaper.content_hash == hash_file(img_a)
         assert restored.palette.entry_hash == first.palette.entry_hash
         assert restored.state.wallpaper.source_path == str(img_a)
@@ -483,8 +483,8 @@ class TestApplyWallpaperFailurePolicy:
         _setup_spine(tmp_path / "install")
         existing = _existing_state("a" * 64)
         repo = _FakeStateRepo(existing)
-        csg = _FakeCsg(fail=True)
-        use_case = _make_use_case(tmp_path, repo, csg=csg)
+        palette_producer = _FakeCsg(fail=True)
+        use_case = _make_use_case(tmp_path, repo, palette_producer=palette_producer)
         img = _img_in(tmp_path, "wall.png", b"doomed bytes")
 
         with pytest.raises(RuntimeError, match="palette apply failed:"):
@@ -827,13 +827,13 @@ class TestApplyWallpaperMutex:
         events: list[str] = []
         repo = _FakeStateRepo(events=events)
         mutex = _FakeMutex(events=events)
-        csg = _FakeCsg(events=events)
-        use_case = _make_use_case(tmp_path, repo, csg=csg, mutex=mutex)
+        palette_producer = _FakeCsg(events=events)
+        use_case = _make_use_case(tmp_path, repo, palette_producer=palette_producer, mutex=mutex)
         img = _img_in(tmp_path, "wall.png", b"outside lock bytes")
 
         use_case.run(img)
 
-        assert events.index("csg") < events.index("acquire(blocking=True)")
+        assert events.index("palette_producer") < events.index("acquire(blocking=True)")
         assert events[-1] == "release"
 
 
@@ -848,7 +848,7 @@ class TestApplyWallpaperLostRenameRace:
 
         wh = hash_file(img)
         tsh = canonical_hash_dir(
-            tmp_path / "install" / "config" / "color-scheme-generator" / "templates"
+            tmp_path / "install" / "config" / "theme-producer" / "templates"
         )
         peh = palette_entry_hash(wh, tsh)
         target = state_root / "cache" / "palettes" / peh
@@ -899,12 +899,12 @@ class TestApplyWallpaperLostRenameRace:
                 )
                 return entry
 
-        csg = _RaceWinnerCsg()
-        use_case = _make_use_case(tmp_path, repo, csg=csg)
+        palette_producer = _RaceWinnerCsg()
+        use_case = _make_use_case(tmp_path, repo, palette_producer=palette_producer)
 
         result = use_case.run(img)
 
-        assert csg.calls == 1  # invoked, but lost the rename
+        assert palette_producer.calls == 1  # invoked, but lost the rename
         assert result.cache_hit_palette  # reported as a hit: entry exists
         assert result.palette.entry_hash == peh
         assert repo.saved[0].palette is not None
@@ -1023,13 +1023,13 @@ class TestApplyWallpaperVariantInput:
     def test_variant_input_skips_weg_but_runs_csg_and_itr(self, tmp_path: Path) -> None:
         _setup_spine(tmp_path / "install")
         repo = _FakeStateRepo()
-        csg, weg, itr = _FakeCsg(), _FakeWeg(), _FakeItr()
-        use_case = _make_use_case(tmp_path, repo, csg=csg, weg=weg, itr=itr)
+        palette_producer, weg, itr = _FakeCsg(), _FakeWeg(), _FakeItr()
+        use_case = _make_use_case(tmp_path, repo, palette_producer=palette_producer, weg=weg, itr=itr)
         variant = self._variant_in(tmp_path)
 
         result = use_case.run(variant)
 
-        assert (csg.calls, weg.calls, itr.calls) == (1, 0, 1)
+        assert (palette_producer.calls, weg.calls, itr.calls) == (1, 0, 1)
         assert result.state.palette is not None
         assert result.state.effects is None
         assert result.state.icons is not None

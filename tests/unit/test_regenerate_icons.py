@@ -1,9 +1,9 @@
-"""Unit tests for ``RegenerateIconsUseCase`` (icon-contrast-opt-out §2.3).
+"""Unit tests for ``RegenerateIconsUseCase``.
 
-Icons-only regeneration from the live palette: fail-loud on absent/
-corrupt state, policy resolution + persistence, icons-only repoint,
-``trigger="regenerate"`` history with ``details.layers={icons: 1}``,
-and AGS-only reload wiring.
+Icons-only regeneration from the live palette: fail-loud on absent/corrupt
+state, icons-only repoint, ``trigger="regenerate"`` history with
+``details.layers={icons: 1}``, AGS-only reload wiring, and the REQ-007
+regression that the spine mappings are rendered verbatim (no retargeting).
 """
 
 from __future__ import annotations
@@ -190,7 +190,7 @@ def _setup(tmp_path: Path) -> dict[str, Any]:
     ) -> RegenerateIconsUseCase:
         return RegenerateIconsUseCase(
             state_repo=repo,
-            csg=None,  # type: ignore[arg-type]
+            palette_producer=None,  # type: ignore[arg-type]
             weg=None,  # type: ignore[arg-type]
             itr=itr,  # type: ignore[arg-type]
             install_spine=install_spine,
@@ -226,15 +226,13 @@ def _history_lines(state_root: Path) -> list[dict[str, Any]]:
 
 
 class TestRegenerateIconsUseCase:
-    def test_auto_guard_on_rederives_icons_only(self, tmp_path: Path) -> None:
+    def test_rederives_icons_only(self, tmp_path: Path) -> None:
         ctx = _setup(tmp_path)
         result = ctx["use_case"].run()
 
-        assert result.contrast_enabled is True
-        assert result.contrast_source == "default"
         assert result.cache_hit is False
-        # Guard evaluated: overlay (not the spine file) reached the renderer.
-        assert ctx["itr"].seen_mappings[0] != ctx["mappings_file"]
+        # REQ-007 regression: the spine mappings reach the renderer verbatim.
+        assert ctx["itr"].seen_mappings[0] == ctx["mappings_file"]
         # Icons-only repoint: exactly the current/icons symlink.
         assert result.repointed == [ctx["state_root"] / "current" / "icons"]
         assert (ctx["state_root"] / "current" / "icons").resolve() == (
@@ -254,6 +252,17 @@ class TestRegenerateIconsUseCase:
         assert ctx["reloader"].calls == 1
         assert result.reload_failures == []
 
+    def test_regenerate_renders_spine_mappings_without_retargeting(
+        self, tmp_path: Path
+    ) -> None:
+        """REQ-007 regression: the manifest mapping token is what resolves."""
+        ctx = _setup(tmp_path)
+        result = ctx["use_case"].run()
+
+        assert ctx["itr"].seen_mappings == [ctx["mappings_file"]]
+        assert result.icons.input_mappings_hash == hash_file(ctx["mappings_file"])
+        assert not (ctx["state_root"] / "icon-contrast.json").exists()
+
     def test_second_run_is_cache_hit(self, tmp_path: Path) -> None:
         ctx = _setup(tmp_path)
         first = ctx["use_case"].run()
@@ -262,32 +271,6 @@ class TestRegenerateIconsUseCase:
         assert second.cache_hit is True
         assert second.icons.entry_hash == first.icons.entry_hash
         assert ctx["itr"].calls == 1
-
-    def test_contrast_off_persists_and_renders_spine(self, tmp_path: Path) -> None:
-        from runtime.adapters.icon_contrast_prefs_store import read_prefs
-
-        ctx = _setup(tmp_path)
-        result = ctx["use_case"].run(contrast="off")
-
-        assert result.contrast_enabled is False
-        assert result.contrast_source == "flag"
-        assert ctx["itr"].seen_mappings[0] == ctx["mappings_file"]
-        assert read_prefs(ctx["state_root"] / "icon-contrast.json") == {
-            ctx["wallpaper_hash"]: False
-        }
-
-    def test_contrast_on_after_opt_out_flips_back(self, tmp_path: Path) -> None:
-        from runtime.adapters.icon_contrast_prefs_store import store_path, write_pref
-
-        ctx = _setup(tmp_path)
-        write_pref(store_path(ctx["state_root"]), ctx["wallpaper_hash"], False)
-        auto = ctx["use_case"].run()
-        assert auto.contrast_enabled is False
-        assert auto.contrast_source == "store"
-        forced = ctx["use_case"].run(contrast="on")
-        assert forced.contrast_enabled is True
-        assert forced.contrast_source == "flag"
-        assert forced.icons.entry_hash != auto.icons.entry_hash
 
     def test_absent_state_fails_loud_without_mutation(self, tmp_path: Path) -> None:
         ctx = _setup(tmp_path)
@@ -316,11 +299,6 @@ class TestRegenerateIconsUseCase:
 
         with pytest.raises(RuntimeError, match="needs a palette"):
             ctx["use_case"].run()
-
-    def test_invalid_flag_fails_loud(self, tmp_path: Path) -> None:
-        ctx = _setup(tmp_path)
-        with pytest.raises(ValueError, match="invalid contrast flag"):
-            ctx["use_case"].run(contrast="sometimes")
 
     def test_reload_failure_reported_not_raised(self, tmp_path: Path) -> None:
         ctx = _setup(tmp_path)

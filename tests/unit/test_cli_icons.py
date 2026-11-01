@@ -1,9 +1,8 @@
-"""Unit tests for the ``icons regenerate`` / ``icons preference`` CLI (§2.3, §2.4).
+"""Unit tests for the ``icons regenerate`` CLI (§2.3).
 
 Command-level rendering + exit codes (composition faked at the module
-boundary), event emission around the real ``_run_icons_regenerate``
-(use case faked), and the real ``_run_icons_preference`` accessor
-(show/set/default-source, missing store OK, absent state loud).
+boundary) and event emission around the real ``_run_icons_regenerate``
+(use case faked).
 """
 
 from __future__ import annotations
@@ -48,8 +47,6 @@ def _regenerate_result(**overrides: Any) -> Any:
         "repointed": [Path("/state/current/icons")],
         "consumer_symlinks": [],
         "reload_failures": [],
-        "contrast_enabled": True,
-        "contrast_source": "default",
     }
     kwargs.update(overrides)
     if kwargs["state"] is None:
@@ -114,68 +111,32 @@ def _isolated_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
 
 def _fake_regenerate(monkeypatch: pytest.MonkeyPatch, behavior: Any) -> None:
-    def _run(*, contrast: str = "auto", client: Any = None) -> Any:
-        return behavior(contrast=contrast, client=client)
+    def _run(*, client: Any = None) -> Any:
+        return behavior(client=client)
 
     monkeypatch.setattr("runtime.cli.main._run_icons_regenerate", _run)
 
 
 class TestIconsRegenerateCli:
     def test_success_renders_summary(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _fake_regenerate(monkeypatch, lambda contrast, client: _regenerate_result())
+        _fake_regenerate(monkeypatch, lambda client: _regenerate_result())
         result = runner.invoke(app, ["icons", "regenerate"])
 
         assert result.exit_code == 0
         assert "icons regenerated" in result.output
-        assert "contrast guard ON" in result.output
-
-    def test_contrast_off_rendered(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _fake_regenerate(
-            monkeypatch,
-            lambda contrast, client: _regenerate_result(
-                contrast_enabled=False, contrast_source="flag"
-            ),
-        )
-        result = runner.invoke(app, ["icons", "regenerate", "--contrast", "off"])
-
-        assert result.exit_code == 0
-        assert "contrast guard OFF" in result.output
 
     def test_json_format(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _fake_regenerate(monkeypatch, lambda contrast, client: _regenerate_result())
+        _fake_regenerate(monkeypatch, lambda client: _regenerate_result())
         result = runner.invoke(app, ["icons", "regenerate", "--format", "json"])
 
         assert result.exit_code == 0
         obj = json.loads(result.output)
         assert obj["icons"] == "e" * 64
-        assert obj["contrast_enabled"] is True
-        assert obj["contrast_source"] == "default"
         assert obj["repointed"] == ["/state/current/icons"]
         assert obj["reload_failures"] == []
 
-    def test_contrast_flag_threads_into_composition(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        seen: dict[str, Any] = {}
-
-        def _run(*, contrast: str = "auto", client: Any = None) -> Any:
-            seen["contrast"] = contrast
-            return _regenerate_result()
-
-        monkeypatch.setattr("runtime.cli.main._run_icons_regenerate", _run)
-        result = runner.invoke(app, ["icons", "regenerate", "--contrast", "off"])
-
-        assert result.exit_code == 0
-        assert seen["contrast"] == "off"
-
-    def test_invalid_flag_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        result = runner.invoke(app, ["icons", "regenerate", "--contrast", "x"])
-
-        assert result.exit_code == 1
-        assert "invalid contrast flag" in result.output
-
     def test_absent_state_maps_to_exit_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def _boom(*, contrast: str = "auto", client: Any = None) -> Any:
+        def _boom(*, client: Any = None) -> Any:
             raise RuntimeError("nothing to regenerate: no runtime state recorded yet")
 
         _fake_regenerate(monkeypatch, _boom)
@@ -187,7 +148,7 @@ class TestIconsRegenerateCli:
     def test_reload_failure_maps_to_exit_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _fake_regenerate(
             monkeypatch,
-            lambda contrast, client: _regenerate_result(reload_failures=["AgsReloader"]),
+            lambda client: _regenerate_result(reload_failures=["AgsReloader"]),
         )
         result = runner.invoke(app, ["icons", "regenerate"])
 
@@ -213,8 +174,7 @@ class TestIconsRegenerateEmission:
             def __init__(self, **kwargs: Any) -> None:
                 captured["kwargs"] = kwargs
 
-            def run(self, *, contrast: str = "auto") -> RegenerateIconsResult:
-                captured["contrast"] = contrast
+            def run(self) -> RegenerateIconsResult:
                 return _regenerate_result()
 
         monkeypatch.setattr(
@@ -247,14 +207,12 @@ class TestIconsRegenerateEmission:
                 {"state": "done", "wallpaper_hash": WH, "trigger": "regenerate"},
             ),
         ]
-        assert captured["contrast"] == "auto"
         # AGS wiring is the manifest-driven coordinator, not an ordinary
         # boolean reloader (AD-27…30).
         from runtime.adapters.ags_app_refresh import AgsAppRefreshCoordinator
 
         assert captured["kwargs"]["reloaders"] == []
         assert type(captured["kwargs"]["app_refresher"]) is AgsAppRefreshCoordinator
-        assert result.contrast_enabled is True
 
     def test_absent_state_publishes_error_without_mutation(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -278,7 +236,7 @@ class TestIconsRegenerateEmission:
                 {"state": "error", "wallpaper_hash": "", "trigger": "regenerate"},
             )
         ]
-        assert "contrast" not in captured  # use case never ran
+        assert "kwargs" not in captured  # use case never ran
 
     def test_busy_second_command_fails_without_visible(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -312,86 +270,3 @@ class TestIconsRegenerateEmission:
                 {"state": "error", "wallpaper_hash": "", "trigger": "regenerate"},
             ),
         ]
-
-
-class TestIconsPreferenceAccessor:
-    def test_show_default_on_without_store_file(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        import runtime.cli.main as cli_main
-        from runtime.adapters.hashing import hash_file
-
-        img = tmp_path / "wall.png"
-        img.write_bytes(b"live bytes")
-        wallpaper_hash = hash_file(img)
-        state_root = tmp_path / "state-home" / "dotfiles"
-        from runtime.adapters.json_state_repository import JsonStateRepository
-
-        saved = _regenerate_result().state
-        import dataclasses
-
-        saved = dataclasses.replace(
-            saved,
-            wallpaper=dataclasses.replace(
-                saved.wallpaper, content_hash=wallpaper_hash, source_path=str(img)
-            ),
-        )
-        JsonStateRepository(state_root).save(saved)
-
-        resolved = cli_main._run_icons_preference(None, None)
-
-        assert resolved == {"hash": wallpaper_hash, "enabled": True, "source": "default"}
-        assert not (state_root / "icon-contrast.json").exists()
-
-    def test_set_persists_then_reads_store(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        import runtime.cli.main as cli_main
-
-        first = cli_main._run_icons_preference(WH, "off")
-        assert first == {"hash": WH, "enabled": False, "source": "store"}
-        second = cli_main._run_icons_preference(WH, None)
-        assert second == {"hash": WH, "enabled": False, "source": "store"}
-
-    def test_explicit_hash_needs_no_state(self, tmp_path: Path) -> None:
-        import runtime.cli.main as cli_main
-
-        resolved = cli_main._run_icons_preference(WH, None)
-        assert resolved == {"hash": WH, "enabled": True, "source": "default"}
-
-    def test_invalid_hash_rejected(self, tmp_path: Path) -> None:
-        import runtime.cli.main as cli_main
-
-        with pytest.raises(ValueError, match="invalid wallpaper hash"):
-            cli_main._run_icons_preference("nope", None)
-
-    def test_invalid_set_rejected(self, tmp_path: Path) -> None:
-        import runtime.cli.main as cli_main
-
-        with pytest.raises(ValueError, match="invalid --set value"):
-            cli_main._run_icons_preference(WH, "maybe")
-
-    def test_default_hash_without_state_fails_loud(self, tmp_path: Path) -> None:
-        import runtime.cli.main as cli_main
-
-        with pytest.raises(RuntimeError, match="no runtime state"):
-            cli_main._run_icons_preference(None, None)
-
-    def test_cli_show_and_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        result = runner.invoke(app, ["icons", "preference", WH])
-        assert result.exit_code == 0
-        assert WH in result.output
-        assert "on (source: default)" in result.output
-
-        result = runner.invoke(app, ["icons", "preference", WH, "--set", "off"])
-        assert result.exit_code == 0
-        assert "off (source: store)" in result.output
-
-        result = runner.invoke(app, ["icons", "preference", WH, "--format", "json"])
-        assert result.exit_code == 0
-        assert json.loads(result.output) == {"hash": WH, "enabled": False, "source": "store"}
-
-    def test_cli_invalid_set_maps_to_exit_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        result = runner.invoke(app, ["icons", "preference", WH, "--set", "maybe"])
-        assert result.exit_code == 1
-        assert "invalid --set value" in result.output

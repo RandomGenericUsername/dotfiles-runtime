@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.5.1
+
+Seam cleanup: delete the icon-contrast guard and retire the CSG producer
+(REQ-007). No compatibility layer remains.
+
+- Icons render exactly what the icons manifest resolves. The WCAG guard, the
+  staging overlay/retargeting path, the per-wallpaper preference store, the
+  `--contrast auto|on|off` flags on `wallpaper set` / `icons regenerate`, the
+  `icons preference` command, and the icons `meta.json` `contrast` block are
+  removed.
+- `csg` is no longer a palette producer. `producer.json` still carries the
+  seam but accepts only the registered, vocabulary-conformant `tpr` producer;
+  an unknown producer (including `csg`) raises a typed
+  `UnsupportedPaletteProducerError` naming the supported set. Ambient
+  `RUNTIME__PALETTE__PRODUCER` / `RUNTIME__PALETTE__TPR_ENGINE` remain ignored
+  and reported.
+- The `palette.v1` conformance gate stays fail-closed before staging and
+  before the visible swap. A legacy non-v1 palette is reported nonconforming
+  instead of "n/a"; the watch-root set follows the theme-producer templates.
+- Shared producer subprocess/artifact helpers moved to
+  `adapters/producer_process.py`; monitor `bar_backdrop` sampling moved to
+  `adapters/wallpaper_luminance.py` (guard-free).
+
 ## 0.5.0
 
 Palette vocabulary contract (`palette.v1`) with fail-closed conformance

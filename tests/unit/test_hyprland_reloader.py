@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tests.support.palette_fakes import PaletteProducerStub
+from tests.support.palette_fakes import PaletteProducerStub, v1_colors_yaml, v1_gtk_css
 
 import os
 import stat
@@ -174,9 +174,9 @@ class TestReconcileReloadIntegration:
             def generate(self, wallpaper_path: Path, output_dir: Path) -> object:
                 self.calls += 1
                 output_dir.mkdir(parents=True, exist_ok=True)
-                (output_dir / "colors.yaml").write_text("colors: []")
+                (output_dir / "colors.yaml").write_text(v1_colors_yaml())
                 (output_dir / "colors.conf").write_text("colors {}")
-                (output_dir / "colors.gtk.css").write_text("colors {}")
+                (output_dir / "colors.gtk.css").write_text(v1_gtk_css())
                 (output_dir / "colors.adw.css").write_text("colors {}")
                 (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
                 (output_dir / "colors.rasi").write_text("* { background: #000; }")
@@ -254,7 +254,7 @@ class TestReconcileReloadIntegration:
                 return False
 
         install_spine = tmp_path / "install"
-        csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
+        csg_templates = install_spine / "config" / "theme-producer" / "templates"
         csg_templates.mkdir(parents=True)
         (csg_templates / "default.yaml").write_text("window: {}\n")
         weg_cfg = install_spine / "config" / "weg"
@@ -276,7 +276,7 @@ class TestReconcileReloadIntegration:
 
         ApplyWallpaperUseCase(
             state_repo=repo,
-            csg=csg,  # type: ignore[arg-type]
+            palette_producer=csg,  # type: ignore[arg-type]
             weg=weg,  # type: ignore[arg-type]
             itr=itr,  # type: ignore[arg-type]
             install_spine=install_spine,
@@ -289,7 +289,7 @@ class TestReconcileReloadIntegration:
         failing = _FailingReloader()
         use_case = ReconcileDesktopStateUseCase(
             state_repo=repo,
-            csg=csg,  # type: ignore[arg-type]
+            palette_producer=csg,  # type: ignore[arg-type]
             weg=weg,  # type: ignore[arg-type]
             itr=itr,  # type: ignore[arg-type]
             install_spine=install_spine,
@@ -327,9 +327,9 @@ class TestReconcileReloadIntegration:
         class _FakeCsg(PaletteProducerStub):
             def generate(self, wallpaper_path: Path, output_dir: Path) -> object:
                 output_dir.mkdir(parents=True, exist_ok=True)
-                (output_dir / "colors.yaml").write_text("colors: []")
+                (output_dir / "colors.yaml").write_text(v1_colors_yaml())
                 (output_dir / "colors.conf").write_text("colors {}")
-                (output_dir / "colors.gtk.css").write_text("colors {}")
+                (output_dir / "colors.gtk.css").write_text(v1_gtk_css())
                 (output_dir / "colors.adw.css").write_text("colors {}")
                 (output_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
                 (output_dir / "colors.rasi").write_text("* { background: #000; }")
@@ -399,7 +399,7 @@ class TestReconcileReloadIntegration:
                 return True
 
         install_spine = tmp_path / "install2"
-        csg_templates = install_spine / "config" / "color-scheme-generator" / "templates"
+        csg_templates = install_spine / "config" / "theme-producer" / "templates"
         csg_templates.mkdir(parents=True)
         (csg_templates / "default.yaml").write_text("window: {}\n")
         weg_cfg = install_spine / "config" / "weg"
@@ -418,7 +418,7 @@ class TestReconcileReloadIntegration:
 
         ApplyWallpaperUseCase(
             state_repo=repo,
-            csg=_FakeCsg(),  # type: ignore[arg-type]
+            palette_producer=_FakeCsg(),  # type: ignore[arg-type]
             weg=_FakeWeg(),  # type: ignore[arg-type]
             itr=_FakeItr(),  # type: ignore[arg-type]
             install_spine=install_spine,
@@ -428,7 +428,7 @@ class TestReconcileReloadIntegration:
         ).run(img)
         use_case = ReconcileDesktopStateUseCase(
             state_repo=repo,
-            csg=_FakeCsg(),  # type: ignore[arg-type]
+            palette_producer=_FakeCsg(),  # type: ignore[arg-type]
             weg=_FakeWeg(),  # type: ignore[arg-type]
             itr=_FakeItr(),  # type: ignore[arg-type]
             install_spine=install_spine,

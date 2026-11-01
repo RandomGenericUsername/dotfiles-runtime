@@ -1,11 +1,11 @@
 """Wallpaper top-strip luminance sampler (adapter).
 
-I/O boundary for the icon-contrast guard: reads wallpaper pixels via a
-use-site PIL import and returns the average WCAG relative luminance of
-the top ``band_px`` rows (the bar backdrop signal). Returns ``None`` on
-ANY failure — missing Pillow, missing/corrupt/unsupported file, empty
-image — and never raises, so the caller falls back to the palette
-backdrop.
+I/O boundary for the monitor ``bar_backdrop`` appearance: reads wallpaper
+pixels via a use-site PIL import and returns the average WCAG relative
+luminance of the top ``band_px`` rows. Returns ``None`` on ANY failure —
+missing Pillow, missing/corrupt/unsupported file, empty image — and never
+raises, so an unknown appearance is recorded honestly instead of failing
+wallpaper set.
 """
 
 from __future__ import annotations
@@ -14,7 +14,19 @@ import importlib
 from pathlib import Path
 from typing import Any
 
-from runtime.domain.icon_contrast import relative_luminance
+
+def _linearize(channel: int) -> float:
+    """Linearize one sRGB channel (WCAG 2.1 § relative luminance)."""
+    scaled = channel / 255.0
+    if scaled <= 0.03928:
+        return scaled / 12.92
+    return float(((scaled + 0.055) / 1.055) ** 2.4)
+
+
+def relative_luminance(rgb: tuple[int, int, int]) -> float:
+    """WCAG 2.1 relative luminance of an sRGB color in ``[0.0, 1.0]``."""
+    red, green, blue = rgb
+    return 0.2126 * _linearize(red) + 0.7152 * _linearize(green) + 0.0722 * _linearize(blue)
 
 
 def sample_top_strip_luminance(wallpaper: Path, band_px: int = 48) -> float | None:
