@@ -2,7 +2,7 @@
 id: REQ-007
 title: "Seam cleanup: delete the icon-contrast guard, retire the CSG producer"
 kind: requirement
-status: in-progress
+status: done
 lane: 2
 links:
   openspec: none
@@ -148,3 +148,19 @@ merged.
 - Cross-repo cleanup is out of scope here: `dotfiles-v3/bootstrap.sh`
   rollback override and `dotfiles-provision` producer template + csg pin.
 
+
+## Outcome
+
+Released `v0.5.1` and deployed live 2026-10-31 (PIN-0121):
+- `rg -i 'icon_contrast|icon-contrast' src/runtime` → no matches; guard domain,
+  adapter wiring, prefs store, policy, CLI `--contrast`, inspect/doctor fields
+  and the `meta.json` contrast block are gone (schema copies updated);
+- `rg -i 'csg|color-scheme-generator' src/runtime` → one docstring mention of
+  the retired value in the typed-error contract; no behavior code; unknown
+  producers raise `UnsupportedPaletteProducerError` naming `tpr`;
+- live icons resolve exactly to manifest roles (battery bolt `#b9c3ff` =
+  `primary`, bar ink `#e3e1e9` = `on_backdrop`), no retargeting;
+- `doctor` clean (21 items), `inspect palette` conforming, `icons regenerate
+  --help` has no `--contrast`;
+- caveat recorded: the luminance sampler survives as
+  `adapters/wallpaper_luminance.py` for the non-guard `bar_backdrop` monitor.
