@@ -7,8 +7,8 @@ lane: 2
 links:
   openspec: none
   bmad: none
-worktree: none
-branch: none
+worktree: .worktrees/BUG-008/
+branch: ticket/BUG-008-bare-ags-run-discovery
 severity: high
 ---
 
@@ -38,10 +38,62 @@ still fail closed.
 
 ## Acceptance
 
-- [ ] Bare `ags run` is discovered with config dir `~/.config/ags` and
+- [x] Bare `ags run` is discovered with config dir `~/.config/ags` and
       instance `ags`; resolved link match succeeds.
-- [ ] Tests: bare run attributed; `-d` behavior unchanged; a genuinely foreign
+- [x] Tests: bare run attributed; `-d` behavior unchanged; a genuinely foreign
       `ags run` (different config dir) still fails.
 - [ ] Live: change wallpaper → bar restarts and adopts the new palette with no
       “outside the deployed link” notification.
-- [ ] Gates green; release v0.5.2 after review.
+- [x] Gates green; version bumped to 0.5.2 (tag/release after review).
+
+## Implementation
+
+- worktree: `.worktrees/BUG-008/`
+- branch: `ticket/BUG-008-bare-ags-run-discovery`
+- fix commit: `8ef66b1` — `BUG-008: attribute bare ags run to its default config dir`
+- version: `0.5.2` (`pyproject.toml`, `runtime.__version__`, `uv.lock`); not tagged.
+
+### Attribution design
+
+- `adapters/ags_reloader.py::_discover_ags_apps` still records explicit
+  `-d/--directory` processes exactly as before.
+- A bare `ags run` is attributed to the effective default config dir read from
+  `/proc/<pid>/environ`: `$XDG_CONFIG_HOME/ags` when non-empty, else the
+  process's `$HOME/.config/ags`, else the runtime's `~/.config/ags` when the
+  environment is unreadable/empty.
+- Instance is `_instance_name_for_dir(config_dir)` (bar `app.tsx` →
+  `ags`), falling back to `BAR_INSTANCE_NAME` for a bare run.
+- The ownership rule is untouched: `AppDiscovery` resolves the attributed
+  config dir and compares it to the deployed link. A bare run whose config dir
+  does not resolve to that link is still a structured foreign/outside failure.
+- `AgsReloader.reload()` now skips the discovered bar instance (`ags`) because
+  the bar is restarted unconditionally; this avoids a duplicate quit/launch.
+
+### Evidence
+
+- `uv run pytest -q tests/unit/test_ags_reloader.py tests/unit/test_ags_app_discovery.py -m "not integration"`
+  → `78 passed`.
+- `make gates` →
+  test `2178 passed, 3 skipped, 10 deselected`; lint `All checks passed!`;
+  contracts-check `48 passed, 1 skipped`; hermetic
+  `2178 passed, 3 skipped, 10 deselected`; lock-check `Resolved 25 packages`;
+  docs-check passed.
+
+## Live verification (pending orchestrator deploy)
+
+Deploy commit `8ef66b1` (v0.5.2), then:
+
+1. `dotfiles-runtime wallpaper set <image>`
+2. Find the newest AGS refresh run:
+
+   ```sh
+   run=$(ls -t "$XDG_STATE_HOME/dotfiles/logs/ags-app-refresh" | head -1)
+   jq -c 'select(.instance=="ags") | {status, reason, argv}' \
+     "$XDG_STATE_HOME/dotfiles/logs/ags-app-refresh/$run"/*.jsonl
+   ```
+
+   Expected: one `ags` record with `"status":"applied"`; no reason containing
+   `outside the deployed link` or `foreign/dev process`.
+3. Confirm the bar visibly adopts the new palette and no
+   `Could not update: bar (ags, unknown)` notification appears.
+
