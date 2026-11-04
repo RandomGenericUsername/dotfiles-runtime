@@ -120,6 +120,80 @@ class TestDiscoverySuccess:
         assert [app.identity.instance for app in result.apps] == ["ags"]
         assert result.apps[0].identity.mode == "restart"
 
+    def test_bare_bar_process_matches_the_deployed_link(self, tmp_path: Path) -> None:
+        spine = tmp_path / "install"
+        link = _deploy(
+            spine,
+            "ags",
+            _manifest(app="ags", instance="ags", config_dir="ags", mode="restart"),
+        )
+        default_dir = tmp_path / "home" / ".config" / "ags"
+        default_dir.parent.mkdir(parents=True)
+        default_dir.symlink_to(link, target_is_directory=True)
+        bare = AgsAppProcess(
+            pid=11,
+            argv=("ags", "run"),
+            config_dir=default_dir,
+            instance="ags",
+        )
+
+        result = _discover(spine, live=("ags",), processes=(bare,))
+
+        assert result.failures == ()
+        assert result.apps[0].running is True
+        assert result.apps[0].pids == (11,)
+
+    def test_bare_run_outside_the_deployed_link_still_fails_closed(
+        self, tmp_path: Path
+    ) -> None:
+        spine = tmp_path / "install"
+        _deploy(
+            spine,
+            "ags",
+            _manifest(app="ags", instance="ags", config_dir="ags", mode="restart"),
+        )
+        foreign_dir = tmp_path / "elsewhere" / "ags"
+        foreign_dir.mkdir(parents=True)
+        (foreign_dir / "app.tsx").write_text('app.start({ instanceName: "ags" })')
+        bare = AgsAppProcess(
+            pid=12,
+            argv=("ags", "run"),
+            config_dir=foreign_dir,
+            instance="ags",
+        )
+
+        result = _discover(spine, live=("ags",), processes=(bare,))
+
+        assert result.apps == ()
+        assert len(result.failures) == 1
+        assert "foreign/dev process" in result.failures[0].reason
+        assert str(foreign_dir) in result.failures[0].reason
+
+    def test_bare_run_with_unknown_instance_still_reports_outside_link(
+        self, tmp_path: Path
+    ) -> None:
+        spine = tmp_path / "install"
+        _deploy(
+            spine,
+            "ags",
+            _manifest(app="ags", instance="ags", config_dir="ags", mode="restart"),
+        )
+        foreign_dir = tmp_path / "elsewhere" / "ags"
+        foreign_dir.mkdir(parents=True)
+        (foreign_dir / "app.tsx").write_text('app.start({ instanceName: "other" })')
+        bare = AgsAppProcess(
+            pid=13,
+            argv=("ags", "run"),
+            config_dir=foreign_dir,
+            instance="other",
+        )
+
+        result = _discover(spine, live=("ags",), processes=(bare,))
+
+        assert result.apps == ()
+        assert len(result.failures) == 1
+        assert "outside the deployed link" in result.failures[0].reason
+
     def test_down_restart_app_is_included(self, tmp_path: Path) -> None:
         spine = tmp_path / "install"
         _deploy(

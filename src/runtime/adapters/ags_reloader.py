@@ -241,7 +241,7 @@ def _pid_alive(pid: int) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class AgsAppProcess:
-    """One running standalone AGS app (``ags run -d <dir>``)."""
+    """One running AGS process (``ags run``, bare or with ``-d <dir>``)."""
 
     pid: int
     argv: tuple[str, ...]
@@ -259,14 +259,57 @@ def _instance_name_for_dir(config_dir: Path) -> str | None:
     return match.group(1) if match is not None else None
 
 
-def _discover_ags_apps() -> list[AgsAppProcess]:
-    """Enumerate running standalone AGS apps from ``/proc`` (bar excluded).
+def _read_process_environ(proc_entry: Path) -> dict[str, str]:
+    """Read one process environment from ``/proc/<pid>/environ``.
 
-    The bar runs as a bare ``ags run`` with no config dir; it is restarted
-    separately and never appears here.
+    Unreadable/empty files yield an empty mapping rather than an error: a
+    process may exit while it is being scanned, and a missing environment is
+    not a reason to drop an otherwise valid AGS process.
+    """
+    try:
+        raw = (proc_entry / "environ").read_bytes()
+    except OSError:
+        return {}
+    environ: dict[str, str] = {}
+    for item in raw.split(b"\0"):
+        if not item or b"=" not in item:
+            continue
+        key, _, value = item.partition(b"=")
+        environ[key.decode("utf-8", "replace")] = value.decode("utf-8", "replace")
+    return environ
+
+
+def _default_config_dir(proc_entry: Path) -> Path:
+    """The effective default AGS config dir for a bare ``ags run`` process.
+
+    AGS resolves a bare ``ags run`` from the process's own environment:
+    ``$XDG_CONFIG_HOME/ags`` when set, otherwise ``$HOME/.config/ags`` and
+    finally this runtime's ``~/.config/ags`` when the environment is
+    unreadable. The path is only an attribution; ownership is still decided
+    by resolving it against the deployed link.
+    """
+    environ = _read_process_environ(proc_entry)
+    xdg_config_home = environ.get("XDG_CONFIG_HOME", "")
+    if xdg_config_home:
+        return Path(xdg_config_home) / "ags"
+    home = environ.get("HOME", "")
+    if home:
+        return Path(home) / ".config" / "ags"
+    return Path.home() / ".config" / "ags"
+
+
+def _discover_ags_apps(proc_root: Path | None = None) -> list[AgsAppProcess]:
+    """Enumerate running AGS apps from ``/proc``.
+
+    An explicit ``-d/--directory`` config dir is used as given. A bare
+    ``ags run`` (the bar autostart) is attributed to its effective default
+    config dir (see :func:`_default_config_dir`), which lets deployed-link
+    discovery resolve the bar. Attribution does not weaken the ownership
+    rule: a config dir that does not resolve to the deployed link is still a
+    foreign/outside process.
     """
     apps: list[AgsAppProcess] = []
-    proc = Path("/proc")
+    proc = proc_root if proc_root is not None else Path("/proc")
     try:
         entries = list(proc.iterdir())
     except OSError:
@@ -286,9 +329,12 @@ def _discover_ags_apps() -> list[AgsAppProcess]:
             if arg in ("-d", "--directory") and index + 1 < len(argv):
                 config_dir = Path(argv[index + 1])
                 break
+        explicit_config_dir = config_dir is not None
         if config_dir is None:
-            continue
-        instance = _instance_name_for_dir(config_dir) or config_dir.name
+            config_dir = _default_config_dir(entry)
+        instance = _instance_name_for_dir(config_dir) or (
+            config_dir.name if explicit_config_dir else BAR_INSTANCE_NAME
+        )
         apps.append(
             AgsAppProcess(
                 pid=int(entry.name),
@@ -449,6 +495,11 @@ class AgsReloader(IDesktopReloader):
         tools_ok = True
         seen_instances: set[str] = set()
         for app in self._app_lister():
+            if app.instance == BAR_INSTANCE_NAME:
+                # The bar (bare ``ags run`` or a ``-d`` relaunch of the bar)
+                # is restarted unconditionally above; restarting it again as
+                # a tool would quit the process that was just launched.
+                continue
             if app.config_dir.name in self._skip_config_dirs:
                 logger.debug("ags: leaving %s running (skip list)", app.instance)
                 continue

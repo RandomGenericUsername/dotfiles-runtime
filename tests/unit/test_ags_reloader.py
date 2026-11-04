@@ -19,6 +19,7 @@ from runtime.adapters.ags_reloader import (
     AgsAppProcess,
     AgsReloader,
     _AgsQueryError,
+    _discover_ags_apps,
     _instance_name_for_dir,
     _list_ags_instances,
     _matches_ags_binary,
@@ -436,6 +437,35 @@ class TestAgsReloaderQuitRelease:
             text=True,
             timeout=10,
         )
+
+    def test_discovered_bar_process_is_not_restarted_twice(
+        self, ags_bin: Path, tmp_path: Path
+    ) -> None:
+        """The bar is already restarted unconditionally; the discovered bare
+        process must not trigger a second quit/launch cycle."""
+        names = _NameState(launch_names=(BAR_INSTANCE_NAME,))
+        apps = [
+            AgsAppProcess(
+                pid=1,
+                argv=("ags", "run"),
+                config_dir=Path("/home/u/.config/ags"),
+                instance=BAR_INSTANCE_NAME,
+            )
+        ]
+        reloader = _make_reloader(
+            ags_bin, tmp_path, app_lister=lambda: apps, instance_lister=names
+        )
+        with (
+            patch("runtime.adapters.ags_reloader.subprocess.run") as mock_run,
+            patch(
+                "runtime.adapters.ags_reloader.subprocess.Popen",
+                side_effect=names.popen(_FakeProcess(code=None)),
+            ) as mock_popen,
+            patch("runtime.adapters.ags_reloader.time.sleep"),
+        ):
+            assert reloader.reload() is True
+        assert mock_run.call_count == 1  # bar quit only
+        assert mock_popen.call_count == 1  # bar launch only
 
 
 class TestAgsReloaderDeployedRestart:
@@ -874,6 +904,130 @@ class TestAgsReloaderStandaloneTools:
         config_dir = tmp_path / "empty"
         config_dir.mkdir()
         assert _instance_name_for_dir(config_dir) is None
+
+
+def _proc_entry(
+    proc_root: Path,
+    pid: int,
+    argv: tuple[str, ...],
+    *,
+    environ: dict[str, str] | None = None,
+) -> Path:
+    entry = proc_root / str(pid)
+    entry.mkdir(parents=True)
+    (entry / "cmdline").write_bytes(b"\0".join(part.encode() for part in argv) + b"\0")
+    if environ is not None:
+        (entry / "environ").write_bytes(
+            b"\0".join(f"{key}={value}".encode() for key, value in environ.items()) + b"\0"
+        )
+    return entry
+
+
+class TestDiscoverAgsApps:
+    """``/proc`` attribution for ``ags run`` without a live host process."""
+
+    def test_bare_run_attributed_to_home_config_ags(self, tmp_path: Path) -> None:
+        proc = tmp_path / "proc"
+        home = tmp_path / "home"
+        default_dir = home / ".config" / "ags"
+        default_dir.mkdir(parents=True)
+        (default_dir / "app.tsx").write_text('app.start({ instanceName: "ags" })')
+        _proc_entry(proc, 101, ("ags", "run"), environ={"HOME": str(home)})
+
+        (app,) = _discover_ags_apps(proc)
+
+        assert app.pid == 101
+        assert app.config_dir == default_dir
+        assert app.instance == BAR_INSTANCE_NAME
+
+    def test_bare_run_uses_process_xdg_config_home(self, tmp_path: Path) -> None:
+        proc = tmp_path / "proc"
+        xdg_config_home = tmp_path / "xdg-config"
+        default_dir = xdg_config_home / "ags"
+        default_dir.mkdir(parents=True)
+        (default_dir / "app.tsx").write_text('app.start({ instanceName: "custom-bar" })')
+        _proc_entry(
+            proc,
+            102,
+            ("ags", "run"),
+            environ={
+                "HOME": str(tmp_path / "home"),
+                "XDG_CONFIG_HOME": str(xdg_config_home),
+            },
+        )
+
+        (app,) = _discover_ags_apps(proc)
+
+        assert app.config_dir == default_dir
+        assert app.instance == "custom-bar"
+
+    def test_explicit_directory_is_used_as_given(self, tmp_path: Path) -> None:
+        proc = tmp_path / "proc"
+        config_dir = tmp_path / "ags-capture"
+        config_dir.mkdir()
+        (config_dir / "app.tsx").write_text('app.start({ instanceName: "capture" })')
+        _proc_entry(
+            proc,
+            103,
+            ("ags", "run", "-d", str(config_dir), "--log-file", "/tmp/capture.log"),
+            environ={"XDG_CONFIG_HOME": str(tmp_path / "ignored")},
+        )
+
+        (app,) = _discover_ags_apps(proc)
+
+        assert app.config_dir == config_dir
+        assert app.instance == "capture"
+
+    def test_explicit_directory_without_app_tsx_falls_back_to_dir_name(
+        self, tmp_path: Path
+    ) -> None:
+        proc = tmp_path / "proc"
+        config_dir = tmp_path / "ags-hypr-pano"
+        config_dir.mkdir()
+        _proc_entry(proc, 104, ("ags", "run", "-d", str(config_dir)))
+
+        (app,) = _discover_ags_apps(proc)
+
+        assert app.config_dir == config_dir
+        assert app.instance == config_dir.name
+
+    def test_empty_xdg_config_home_falls_back_to_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        proc = tmp_path / "proc"
+        home = tmp_path / "home"
+        _proc_entry(
+            proc,
+            105,
+            ("ags", "run"),
+            environ={"XDG_CONFIG_HOME": "", "HOME": str(home)},
+        )
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "runtime-home")
+
+        (app,) = _discover_ags_apps(proc)
+
+        assert app.config_dir == home / ".config" / "ags"
+        assert app.instance == BAR_INSTANCE_NAME
+
+    def test_missing_environ_does_not_crash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        proc = tmp_path / "proc"
+        _proc_entry(proc, 106, ("ags", "run"))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "runtime-home")
+
+        (app,) = _discover_ags_apps(proc)
+
+        assert app.config_dir == tmp_path / "runtime-home" / ".config" / "ags"
+        assert app.instance == BAR_INSTANCE_NAME
+
+    def test_exited_process_without_environ_or_cmdline_is_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        proc = tmp_path / "proc"
+        (proc / "107").mkdir(parents=True)
+
+        assert _discover_ags_apps(proc) == []
 
 
 def _now_z() -> str:

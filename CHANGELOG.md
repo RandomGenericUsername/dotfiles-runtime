@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.2
+
+Bar palette refresh: a bare `ags run` is attributed to its effective default
+config dir so deployed-link discovery can restart the bar (BUG-008).
+
+- `_discover_ags_apps` now records a bare `ags run` (the bar autostart) using
+  `$XDG_CONFIG_HOME/ags` from the process environment, falling back to
+  `$HOME/.config/ags` and then this runtime's `~/.config/ags`. The instance
+  name comes from the config dir's `app.tsx`, else `ags`.
+- Ownership stays fail-closed: discovery still resolves the attributed config
+  dir and only accepts it when it matches the deployed link. A bare process
+  with a different config dir is still reported as foreign/outside.
+- `AgsReloader.reload()` skips the discovered bar instance because the bar is
+  restarted unconditionally; no duplicate quit/launch cycle.
+- Explicit `-d/--directory` discovery is unchanged.
+
 ## 0.5.1
 
 Seam cleanup: delete the icon-contrast guard and retire the CSG producer
