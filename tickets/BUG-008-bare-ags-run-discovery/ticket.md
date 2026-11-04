@@ -2,7 +2,7 @@
 id: BUG-008
 title: "Bar is not updated: discovery skips the bare `ags run` bar process"
 kind: bug
-status: in-progress
+status: done
 lane: 2
 links:
   openspec: none
@@ -97,3 +97,13 @@ Deploy commit `8ef66b1` (v0.5.2), then:
 3. Confirm the bar visibly adopts the new palette and no
    `Could not update: bar (ags, unknown)` notification appears.
 
+
+## Outcome
+
+Fixed in `v0.5.2` and deployed via PIN-0129. Live proof 2026-11-04:
+- wallpaper default → eagle: refresh log
+  `20261104T131302Z-…/00-ags.jsonl` → `status: applied`, `mode: restart`,
+  argv `ags run -d …/config/ags`, exit 0; palette changed to `9810b297…`;
+- wallpaper eagle → default: `20261104T131315Z-…/00-ags.jsonl` → same
+  `applied`/restart/exit 0;
+- zero `outside the deployed link` / `foreign/dev process` entries.
