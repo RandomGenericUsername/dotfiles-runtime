@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+Read-only shared monitor catalog: `dotfiles-runtime monitors list --format json`
+(REQ-009).
+
+- Adds the `IMonitorCatalog` sibling port; `HyprlandMonitorSource` implements
+  both it and `IMonitorSource`. `detect_monitors()` behavior is unchanged.
+- Emits `schema_version: 1` with `connector`, `label`, `description`, `make`,
+  `model`, `serial`, `geometry`, `scale`, `transform`, `focused` and
+  `mirror_of`, filtered to connected, enabled, non-mirrored outputs and ordered
+  by `geometry.x`, `geometry.y`, `connector`.
+- Headless/unavailable exits 0 with `source: "unavailable"` and `monitors: []`.
+- Adds the runtime-owned schema `contracts/schemas/monitors-list.schema.json`
+  (no `contracts` repo or program-tuple bump). No daemon, no state write, no
+  XDG write.
+
 ## 0.5.2
 
 Bar palette refresh: a bare `ags run` is attributed to its effective default

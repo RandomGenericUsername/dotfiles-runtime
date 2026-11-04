@@ -13,6 +13,8 @@ the already-detected monitor names from their injected
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from runtime.domain.models import (
     DEFAULT_MONITOR,
     BackendType,
@@ -20,6 +22,7 @@ from runtime.domain.models import (
     FitMode,
     MonitorWallpaperConfig,
 )
+from runtime.ports.monitor_catalog import MonitorInfo
 
 
 def preserve_monitors(
@@ -84,4 +87,54 @@ def preserve_monitors(
             ipc_socket=None,
         )
         for name in names
+    }
+
+
+def active_monitors(monitors: Iterable[MonitorInfo]) -> list[MonitorInfo]:
+    """Filter disabled/mirrored outputs and sort by x, y, connector (REQ-009).
+
+    This is the pure catalog projection: the adapter reports every output
+    (with diagnostics); this function owns the contract's targetable set and
+    canonical order (capture EPIC-002 ``design.md`` §2.2).
+    """
+    active = [monitor for monitor in monitors if not monitor.disabled and monitor.mirror_of is None]
+    active.sort(key=lambda monitor: (monitor.geometry.x, monitor.geometry.y, monitor.connector))
+    return active
+
+
+def monitor_to_dict(monitor: MonitorInfo) -> dict[str, object]:
+    """Serialize one descriptor to the ``monitors[]`` contract shape."""
+    return {
+        "connector": monitor.connector,
+        "label": monitor.label,
+        "description": monitor.description,
+        "make": monitor.make,
+        "model": monitor.model,
+        "serial": monitor.serial,
+        "geometry": {
+            "x": monitor.geometry.x,
+            "y": monitor.geometry.y,
+            "width": monitor.geometry.width,
+            "height": monitor.geometry.height,
+        },
+        "scale": monitor.scale,
+        "transform": monitor.transform,
+        "focused": monitor.focused,
+        "mirror_of": monitor.mirror_of,
+    }
+
+
+def catalog_payload(monitors: Iterable[MonitorInfo]) -> dict[str, object]:
+    """Build the ``schema_version: 1`` catalog object for ``monitors list``.
+
+    An empty targetable set is reported as ``source: "unavailable"``: that
+    is the uniform headless/no-output degradation shape the consumer
+    contract expects (it never distinguishes "no compositor" from "no
+    targetable output"). Detection never raises here.
+    """
+    active = active_monitors(monitors)
+    return {
+        "schema_version": 1,
+        "source": "hyprland" if active else "unavailable",
+        "monitors": [monitor_to_dict(monitor) for monitor in active],
     }

@@ -20,6 +20,7 @@ dotfiles-runtime gtk4 restart             # reload GTK4 subscribers
 dotfiles-runtime daemon run               # systemd ExecStart: org.dotfiles.Events owner
 dotfiles-runtime inspect status|daemon|history|failures|producer
 dotfiles-runtime inspect cache list|prune
+dotfiles-runtime monitors list [--format json]  # read-only monitor catalog
 dotfiles-runtime version
 ```
 
@@ -84,7 +85,7 @@ src/runtime/
   ports/        protocols: event bus, state, history, reloaders, palette/WEG/ITR
   adapters/     subprocess adapters, JSON store, cache, D-Bus, Hyprland/AGS/GTK4 reloaders
   application/  apply_wallpaper, derive, seed_cache, reconcile, doctor, inspect, clipboard
-  cli/          Typer app: wallpaper / reconcile / doctor / icons / inspect / daemon / …
+  cli/          Typer app: wallpaper / reconcile / doctor / icons / inspect / monitors / daemon / …
 ```
 
 `application/apply_wallpaper.py` is the visible-first chain: apply the wallpaper immediately, then
