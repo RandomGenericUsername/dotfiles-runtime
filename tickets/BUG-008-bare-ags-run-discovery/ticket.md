@@ -42,16 +42,17 @@ still fail closed.
       instance `ags`; resolved link match succeeds.
 - [x] Tests: bare run attributed; `-d` behavior unchanged; a genuinely foreign
       `ags run` (different config dir) still fails.
-- [ ] Live: change wallpaper → bar restarts and adopts the new palette with no
-      “outside the deployed link” notification.
-- [x] Gates green; version bumped to 0.5.2 (tag/release after review).
+- [x] Live: change wallpaper → bar restarts and adopts the new palette with no
+      “outside the deployed link” notification (proof in Outcome below).
+- [x] Gates green; version bumped to 0.5.2 and released as `v0.5.2` (`81f57c5`).
 
 ## Implementation
 
 - worktree: `.worktrees/BUG-008/`
 - branch: `ticket/BUG-008-bare-ags-run-discovery`
 - fix commit: `8ef66b1` — `BUG-008: attribute bare ags run to its default config dir`
-- version: `0.5.2` (`pyproject.toml`, `runtime.__version__`, `uv.lock`); not tagged.
+- version: `0.5.2` (`pyproject.toml`, `runtime.__version__`, `uv.lock`); released
+  as annotated tag `v0.5.2` (`81f57c5`).
 
 ### Attribution design
 
