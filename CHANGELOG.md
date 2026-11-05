@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.6.0 — 2026-11-04
 
 Read-only shared monitor catalog: `dotfiles-runtime monitors list --format json`
 (REQ-009).
