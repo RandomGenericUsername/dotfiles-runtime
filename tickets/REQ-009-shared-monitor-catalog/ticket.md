@@ -7,8 +7,8 @@ lane: 3
 links:
   openspec: none
   bmad: none
-worktree: .worktrees/REQ-009/
-branch: ticket/REQ-009-shared-monitor-catalog
+worktree: none
+branch: main (merged 2026-11-04; worktree/branch removed)
 ---
 
 # Shared monitor catalog service
