@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.6.1 — 2026-11-05
+
+Release metadata fix: `v0.6.0` shipped `pyproject.toml` and
+`runtime.__version__` at `0.5.2`, so `dotfiles-runtime version` and the
+provisioning verify check disagreed with the tag.
+
+- Bump `pyproject.toml`, `uv.lock` and `runtime.__version__` to `0.6.1`.
+- No behaviour change: the `monitors list` command, schema and filtering are
+  identical to `v0.6.0`.
+
 ## v0.6.0 — 2026-11-04
 
 Read-only shared monitor catalog: `dotfiles-runtime monitors list --format json`
