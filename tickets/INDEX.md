@@ -7,6 +7,7 @@
 ## Requirements
 
 - [REQ-008-dotfiles-user-settings](./REQ-008-dotfiles-user-settings/ticket.md) — User-owned dotfiles settings with a terminal ANSI policy (`wallpaper` default vs `themed`) | `proposed` | worktree: .worktrees/REQ-008/ | branch: ticket/REQ-008-dotfiles-user-settings
+- [REQ-009-shared-monitor-catalog](./REQ-009-shared-monitor-catalog/ticket.md) — Shared monitor catalog service: `dotfiles-runtime monitors list --format json` | `done` | worktree: .worktrees/REQ-009/ | branch: ticket/REQ-009-shared-monitor-catalog
 - [REQ-006-palette-vocabulary-contract](./REQ-006-palette-vocabulary-contract/ticket.md) — Palette vocabulary contract (`palette.v1`): declared roles, conformance validation, probe tests | `done` | tag: v0.5.0 | live: conforming 51 roles
 - [REQ-007-seam-cleanup](./REQ-007-seam-cleanup/ticket.md) — Seam cleanup: delete the icon-contrast guard, retire the CSG producer | `done` | tag: v0.5.1 | live: no guard, producer tpr-only
 - [REQ-004-producer-config](./REQ-004-producer-config/ticket.md) — Runtime-owned palette producer config (no ambient-env authority) | `done` | tag: v0.4.1

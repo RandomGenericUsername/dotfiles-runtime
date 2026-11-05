@@ -132,8 +132,11 @@ _BANNED_PATH_FS_METHODS = frozenset(
     }
 )
 
-# Ports concrete-class allowlist — runtime ports are pure ABCs today.
-_PORTS_ALLOWED_AGGREGATES: dict[str, set[str]] = {}
+# Ports concrete-class allowlist — dataclass aggregates are the only
+# permitted concrete shape (pure value objects owned by a port module).
+_PORTS_ALLOWED_AGGREGATES: dict[str, set[str]] = {
+    "monitor_catalog.py": {"MonitorGeometry", "MonitorInfo"},
+}
 
 # Distribution names whose import root differs from the normalized name.
 _DIST_TO_IMPORT_ROOT = {
@@ -905,11 +908,16 @@ def _run_standalone() -> None:
             tree = ast.parse(f.read_text(encoding="utf-8"), filename=str(f))
             aliases = _import_aliases(tree)
             for node in tree.body:
-                if isinstance(node, ast.ClassDef) and _classify_ports_class(node, aliases) != "abc":
-                    _fail(
-                        f"{f.relative_to(_SRC_ROOT)}:{node.lineno} declares "
-                        f"concrete class {node.name!r}; relocate to adapters/"
-                    )
+                if not isinstance(node, ast.ClassDef):
+                    continue
+                if _classify_ports_class(node, aliases) == "abc":
+                    continue
+                if node.name in _PORTS_ALLOWED_AGGREGATES.get(f.name, set()):
+                    continue
+                _fail(
+                    f"{f.relative_to(_SRC_ROOT)}:{node.lineno} declares "
+                    f"concrete class {node.name!r}; relocate to adapters/"
+                )
 
     # 4. Rule 5 cross-package boundary.
     allowed = _allowed_third_party_roots()

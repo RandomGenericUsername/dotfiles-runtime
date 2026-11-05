@@ -72,7 +72,8 @@ app = typer.Typer(
         "Manages wallpaper, state, history, and cache for the dotfiles system.\n\n"
         "Commands:\n"
         "  version  Show the installed package version\n"
-        "  wallpaper set  Derive, cache, swap, reload, and persist state for a wallpaper"
+        "  wallpaper set  Derive, cache, swap, reload, and persist state for a wallpaper\n"
+        "  monitors list  List connected, enabled, non-mirrored outputs"
     ),
 )
 
@@ -93,6 +94,9 @@ app.add_typer(icons_app, name="icons")
 
 gtk4_app = typer.Typer(help="GTK4 app reload commands")
 app.add_typer(gtk4_app, name="gtk4")
+
+monitors_app = typer.Typer(help="Monitor commands")
+app.add_typer(monitors_app, name="monitors")
 
 logger = logging.getLogger(__name__)
 
@@ -376,6 +380,7 @@ def main_callback(
         "capture",
         "clipboard",
         "gtk4",
+        "monitors",
     ):
         return
     _run_seed_if_needed()
@@ -1175,6 +1180,72 @@ def gtk4_restart(output_format: OutputFormat = _OUTPUT_FORMAT_OPTION) -> None:
         else "gtk4: no allowlisted apps running; nothing to restart"
     )
     renderer.custom(CustomView(plain=summary, object={"restarted": names}, rich=summary))
+
+
+def _run_monitors_list() -> dict[str, object]:
+    """Compose the read-only monitor catalog (REQ-009).
+
+    No state root, seeder, mutex, cache, or reloader: the command reads
+    ``hyprctl monitors -j`` and projects the contract shape. Detection
+    failure is the adapter's empty list, which the projection renders as
+    ``source: "unavailable"`` — never an exception.
+    """
+    from runtime.adapters.hyprland_monitor_source import HyprlandMonitorSource
+    from runtime.application.monitors import catalog_payload
+
+    return catalog_payload(HyprlandMonitorSource().list_monitors())
+
+
+def _monitors_plain(payload: dict[str, object]) -> str:
+    """One line per targetable monitor; a single line when unavailable."""
+    monitors = payload.get("monitors")
+    if not isinstance(monitors, list) or not monitors:
+        return "no monitors available"
+    lines: list[str] = []
+    for monitor in monitors:
+        if not isinstance(monitor, dict):
+            continue
+        geometry = monitor.get("geometry")
+        if not isinstance(geometry, dict):
+            geometry = {}
+        focus = " [focused]" if monitor.get("focused") else ""
+        lines.append(
+            f"{monitor.get('connector')}\t{monitor.get('label')}"
+            f"\t{geometry.get('width')}x{geometry.get('height')}"
+            f"+{geometry.get('x')}+{geometry.get('y')}"
+            f"\tscale={monitor.get('scale')} transform={monitor.get('transform')}{focus}"
+        )
+    return "\n".join(lines) if lines else "no monitors available"
+
+
+@monitors_app.command("list")
+def monitors_list(output_format: OutputFormat = _OUTPUT_FORMAT_OPTION) -> None:
+    """List connected, enabled, non-mirrored outputs.
+
+    Read-only and safe in headless/CI: no daemon, no state/XDG write, no
+    provisioned spine. ``--format json`` is the machine contract
+    (``schema_version: 1``); detection failure exits 0 with
+    ``source: "unavailable"`` and an empty list.
+    """
+    renderer = create_renderer(output_format)
+    try:
+        payload = _run_monitors_list()
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.error("monitors list failed: %s", exc)
+        renderer.error(ErrorView(kind=type(exc).__name__, message=str(exc)))
+        raise typer.Exit(code=1) from None
+    except Exception:
+        logger.exception("monitors list failed unexpectedly")
+        renderer.error(
+            ErrorView(
+                kind="UnexpectedError",
+                message="monitors list failed unexpectedly; see logs",
+            )
+        )
+        raise typer.Exit(code=1) from None
+
+    plain = _monitors_plain(payload)
+    renderer.custom(CustomView(plain=plain, object=payload, rich=plain))
 
 
 def _append_inputs_check(summary: str, obj: dict[str, object]) -> str:
