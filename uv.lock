@@ -103,7 +103,7 @@ wheels = [
 
 [[package]]
 name = "dotfiles-runtime"
-version = "0.5.2"
+version = "0.6.1"
 source = { editable = "." }
 dependencies = [
     { name = "cli-invocation-contract" },

@@ -18,6 +18,7 @@
 
 ## Bugs
 
+- [BUG-009-release-version-metadata](./BUG-009-release-version-metadata/ticket.md) — v0.6.0 release metadata still reports 0.5.2; provisioning verify fails | `done` | severity: high | worktree: .worktrees/BUG-009/ | branch: ticket/BUG-009-release-version-metadata | fix: v0.6.1
 - [BUG-008-bare-ags-run-discovery](./BUG-008-bare-ags-run-discovery/ticket.md) — Bar refresh fails: discovery skips bare `ags run` | `in-progress` | severity: high | worktree: .worktrees/BUG-008/ | branch: ticket/BUG-008-bare-ags-run-discovery | fix: 8ef66b1
 - [BUG-001-required-palette](./BUG-001-required-palette/ticket.md) — Palette is mandatory: fail before the visible swap, refuse null on reconcile | `done` | severity: high | tag: v0.2.0
 - [BUG-002-csg-adapter-timeout-cleanup](./BUG-002-csg-adapter-timeout-cleanup/ticket.md) — csg adapter timeout: clean up the container and never discard a complete palette | `done` | severity: medium | tag: v0.2.1
