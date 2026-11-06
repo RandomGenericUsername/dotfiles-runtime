@@ -6,6 +6,7 @@
 
 ## Requirements
 
+- [REQ-010-skins-derivation-layer](./REQ-010-skins-derivation-layer/ticket.md) — Skins derivation layer: palette-independent per-app CSS + token map | `in-progress` | worktree: .worktrees/REQ-010/ | branch: ticket/REQ-010-skins-derivation-layer | openspec: skins-derivation-layer
 - [REQ-008-dotfiles-user-settings](./REQ-008-dotfiles-user-settings/ticket.md) — User-owned dotfiles settings with a terminal ANSI policy (`wallpaper` default vs `themed`) | `proposed` | worktree: .worktrees/REQ-008/ | branch: ticket/REQ-008-dotfiles-user-settings
 - [REQ-009-shared-monitor-catalog](./REQ-009-shared-monitor-catalog/ticket.md) — Shared monitor catalog service: `dotfiles-runtime monitors list --format json` | `done` | worktree none, branch main (merged 2026-11-04; worktree/branch removed)
 - [REQ-006-palette-vocabulary-contract](./REQ-006-palette-vocabulary-contract/ticket.md) — Palette vocabulary contract (`palette.v1`): declared roles, conformance validation, probe tests | `done` | tag: v0.5.0 | live: conforming 51 roles
