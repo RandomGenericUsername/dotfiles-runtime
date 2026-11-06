@@ -69,21 +69,21 @@ scoped repair:
 
 ## Acceptance
 
-- [ ] `doctor` reports each always-on unit as ok when active, MainPID alive and
+- [x] `doctor` reports each always-on unit as ok when active, MainPID alive and
       the D-Bus owner inside the unit cgroup; inactive/failed units exit 1.
-- [ ] MainPID/D-Bus owner mismatch and orphan `ags run`/`gjs` processes are
+- [x] MainPID/D-Bus owner mismatch and orphan `ags run`/`gjs` processes are
       reported as drift without signalling any process.
-- [ ] Absent systemd/user session yields a clear skip note and does not change
+- [x] Absent systemd/user session yields a clear skip note and does not change
       doctor's clean exit code.
-- [ ] A ledger entry older than the current appearance hash is reported as a
+- [x] A ledger entry older than the current appearance hash is reported as a
       stale-app note (never fabricated when the ledger is absent).
-- [ ] `doctor --repair` activates only `systemctl --user restart <unit>` and
+- [x] `doctor --repair` activates only `systemctl --user restart <unit>` and
       `ags quit -i <instance>`; a test pins the exact allowed set and the
       absence of `kill`/`pkill`/process-tree actions.
-- [ ] Unit tests use fake systemctl/ags/busctl/proc seams and cover active,
+- [x] Unit tests use fake systemctl/ags/busctl/proc seams and cover active,
       inactive, PID mismatch, orphan, absent-systemd skip and repair actions.
-- [ ] README/ARCHITECTURE and CHANGELOG document the leg and the safety rule.
-- [ ] `make gates`, `make gates-ci` and `make ci-gates-parity` pass; annotated
+- [x] README/ARCHITECTURE and CHANGELOG document the leg and the safety rule.
+- [x] `make gates`, `make gates-ci` and `make ci-gates-parity` pass; annotated
       `v0.9.2` lands after a fast-forward merge; no push.
 
 ## Evidence / Verify
@@ -100,4 +100,18 @@ scoped repair:
   `io.Astal.ags` and `io.Astal.notifications`; the notification overlay also
   owns `org.freedesktop.Notifications`.
 - Verify: `uv run pytest -q tests/unit/test_ags_supervision.py tests/unit/test_doctor_check.py tests/unit/test_doctor_repair.py`
-  and `make gates`.
+  → `90 passed`; `uv run pytest -q -m "not integration"` → `2329 passed, 3 skipped, 10 deselected`.
+- Implementation commit `8212939` adds `adapters/ags_supervision.py`,
+  `DoctorUseCase._check_supervision`, the `DoctorRepairUseCase` safe-action
+  path and the CLI report/action projection.
+- Changelog: `CHANGELOG.md` v0.9.2; docs: `README.md` release notes,
+  `docs/ARCHITECTURE.md` §6b.
+- Gates: `make gates` → rc=0 (`test` 2329 passed, 3 skipped, 10 deselected;
+  `lint` All checks passed; `contracts-check` 54 passed, 1 skipped; `hermetic`
+  2329 passed, 3 skipped, 10 deselected; `lock-check` resolved 25 packages;
+  `docs-check` rc=0). `make gates-ci` → rc=0 with the same counts.
+  `make ci-gates-parity` → `PASS` (gates=6, jobs=8, exempt
+  `ci-gates-parity, release`).
+- Deviations: none. `inspect status` deliberately stays the state projection;
+  RFC §4.3 names the doctor as the live supervision surface (one surface, no
+  duplicate systemd probing).

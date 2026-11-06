@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.9.2 — 2026-11-06
+
+Report and safely repair the always-on AGS `systemd --user` supervision
+(REQ-017). Provisioning v0.1.37 owns the static units; this is the RFC §4.3
+runtime doctor leg and the RFC §4.2 repair rule.
+
+- `doctor` checks `systemctl --user is-active` for
+  `dotfiles-ags-bar.service` (instance `ags`) and
+  `dotfiles-ags-notifications.service` (instance `notifications`), reads
+  `MainPID`, verifies it is alive, and resolves the instance's AGS D-Bus owner
+  PID with `busctl --user status io.Astal.<instance>` cross-checked against
+  `ags list`.
+- `MainPID` is the foreground `ags run` wrapper; its `gjs` child owns the bus
+  name. An owner inside the unit cgroup is healthy even when it differs from
+  `MainPID`; an owner outside the cgroup, a dead `MainPID`, or an inactive unit
+  is drift.
+- Orphan detection reports `ags run` wrappers for an always-on configDir
+  outside the unit cgroup, plus their `gjs` descendants. The check never
+  signals them.
+- The appearance ledger adds a note when a running app was last applied at an
+  older appearance hash than the current generation. An absent ledger is
+  reported as unknown, never fabricated.
+- Absent systemd or a user session is an explicit skip note; it does not change
+  the doctor exit code.
+- `doctor --repair` is limited to `systemctl --user restart <unit>` and
+  `ags quit -i <instance>`; it never kills, `pkill`s or process-tree-kills the
+  `ags run` parent. Pure supervision drift is repaired without a reconcile;
+  mixed drift performs the safe actions before the existing reconcile.
+- `inspect status` remains the read-only state projection; live systemd
+  supervision stays in the doctor so there is one live supervision surface.
+- Tests inject fake systemctl/ags/busctl/proc seams and cover active, inactive,
+  PID mismatch, orphan, stale appearance, absent-systemd skip and exactly the
+  allowed repair action set.
+
 ## v0.9.1 — 2026-11-06
 
 Consume the real `dotfiles-assets v0.12.0` / `contracts v0.7.0` v2 appearance

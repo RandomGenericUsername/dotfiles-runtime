@@ -189,6 +189,33 @@ and the icon-manifest inputs; the runtime owns the applied-appearance ledger
 under `$XDG_STATE_HOME/dotfiles/logs/ags-app-refresh/<runId>/`. `wallpaper.state` remains the
 progress/UI event only; it is not a palette-refresh trigger (AD-27).
 
+## 6b. Always-on AGS supervision (doctor)
+
+Provisioning v0.1.37 owns the static unit contract for the two always-on apps
+(`dotfiles-ags-bar.service` / instance `ags` / configDir `ags`, and
+`dotfiles-ags-notifications.service` / instance `notifications` / configDir
+`ags-notifications`). The runtime supplies the live leg in
+`adapters/ags_supervision.py` and the doctor composes it:
+
+- `systemctl --user is-active` and `show -p MainPID --value` for both units;
+- `busctl --user status io.Astal.<instance>` for the D-Bus owner PID,
+  cross-checked against `ags list`;
+- `/proc` scanning for orphan `ags run` wrappers whose configDir is an
+  always-on target but whose cgroup is not the unit, plus their `gjs`
+  descendants;
+- the appearance ledger supplies a freshness note when an app was last applied
+  at an older hash than the recorded generation.
+
+`MainPID` is the foreground `ags run` wrapper. Its `gjs` child owns the bus
+name, so the owner is accepted when it is inside the unit cgroup (not
+necessarily equal to `MainPID`); an owner outside the cgroup is drift. An
+absent systemd/user session is an explicit skip, not desktop drift.
+
+`doctor --repair` is restricted to the RFC §4.2 graceful actions:
+`systemctl --user restart <unit>` and `ags quit -i <instance>`. It never
+signals a PID, never `kill`/`pkill`s and never process-tree-kills the
+`ags run` parent. Pure supervision drift does not run a reconcile.
+
 ## 7. Contracts and conformance
 
 The canonical event contract lives in the `contracts` repo. This package consumes it in two forms:

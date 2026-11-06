@@ -12,7 +12,7 @@ tool: it consumes those by pin and drives `tpr` / `weg` / `itr` as subprocesses.
 ```console
 dotfiles-runtime wallpaper set IMAGE      # visible-first apply → derive → reconcile → persist
 dotfiles-runtime reconcile                # repoint current/ to current.json
-dotfiles-runtime doctor [--repair]        # store vs symlinks vs cache drift
+dotfiles-runtime doctor [--repair]        # state/cache and AGS supervision drift
 dotfiles-runtime capture                  # resident capture job (hub Control)
 dotfiles-runtime clipboard                # resident clipboard watcher
 dotfiles-runtime icons regenerate         # re-render the icon set
@@ -27,6 +27,24 @@ dotfiles-runtime version
 Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
+
+**0.9.2** — doctor supervises the always-on AGS units.
+
+- `doctor` now reports the two `systemd --user` units
+  (`dotfiles-ags-bar.service` / instance `ags`, and
+  `dotfiles-ags-notifications.service` / instance `notifications`):
+  `is-active`, `MainPID` liveness, the AGS D-Bus owner PID
+  (`busctl --user status io.Astal.<instance>` cross-checked with `ags list`),
+  orphan `ags run`/`gjs` processes outside the unit cgroup, and a ledger note
+  when the running app predates the current appearance hash.
+- A live D-Bus owner may differ from `MainPID`: the `ags run` wrapper is
+  `MainPID` and its `gjs` child owns the name, so an owner inside the unit
+  cgroup is healthy. An owner outside the cgroup is drift.
+- Absent systemd or a user session is an explicit skip note, never a failure.
+- `doctor --repair` is limited to `systemctl --user restart <unit>` and
+  `ags quit -i <instance>`. It never kills, `pkill`s or process-tree-kills an
+  `ags run` parent (RFC §4.2). Pure supervision drift is repaired without a
+  reconcile; mixed drift runs the safe actions before the existing reconcile.
 
 **0.9.1** — consume the real v2 appearance manifests.
 
