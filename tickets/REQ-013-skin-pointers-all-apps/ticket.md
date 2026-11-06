@@ -2,7 +2,7 @@
 id: REQ-013
 title: "Emit skin consumer pointers for every skin target, not just AGS"
 kind: requirement
-status: in-progress
+status: done
 lane: 2
 links:
   openspec: none
@@ -51,23 +51,23 @@ Required correction:
 
 ## Acceptance
 
-- [ ] The static consumer table contains no skin entries and no app names.
-- [ ] Skin pointers are derived from `SkinEntry.artifact_hashes`; two or more
+- [x] The static consumer table contains no skin entries and no app names.
+- [x] Skin pointers are derived from `SkinEntry.artifact_hashes`; two or more
       config dirs receive both pointers.
-- [ ] An artifact whose config dir is absent is skipped; no directory is
+- [x] An artifact whose config dir is absent is skipped; no directory is
       created and no error is raised.
-- [ ] A generation change repoints existing pointers to the new current/
+- [x] A generation change repoints existing pointers to the new current/
       targets atomically.
-- [ ] Stale skin pointers for removed targets are pruned; non-skin pointers
+- [x] Stale skin pointers for removed targets are pruned; non-skin pointers
       and unrelated files in a config dir are untouched.
-- [ ] The pointer set is proven data-derived (a non-AGS and an unknown config
+- [x] The pointer set is proven data-derived (a non-AGS and an unknown config
       dir are handled generically).
-- [ ] `inspect status` and `doctor` report the derived pointers and do not
+- [x] `inspect status` and `doctor` report the derived pointers and do not
       report absent config dirs as drift.
-- [ ] The bar's existing `config/ags/skin.css` / `config/ags/skin.json`
+- [x] The bar's existing `config/ags/skin.css` / `config/ags/skin.json`
       behavior is unchanged.
-- [ ] Release metadata is the next patch (`v0.8.2`); no existing tag is moved.
-- [ ] `make gates` and `make gates-ci` pass.
+- [x] Release metadata is the next patch (`v0.8.2`); no existing tag is moved.
+- [x] `make gates` and `make gates-ci` pass.
 
 ## Evidence
 
@@ -100,6 +100,56 @@ done
 `skin.json`; the pinned assets template tree has exactly the seven
 `<configDir>.gtk.css.j2` files. The hardcoded `ags` pair is at
 `src/runtime/adapters/consumer_path_spec.py:59-60`.
+
+## Implementation evidence
+
+Executed on the ticket worktree (2026-11-06):
+
+```sh
+uv run pytest -q tests/unit/test_skins.py tests/unit/test_seed_cache.py \
+  tests/unit/test_inspect.py tests/unit/test_doctor_check.py \
+  tests/unit/test_reconcile.py tests/architecture
+# 313 passed
+```
+
+A live-shaped prototype (temp install spine + the seven real artifact names
+from `~/.local/state/dotfiles/current.json`) produced both pointers for every
+installed target and never created an absent dir:
+
+```text
+ags: skin.css -> .../current/skins/ags.css, skin.json -> .../current/skin.json
+ags-clipboard: skin.css -> .../current/skins/ags-clipboard.css, ...
+ags-notifications: ... ags-wallpaper-selector: ... ags-capture: ...
+ags-icme: ... ags-btop-studio: ...
+missing-dir-created: False
+```
+
+The pointer set is data-derived: the `custom-app` test creates
+`config/custom-app/skin.{css,json}` from a `custom-app.css` artifact even
+though the runtime has never heard of that app, and no `ags` pointer appears.
+Stale pruning removes the runtime-owned `ags-clipboard` pair after a
+generation drops its template while leaving `config/ags/colors.css`,
+`notes.txt`, and a user symlink untouched.
+
+```sh
+make gates
+# test       2250 passed, 3 skipped, 10 deselected
+# lint       All checks passed
+# contracts  48 passed, 1 skipped
+# hermetic   2250 passed, 3 skipped, 10 deselected
+# lock-check Resolved 25 packages
+# docs-check exit 0
+# make gates exit=0
+```
+
+```sh
+make gates-ci
+# same set and results as make gates; exit 0
+```
+
+Release metadata is `0.8.2` in `pyproject.toml`, `uv.lock` and
+`runtime.__version__`; the annotated `v0.8.2` tag is created after the
+fast-forward merge. No existing tag was moved. Nothing is pushed.
 
 ## Implementation map
 
