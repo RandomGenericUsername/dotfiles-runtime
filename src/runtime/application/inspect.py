@@ -52,8 +52,15 @@ from typing import Literal, cast
 
 import fastjsonschema
 
+from runtime.adapters.appearance import (
+    appearance_pointer_status,
+    expected_mode,
+    read_current_appearance,
+)
 from runtime.adapters.cache import CACHE_LAYERS, cache_entry_path
 from runtime.adapters.contract_schemas import history_validator
+from runtime.adapters.hashing import appearance_generation_hash
+from runtime.adapters.watch_health import WatchHealthStore
 from runtime.application.palette_conformance import PaletteConformance, check_palette_entry
 from runtime.domain.history import HistoryTrigger
 from runtime.domain.models import (
@@ -150,6 +157,11 @@ class InspectStatusResult:
     skin: str | None = None
     skin_name: str | None = None
     skin_tokens: dict[str, object] | None = None
+    appearance_hash: str | None = None
+    appearance_skin: str | None = None
+    appearance_mode: str | None = None
+    appearance_pointer: LinkStatus | None = None
+    appearance_watch: str | None = None
 
 
 class InspectStateUseCase:
@@ -219,6 +231,39 @@ class InspectStateUseCase:
                 skin_entry=state.skin,
             )
 
+        appearance = read_current_appearance(self._state_root)
+        palette_mode = expected_mode(self._state_root, state.palette)
+        mode = appearance.mode if appearance is not None else palette_mode
+        # The pointer must resolve to the identity derived from the recorded
+        # state (not from whatever the pointer happens to contain), otherwise
+        # a stale generation would validate itself.
+        expected_hash = (
+            appearance_generation_hash(
+                state.palette.entry_hash, state.skin.entry_hash, palette_mode
+            )
+            if state.palette is not None and state.skin is not None
+            else None
+        )
+        pointer_status, pointer_target = appearance_pointer_status(
+            self._state_root, expected_hash
+        )
+        appearance_pointer = LinkStatus(
+            status=cast("LinkStatusKind", pointer_status), target=pointer_target
+        )
+        watch_record = WatchHealthStore(self._state_root).read()
+        appearance_watch = (
+            "unknown"
+            if watch_record is None
+            else ("degraded" if watch_record.degraded else "ok")
+        )
+        if appearance is not None and self._install_spine is not None and self._consumer_spec:
+            for pointer in self._consumer_spec.appearance_pointers(appearance.config_dirs):
+                dest = self._install_spine / pointer.path
+                if not dest.parent.is_dir():
+                    continue
+                expected = self._state_root / "current" / pointer.target
+                consumer_pointers[pointer.path] = self._link_status(dest, expected)
+
         return InspectStatusResult(
             wallpaper=state.wallpaper.content_hash,
             wallpaper_source_path=state.wallpaper.source_path,
@@ -232,6 +277,11 @@ class InspectStateUseCase:
             skin=state.skin.entry_hash if state.skin else None,
             skin_name=state.skin.name if state.skin else None,
             skin_tokens=self._read_skin_tokens(state),
+            appearance_hash=expected_hash,
+            appearance_skin=appearance.skin if appearance is not None else None,
+            appearance_mode=mode if expected_hash is not None else None,
+            appearance_pointer=appearance_pointer if expected_hash is not None else None,
+            appearance_watch=appearance_watch if expected_hash is not None else None,
         )
 
     def _read_skin_tokens(self, state: DesktopState) -> dict[str, object] | None:

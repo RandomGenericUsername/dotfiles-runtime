@@ -65,6 +65,31 @@ class IConsumerPathSpec(ABC):
             )
         return tuple(pointers)
 
+    def appearance_pointers(self, config_dirs: Iterable[str]) -> tuple[ConsumerPointer, ...]:
+        """Return the v2 convenience link for every supplied config dir.
+
+        ``config/<configDir>/appearance.css`` → ``current/appearance/<configDir>.css``.
+        The link target names the single repointed hop, so the link itself is
+        stable across generations. Unsafe path segments are rejected.
+        """
+        pointers: list[ConsumerPointer] = []
+        for config_dir in sorted(set(config_dirs)):
+            if (
+                not config_dir
+                or config_dir in (".", "..")
+                or "/" in config_dir
+                or "\\" in config_dir
+                or config_dir.strip() != config_dir
+            ):
+                continue
+            pointers.append(
+                ConsumerPointer(
+                    path=f"config/{config_dir}/appearance.css",
+                    target=f"appearance/{config_dir}.css",
+                )
+            )
+        return tuple(pointers)
+
     @abstractmethod
     def rules(self) -> ConsumerPointerRules:
         """Return the pinned consumer-pointer rules."""

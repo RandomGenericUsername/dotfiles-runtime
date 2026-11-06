@@ -34,13 +34,15 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
+from runtime.adapters.appearance import AppearanceGenerator
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder
 from runtime.application.bar_backdrop import with_bar_backdrops
-from runtime.application.derive import DerivationPipeline
+from runtime.application.derive import DerivationPipeline, find_skin_manifest
 from runtime.domain.models import (
     DEFAULT_MONITOR,
     DEFAULT_SKIN,
+    AppearanceEntry,
     BackendType,
     DesktopState,
     EffectsEntry,
@@ -52,6 +54,7 @@ from runtime.domain.models import (
     SkinUnavailableError,
     WallpaperEntry,
 )
+from runtime.ports.appearance_generator import IAppearanceGenerator
 from runtime.ports.color_scheme_generator import IColorSchemeGenerator
 from runtime.ports.effects_generator import IEffectsGenerator
 from runtime.ports.icon_renderer import IIconRenderer
@@ -96,6 +99,8 @@ class SeedCacheUseCase:
         monitor_source: IMonitorSource | None = None,
         skin_name: str = DEFAULT_SKIN,
         skin_expander: ISkinExpander | None = None,
+        appearance_generator: IAppearanceGenerator | None = None,
+        appearance_keep: int = 5,
     ) -> None:
         self._state_repo = state_repo
         self._factory = factory
@@ -105,6 +110,10 @@ class SeedCacheUseCase:
         self._mutex = mutex
         self._monitor_source = monitor_source
         self._skin_name = skin_name
+        #: The v2 composed appearance plane. Default to the real generator:
+        #: publication is part of the normal seed flow, not an opt-in.
+        self._appearance = appearance_generator or AppearanceGenerator(state_root)
+        self._appearance_keep = appearance_keep
         # Shared derivation plumbing (Story 1.13): spine discovery + per-layer
         # ensure-entry pattern live in application/derive.py; seed and apply
         # compose the same pipeline so behavior stays identical.
@@ -197,6 +206,7 @@ class SeedCacheUseCase:
         effects_entry = self._populate_effects(default_png, wallpaper_hash)
         icons_entry = self._populate_icons(palette_entry.entry_hash)
         skin_entry = self._populate_skin()
+        appearance_entry = self._populate_appearance(palette_entry, skin_entry)
 
         # 6. Construct domain objects (real hashes from the adapters — the
         # seeded state must agree with the meta.json beside each cache entry)
@@ -247,6 +257,11 @@ class SeedCacheUseCase:
             icons_entry_hash=icons_entry.entry_hash if icons_entry else None,
             skin_entry=skin_entry,
         )
+
+        # 7a1. The one appearance pointer + convenience links. The v1 skin
+        # pointers are still repointed below (migration window).
+        if appearance_entry is not None:
+            self._seeder.publish_appearance(self._install_spine, appearance_entry)
 
         # 7a2. R2 consumer-path symlinks (Epic 4): point the spine consumer
         # path at current/ so desktop consumers read the active palette.
@@ -299,6 +314,30 @@ class SeedCacheUseCase:
             return entry
         except Exception as exc:
             logger.warning("seeding: icon rendering failed; continuing: %s", exc)
+            return None
+
+    def _populate_appearance(
+        self, palette_entry: PaletteEntry, skin_entry: SkinEntry | None
+    ) -> AppearanceEntry | None:
+        """Compose the v2 appearance generation. Fail-closed on any error."""
+        if skin_entry is None:
+            return None
+        try:
+            manifest_path, _source = find_skin_manifest(
+                skin_entry.name, self._install_spine
+            )
+            entry, _cache_hit = self._appearance.ensure(
+                palette_entry=palette_entry,
+                skin_entry=skin_entry,
+                install_spine=self._install_spine,
+                manifest_path=manifest_path,
+                keep=self._appearance_keep,
+            )
+            return entry
+        except Exception as exc:
+            logger.error(
+                "seeding: appearance generation failed; previous appearance kept: %s", exc
+            )
             return None
 
     def _populate_skin(self) -> SkinEntry | None:

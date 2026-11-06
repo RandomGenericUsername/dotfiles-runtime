@@ -110,3 +110,33 @@ def load_ags_app_manifest_schema() -> dict[str, Any]:
 def load_ags_app_refresh_result_schema() -> dict[str, Any]:
     """Embedded AGS app refresh-result schema (draft-07)."""
     return _load("ags-app-refresh-result.schema.json")
+
+
+def appearance_manifest_validator() -> Validator:
+    """Validator for an authored v2 appearance manifest (contract v0.7.0)."""
+    return _validator("appearance-manifest.schema.json")
+
+
+def appearance_json_validator() -> Validator:
+    """Validator for a resolved, mode-resolved ``tokens.json`` (v2)."""
+    return _validator("appearance-json.schema.json")
+
+
+def appearance_artifact_validator() -> Validator:
+    """Validator for the ``appearance.json`` metadata artifact (v2)."""
+    return _validator("appearance-artifact.schema.json")
+
+
+def load_appearance_manifest_schema() -> dict[str, Any]:
+    """Embedded appearance manifest schema (draft-07)."""
+    return _load("appearance-manifest.schema.json")
+
+
+def load_appearance_json_schema() -> dict[str, Any]:
+    """Embedded resolved appearance token schema (draft-07)."""
+    return _load("appearance-json.schema.json")
+
+
+def load_appearance_artifact_schema() -> dict[str, Any]:
+    """Embedded appearance metadata schema (draft-07)."""
+    return _load("appearance-artifact.schema.json")

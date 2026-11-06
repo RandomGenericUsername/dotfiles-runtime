@@ -21,6 +21,9 @@ _SCHEMAS = (
     "ags-app-refresh-result",
     "ags-apps-install-list",
     "program-tuple",
+    "appearance-manifest",
+    "appearance-json",
+    "appearance-artifact",
 )
 
 

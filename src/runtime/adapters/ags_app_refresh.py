@@ -279,7 +279,7 @@ class AgsAppRefreshCoordinator(IAgsAppRefresher):
 
     def refresh(self, state: DesktopState, *, trigger: str = "reconcile") -> AppRefreshOutcome:
         """Gate on the ledger, run both lanes, persist results atomically."""
-        appearance = appearance_hash_for_state(state)
+        appearance = appearance_hash_for_state(state, state_root=self._state_root)
         run_id = self._run_id_factory()
         try:
             with hold_operation_lock(self._state_root):
@@ -476,7 +476,7 @@ class AgsAppRefreshCoordinator(IAgsAppRefresher):
         # the next trigger refreshes against the authoritative appearance.
         latest = self._state_repo.load_current()
         if latest is not None:
-            latest_hash = appearance_hash_for_state(latest)
+            latest_hash = appearance_hash_for_state(latest, state_root=self._state_root)
             if latest_hash != appearance:
                 results = [
                     self._downgrade_to_deferred(record) if record.status == "applied" else record

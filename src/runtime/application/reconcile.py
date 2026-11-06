@@ -45,17 +45,23 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from runtime.adapters.appearance import AppearanceGenerator
 from runtime.adapters.cache import cache_entry_path
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder, _repoint_symlink
 from runtime.application.bar_backdrop import with_bar_backdrops
-from runtime.application.derive import DerivationPipeline, ensure_palette_entry_complete
+from runtime.application.derive import (
+    DerivationPipeline,
+    ensure_palette_entry_complete,
+    find_skin_manifest,
+)
 from runtime.application.palette_conformance import require_palette_conformance
 from runtime.domain.ags_apps import AppRefreshRecord, ReloadFailure
 from runtime.domain.history import HISTORY_TRIGGERS
 from runtime.domain.models import (
     DEFAULT_MONITOR,
     DEFAULT_SKIN,
+    AppearanceEntry,
     DesktopState,
     EffectsEntry,
     IconsEntry,
@@ -65,6 +71,7 @@ from runtime.domain.models import (
     SkinUnavailableError,
 )
 from runtime.ports.ags_app_refresher import IAgsAppRefresher
+from runtime.ports.appearance_generator import IAppearanceGenerator
 from runtime.ports.color_scheme_generator import IColorSchemeGenerator
 from runtime.ports.desktop_reloader import IDesktopReloader
 from runtime.ports.effects_generator import IEffectsGenerator
@@ -92,6 +99,9 @@ class ReconcileResult:
     ``<install>/config/ags/colors.css`` → ``current/colors.gtk.css``.
     Kept separate from ``repointed`` (which is ``current/``-only) so CLI
     counts and existing consumers keep their contract."""
+    appearance_hash: str | None = None
+    appearance_skin: str | None = None
+    appearance_mode: str | None = None
 
 
 class ReconcileDesktopStateUseCase:
@@ -131,12 +141,18 @@ class ReconcileDesktopStateUseCase:
         app_refresher: IAgsAppRefresher | None = None,
         skin_name: str = DEFAULT_SKIN,
         skin_expander: ISkinExpander | None = None,
+        appearance_generator: IAppearanceGenerator | None = None,
+        appearance_keep: int = 5,
     ) -> None:
         self._state_repo = state_repo
         self._state_root = state_root
         self._install_spine = install_spine
         self._seeder = seeder
         self._mutex = mutex
+        #: The composed v2 appearance plane is part of the normal reconcile
+        #: flow; the default is the real generator (tests may inject a fake).
+        self._appearance = appearance_generator or AppearanceGenerator(state_root)
+        self._appearance_keep = appearance_keep
         #: Real producer identity for typed failures.
         self._producer_name = getattr(palette_producer, "producer_name", "tpr")
         self._reloaders: list[IDesktopReloader] = list(reloaders) if reloaders is not None else []
@@ -278,6 +294,9 @@ class ReconcileDesktopStateUseCase:
                 icons_entry_hash=state.icons.entry_hash if state.icons else None,
                 skin_entry=skin,
             )
+            # The one composed appearance generation + its single pointer.
+            # v1 skin pointers are still repointed below (migration window).
+            appearance_entry = self._publish_appearance(palette, skin, regenerated)
             # R2 consumer-path symlinks (Epic 4): point the spine consumer
             # path at current/ so desktop consumers read the active palette.
             # Runs after the current/ repoint (the target must exist first);
@@ -388,6 +407,11 @@ class ReconcileDesktopStateUseCase:
             reload_failures=reload_failures,
             consumer_symlinks=consumer_repointed,
             app_refresh_results=app_results,
+            appearance_hash=appearance_entry.appearance_hash
+            if appearance_entry is not None
+            else None,
+            appearance_skin=appearance_entry.skin if appearance_entry is not None else None,
+            appearance_mode=appearance_entry.mode if appearance_entry is not None else None,
         )
 
     # ------------------------------------------------------------------
@@ -524,6 +548,39 @@ class ReconcileDesktopStateUseCase:
                     regenerated.append("skin")
 
         return palette, effects, icons, skin
+
+    def _publish_appearance(
+        self,
+        palette: PaletteEntry,
+        skin: SkinEntry | None,
+        regenerated: list[str],
+    ) -> AppearanceEntry | None:
+        """Compose and publish the appearance generation in the same flow.
+
+        Fail closed: any composition error is logged and the previous
+        ``current/appearance`` pointer is left untouched. The v1 skin pointers
+        are repointed by the caller regardless, so v1 apps keep working.
+        """
+        if skin is None:
+            return None
+        try:
+            manifest_path, _source = find_skin_manifest(skin.name, self._install_spine)
+            entry, cache_hit = self._appearance.ensure(
+                palette_entry=palette,
+                skin_entry=skin,
+                install_spine=self._install_spine,
+                manifest_path=manifest_path,
+                keep=self._appearance_keep,
+            )
+            self._seeder.publish_appearance(self._install_spine, entry)
+        except Exception as exc:
+            logger.error(
+                "reconcile: appearance generation failed; previous appearance kept: %s", exc
+            )
+            return None
+        if not cache_hit:
+            regenerated.append("appearance")
+        return entry
 
     def _previous_skin_if_cached(self, previous: SkinEntry | None) -> SkinEntry | None:
         """Keep a previous skin only while its cache entry still exists."""

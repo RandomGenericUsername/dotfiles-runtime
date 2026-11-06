@@ -1,0 +1,78 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://dotfiles.local/schemas/appearance-artifact.schema.json",
+  "title": "Appearance metadata artifact (version 2)",
+  "description": "appearance.json inside a cache/appearance/<hash>/ generation. It names the selected skin and palette mode, records the palette/skin/composed hashes and points at the resolved tokens.json. It is metadata only: the resolved tokens are validated against appearance-json.schema.json.",
+  "status": "frozen",
+  "type": "object",
+  "additionalProperties": false,
+  "propertyNames": {
+    "$ref": "#/definitions/forbiddenName"
+  },
+  "required": [
+    "version",
+    "skin",
+    "mode",
+    "paletteHash",
+    "skinHash",
+    "appearanceHash",
+    "generationHash",
+    "tokenRef"
+  ],
+  "properties": {
+    "version": {
+      "const": 2,
+      "description": "Appearance artifact version; exactly 2."
+    },
+    "skin": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "description": "Selected skin name."
+    },
+    "mode": {
+      "enum": [
+        "dark",
+        "light"
+      ],
+      "description": "Palette mode selected at generation."
+    },
+    "paletteHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "A lowercase 64-character SHA-256 hex digest."
+    },
+    "skinHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "A lowercase 64-character SHA-256 hex digest."
+    },
+    "appearanceHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "A lowercase 64-character SHA-256 hex digest."
+    },
+    "generationHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "A lowercase 64-character SHA-256 hex digest."
+    },
+    "tokenRef": {
+      "const": "tokens.json",
+      "description": "Relative filename of the resolved token document in this generation."
+    }
+  },
+  "definitions": {
+    "forbiddenName": {
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "(?:^|_)(?:structure|order|presence)(?:_|$)"
+          },
+          {
+            "pattern": "variant"
+          }
+        ]
+      }
+    }
+  }
+}

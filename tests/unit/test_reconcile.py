@@ -905,6 +905,8 @@ class TestReconcileStructuralScopeLock:
             "app_refresher",
             "skin_name",
             "skin_expander",
+            "appearance_generator",
+            "appearance_keep",
         }
         assert not any("backend" in p or "factory" in p for p in params)
 

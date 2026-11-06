@@ -21,8 +21,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from runtime.adapters.appearance import expected_mode, read_current_appearance
 from runtime.adapters.cache import resolve_entry_artifact
-from runtime.adapters.hashing import hash_file
+from runtime.adapters.hashing import appearance_generation_hash, hash_file
+from runtime.adapters.watch_health import WatchHealthStore
 from runtime.application.inspect import InspectHistoryUseCase, LinkStatusKind
 from runtime.application.palette_conformance import check_palette_entry
 from runtime.application.reconcile import ReconcileDesktopStateUseCase
@@ -100,6 +102,7 @@ class DoctorUseCase:
         items.extend(self._check_vocabulary(state))
         items.extend(self._check_links(state))
         items.extend(self._check_skin_consumer_pointers(state))
+        items.extend(self._check_appearance(state))
         items.extend(self._check_input_provenance())
         items.extend(self._check_history(state))
         clean = all(item.status == "ok" for item in items)
@@ -437,6 +440,146 @@ class DoctorUseCase:
             expected = current_dir / pointer.target
             status, detail = self._link_status(dest, expected)
             items.append(DriftItem(f"consumer/{pointer.path}", "consumer", status, detail))
+        return items
+
+    def _check_appearance(self, state: DesktopState) -> list[DriftItem]:
+        """Report the v2 appearance generation, pointer, watch and v1 skew.
+
+        Read-only. When the state has no skin yet (pre-skin machine) the leg
+        is omitted entirely. Once a skin is recorded, ``current/appearance``
+        must exist and resolve to the generation whose identity is
+        ``f(palette, skin, mode)``. During the migration window the v1
+        ``skin.css`` pointers are deliberately still published; their
+        coexistence with ``current/appearance`` is reported as a skew so the
+        cutover cannot be mistaken for complete (removal is a later ticket).
+        """
+        pointer = self._state_root / "current" / "appearance"
+        if state.skin is None:
+            if pointer.is_symlink():
+                status, detail = self._link_status(pointer, pointer)
+                return [
+                    DriftItem(
+                        "appearance:pointer",
+                        "appearance",
+                        status,
+                        f"{detail} (state records no skin; generation is orphaned)",
+                    )
+                ]
+            return []
+        if state.palette is None:
+            return []
+        manifest = read_current_appearance(self._state_root)
+        palette_mode = expected_mode(self._state_root, state.palette)
+        mode = manifest.mode if manifest is not None else palette_mode
+        # Pointer identity comes from the recorded state, never from the
+        # generation the pointer resolves to (a stale generation must not
+        # validate itself).
+        expected_hash = appearance_generation_hash(
+            state.palette.entry_hash, state.skin.entry_hash, palette_mode
+        )
+        expected_dir = self._state_root / "cache" / "appearance" / expected_hash
+        status, detail = self._link_status(
+            self._state_root / "current" / "appearance", expected_dir
+        )
+        items: list[DriftItem] = [
+            DriftItem(
+                "appearance:pointer",
+                "appearance",
+                status,
+                f"{detail} (skin={state.skin.name}, mode={mode}, hash={expected_hash[:12]})",
+            )
+        ]
+        if manifest is None:
+            items.append(
+                DriftItem(
+                    "appearance:manifest",
+                    "appearance",
+                    "missing",
+                    f"current/appearance has no readable v2 generation for {expected_hash[:12]}",
+                )
+            )
+        else:
+            items.append(
+                DriftItem(
+                    "appearance:manifest",
+                    "appearance",
+                    "ok",
+                    (
+                        f"generation {manifest.appearance_hash[:12]} "
+                        f"(skin={manifest.skin}, mode={manifest.mode}, "
+                        f"{len(manifest.config_dirs)} css target(s))"
+                    ),
+                )
+            )
+        watch = WatchHealthStore(self._state_root).read()
+        if watch is None:
+            items.append(
+                DriftItem(
+                    "appearance:watch",
+                    "appearance",
+                    "ok",
+                    "watch health unknown (daemon has not reported; pointer is the signal)",
+                )
+            )
+        else:
+            items.append(
+                DriftItem(
+                    "appearance:watch",
+                    "appearance",
+                    "diverged" if watch.degraded else "ok",
+                    (
+                        f"watch set degraded: {', '.join(watch.failed_roots) or 'unknown root'}"
+                        if watch.degraded
+                        else "watch set healthy"
+                    ),
+                )
+            )
+        if manifest is not None:
+            spec_dirs = set(skin_config_dirs(state.skin.artifact_hashes))
+            if self._install_spine is not None:
+                for config_dir in manifest.config_dirs:
+                    dest = self._install_spine / "config" / config_dir / "appearance.css"
+                    if not dest.parent.is_dir():
+                        continue
+                    expected = (
+                        self._state_root
+                        / "current"
+                        / "appearance"
+                        / f"{config_dir}.css"
+                    )
+                    c_status, c_detail = self._link_status(dest, expected)
+                    items.append(
+                        DriftItem(
+                            f"consumer/config/{config_dir}/appearance.css",
+                            "consumer",
+                            c_status,
+                            c_detail,
+                        )
+                    )
+                # v1/v2 skew: an installed v1 skin pointer whose target is
+                # current/skins/ means the app still consumes the v1 plane.
+                for config_dir in sorted(spec_dirs):
+                    v1_link = self._install_spine / "config" / config_dir / "skin.css"
+                    if not v1_link.parent.is_dir() or not v1_link.is_symlink():
+                        continue
+                    try:
+                        raw = os.readlink(v1_link)
+                    except OSError:
+                        continue
+                    if "current/skins/" in raw.replace("\\", "/"):
+                        items.append(
+                            DriftItem(
+                                "appearance:v1v2-skew",
+                                "appearance",
+                                "diverged",
+                                (
+                                    "v1 skin pointers are still published during the "
+                                    "migration window (apps still consume "
+                                    "current/skins/); remove them only after the v2 cutover"
+                                ),
+                            )
+                        )
+                        break
         return items
 
     def _link_status(self, link: Path, expected_target: Path) -> tuple[LinkStatusKind, str]:

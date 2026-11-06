@@ -213,6 +213,28 @@ class SkinEntry:
 DEFAULT_SKIN: Final[str] = "glass"
 
 
+@dataclass(frozen=True, slots=True)
+class AppearanceEntry:
+    """One immutable composed appearance generation (contracts v0.7.0).
+
+    ``appearance_hash`` is the cache directory name and the ledger/refresh
+    identity: ``sha256(palette_entry_hash ‖ skin_entry_hash ‖ mode)``. The
+    palette and skin caches stay independent inputs; this type never mutates
+    either entry. ``config_dirs`` is derived from the skin's ``<configDir>.css``
+    artifacts, never a fixed app list.
+    """
+
+    version: Literal[2]
+    appearance_hash: str
+    palette_hash: str
+    skin_hash: str
+    skin: str
+    mode: Literal["dark", "light"]
+    generation_hash: str
+    token_ref: Literal["tokens.json"]
+    config_dirs: tuple[str, ...]
+
+
 class SkinUnavailableError(RuntimeError):
     """A selected skin could not be resolved, parsed or expanded.
 

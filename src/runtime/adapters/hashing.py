@@ -113,6 +113,26 @@ def appearance_hash(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def appearance_generation_hash(palette_hash: str, skin_hash: str, mode: str) -> str:
+    """Canonical v2 appearance hash: ``f(palette, skin, mode)``.
+
+    Canonical form from the frozen ``contracts`` v0.7.0 appearance contract::
+
+        sha256("appearance.v2\\n" + paletteHash + "\\n" + skinHash + "\\n" + mode)
+
+    Mode is part of the identity on purpose (RFC risk R-2): a mode flip must
+    produce a new generation even when the palette and skin entry hashes are
+    unchanged. Effects/icons are content layers, not appearance layers, so
+    they are deliberately absent (RFC R-5).
+    """
+    _validate_hex64("palette_hash", palette_hash)
+    _validate_hex64("skin_hash", skin_hash)
+    if mode not in ("dark", "light"):
+        raise ValueError(f"mode must be 'dark' or 'light', got {mode!r}")
+    material = f"appearance.v2\n{palette_hash}\n{skin_hash}\n{mode}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
 def hash_file(path: Path) -> str:
     """SHA-256 hex (lowercase) of a single file, chunked.
 

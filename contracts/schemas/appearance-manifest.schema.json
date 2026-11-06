@@ -1,0 +1,740 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://dotfiles.local/schemas/appearance-manifest.schema.json",
+  "title": "Appearance manifest (schemaVersion 2)",
+  "description": "Canonical appearance manifest for the v2 appearance plane. The nested token groups describe surface roles, interaction states, type, ink and namespaced layout metrics; optional mode.dark/mode.light groups are same-shape overrides selected from the palette mode. All lengths are unitless JSON numbers rendered as CSS px (letter-spacing renders as em, font-weight stays unitless). Paint values are palette role expressions only: no literal hex, no transitions and no structure/variant tokens.",
+  "status": "frozen",
+  "type": "object",
+  "additionalProperties": false,
+  "propertyNames": {
+    "$ref": "#/definitions/forbiddenName"
+  },
+  "required": [
+    "schemaVersion",
+    "name",
+    "groups"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 2,
+      "description": "Appearance manifest version; exactly 2."
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "description": "Appearance/skin name; v2 ships glass, flat and paper."
+    },
+    "groups": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "properties": {
+        "surface": {
+          "$ref": "#/definitions/surfaceGroup"
+        },
+        "state": {
+          "$ref": "#/definitions/stateGroup"
+        },
+        "type": {
+          "$ref": "#/definitions/typeGroup"
+        },
+        "ink": {
+          "$ref": "#/definitions/inkGroup"
+        },
+        "layout": {
+          "$ref": "#/definitions/layoutGroup"
+        }
+      },
+      "required": [
+        "surface",
+        "state",
+        "type",
+        "ink",
+        "layout"
+      ]
+    },
+    "mode": {
+      "$ref": "#/definitions/modeOverrides"
+    }
+  },
+  "definitions": {
+    "paletteRole": {
+      "type": "string",
+      "enum": [
+        "background",
+        "error",
+        "error_container",
+        "inverse_on_surface",
+        "inverse_primary",
+        "inverse_surface",
+        "on_background",
+        "on_error",
+        "on_error_container",
+        "on_primary",
+        "on_primary_container",
+        "on_primary_fixed",
+        "on_primary_fixed_variant",
+        "on_secondary",
+        "on_secondary_container",
+        "on_secondary_fixed",
+        "on_secondary_fixed_variant",
+        "on_surface",
+        "on_surface_variant",
+        "on_tertiary",
+        "on_tertiary_container",
+        "on_tertiary_fixed",
+        "on_tertiary_fixed_variant",
+        "outline",
+        "outline_variant",
+        "primary",
+        "primary_container",
+        "primary_fixed",
+        "primary_fixed_dim",
+        "scrim",
+        "secondary",
+        "secondary_container",
+        "secondary_fixed",
+        "secondary_fixed_dim",
+        "shadow",
+        "source_color",
+        "surface",
+        "surface_bright",
+        "surface_container",
+        "surface_container_high",
+        "surface_container_highest",
+        "surface_container_low",
+        "surface_container_lowest",
+        "surface_dim",
+        "surface_tint",
+        "surface_variant",
+        "tertiary",
+        "tertiary_container",
+        "tertiary_fixed",
+        "tertiary_fixed_dim",
+        "on_backdrop"
+      ],
+      "description": "A palette.v1 role name (50 Material roles + on_backdrop). No new roles are introduced by a skin."
+    },
+    "forbiddenName": {
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "(?:^|_)(?:structure|order|presence)(?:_|$)"
+          },
+          {
+            "pattern": "variant"
+          }
+        ]
+      }
+    },
+    "noForbiddenValue": {
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "#"
+          },
+          {
+            "pattern": "transition"
+          }
+        ]
+      }
+    },
+    "paint": {
+      "type": "string",
+      "minLength": 1,
+      "allOf": [
+        {
+          "$ref": "#/definitions/noForbiddenValue"
+        }
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "blur\\("
+          },
+          {
+            "pattern": "calc\\([^)]*%"
+          },
+          {
+            "pattern": "@(?!(?:background|error|error_container|inverse_on_surface|inverse_primary|inverse_surface|on_background|on_error|on_error_container|on_primary|on_primary_container|on_primary_fixed|on_primary_fixed_variant|on_secondary|on_secondary_container|on_secondary_fixed|on_secondary_fixed_variant|on_surface|on_surface_variant|on_tertiary|on_tertiary_container|on_tertiary_fixed|on_tertiary_fixed_variant|outline|outline_variant|primary|primary_container|primary_fixed|primary_fixed_dim|scrim|secondary|secondary_container|secondary_fixed|secondary_fixed_dim|shadow|source_color|surface|surface_bright|surface_container|surface_container_high|surface_container_highest|surface_container_low|surface_container_lowest|surface_dim|surface_tint|surface_variant|tertiary|tertiary_container|tertiary_fixed|tertiary_fixed_dim|on_backdrop)(?![A-Za-z0-9_-]))"
+          },
+          {
+            "pattern": "alpha\\(\\s*@(?:background|error|error_container|inverse_on_surface|inverse_primary|inverse_surface|on_background|on_error|on_error_container|on_primary|on_primary_container|on_primary_fixed|on_primary_fixed_variant|on_secondary|on_secondary_container|on_secondary_fixed|on_secondary_fixed_variant|on_surface|on_surface_variant|on_tertiary|on_tertiary_container|on_tertiary_fixed|on_tertiary_fixed_variant|outline|outline_variant|primary|primary_container|primary_fixed|primary_fixed_dim|scrim|secondary|secondary_container|secondary_fixed|secondary_fixed_dim|shadow|source_color|surface|surface_bright|surface_container|surface_container_high|surface_container_highest|surface_container_low|surface_container_lowest|surface_dim|surface_tint|surface_variant|tertiary|tertiary_container|tertiary_fixed|tertiary_fixed_dim|on_backdrop)\\s*,\\s*(?!\\s*(?:0(?:\\.\\d+)?|1(?:\\.0+)?)\\s*\\))"
+          },
+          {
+            "pattern": "color-mix\\((?![^)]*\\bin srgb\\b)"
+          },
+          {
+            "pattern": "color-mix\\((?![^)]*%\\s*,)"
+          }
+        ]
+      },
+      "description": "A CSS paint composed only from palette.v1 role expressions and the transparent keyword: colours, alpha(), color-mix(), gradients and shadows. No literal hex, no transition, no blur( outside the blur token and no percentage inside calc()."
+    },
+    "roleExpression": {
+      "type": "string",
+      "minLength": 1,
+      "allOf": [
+        {
+          "$ref": "#/definitions/noForbiddenValue"
+        }
+      ],
+      "anyOf": [
+        {
+          "pattern": "^@(?:background|error|error_container|inverse_on_surface|inverse_primary|inverse_surface|on_background|on_error|on_error_container|on_primary|on_primary_container|on_primary_fixed|on_primary_fixed_variant|on_secondary|on_secondary_container|on_secondary_fixed|on_secondary_fixed_variant|on_surface|on_surface_variant|on_tertiary|on_tertiary_container|on_tertiary_fixed|on_tertiary_fixed_variant|outline|outline_variant|primary|primary_container|primary_fixed|primary_fixed_dim|scrim|secondary|secondary_container|secondary_fixed|secondary_fixed_dim|shadow|source_color|surface|surface_bright|surface_container|surface_container_high|surface_container_highest|surface_container_low|surface_container_lowest|surface_dim|surface_tint|surface_variant|tertiary|tertiary_container|tertiary_fixed|tertiary_fixed_dim|on_backdrop)$"
+        },
+        {
+          "pattern": "^alpha\\(\\s*@(?:background|error|error_container|inverse_on_surface|inverse_primary|inverse_surface|on_background|on_error|on_error_container|on_primary|on_primary_container|on_primary_fixed|on_primary_fixed_variant|on_secondary|on_secondary_container|on_secondary_fixed|on_secondary_fixed_variant|on_surface|on_surface_variant|on_tertiary|on_tertiary_container|on_tertiary_fixed|on_tertiary_fixed_variant|outline|outline_variant|primary|primary_container|primary_fixed|primary_fixed_dim|scrim|secondary|secondary_container|secondary_fixed|secondary_fixed_dim|shadow|source_color|surface|surface_bright|surface_container|surface_container_high|surface_container_highest|surface_container_low|surface_container_lowest|surface_dim|surface_tint|surface_variant|tertiary|tertiary_container|tertiary_fixed|tertiary_fixed_dim|on_backdrop)\\s*,\\s*(?:0(?:\\.\\d+)?|1(?:\\.0+)?)\\s*\\)$"
+        },
+        {
+          "pattern": "^color-mix\\(\\s*in srgb\\s*,\\s*@(?:background|error|error_container|inverse_on_surface|inverse_primary|inverse_surface|on_background|on_error|on_error_container|on_primary|on_primary_container|on_primary_fixed|on_primary_fixed_variant|on_secondary|on_secondary_container|on_secondary_fixed|on_secondary_fixed_variant|on_surface|on_surface_variant|on_tertiary|on_tertiary_container|on_tertiary_fixed|on_tertiary_fixed_variant|outline|outline_variant|primary|primary_container|primary_fixed|primary_fixed_dim|scrim|secondary|secondary_container|secondary_fixed|secondary_fixed_dim|shadow|source_color|surface|surface_bright|surface_container|surface_container_high|surface_container_highest|surface_container_low|surface_container_lowest|surface_dim|surface_tint|surface_variant|tertiary|tertiary_container|tertiary_fixed|tertiary_fixed_dim|on_backdrop)\\s+\\d{1,3}%\\s*,\\s*(?:transparent|@(?:background|error|error_container|inverse_on_surface|inverse_primary|inverse_surface|on_background|on_error|on_error_container|on_primary|on_primary_container|on_primary_fixed|on_primary_fixed_variant|on_secondary|on_secondary_container|on_secondary_fixed|on_secondary_fixed_variant|on_surface|on_surface_variant|on_tertiary|on_tertiary_container|on_tertiary_fixed|on_tertiary_fixed_variant|outline|outline_variant|primary|primary_container|primary_fixed|primary_fixed_dim|scrim|secondary|secondary_container|secondary_fixed|secondary_fixed_dim|shadow|source_color|surface|surface_bright|surface_container|surface_container_high|surface_container_highest|surface_container_low|surface_container_lowest|surface_dim|surface_tint|surface_variant|tertiary|tertiary_container|tertiary_fixed|tertiary_fixed_dim|on_backdrop))\\s*\\)$"
+        }
+      ]
+    },
+    "inkValue": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/paletteRole"
+        },
+        {
+          "$ref": "#/definitions/roleExpression"
+        }
+      ]
+    },
+    "blurValue": {
+      "oneOf": [
+        {
+          "const": "none"
+        },
+        {
+          "type": "string",
+          "pattern": "^blur\\(\\d+(?:\\.\\d+)?px\\)(?: saturate\\(\\d+(?:\\.\\d+)?\\))?$",
+          "description": "blur(<n>px) with an optional saturate(<n>); this is the ONLY token that may contain \"blur(\"."
+        }
+      ]
+    },
+    "nonNegativeNumber": {
+      "type": "number",
+      "minimum": 0,
+      "description": "A non-negative, unitless JSON number (for example 12). In a CSS length position the expander renders it as <number>px; a unit string such as \"12px\" is invalid.",
+      "examples": [
+        12,
+        1.5,
+        312
+      ]
+    },
+    "number": {
+      "type": "number",
+      "description": "A unitless JSON number (for example 12 or 1.5). In a CSS length position the expander renders it as <number>px; a unit string such as \"12px\" is invalid.",
+      "examples": [
+        12,
+        1.5,
+        312
+      ]
+    },
+    "fontFamily": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A CSS font-family string; the default skin may use \"inherit\".",
+      "examples": [
+        "inherit",
+        "Inter, sans-serif"
+      ],
+      "allOf": [
+        {
+          "$ref": "#/definitions/noForbiddenValue"
+        }
+      ]
+    },
+    "shadowValue": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/paint"
+        }
+      ],
+      "description": "Either none or a shadow string composed only from palette role atoms."
+    },
+    "borderPaint": {
+      "description": "A border colour expression (transparent, a palette role, alpha() or color-mix()). The width is the sibling numeric border-width token; a border value must not carry a width or a style.",
+      "anyOf": [
+        {
+          "const": "transparent"
+        },
+        {
+          "$ref": "#/definitions/paletteRole"
+        },
+        {
+          "$ref": "#/definitions/roleExpression"
+        }
+      ]
+    },
+    "roleValue": {
+      "description": "A role expression used by state fill/ink/ring or by surface paint. Bare palette roles, @role, alpha(@role, n), color-mix(...) and transparent are legal; literal hex is never legal.",
+      "anyOf": [
+        {
+          "const": "transparent"
+        },
+        {
+          "$ref": "#/definitions/paletteRole"
+        },
+        {
+          "$ref": "#/definitions/roleExpression"
+        }
+      ]
+    },
+    "positiveNumber": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "A positive, unitless JSON number. Length positions render as <number>px; units are never stored.",
+      "examples": [
+        1,
+        9.5,
+        15
+      ]
+    },
+    "fontWeight": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 1000,
+      "description": "A unitless CSS font weight (for example 400 or 600).",
+      "examples": [
+        400,
+        600,
+        650
+      ]
+    },
+    "letterSpacing": {
+      "type": "number",
+      "minimum": -10,
+      "maximum": 10,
+      "description": "A unitless letter-spacing ratio rendered as <number>em in CSS (0.05 -> 0.05em); the unit is never stored.",
+      "examples": [
+        0,
+        0.05,
+        0.08
+      ]
+    },
+    "panelRole": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "properties": {
+        "bg": {
+          "$ref": "#/definitions/paint"
+        },
+        "border": {
+          "$ref": "#/definitions/borderPaint"
+        },
+        "border-width": {
+          "$ref": "#/definitions/nonNegativeNumber"
+        },
+        "radius": {
+          "$ref": "#/definitions/nonNegativeNumber"
+        },
+        "padding": {
+          "$ref": "#/definitions/nonNegativeNumber"
+        },
+        "shadow": {
+          "$ref": "#/definitions/shadowValue"
+        },
+        "blur": {
+          "$ref": "#/definitions/blurValue"
+        }
+      },
+      "required": [
+        "bg",
+        "border",
+        "border-width",
+        "radius",
+        "padding",
+        "shadow",
+        "blur"
+      ]
+    },
+    "cardRole": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "properties": {
+        "bg": {
+          "$ref": "#/definitions/paint"
+        },
+        "border": {
+          "$ref": "#/definitions/borderPaint"
+        },
+        "border-width": {
+          "$ref": "#/definitions/nonNegativeNumber"
+        },
+        "radius": {
+          "$ref": "#/definitions/nonNegativeNumber"
+        },
+        "padding": {
+          "$ref": "#/definitions/nonNegativeNumber"
+        }
+      },
+      "required": [
+        "bg",
+        "border",
+        "border-width",
+        "radius",
+        "padding"
+      ]
+    },
+    "cellRole": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "properties": {
+        "bg": {
+          "$ref": "#/definitions/paint"
+        },
+        "border": {
+          "$ref": "#/definitions/borderPaint"
+        },
+        "border-width": {
+          "$ref": "#/definitions/nonNegativeNumber"
+        },
+        "radius": {
+          "$ref": "#/definitions/nonNegativeNumber"
+        },
+        "padding": {
+          "$ref": "#/definitions/nonNegativeNumber"
+        },
+        "hover-bg": {
+          "$ref": "#/definitions/paint"
+        }
+      },
+      "required": [
+        "bg",
+        "border",
+        "border-width",
+        "radius",
+        "padding",
+        "hover-bg"
+      ]
+    },
+    "controlRole": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "properties": {
+        "bg": {
+          "$ref": "#/definitions/paint"
+        },
+        "border": {
+          "$ref": "#/definitions/borderPaint"
+        },
+        "border-width": {
+          "$ref": "#/definitions/nonNegativeNumber"
+        },
+        "radius": {
+          "$ref": "#/definitions/nonNegativeNumber"
+        },
+        "padding": {
+          "$ref": "#/definitions/nonNegativeNumber"
+        },
+        "font-size": {
+          "$ref": "#/definitions/positiveNumber"
+        },
+        "font-weight": {
+          "$ref": "#/definitions/fontWeight"
+        }
+      },
+      "required": [
+        "bg",
+        "border",
+        "border-width",
+        "radius",
+        "padding",
+        "font-size",
+        "font-weight"
+      ]
+    },
+    "pillRole": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "properties": {
+        "bg": {
+          "$ref": "#/definitions/paint"
+        },
+        "border": {
+          "$ref": "#/definitions/borderPaint"
+        },
+        "border-width": {
+          "$ref": "#/definitions/nonNegativeNumber"
+        },
+        "radius": {
+          "$ref": "#/definitions/nonNegativeNumber"
+        },
+        "padding": {
+          "$ref": "#/definitions/nonNegativeNumber"
+        },
+        "font-size": {
+          "$ref": "#/definitions/positiveNumber"
+        },
+        "letter-spacing": {
+          "$ref": "#/definitions/letterSpacing"
+        }
+      },
+      "required": [
+        "bg",
+        "border",
+        "border-width",
+        "radius",
+        "padding",
+        "font-size",
+        "letter-spacing"
+      ]
+    },
+    "surfaceGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "properties": {
+        "panel": {
+          "$ref": "#/definitions/panelRole"
+        },
+        "card": {
+          "$ref": "#/definitions/cardRole"
+        },
+        "cell": {
+          "$ref": "#/definitions/cellRole"
+        },
+        "control": {
+          "$ref": "#/definitions/controlRole"
+        },
+        "pill": {
+          "$ref": "#/definitions/pillRole"
+        }
+      },
+      "required": [
+        "panel",
+        "card",
+        "cell",
+        "control",
+        "pill"
+      ]
+    },
+    "stateRole": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "properties": {
+        "fill": {
+          "$ref": "#/definitions/roleValue"
+        },
+        "ink": {
+          "$ref": "#/definitions/inkValue"
+        },
+        "ring": {
+          "$ref": "#/definitions/roleValue"
+        }
+      },
+      "required": [
+        "fill",
+        "ink",
+        "ring"
+      ]
+    },
+    "stateGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "properties": {
+        "hover": {
+          "$ref": "#/definitions/stateRole"
+        },
+        "selected": {
+          "$ref": "#/definitions/stateRole"
+        },
+        "focus": {
+          "$ref": "#/definitions/stateRole"
+        },
+        "disabled": {
+          "$ref": "#/definitions/stateRole"
+        }
+      },
+      "required": [
+        "hover",
+        "selected",
+        "focus",
+        "disabled"
+      ]
+    },
+    "typeGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "properties": {
+        "font-family": {
+          "$ref": "#/definitions/fontFamily"
+        },
+        "font-weight": {
+          "$ref": "#/definitions/fontWeight"
+        },
+        "letter-spacing": {
+          "$ref": "#/definitions/letterSpacing"
+        },
+        "size-caption": {
+          "$ref": "#/definitions/positiveNumber"
+        },
+        "size-meta": {
+          "$ref": "#/definitions/positiveNumber"
+        },
+        "size-body": {
+          "$ref": "#/definitions/positiveNumber"
+        },
+        "size-title": {
+          "$ref": "#/definitions/positiveNumber"
+        },
+        "size-display": {
+          "$ref": "#/definitions/positiveNumber"
+        }
+      },
+      "required": [
+        "font-family",
+        "font-weight",
+        "letter-spacing",
+        "size-caption",
+        "size-meta",
+        "size-body",
+        "size-title",
+        "size-display"
+      ]
+    },
+    "inkGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "properties": {
+        "ink": {
+          "$ref": "#/definitions/inkValue"
+        },
+        "ink-dim": {
+          "$ref": "#/definitions/inkValue"
+        },
+        "accent": {
+          "$ref": "#/definitions/inkValue"
+        },
+        "accent-muted": {
+          "$ref": "#/definitions/inkValue"
+        },
+        "ink-over": {
+          "const": "auto",
+          "description": "Derived at runtime from the backdrop; the only legal value is auto."
+        }
+      },
+      "required": [
+        "ink",
+        "ink-dim",
+        "accent",
+        "accent-muted",
+        "ink-over"
+      ]
+    },
+    "layoutApp": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/forbiddenName"
+          },
+          {
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          }
+        ]
+      },
+      "minProperties": 1,
+      "patternProperties": {
+        "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$": {
+          "$ref": "#/definitions/nonNegativeNumber"
+        }
+      },
+      "description": "Numeric layout metrics for one app. Namespaced under layout.<app>; owned by the app's TSX and never expanded by a template."
+    },
+    "layoutGroup": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/layoutApp"
+      },
+      "propertyNames": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/forbiddenName"
+          },
+          {
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          }
+        ]
+      },
+      "minProperties": 1,
+      "description": "layout.<app> namespaces: for example layout.bar.panel-width. Values are unitless numbers consumed by skinValue(), never emitted by a template."
+    },
+    "modeOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "minProperties": 1,
+      "properties": {
+        "surface": {
+          "$ref": "#/definitions/surfaceGroup"
+        },
+        "state": {
+          "$ref": "#/definitions/stateGroup"
+        },
+        "type": {
+          "$ref": "#/definitions/typeGroup"
+        },
+        "ink": {
+          "$ref": "#/definitions/inkGroup"
+        },
+        "layout": {
+          "$ref": "#/definitions/layoutGroup"
+        }
+      },
+      "description": "Optional overrides for one palette mode. An override is the complete same-shape group it replaces; omitted groups inherit the base groups. There is no deep merge."
+    },
+    "modeOverrides": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "properties": {
+        "dark": {
+          "$ref": "#/definitions/modeOverride"
+        },
+        "light": {
+          "$ref": "#/definitions/modeOverride"
+        }
+      },
+      "description": "Optional mode.dark / mode.light group overrides. Generation selects exactly one from the palette mode and expands templates afterwards."
+    }
+  }
+}

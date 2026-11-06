@@ -19,6 +19,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+# Path is also part of the public ``appearance_hash_for_state`` signature.
 from runtime.domain.ags_apps import (
     AppAppearanceState,
     AppliedAppearance,
@@ -93,25 +94,41 @@ def hold_operation_lock(state_root: Path, *, timeout: float = 10.0) -> Iterator[
             pass
 
 
-def appearance_hash_for_state(state: object) -> str:
-    """Compute the appearance hash from a ``DesktopState`` (palette/icons/effects/skin).
+def appearance_hash_for_state(state: object, *, state_root: Path | None = None) -> str:
+    """Compute the ledger/refresh appearance hash from a ``DesktopState``.
 
-    Imports are local so domain models stay the only direct dependency of the
-    caller; the hash formula lives in the adapter hashing module.
+    v2 identity is ``f(palette, skin, mode)`` (contracts v0.7.0). Effects and
+    icons are content layers, not appearance layers, so they no longer
+    participate (RFC R-5 keeps their separate refresh signal). When the state
+    has no palette/skin yet, the historical content hash is retained so a
+    pre-appearance machine still has a stable ledger key.
+
+    ``state_root`` lets the caller reuse the mode recorded by the live
+    generation (or the palette's projected mode); without it the identity
+    falls back to ``dark``.
     """
-    from runtime.adapters.hashing import appearance_hash
+    from runtime.adapters.appearance import expected_mode, read_current_appearance
+    from runtime.adapters.hashing import appearance_generation_hash, appearance_hash
 
     palette = getattr(state, "palette", None)
     effects = getattr(state, "effects", None)
     icons = getattr(state, "icons", None)
     skin = getattr(state, "skin", None)
+    palette_hash = getattr(palette, "entry_hash", None)
+    skin_hash = getattr(skin, "entry_hash", None)
+    if palette_hash is not None and skin_hash is not None:
+        mode = "dark"
+        if state_root is not None:
+            manifest = read_current_appearance(state_root)
+            mode = manifest.mode if manifest is not None else expected_mode(state_root, palette)
+        return appearance_generation_hash(palette_hash, skin_hash, mode)
     return appearance_hash(
-        palette_hash=getattr(palette, "entry_hash", None),
+        palette_hash=palette_hash,
         effects_hash=getattr(effects, "entry_hash", None),
         icons_hash=getattr(icons, "entry_hash", None),
         icon_templates_hash=getattr(icons, "input_templates_hash", None),
         icon_mappings_hash=getattr(icons, "input_mappings_hash", None),
-        skins_hash=getattr(skin, "entry_hash", None),
+        skins_hash=skin_hash,
     )
 
 

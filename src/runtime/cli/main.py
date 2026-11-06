@@ -981,6 +981,9 @@ def wallpaper_set(
         "skipped": list(result.reconcile.skipped),
         "cache_regenerated": list(result.reconcile.cache_regenerated),
         "reload_failures": list(result.reconcile.reload_failures),
+        "appearance_hash": getattr(result.reconcile, "appearance_hash", None),
+        "appearance_skin": getattr(result.reconcile, "appearance_skin", None),
+        "appearance_mode": getattr(result.reconcile, "appearance_mode", None),
         "inputs_stale": [],
         "inputs_fresh": [],
         "inputs_check_error": None,
@@ -3270,6 +3273,12 @@ def reconcile(
             if result.consumer_symlinks
             else ""
         )
+        + (
+            f", appearance {result.appearance_hash[:12]}"
+            f" ({result.appearance_skin}/{result.appearance_mode})"
+            if getattr(result, "appearance_hash", None)
+            else ""
+        )
     )
     obj: dict[str, object] = {
         "repointed": [str(p) for p in result.repointed],
@@ -3277,6 +3286,9 @@ def reconcile(
         "skipped": list(result.skipped),
         "cache_regenerated": list(result.cache_regenerated),
         "reload_failures": list(result.reload_failures),
+        "appearance_hash": getattr(result, "appearance_hash", None),
+        "appearance_skin": getattr(result, "appearance_skin", None),
+        "appearance_mode": getattr(result, "appearance_mode", None),
     }
     try:
         converge_report = _call_with_producer(_run_converge, producer=producer)
@@ -3522,10 +3534,16 @@ def inspect_status(
     effects_desc = result.effects[:12] if result.effects is not None else "absent"
     icons_desc = result.icons[:12] if result.icons is not None else "absent"
     skin_desc = result.skin_name or "absent"
+    appearance_desc = (
+        f"{result.appearance_hash[:12]} ({result.appearance_skin}/{result.appearance_mode})"
+        if result.appearance_hash is not None
+        else "absent"
+    )
     summary = (
         f"desktop state: wallpaper {result.wallpaper[:12]}"
         f" (palette {palette_desc}, effects {effects_desc}, icons {icons_desc},"
         f" skin {skin_desc})"
+        f", appearance {appearance_desc}"
         f", {len(result.current_symlinks)} symlink(s) checked"
     )
     renderer.custom(
@@ -3541,6 +3559,18 @@ def inspect_status(
                 "skin": result.skin,
                 "skin_name": result.skin_name,
                 "skin_tokens": result.skin_tokens,
+                "appearance_hash": result.appearance_hash,
+                "appearance_skin": result.appearance_skin,
+                "appearance_mode": result.appearance_mode,
+                "appearance_pointer": (
+                    {
+                        "status": result.appearance_pointer.status,
+                        "target": result.appearance_pointer.target,
+                    }
+                    if result.appearance_pointer is not None
+                    else None
+                ),
+                "appearance_watch": result.appearance_watch,
                 "applied_at": result.applied_at,
                 "current_symlinks": {
                     name: {"status": status.status, "target": status.target}

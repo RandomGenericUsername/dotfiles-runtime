@@ -29,12 +29,14 @@ from typing import Any, Final, cast
 
 import fastjsonschema
 
+from runtime.adapters.appearance import prune_stale_appearance_consumers
 from runtime.adapters.cache import CACHE_QUARANTINE_DIR, hardlink_or_copy
 from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
 from runtime.adapters.contract_schemas import meta_validator, meta_validator_for_kind
 from runtime.adapters.flock_seed_mutex import FlockHistoryMutex
 from runtime.adapters.hashing import HASH_ALGORITHM, hash_file
 from runtime.domain.models import (
+    AppearanceEntry,
     EffectsArtifacts,
     EffectsEntry,
     HistoryLockError,
@@ -774,6 +776,46 @@ class CacheSeeder:
                 )
                 created.append(self.repoint_current_symlink(link_name, target))
 
+        return created
+
+    def publish_appearance(
+        self,
+        install_spine: Path,
+        appearance: AppearanceEntry,
+    ) -> list[Path]:
+        """Repoint the ONE appearance pointer and its convenience links.
+
+        The only repointed hop is ``current/appearance``: one temp symlink +
+        ``os.replace`` to ``cache/appearance/<appearanceHash>``. Each existing
+        app config dir receives a stable ``appearance.css`` link into that hop;
+        absent dirs are skipped (the runtime never creates an app config dir).
+        Runtime-owned links for targets the generation no longer produces are
+        pruned. v1 skin pointers are deliberately untouched (migration window).
+        """
+        cache_dir = self._state_root / "cache" / "appearance" / appearance.appearance_hash
+        if not cache_dir.is_dir():
+            raise RuntimeError(f"appearance generation missing: {cache_dir}")
+        current_dir = self.ensure_current_dir()
+        pointer = current_dir / "appearance"
+        _repoint_symlink(pointer, cache_dir)
+        created: list[Path] = [pointer]
+
+        wanted: set[Path] = set()
+        config_root = install_spine / "config"
+        if config_root.is_dir():
+            for config_dir in appearance.config_dirs:
+                dest = config_root / config_dir / "appearance.css"
+                if not dest.parent.is_dir():
+                    logger.debug(
+                        "seeding: appearance convenience link skipped, config dir absent: %s",
+                        dest.parent,
+                    )
+                    continue
+                target = pointer / f"{config_dir}.css"
+                _repoint_symlink(dest, target)
+                created.append(dest)
+                wanted.add(dest)
+            created.extend(prune_stale_appearance_consumers(install_spine, wanted))
         return created
 
     def repoint_consumer_symlinks(
