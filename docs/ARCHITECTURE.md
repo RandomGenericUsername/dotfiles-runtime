@@ -43,7 +43,8 @@ not import `os`, `pathlib`, `io`, `subprocess`, `socket` or `shutil`.
    - `tpr generate <wallpaper> --format …` (8 formats),
    - `weg batch all -- <wallpaper>`,
    - `itr render [<icons.yaml>]`,
-   - skin manifest + shared templates (`{{SKIN_*}}` expansion, palette-independent).
+   - skin manifest (`schema_major = 1`, `name`, six token groups) + shared
+     `<configDir>.gtk.css.j2` templates (`{{SKIN_*}}` expansion, palette-independent).
 3. **Cache** every artifact by its content hash under
    `$XDG_STATE_HOME/dotfiles/cache/<layer>/<sha256>/`, with a co-located `meta.json`.
    The skin layer is palette-independent: its key is `sha256(templates_hash ‖ manifest_hash)`, so
@@ -81,7 +82,7 @@ $XDG_STATE_HOME/dotfiles/
   current.json                         # desired state (machine-defined, schema-validated)
   current/                             # symlinks: colors.{conf,yaml,gtk.css,adw.css,
                                        #   sequences,rasi,kitty,btop.theme}, icons/
-  current/skins/<app>.css              # expanded skin CSS (palette-independent)
+  current/skins/<configDir>.css        # expanded skin CSS (palette-independent)
   current/skin.json                    # resolved skin token map for skinValue consumers
   cache/<layer>/<sha256>/meta.json     # layers: wallpapers,palettes,effects,icons,skins
   history.jsonl                        # append-only, atomic, symlink-guarded
@@ -95,8 +96,12 @@ $XDG_STATE_HOME/dotfiles/
   `current/skins/ags.css` and `config/ags/skin.json` → `current/skin.json`; adding one is a spec
   line plus its `@import`.
 - Skins are selected from `desired.json` (`"skin": "<name>"`, default `glass`). A skin is a
-  palette/ink mapping + paint + rhythm only (`{{SKIN_*}}` tokens, no structure/variants); a
-  missing/invalid manifest keeps the previous skin and never touches app CSS.
+  palette/ink mapping + paint + rhythm only (no structure/variants). The canonical manifest is
+  `schema_major = 1`, `name`, plus exactly `shape`/`surface`/`ink`/`type`/`rhythm`/`layout`;
+  dimensions must be unitless numbers and templates are `<configDir>.gtk.css.j2` →
+  `<configDir>.css`. Numeric tokens render `<number>px` and `skin.json` is the grouped
+  `version: 1` map with raw numbers. A missing/invalid manifest keeps the previous skin and
+  never touches app CSS.
 - Clipboard history is separate: `$XDG_STATE_HOME/clipboard/history.json` with images under
   `$XDG_CACHE_HOME/clipboard/` (config at `$XDG_CONFIG_HOME/clipboard/config.json`). The old
   `hypr-pano` paths are a one-time migration source only (AD-35).

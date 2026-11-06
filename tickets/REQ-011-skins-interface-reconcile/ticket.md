@@ -2,7 +2,7 @@
 id: REQ-011
 title: "Reconcile the skin expander to the canonical skin interface"
 kind: requirement
-status: in-progress
+status: done
 lane: 2
 links:
   openspec: none
@@ -37,11 +37,10 @@ One TOML/JSON manifest per skin under `skins/manifests/`:
   `accent`, `ink-over`, `font-family`
 - no `[tokens]`, no `[apps]`, no structure/variant keys.
 
-The current assets manifest encodes dimensions as `"12px"` strings (the frozen
-v1 assets schema). The expander accepts that dimension spelling for
-compatibility and normalizes every dimension token to a raw number in
-`skin.json`; CSS still receives `<number>px`. New manifests use unitless
-numbers.
+Dimensions are unitless numbers in both TOML and JSON. The assets repo was
+canonicalized during this work (`5a62c2d` unitless tokens, `db33e7e`
+`<configDir>.gtk.css.j2` names), so the runtime enforces the canonical form and
+rejects a unit string such as `"12px"`; CSS renders `<number>px`.
 
 ### Canonical template set + rendering
 
@@ -74,29 +73,29 @@ numbers.
 
 ## Acceptance
 
-- [ ] `SkinExpander` parses the canonical grouped TOML/JSON manifest, validates
+- [x] `SkinExpander` parses the canonical grouped TOML/JSON manifest, validates
       `schema_major == 1`, `name`, the six groups and their token sets, and
       rejects unknown groups/tokens/structure/variant keys.
-- [ ] Dimensions accept a number or a `<number>px` string; `skin.json` stores
-      every numeric token as a raw number (never a unit string).
-- [ ] Template discovery is `*.gtk.css.j2` → `<configDir>.css`; unknown and
+- [x] Dimensions are unitless numbers; a unit string fails closed. `skin.json`
+      stores every numeric token as a raw number (never a unit string).
+- [x] Template discovery is `*.gtk.css.j2` → `<configDir>.css`; unknown and
       unresolved `{{...}}` placeholders fail closed with the template path.
-- [ ] CSS substitutes numeric tokens as `<number>px`, `cell-pad` and string
+- [x] CSS substitutes numeric tokens as `<number>px`, `cell-pad` and string
       tokens verbatim, including layout tokens.
-- [ ] `skin.json` is the grouped `version: 1` map with numeric values; no flat
+- [x] `skin.json` is the grouped `version: 1` map with numeric values; no flat
       `[tokens]`/`[apps]` shape remains.
-- [ ] Manifest discovery includes `skins/manifests/<name>.toml|json` on the
+- [x] Manifest discovery includes `skins/manifests/<name>.toml|json` on the
       installed spine.
-- [ ] A test expands a fixture copied from the real `glass` manifest plus an
+- [x] A test expands a fixture copied from the real `glass` manifest plus an
       `ags.gtk.css.j2` template and asserts `border-radius: 12px`,
       `border: 1.5px solid @primary`, `padding: 8px 9px`, grouped numeric
       `12`/`1.5`/`312`, and the `config/ags/skin.css` pointer.
-- [ ] The old 18 wrong-format tests are rewritten; cache/fallback/pointer,
+- [x] The old 18 wrong-format tests are rewritten; cache/fallback/pointer,
       inspect/doctor/prune and appearance tests stay green.
-- [ ] Expander/port docstrings, README, ARCHITECTURE and CHANGELOG describe the
+- [x] Expander/port docstrings, README, ARCHITECTURE and CHANGELOG describe the
       canonical interface.
-- [ ] `make gates` and `make gates-ci` pass.
-- [ ] Release metadata is the next annotated minor (`v0.8.0`); no existing tag
+- [x] `make gates` and `make gates-ci` pass.
+- [x] Release metadata is the next annotated minor (`v0.8.0`); no existing tag
       is moved.
 
 ## Evidence
@@ -118,9 +117,79 @@ PY
 ```
 
 Real manifest shape: `dotfiles-assets/skins/manifests/glass.toml:11-48`
-(`schema_major`, `name`, six groups; dimensions currently spelled `"12px"`).
-Consumer contract: `ags-platform/ports/skin.ts` `parseSkinJson` (grouped map,
-`version: "1"`, raw numbers for numeric tokens).
+(`schema_major`, `name`, six groups; at the baseline commit the dimensions were
+spelled `"12px"`, and the assets repo canonicalized them to unitless numbers in
+`5a62c2d` during this work). Consumer contract: `ags-platform/ports/skin.ts`
+`parseSkinJson` (grouped map, `version: "1"`, raw numbers for numeric tokens).
+
+## Implementation evidence
+
+Executed on the ticket worktree (2026-11-05):
+
+```sh
+uv run pytest -q tests/unit/test_skin_expander.py tests/unit/test_skins.py
+# 29 passed
+```
+
+The fixture `tests/fixtures/skins/manifests/glass.toml` is byte-identical to
+the real assets manifest (`cmp` exit 0); `tests/fixtures/skins/templates/ags.gtk.css.j2`
+is the canonical template name.
+
+```sh
+uv run python - <<'PY'
+from pathlib import Path
+from runtime.adapters.hashing import canonical_hash_dir, hash_file, skin_entry_hash
+from runtime.adapters.skin_expander import SkinExpander
+m = Path('/home/inumaki/Development/dotfiles/dotfiles-assets/skins/manifests/glass.toml')
+t = Path('/home/inumaki/Development/dotfiles/dotfiles-assets/skins/templates')
+h = skin_entry_hash(canonical_hash_dir(t), hash_file(m))
+entry = SkinExpander().expand('glass', m, t, Path('/tmp/opencode/skin-canonical')/h)
+print(sorted(entry.artifact_hashes))
+PY
+# ['ags.css', 'skin.json']
+```
+
+Rendered real assets CSS contains `border-radius: 12px`, `border: 1.5px solid
+@primary`, `padding: 8px 9px` and `min-width: 312px`; the real `skin.json`
+groups are `version,shape,surface,ink,type,rhythm,layout` with numeric
+`radius-panel=12`, `border-w=1.5`, `panel-width=312`.
+
+```sh
+make gates
+# test       2239 passed, 3 skipped, 10 deselected
+# lint       All checks passed
+# contracts  48 passed, 1 skipped
+# hermetic   2239 passed, 3 skipped, 10 deselected
+# lock-check Resolved 25 packages (no changes)
+# docs-check exit 0
+```
+
+```sh
+make gates-ci
+# same set and results as make gates; exit 0
+```
+
+## Interface ambiguity resolved
+
+1. **Dimension spelling.** At ticket start the canonical statement said
+   unitless numbers while the assets manifests spelled dimensions `"12px"`.
+   The assets repo canonicalized them during the work (`5a62c2d`), so the
+   conflict is gone. Resolution: enforce strict unitless numbers; the fixture
+   is a byte-identical copy of the canonical real `glass.toml` and the test
+   asserts numeric `12`/`1.5`/`312`.
+2. **Template/configDir name.** At ticket start the real assets file was
+   `templates/ags-bar.gtk.css.j2`, but the canonical bar configDir is `ags`
+   (`dotfiles-v3/dotfiles/provisioning/apps.yaml`). The assets repo renamed it
+   to `ags.gtk.css.j2` during the work (`db33e7e`). Resolution: the runtime
+   implements only the canonical `<configDir>.gtk.css.j2` → `<configDir>.css`
+   rule (no runtime special-case); the real assets now produce `ags.css`.
+3. **Group order.** The real TOML lists `shape,rhythm,surface,ink,type,layout`;
+   `parseSkinJson`'s declared group order is
+   `shape,surface,ink,type,rhythm,layout`. Resolution: `skin.json` emits the
+   contract order; TOML table order is irrelevant.
+4. **`ink-over`.** The canonical string-token list omits it, but it is a real
+   frozen v1 token (`"auto"`). It is treated as a string token; no new field was
+   invented.
 
 ## Implementation map
 

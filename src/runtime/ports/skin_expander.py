@@ -2,8 +2,11 @@
 
 A skin is a palette/ink mapping + paint + rhythm description expanded from a
 shared template set and one chosen manifest. It carries no structure or
-variant tokens. Implementations parse/validate the manifest, substitute
-deterministically, and write the per-app CSS plus the resolved token map.
+variant tokens. The canonical manifest is a ``schema_major``/``name`` header
+plus the six ``shape``/``surface``/``ink``/``type``/``rhythm``/``layout``
+groups (no ``[tokens]``/``[apps]``). Implementations parse/validate the
+manifest, substitute every ``<configDir>.gtk.css.j2`` deterministically, and
+write the per-config CSS plus the grouped ``skin.json`` token map.
 """
 
 from __future__ import annotations

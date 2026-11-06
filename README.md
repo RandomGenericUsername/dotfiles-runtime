@@ -28,6 +28,16 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**0.8.0** — canonical skin interface: grouped manifests, `*.gtk.css.j2` templates, raw-number token map.
+
+- The expander consumes the real assets shape: `schema_major = 1`, `name`, and the six
+  `shape`/`surface`/`ink`/`type`/`rhythm`/`layout` groups (no `[tokens]`/`[apps]`).
+  Dimensions must be unitless numbers; unit strings fail closed.
+- Every `<configDir>.gtk.css.j2` under the shared templates dir renders
+  `<configDir>.css`; numeric tokens become `<number>px`, `cell-pad`/strings stay verbatim.
+- `skin.json` is the grouped `{"version": 1, "<group>": {...}}` map with raw numbers, so
+  `ags-platform` `parseSkinJson` accepts it. Pointers, cache identity and fallback are unchanged.
+
 **0.7.0** — skins derivation layer: palette-independent per-app CSS + token map.
 
 - `desired.json` accepts an optional `"skin": "<name>"` (default `glass`); v1 ships the
@@ -36,7 +46,7 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
   template set with deterministic `{{SKIN_*}}` substitution and caches it under
   `cache/skins/<sha256>/` keyed by `sha256(templates_hash ‖ manifest_hash)`, so a wallpaper or
   palette change never re-expands CSS.
-- `current/skins/<app>.css` + `current/skin.json` are atomic pointers; AGS gets
+- `current/skins/<configDir>.css` + `current/skin.json` are atomic pointers; AGS gets
   `config/ags/skin.css` and `config/ags/skin.json`. The appearance hash includes the skin, so live
   apps refresh through the existing `palette-refresh` lane (the restart-only bar is unchanged).
 - A missing/invalid manifest or template keeps the previous skin, logs a structured error, and

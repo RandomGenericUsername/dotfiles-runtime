@@ -263,6 +263,10 @@ def _skin_roots(install_spine: Path, dev: Path | None) -> list[Path]:
 
 def _manifest_paths(root: Path, name: str) -> list[Path]:
     return [
+        # Canonical assets layout: <skins>/manifests/<name>.{toml,json}.
+        root / "manifests" / f"{name}.toml",
+        root / "manifests" / f"{name}.json",
+        # Legacy/alternate in-spine layouts remain readable.
         root / f"{name}.toml",
         root / f"{name}.json",
         root / name / "manifest.toml",

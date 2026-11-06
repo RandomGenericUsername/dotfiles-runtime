@@ -81,22 +81,47 @@ def _write_skin_assets(
     spine: Path,
     *,
     name: str = "glass",
-    body: str = ".panel { border-radius: {{SKIN_RADIUS}}; }\n",
-    token: str = "12px",
+    body: str = ".panel { border-radius: {{SKIN_RADIUS_PANEL}}; }\n",
+    radius: str = "12",
 ) -> tuple[Path, Path]:
-    templates = spine / "skin-templates"
+    """Write the canonical assets layout: skins/manifests + skins/templates."""
+    templates = spine / "skins" / "templates"
     templates.mkdir(parents=True, exist_ok=True)
-    (templates / "ags.css.tpl").write_text(body, encoding="utf-8")
-    skins = spine / "skins"
-    skins.mkdir(parents=True, exist_ok=True)
-    manifest = skins / f"{name}.toml"
+    (templates / "ags.gtk.css.j2").write_text(body, encoding="utf-8")
+    manifests = spine / "skins" / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    manifest = manifests / f"{name}.toml"
     manifest.write_text(
-        f'name = "{name}"\n'
-        "version = 1\n"
-        "[tokens]\n"
-        f'radius = "{token}"\n'
-        "[apps]\n"
-        'ags = "ags.css.tpl"\n',
+        f'schema_major = 1\nname = "{name}"\n'
+        "[shape]\n"
+        f"radius-panel = {radius}\n"
+        "radius-card = 9\n"
+        "radius-cell = 7\n"
+        "radius-pill = 20\n"
+        "border-w = 1.5\n"
+        "[rhythm]\n"
+        "gap = 8\n"
+        'cell-pad = "8px 9px"\n'
+        "[surface]\n"
+        'bg-panel = "alpha(@surface, 0.94)"\n'
+        'bg-card = "alpha(@surface_container_high, 0.18)"\n'
+        'border = "@primary"\n'
+        'shadow = "none"\n'
+        'blur = "none"\n'
+        "[ink]\n"
+        'ink = "@on_surface"\n'
+        'ink-dim = "alpha(@on_surface, 0.62)"\n'
+        'accent = "@primary"\n'
+        'ink-over = "auto"\n'
+        "[type]\n"
+        'font-family = "inherit"\n'
+        "title-size = 12.5\n"
+        "text-size = 13\n"
+        "[layout]\n"
+        "panel-width = 312\n"
+        "bt-list-spacing = 4\n"
+        "bar-row-height = 0\n"
+        "chip-min = 0\n",
         encoding="utf-8",
     )
     return manifest, templates
@@ -258,8 +283,9 @@ def test_skin_cache_miss_on_template_and_manifest_change(tmp_path: Path) -> None
     first, hit = pipeline.ensure_skin("glass")
     assert hit is False and expander.calls == 1
 
-    (templates / "ags.css.tpl").write_text(
-        ".panel { border-radius: {{SKIN_RADIUS}}; padding: 1px; }\n", encoding="utf-8"
+    (templates / "ags.gtk.css.j2").write_text(
+        ".panel { border-radius: {{SKIN_RADIUS_PANEL}}; padding: 1px; }\n",
+        encoding="utf-8",
     )
     after_template, hit = pipeline.ensure_skin("glass")
     assert hit is False and expander.calls == 2
@@ -267,7 +293,9 @@ def test_skin_cache_miss_on_template_and_manifest_change(tmp_path: Path) -> None
     assert after_template.input_templates_hash != first.input_templates_hash
 
     manifest.write_text(
-        manifest.read_text(encoding="utf-8").replace('radius = "12px"', 'radius = "16px"'),
+        manifest.read_text(encoding="utf-8").replace(
+            "radius-panel = 12", "radius-panel = 16"
+        ),
         encoding="utf-8",
     )
     after_manifest, hit = pipeline.ensure_skin("glass")
@@ -290,8 +318,8 @@ def test_invalid_manifest_keeps_previous_skin_and_never_touches_css(
     link_before = (state_root / "current" / "skins" / "ags.css").readlink()
     ags_before = (spine / "config" / "ags" / "skin.css").readlink()
 
-    manifest = spine / "skins" / "glass.toml"
-    manifest.write_text("name = [not valid", encoding="utf-8")
+    manifest = spine / "skins" / "manifests" / "glass.toml"
+    manifest.write_text("schema_major = [not valid", encoding="utf-8")
     with caplog.at_level("ERROR"):
         second = reconcile.run()
 
@@ -422,9 +450,53 @@ def test_inspect_prints_resolved_skin_and_tokens(tmp_path: Path) -> None:
 
     assert inspected.skin == result.state.skin.entry_hash  # type: ignore[union-attr]
     assert inspected.skin_name == "glass"
-    assert inspected.skin_tokens == {"radius": "12px"}
+    assert inspected.skin_tokens == {
+        "version": 1,
+        "shape": {
+            "radius-panel": 12,
+            "radius-card": 9,
+            "radius-cell": 7,
+            "radius-pill": 20,
+            "border-w": 1.5,
+        },
+        "surface": {
+            "bg-panel": "alpha(@surface, 0.94)",
+            "bg-card": "alpha(@surface_container_high, 0.18)",
+            "border": "@primary",
+            "shadow": "none",
+            "blur": "none",
+        },
+        "ink": {
+            "ink": "@on_surface",
+            "ink-dim": "alpha(@on_surface, 0.62)",
+            "accent": "@primary",
+            "ink-over": "auto",
+        },
+        "type": {
+            "font-family": "inherit",
+            "title-size": 12.5,
+            "text-size": 13,
+        },
+        "rhythm": {"gap": 8, "cell-pad": "8px 9px"},
+        "layout": {
+            "panel-width": 312,
+            "bt-list-spacing": 4,
+            "bar-row-height": 0,
+            "chip-min": 0,
+        },
+    }
     assert inspected.consumer_pointers["config/ags/skin.css"].status == "ok"
     assert inspected.consumer_pointers["config/ags/skin.json"].status == "ok"
+
+
+def test_consumer_pointer_table_includes_the_ags_skin_pair() -> None:
+    pointers = {
+        pointer.path: pointer.target
+        for pointer in StaticConsumerPathSpec().consumer_pointers()
+    }
+
+    assert pointers["config/ags/skin.css"] == "skins/ags.css"
+    assert pointers["config/ags/skin.json"] == "skin.json"
 
 
 def test_skin_entry_hash_ignores_wallpaper_and_palette() -> None:

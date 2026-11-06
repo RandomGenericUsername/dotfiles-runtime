@@ -1,0 +1,44 @@
+/*
+ * Fixture template: the canonical `<configDir>.gtk.css.j2` shape.
+ * Numeric tokens render as `<number>px`; cell-pad and role expressions are
+ * verbatim. Selector vocabulary is app-owned.
+ */
+
+.panel {
+  min-width: {{SKIN_PANEL_WIDTH}};
+  background-color: {{SKIN_BG_PANEL}};
+  border: {{SKIN_BORDER_W}} solid {{SKIN_BORDER}};
+  border-radius: {{SKIN_RADIUS_PANEL}};
+  padding: {{SKIN_CELL_PAD}};
+  box-shadow: {{SKIN_SHADOW}};
+  backdrop-filter: {{SKIN_BLUR}};
+  color: {{SKIN_INK}};
+  font-family: {{SKIN_FONT_FAMILY}};
+}
+
+.card {
+  border-radius: {{SKIN_RADIUS_CARD}};
+  background-color: {{SKIN_BG_CARD}};
+}
+
+.cell {
+  border-radius: {{SKIN_RADIUS_CELL}};
+  padding: {{SKIN_CELL_PAD}};
+  margin-bottom: {{SKIN_BT_LIST_SPACING}};
+  min-height: {{SKIN_BAR_ROW_HEIGHT}};
+}
+
+.title {
+  font-size: {{SKIN_TITLE_SIZE}};
+}
+
+.body {
+  font-size: {{SKIN_TEXT_SIZE}};
+  color: {{SKIN_INK_DIM}};
+}
+
+.accent {
+  color: {{SKIN_ACCENT}};
+  border-radius: {{SKIN_RADIUS_PILL}};
+  min-width: {{SKIN_CHIP_MIN}};
+}

@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.8.0 — 2026-11-05
+
+Reconcile the skin expander to the canonical skin interface (REQ-011). This
+corrects the v0.7.0 manifest reader, which invented a `version` / `[tokens]` /
+`[apps]` shape and rejected every real assets manifest.
+
+- Manifests are `schema_major = 1`, `name`, and exactly the six groups
+  `[shape]`, `[surface]`, `[ink]`, `[type]`, `[rhythm]`, `[layout]`; there is no
+  `[tokens]`/`[apps]` table and no structure/variant key. Dimensions must be
+  unitless numbers (`radius-panel = 12`, `border-w = 1.5`); a unit string such
+  as `"12px"` fails closed.
+- Templates are discovered by `<configDir>.gtk.css.j2` and rendered to
+  `<configDir>.css`; `{{SKIN_<TOKEN>}}` is the token name uppercased with
+  non-alphanumerics replaced by `_`. Unknown/unresolved placeholders fail
+  closed.
+- Numeric tokens render as `<number>px` in CSS (including layout tokens);
+  `cell-pad` and string tokens render verbatim. `skin.json` is the grouped
+  `{"version": 1, "<group>": {...}}` map with raw numbers, matching
+  `ags-platform` `parseSkinJson`.
+- Manifest discovery accepts the canonical `skins/manifests/<name>.toml|json`
+  layout on the installed spine. Cache identity, pointers, palette-refresh/
+  restart lanes, fail-closed fallback and inspect/doctor/prune are unchanged.
+
 ## v0.7.0 — 2026-11-05
 
 Skins derivation layer: palette-independent per-app CSS + resolved token map
@@ -7,13 +30,12 @@ Skins derivation layer: palette-independent per-app CSS + resolved token map
 
 - `desired.json` gains an optional `skin: "<name>"` (default `glass`); the v1
   assets tag supplies `glass`, `flat` and `paper` manifests.
-- `SkinExpander` parses JSON/TOML manifests (`name`, `version: 1`, `tokens`,
-  non-empty `apps`), expands `{{SKIN_<TOKEN>}}` deterministically, and emits
-  `<app>.css` plus `skin.json`. No Jinja or new runtime dependency.
+- Initial `SkinExpander` (superseded in v0.8.0: it expected a non-canonical
+  `version` / `tokens` / `apps` manifest and did not match the frozen assets).
 - Cache key is `sha256(templates_hash ‖ manifest_hash)` under
   `cache/skins/<sha256>/` with a `meta.json` (`kind: "skin"`). Wallpaper and
   palette changes are cache hits; template/manifest changes are misses.
-- `current/skins/<app>.css` and `current/skin.json` are atomic symlinks; AGS
+- `current/skins/<configDir>.css` and `current/skin.json` are atomic symlinks; AGS
   gains the stable consumer pointers `config/ags/skin.css` and
   `config/ags/skin.json`.
 - `current.json` carries an optional `skin` projection (`hash`, `name`,
