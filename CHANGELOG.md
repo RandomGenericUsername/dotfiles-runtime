@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.9.4 — 2026-11-06
+
+Follow-up to v0.9.3 for the live spine shape: `<install>/config/<configDir>`
+is a symlink to the immutable app install, so the v1 prune and the doctor v1
+check must follow the config-dir symlink (but never the retired skin link).
+Without this, the live `config/ags/skin.{css,json}` and
+`config/ags-notifications/skin.{css,json}` links would remain after the
+cutover.
+
+- `CacheSeeder.prune_v1_skin_pointers` follows a deployed config-dir symlink
+  and removes runtime-owned v1 `skin.css`/`skin.json` links inside the app
+  install; it still leaves `appearance.css`, palette links, regular files and
+  user symlinks untouched.
+- `doctor` scans the same symlinked config dirs, so a leftover v1 link is real
+  drift instead of being silently skipped.
+- Regression test pins pruning through a symlinked config dir.
+
 ## v0.9.3 — 2026-11-06
 
 Make the AGS restart lane systemd-aware and finish the v2 pointer cutover

@@ -28,6 +28,15 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**0.9.4** — follow-up for the live symlinked spine config dirs.
+
+- The live spine exposes `<install>/config/<configDir>` as a symlink to the
+  app install. The v1 prune and the `doctor` v1 check now follow that
+  config-dir symlink (never the retired skin link), so existing
+  `config/<configDir>/skin.{css,json}` links are actually removed after the
+  cutover. `appearance.css`, palette links, regular files and user symlinks
+  remain untouched.
+
 **0.9.3** — systemd-aware AGS restart and the final v1 pointer cutover.
 
 - The manifest-driven restart lane discovers `systemctl --user` units matching

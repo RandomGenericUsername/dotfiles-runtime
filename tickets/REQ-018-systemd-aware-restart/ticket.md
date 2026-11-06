@@ -73,7 +73,8 @@ cutover (REQ-015) must remove the remaining v1 skin pointer surface.
 - [x] Docs/CHANGELOG record the systemd-aware restart and the final v1
       removal.
 - [x] `make gates` and `make gates-ci` pass; annotated `v0.9.3` lands after a
-      fast-forward merge and is pushed with main.
+      fast-forward merge and is pushed with main, followed by `v0.9.4` for the
+      live symlinked config-dir prune fix caught after the first tag.
 
 ## Evidence / Verify
 
@@ -101,14 +102,17 @@ cutover (REQ-015) must remove the remaining v1 skin pointer surface.
   `adapters/ags_systemd_units.py`, the systemd branch in
   `AgsReloader.restart_deployed_app`/`reload`, the failure-carrying refresh
   result, the v1 pruning and the doctor cutover behavior.
+- Follow-up `fa92b2d` (v0.9.4) follows the live spine's
+  `config/<configDir>` symlink when pruning/detecting v1 links; v0.9.3 would
+  otherwise skip the live app-install dirs.
 - Verify: `uv run pytest -q tests/unit/test_ags_systemd_units.py
   tests/unit/test_ags_reloader.py tests/unit/test_ags_app_refresh.py
   tests/unit/test_skins.py tests/unit/test_appearance.py
-  tests/unit/test_doctor_check.py` → `164 passed`; full fast suite →
-  `2343 passed, 3 skipped, 10 deselected`.
-- Gates: `make gates` → rc=0 (`test` 2343 passed, 3 skipped, 10 deselected;
+  tests/unit/test_doctor_check.py` → `165 passed`; full fast suite →
+  `2344 passed, 3 skipped, 10 deselected`.
+- Gates: `make gates` → rc=0 (`test` 2344 passed, 3 skipped, 10 deselected;
   `lint` All checks passed; `contracts-check` 54 passed, 1 skipped; `hermetic`
-  2343 passed, 3 skipped, 10 deselected; `lock-check` resolved 25 packages;
+  2344 passed, 3 skipped, 10 deselected; `lock-check` resolved 25 packages;
   `docs-check` rc=0). `make gates-ci` → rc=0 with the same counts.
   `make ci-gates-parity` → `PASS` (gates=6, jobs=8, exempt
   `ci-gates-parity, release`).

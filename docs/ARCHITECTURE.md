@@ -150,7 +150,10 @@ raw target names `current/appearance`) and are no longer in the generation.
   link derived from the generation. There is no app list; an AGS app added
   later gets a link as soon as its template is in the skin. A pointer whose
   `<install>/config/<configDir>` is absent is skipped (the runtime never
-  creates an app config dir). Reconcile prunes stale runtime-owned appearance
+  creates an app config dir). The live spine exposes
+  `config/<configDir>` as a symlink to the app install; pointer maintenance
+  follows that directory symlink but never follows the skin pointer itself.
+  Reconcile prunes stale runtime-owned appearance
   links and every retired v1 `skin.css`/`skin.json` link; it never prunes the
   pinned palette/theme table, an appearance link, or a user-owned file.
 - Skins are selected from `desired.json` (`"skin": "<name>"`, default `glass`). A skin is a
