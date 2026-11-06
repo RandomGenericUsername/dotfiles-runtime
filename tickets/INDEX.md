@@ -6,6 +6,7 @@
 
 ## Requirements
 
+- [REQ-016-appearance-v2-manifests](./REQ-016-appearance-v2-manifests/ticket.md) — Consume the real v2 appearance manifests (TOML, nested groups, modes) | `in-progress` | worktree: .worktrees/REQ-016/ | branch: ticket/REQ-016-appearance-v2-manifests
 - [REQ-015-appearance-v1-pointer-removal](./REQ-015-appearance-v1-pointer-removal/ticket.md) — Remove the v1 skin pointers after the appearance v2 cutover | `proposed`
 - [REQ-014-appearance-plane](./REQ-014-appearance-plane/ticket.md) — Publish one composed appearance generation behind one atomically repointed pointer | `done` | worktree: .worktrees/REQ-014/ | branch: ticket/REQ-014-appearance-plane | tag: v0.9.0
 - [REQ-013-skin-pointers-all-apps](./REQ-013-skin-pointers-all-apps/ticket.md) — Skin consumer pointers for every skin target, derived from artifacts (not AGS-only) | `done` | worktree: .worktrees/REQ-013/ | branch: ticket/REQ-013-skin-pointers-all-apps | tag: v0.8.2
