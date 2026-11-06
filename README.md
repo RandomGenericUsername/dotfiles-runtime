@@ -28,6 +28,29 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**0.9.1** — consume the real v2 appearance manifests.
+
+- `SkinExpander` accepts `contracts v0.7.0` v2 manifests (`schemaVersion = 2`)
+  with nested `groups.surface.*`, `groups.state.*`, `groups.type`, `groups.ink`
+  and `groups.layout.<app>`, plus optional `mode.dark`/`mode.light` overrides.
+  The document is validated against the vendored `appearance-manifest` schema;
+  structure/variant/literal-hex/transition/unit-string inputs fail closed. The
+  frozen v1 (`schema_major = 1`) path and its `skin.json` translation still
+  work during the assets tuple bump.
+- v2 placeholders are the flattened nested token path
+  (`surface.panel.bg` → `{{SKIN_SURFACE_PANEL_BG}}`). Lengths render
+  `<n>px`, `letter-spacing` renders `<n>em`, `font-weight` stays unitless;
+  layout placeholders, conditionals and unknown/unresolved placeholders fail.
+- Appearance generation reads v2 TOML directly, applies the selected
+  `mode.dark`/`mode.light` override as a whole group before writing
+  `tokens.json` or expanding CSS, and composes the same palette legacy CSS +
+  role block + mode-resolved skin CSS. The single-hop `current/appearance`
+  pointer, convenience links and v1 pointers are unchanged.
+- Palette mode detection still uses `mode`/`scheme`/`appearance`/`variant` or
+  `is_dark`/`dark`; the current `theme-producer` emits no mode field, so the
+  fallback stays `dark`. That producer gap is documented: it must eventually
+  emit the selected mode.
+
 **0.9.0** — one appearance generation, one atomically repointed pointer.
 
 - The runtime publishes `cache/appearance/<appearanceHash>/` containing

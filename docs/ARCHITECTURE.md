@@ -115,9 +115,23 @@ into one immutable generation under `cache/appearance/<appearanceHash>/`:
 
 **Mode source.** Generation inspects `colors.yaml` for a
 `mode`/`scheme`/`appearance`/`variant` scalar (`dark`/`light`) or an
-`is_dark`/`dark` boolean. The current producer emits no mode field, so the
-documented fallback is `dark`. Mode is part of the identity: flipping it
+`is_dark`/`dark` boolean. The current `theme-producer` projection
+(`src/theme_producer/defaults/templates/colors.yaml.j2`) emits the role map and
+legacy `colors:` list but **no mode field**, so the documented fallback is
+`dark`. This is a known producer gap: the producer must eventually emit the
+selected mode so a light palette reaches the appearance plane without an
+authored `mode.light` override. Mode is part of the identity: flipping it
 produces a new generation even with unchanged palette/skin hashes.
+
+**Manifest input.** `SkinExpander` accepts both the frozen v1
+(`schema_major = 1`, flat groups) and the contracts v0.7.0 v2
+(`schemaVersion = 2`, nested `groups`, optional `mode.dark`/`mode.light`)
+TOML/JSON manifests. The v1 path and its `skin.json` translation stay until the
+assets tuple bump. For v2, appearance generation validates the authored
+manifest against the vendored `appearance-manifest` schema, applies the whole
+selected override group, then expands the flattened placeholders
+(`surface.panel.bg` → `{{SKIN_SURFACE_PANEL_BG}}`) with lengths as `px`,
+`letter-spacing` as `em` and `font-weight` unitless.
 
 **Retention.** Publication keeps the active generation, the newest keep-N and
 entries inside the grace window; older `cache/appearance/*` directories are

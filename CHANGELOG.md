@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.9.1 — 2026-11-06
+
+Consume the real `dotfiles-assets v0.12.0` / `contracts v0.7.0` v2 appearance
+manifests (REQ-016). v0.9.0 rejected every real v2 TOML manifest with
+`ValueError: skin manifest has unknown keys ['groups', 'schemaVersion']`.
+
+- `SkinExpander` reads `schemaVersion = 2` manifests: nested
+  `[groups.surface.{panel,card,cell,control,pill}]`, `[groups.state.*]`,
+  `[groups.type]`, `[groups.ink]`, `[groups.layout.<app>]` and optional
+  `[mode.dark]`/`[mode.light]` complete same-shape overrides. The authored
+  document is validated against the vendored `appearance-manifest` schema;
+  structure/variant/literal-hex/transition/unit-string inputs fail closed. The
+  v1 `schema_major = 1` path and `skin.json` translation remain for the assets
+  tuple bump.
+- v2 templates use flattened placeholders (full nested path uppercased with
+  non-alphanumerics replaced by `_`: `surface.cell.hover-bg` →
+  `{{SKIN_SURFACE_CELL_HOVER_BG}}`). Lengths render `<n>px`,
+  `letter-spacing` renders `<n>em`, `font-weight` stays unitless. Unknown,
+  unresolved, layout and conditional placeholders fail closed.
+- Appearance generation reads v2 TOML, resolves the palette mode, replaces
+  each authored override group as a whole, writes the top-level
+  `{version: 2, surface, state, type, ink, layout}` `tokens.json` (validated
+  against `appearance-json`) and expands the mode-resolved templates before
+  composing the sheet. The skin cache stays palette/mode-independent and its
+  identity remains `sha256(templates_hash ‖ manifest_hash)`; the appearance
+  identity remains `f(palette, skin, mode)`.
+- The current `theme-producer` emits no mode field in `colors.yaml`, so the
+  runtime still defaults to `dark`. The gap is documented: the producer must
+  eventually emit the selected mode; an authored `mode.light` override works
+  today.
+- Tests expand the real v2 `glass`/`flat`/`paper` manifests × both modes,
+  validate the resolved documents, prove the flattened placeholder/unit rules,
+  whole-group override completeness, v1 translation, cache hashes, the pointer
+  and the composed palette/role/skin CSS blocks.
+
 ## v0.9.0 — 2026-11-06
 
 Publish one composed appearance generation behind one atomically repointed
