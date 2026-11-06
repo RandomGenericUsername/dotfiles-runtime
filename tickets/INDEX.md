@@ -6,7 +6,7 @@
 
 ## Requirements
 
-- [REQ-018-systemd-aware-restart](./REQ-018-systemd-aware-restart/ticket.md) — Systemd-aware AGS restart lane and the v2 pointer cutover | `in-progress` | worktree: .worktrees/REQ-018/ | branch: ticket/REQ-018-systemd-aware-restart
+- [REQ-018-systemd-aware-restart](./REQ-018-systemd-aware-restart/ticket.md) — Systemd-aware AGS restart lane and the v2 pointer cutover | `done` | worktree: .worktrees/REQ-018/ | branch: ticket/REQ-018-systemd-aware-restart | tag: v0.9.3
 - [REQ-017-supervision-doctor](./REQ-017-supervision-doctor/ticket.md) — Doctor supervision checks for the always-on AGS systemd --user units | `done` | worktree: .worktrees/REQ-017/ | branch: ticket/REQ-017-supervision-doctor | tag: v0.9.2
 - [REQ-016-appearance-v2-manifests](./REQ-016-appearance-v2-manifests/ticket.md) — Consume the real v2 appearance manifests (TOML, nested groups, modes) | `done` | worktree: .worktrees/REQ-016/ | branch: ticket/REQ-016-appearance-v2-manifests | tag: v0.9.1
 - [REQ-015-appearance-v1-pointer-removal](./REQ-015-appearance-v1-pointer-removal/ticket.md) — Remove the v1 skin pointers after the appearance v2 cutover | `done` | folded into REQ-018

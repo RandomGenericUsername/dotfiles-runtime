@@ -83,8 +83,6 @@ $XDG_STATE_HOME/dotfiles/
   current/                             # symlinks: colors.{conf,yaml,gtk.css,adw.css,
                                        #   sequences,rasi,kitty,btop.theme}, icons/
   current/appearance -> cache/appearance/<appearanceHash>/   # ONE v2 hop
-  current/skins/<configDir>.css        # v1 pointer, retained during migration
-  current/skin.json                    # v1 token map, retained during migration
   cache/appearance/<appearanceHash>/   # colors.yaml + tokens.json + appearance.json
                                        #   + one composed <configDir>.css per target
   cache/<layer>/<sha256>/meta.json     # layers: wallpapers,palettes,effects,icons,skins
@@ -110,8 +108,12 @@ into one immutable generation under `cache/appearance/<appearanceHash>/`:
   (`@define-color <role> <hex>;`), then the expanded skin CSS.
 - `current/appearance` is the only repointed hop. Stable
   `config/<configDir>/appearance.css` links point at
-  `current/appearance/<configDir>.css`. v1 `skin.css`/`skin.json` pointers
-  keep being published until `REQ-015-appearance-v1-pointer-removal`.
+  `current/appearance/<configDir>.css`. The v1 `current/skins/`,
+  `current/skin.json`, `config/<configDir>/skin.css` and
+  `config/<configDir>/skin.json` family is retired (REQ-015/REQ-018);
+  publication stops creating it and prunes existing runtime-owned links.
+  Appearance links, palette links, regular files and user symlinks are never
+  pruned.
 
 **Mode source.** Generation inspects `colors.yaml` for a
 `mode`/`scheme`/`appearance`/`variant` scalar (`dark`/`light`) or an
@@ -143,15 +145,14 @@ raw target names `current/appearance`) and are no longer in the generation.
 - Repoints are atomic and symlink-guarded (`adapters/seeder.py`).
 - Consumer pointers: the pinned palette/theme table
   (`adapters/consumer_path_spec.py`) is `ags`, `gtk-3.0`, `gtk-4.0`, `rofi`,
-  `btop`. Skin pointers are **derived per generation**: every
-  `<configDir>.css` artifact in the active `SkinEntry` yields
-  `config/<configDir>/skin.css` → `current/skins/<configDir>.css` and
-  `config/<configDir>/skin.json` → `current/skin.json`. There is no app list;
-  an AGS app added later gets pointers as soon as its template is in the skin.
-  A pointer whose `<install>/config/<configDir>` is absent is skipped (the
-  runtime never creates an app config dir). Reconcile prunes stale
-  runtime-owned skin symlinks when a generation drops a target; it never
-  prunes the pinned palette/theme table or a user-owned file.
+  `btop`. Appearance consumers use the stable
+  `config/<configDir>/appearance.css` → `current/appearance/<configDir>.css`
+  link derived from the generation. There is no app list; an AGS app added
+  later gets a link as soon as its template is in the skin. A pointer whose
+  `<install>/config/<configDir>` is absent is skipped (the runtime never
+  creates an app config dir). Reconcile prunes stale runtime-owned appearance
+  links and every retired v1 `skin.css`/`skin.json` link; it never prunes the
+  pinned palette/theme table, an appearance link, or a user-owned file.
 - Skins are selected from `desired.json` (`"skin": "<name>"`, default `glass`). A skin is a
   palette/ink mapping + paint + rhythm only (no structure/variants). The canonical manifest is
   `schema_major = 1`, `name`, plus exactly `shape`/`surface`/`ink`/`type`/`rhythm`/`layout`;
@@ -182,12 +183,19 @@ AGS refresh (`adapters/ags_app_refresh.py`). Discovery reads every deployed link
 `<install>/config` and validates `app.manifest.json` against `app.tsx` and `ags list` (AD-26).
 Running live apps refresh in parallel through
 `ags request palette-refresh <appearance-hash> -i <instance>` with a 5 s timeout; restart apps
-(the bar) go through the serialized BUG-006 quit/confirm/launch procedure and are included even
-when down. The appearance hash now includes the skin entry hash alongside palette/effects/icons
-and the icon-manifest inputs; the runtime owns the applied-appearance ledger
-(`$XDG_STATE_HOME/dotfiles/appearance-ledger.json`), one operation lock, and per-app JSONL records
-under `$XDG_STATE_HOME/dotfiles/logs/ags-app-refresh/<runId>/`. `wallpaper.state` remains the
-progress/UI event only; it is not a palette-refresh trigger (AD-27).
+go through the serialized BUG-006 quit/confirm/launch procedure and are included even
+when down. The restart lane is systemd-aware: `adapters/ags_systemd_units.py` discovers
+`systemctl --user` units matching `dotfiles-ags-*.service`, parses each `ExecStart`'s
+`ags run -d <spine>/config/<configDir>` target, and matches it to the consumed configDir.
+A unit-managed app is restarted only with `systemctl --user restart <unit>` (serialized, with
+the instance-name oracle confirming the return); the lane never raw-`ags quit`/`ags run`s it
+and never falls back to a raw launch when systemd fails. A non-unit app keeps the
+quit/confirm/launch path. The appearance hash now includes the skin entry hash alongside
+palette/effects/icons and the icon-manifest inputs; the runtime owns the applied-appearance
+ledger (`$XDG_STATE_HOME/dotfiles/appearance-ledger.json`), one operation lock, and per-app
+JSONL records under `$XDG_STATE_HOME/dotfiles/logs/ags-app-refresh/<runId>/`.
+`wallpaper.state` remains the progress/UI event only; it is not a palette-refresh trigger
+(AD-27).
 
 ## 6b. Always-on AGS supervision (doctor)
 

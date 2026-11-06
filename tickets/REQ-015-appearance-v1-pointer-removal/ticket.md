@@ -49,7 +49,7 @@ bump in wave 6). The removal must:
 
 ## Evidence / Verify
 
-- Closed by `REQ-018-systemd-aware-restart`; see that ticket for the
-  implementation commits, tests and gate output.
+- Closed by `REQ-018-systemd-aware-restart` (v0.9.3, implementation commit
+  `3648977`); see that ticket for the full evidence and gate output.
 - Verify: `uv run pytest -q tests/unit/test_skins.py
-  tests/unit/test_appearance.py tests/unit/test_doctor_check.py`.
+  tests/unit/test_appearance.py tests/unit/test_doctor_check.py` → `76 passed`.

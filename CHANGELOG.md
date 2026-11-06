@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.9.3 — 2026-11-06
+
+Make the AGS restart lane systemd-aware and finish the v2 pointer cutover
+(REQ-018, folding REQ-015). The v2 acceptance test caught a live split-brain:
+a skin switch quit the unit-managed bar and relaunched it with a raw
+`ags run`, leaving `dotfiles-ags-bar.service` inactive and an orphan bar
+outside the unit.
+
+- `adapters/ags_systemd_units.py` discovers `systemctl --user` units matching
+  `dotfiles-ags-*.service`, reads each `ExecStart`, and parses the
+  `ags run -d <spine>/config/<configDir>` target. A unit is matched to the
+  consumed deployed configDir by resolved path, then by basename. No AGS app
+  name is hardcoded.
+- `AgsReloader.restart_deployed_app` restarts a unit-managed app only with
+  `systemctl --user restart <unit>`, one unit at a time, then waits for the
+  instance name through `ags list`. It never raw-`ags quit`/`ags run`s that
+  app and never falls back to a raw launch when systemd fails. Non-unit apps
+  keep the existing quit/release/launch path. `reload()` uses the same rule
+  for the bar and does not restart a unit-managed app twice.
+- The refresh record and ledger carry the exact systemd argv plus
+  stderr on failure, so `doctor` supervision reports the unit inactive and/or
+  the stale appearance instead of silently accepting an orphan.
+- The v1 skin pointer family is retired: no runtime path publishes
+  `current/skins/`, `current/skin.json`, `config/<configDir>/skin.css` or
+  `config/<configDir>/skin.json`. Existing runtime-owned config links are
+  pruned; appearance and palette pointers, regular files and user symlinks are
+  untouched. Reconcile also clears the stale v1 `current/` mirrors.
+- `doctor` no longer reports the expected v1/v2 skew on a clean v2 host; a
+  runtime-owned v1 link that reappears is real drift.
+- Tests use fake systemctl/units for ExecStart parsing, activation, unit-only
+  restart, non-unit fallback, restart failure and no-double-restart, plus v1
+  pruning safety and a supervision-clean/no-skew doctor assertion.
+
 ## v0.9.2 — 2026-11-06
 
 Report and safely repair the always-on AGS `systemd --user` supervision

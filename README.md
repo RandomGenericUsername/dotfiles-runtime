@@ -28,6 +28,27 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**0.9.3** — systemd-aware AGS restart and the final v1 pointer cutover.
+
+- The manifest-driven restart lane discovers `systemctl --user` units matching
+  `dotfiles-ags-*.service` and parses each `ExecStart`'s
+  `ags run -d <spine>/config/<configDir>` target. Discovery is data-driven; no
+  AGS app names are hardcoded.
+- A unit-managed app restarts only through
+  `systemctl --user restart <unit>` (one unit at a time, then the instance
+  name is verified through `ags list`). The lane never raw-`ags quit`/`ags run`s
+  a unit-managed app and never falls back to a raw launch when systemd fails;
+  the exact failed command and stderr land in the refresh record/ledger and
+  therefore in `doctor` supervision. A non-unit app keeps the existing
+  serialized quit/confirm/launch path.
+- The v2 appearance cutover is complete: the runtime stops publishing
+  `current/skins/`, `current/skin.json`,
+  `config/<configDir>/skin.css` and `config/<configDir>/skin.json`. Existing
+  runtime-owned v1 links are pruned; `appearance.css`, palette pointers,
+  regular files and user symlinks are untouched. `doctor` reports no v1/v2
+  skew on a clean host and treats a reappearing runtime-owned v1 link as real
+  drift.
+
 **0.9.2** — doctor supervises the always-on AGS units.
 
 - `doctor` now reports the two `systemd --user` units
