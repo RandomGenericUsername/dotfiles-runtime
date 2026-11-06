@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.9.0 — 2026-11-06
+
+Publish one composed appearance generation behind one atomically repointed
+pointer (REQ-014). This adopts the frozen `contracts` v0.7.0 appearance plane
+while keeping the existing palette and skin caches independent.
+
+- Generate `cache/appearance/<appearanceHash>/` with `colors.yaml`,
+  mode-resolved v2 `tokens.json`, `appearance.json` (`version: 2`,
+  `appearanceHash`, `paletteHash`, `skinHash`, `generationHash`, `skin`,
+  `mode`, `tokenRef`) and one `<configDir>.css` per skin target. The composed
+  sheet is the palette legacy CSS + rendered `@define-color` role block +
+  expanded skin CSS.
+- `appearanceHash = sha256("appearance.v2\n" + paletteHash + "\n" + skinHash +
+  "\n" + mode)`. A wallpaper change reuses the skin expansion; a skin change
+  reuses the palette. The appearance ledger/refresh uses this identity; the
+  `palette-refresh` transport is unchanged (whole-appearance semantics).
+- Mode is derived from the generated palette and is part of the identity. A
+  `mode`/`scheme`/`appearance`/`variant` scalar or `is_dark`/`dark` boolean
+  selects it; when the producer emits no mode field the generation defaults to
+  `dark`. A v2 manifest's `mode.dark`/`mode.light` override replaces its
+  same-shape group before `tokens.json`/CSS are written. A v1 `skin.json` is
+  translated through the RFC §5.2 compatibility mapping for the migration
+  window.
+- `current/appearance` is the only repointed hop (temp symlink +
+  `os.replace`). Stable `config/<configDir>/appearance.css` links point into
+  it; absent config dirs are skipped and runtime-owned stale links are pruned.
+  v1 `current/skins/`, `current/skin.json` and `config/<configDir>/skin.*`
+  pointers are retained so v1 apps keep working; removal is
+  `REQ-015-appearance-v1-pointer-removal`.
+- Reconcile/seed publish in the same atomic flow and prune old generations
+  under keep-N + active + grace. `inspect status` and `doctor` report
+  appearance hash/skin/mode/pointer and watch health; doctor flags the v1/v2
+  skew while the migration pointers exist.
+- Vendored the three v0.7.0 appearance schemas; `tokens.json` and
+  `appearance.json` are validated before publication.
+
 ## v0.8.2 — 2026-11-06
 
 Emit skin consumer pointers for every skin target, not just AGS (REQ-013).

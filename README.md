@@ -28,6 +28,29 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**0.9.0** — one appearance generation, one atomically repointed pointer.
+
+- The runtime publishes `cache/appearance/<appearanceHash>/` containing
+  `colors.yaml`, the mode-resolved v2 `tokens.json`, `appearance.json`
+  (`version: 2`) and one composed `<configDir>.css` per skin target. The
+  composed sheet is the palette legacy CSS + rendered `@define-color` role
+  block + expanded skin CSS, so an app installs one provider.
+- `appearanceHash = sha256("appearance.v2\n" + paletteHash + "\n" + skinHash +
+  "\n" + mode)`. Palette and skin caches stay independent: a wallpaper change
+  reuses the skin expansion, a skin change reuses the palette. Mode is part of
+  the identity; it is read from the generated palette and defaults to `dark`
+  when the producer emits no mode field.
+- `current/appearance` is the ONE atomically repointed hop. Stable
+  `config/<configDir>/appearance.css` links point into it for existing app
+  config dirs. v1 `current/skins/`, `current/skin.json` and
+  `config/<configDir>/skin.{css,json}` pointers remain during the migration
+  window so v1 apps keep working; their removal is
+  `REQ-015-appearance-v1-pointer-removal`.
+- Reconcile/seed write the generation in the same flow, prune old generations
+  (keep-N + active + grace) and stale runtime-owned convenience links.
+  `inspect status` / `doctor` report appearance hash, skin, mode, pointer,
+  watch health and the v1/v2 skew.
+
 **0.8.2** — skin pointers for every skin target, derived from the generation.
 
 - The static consumer table no longer hardcodes AGS skin entries. For every

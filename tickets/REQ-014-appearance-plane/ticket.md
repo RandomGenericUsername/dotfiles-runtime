@@ -2,7 +2,7 @@
 id: REQ-014
 title: "Publish one appearance generation and one atomically repointed pointer"
 kind: requirement
-status: in-progress
+status: done
 lane: 2
 links:
   openspec: none
@@ -66,24 +66,81 @@ hash/skin/mode/pointer and watch health; `doctor` detects the v1/v2 skew
 
 ## Acceptance
 
-- [ ] `cache/appearance/<appearanceHash>/` holds `colors.yaml`,
+- [x] `cache/appearance/<appearanceHash>/` holds `colors.yaml`,
       `tokens.json`, `appearance.json` and one `<configDir>.css` per target.
-- [ ] `tokens.json` validates against `appearance-json.schema.json`;
+- [x] `tokens.json` validates against `appearance-json.schema.json`;
       `appearance.json` validates against `appearance-artifact.schema.json`.
-- [ ] `current/appearance` is a single-hop symlink repointed atomically.
-- [ ] `config/<configDir>/appearance.css` convenience links are emitted for
+- [x] `current/appearance` is a single-hop symlink repointed atomically.
+- [x] `config/<configDir>/appearance.css` convenience links are emitted for
       existing config dirs and pruned when stale.
-- [ ] There is one appearance cache entry per `(palette, skin, mode)`.
-- [ ] `appearanceHash` differs between modes and is stable for the same
+- [x] There is one appearance cache entry per `(palette, skin, mode)`.
+- [x] `appearanceHash` differs between modes and is stable for the same
       palette/skin/mode.
-- [ ] A wallpaper/palette change creates a new appearance while the skin
+- [x] A wallpaper/palette change creates a new appearance while the skin
       cache is a hit; a skin change creates a new appearance while the
       palette cache is a hit.
-- [ ] v1 `skin.css`/`skin.json` pointers are still published.
-- [ ] Seed/reconcile write the generation in the same flow; stale appearance
+- [x] v1 `skin.css`/`skin.json` pointers are still published.
+- [x] Seed/reconcile write the generation in the same flow; stale appearance
       entries and convenience links are pruned; reruns are idempotent.
-- [ ] `inspect status` and `doctor` report appearance hash/skin/mode/pointer
+- [x] `inspect status` and `doctor` report appearance hash/skin/mode/pointer
       and watch health; doctor reports the v1/v2 skew.
-- [ ] `make gates` and `make gates-ci` pass.
-- [ ] Docs/CHANGELOG record the migration window and the v1-pointer removal
+- [x] `make gates` and `make gates-ci` pass.
+- [x] Docs/CHANGELOG record the migration window and the v1-pointer removal
       follow-up.
+
+
+## Evidence
+
+Baseline: the runtime published palette and skin as two artifact sets with no
+composed generation or `current/appearance` pointer (`src/runtime/adapters/seeder.py`
+`repoint_current_symlinks`/`repoint_consumer_symlinks` before this ticket).
+
+Implementation evidence on the ticket worktree (2026-11-06):
+
+```sh
+uv run pytest -q tests/unit/test_appearance.py
+# 15 passed
+```
+
+The suite proves: generation layout + both schemas, `f(palette,skin,mode)`
+identity (mode variants differ), palette/skin cache independence, the
+single-hop pointer + stable convenience links, retained v1 skin pointers,
+stale-entry/link pruning, idempotent republish, v2 mode-override resolution,
+reconcile publication, inspect reporting and doctor skew detection.
+
+```sh
+make gates
+# test       2272 passed, 3 skipped, 10 deselected
+# lint       All checks passed
+# contracts  54 passed, 1 skipped
+# hermetic   2272 passed, 3 skipped, 10 deselected
+# lock-check Resolved 25 packages
+# docs-check exit 0
+# make gates exit=0
+```
+
+```sh
+make gates-ci
+# same gate set; exit 0
+```
+
+## Implementation map
+
+- `src/runtime/adapters/appearance.py` — staging, mode detection/resolution,
+  v1→v2 compatibility translation, v2 manifest overrides, CSS composition,
+  generation hash, manifest validation, pointer/read/prune helpers.
+- `src/runtime/domain/models.py` — `AppearanceEntry`.
+- `src/runtime/adapters/hashing.py` — canonical
+  `sha256("appearance.v2\n" + paletteHash + "\n" + skinHash + "\n" + mode)`.
+- `src/runtime/adapters/seeder.py` — `publish_appearance` (one repoint) and
+  stale convenience-link pruning; v1 skin pointer paths untouched.
+- `src/runtime/application/{seed_cache,reconcile}.py` — compose/publish in the
+  same flow; fail-closed logging.
+- `src/runtime/application/{inspect,doctor}.py` — appearance hash/skin/mode/
+  pointer/watch reporting + v1/v2 skew detection.
+- `src/runtime/adapters/appearance_ledger.py` + `ags_app_refresh.py` — ledger
+  identity uses the generation hash with the recorded/derived mode.
+- `src/runtime/adapters/contract_schemas.py`, `schemas/appearance-*.json` —
+  vendored contracts v0.7.0 validators.
+- `tests/unit/test_appearance.py`, updated schema-conformance and constructor
+  tripwire tests.

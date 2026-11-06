@@ -6,7 +6,8 @@
 
 ## Requirements
 
-- [REQ-014-appearance-plane](./REQ-014-appearance-plane/ticket.md) — Publish one composed appearance generation behind one atomically repointed pointer | `in-progress` | worktree: .worktrees/REQ-014/ | branch: ticket/REQ-014-appearance-plane
+- [REQ-015-appearance-v1-pointer-removal](./REQ-015-appearance-v1-pointer-removal/ticket.md) — Remove the v1 skin pointers after the appearance v2 cutover | `proposed`
+- [REQ-014-appearance-plane](./REQ-014-appearance-plane/ticket.md) — Publish one composed appearance generation behind one atomically repointed pointer | `done` | worktree: .worktrees/REQ-014/ | branch: ticket/REQ-014-appearance-plane | tag: v0.9.0
 - [REQ-013-skin-pointers-all-apps](./REQ-013-skin-pointers-all-apps/ticket.md) — Skin consumer pointers for every skin target, derived from artifacts (not AGS-only) | `done` | worktree: .worktrees/REQ-013/ | branch: ticket/REQ-013-skin-pointers-all-apps | tag: v0.8.2
 - [REQ-012-skins-hairline-token](./REQ-012-skins-hairline-token/ticket.md) — Accept the skins v0.6.0 `shape.hairline-w` token | `done` | worktree: .worktrees/REQ-012/ | branch: ticket/REQ-012-skins-hairline-token | tag: v0.8.1
 - [REQ-011-skins-interface-reconcile](./REQ-011-skins-interface-reconcile/ticket.md) — Reconcile the skin expander to the canonical skin interface | `done` | worktree: .worktrees/REQ-011/ | branch: ticket/REQ-011-skins-interface-reconcile

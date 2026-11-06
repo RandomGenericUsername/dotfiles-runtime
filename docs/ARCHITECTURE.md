@@ -82,11 +82,47 @@ $XDG_STATE_HOME/dotfiles/
   current.json                         # desired state (machine-defined, schema-validated)
   current/                             # symlinks: colors.{conf,yaml,gtk.css,adw.css,
                                        #   sequences,rasi,kitty,btop.theme}, icons/
-  current/skins/<configDir>.css        # expanded skin CSS (palette-independent)
-  current/skin.json                    # resolved skin token map for skinValue consumers
+  current/appearance -> cache/appearance/<appearanceHash>/   # ONE v2 hop
+  current/skins/<configDir>.css        # v1 pointer, retained during migration
+  current/skin.json                    # v1 token map, retained during migration
+  cache/appearance/<appearanceHash>/   # colors.yaml + tokens.json + appearance.json
+                                       #   + one composed <configDir>.css per target
   cache/<layer>/<sha256>/meta.json     # layers: wallpapers,palettes,effects,icons,skins
   history.jsonl                        # append-only, atomic, symlink-guarded
 ```
+
+### Appearance plane v2
+
+The palette and skin caches are independent inputs; the runtime composes them
+into one immutable generation under `cache/appearance/<appearanceHash>/`:
+
+- `appearanceHash = sha256("appearance.v2\n" + paletteHash + "\n" + skinHash +
+  "\n" + mode)`; the directory name is the hash.
+- `tokens.json` is the resolved v2 token document (validated against
+  `appearance-json.schema.json`). Mode overrides from a v2 manifest replace
+  their same-shape group before expansion. During the assets migration window
+  a v1 `skin.json` is translated through the RFC §5.2 compatibility mapping.
+- `appearance.json` is metadata only (`version: 2`, `skin`, `mode`,
+  `paletteHash`, `skinHash`, `appearanceHash`, `generationHash`, `tokenRef`)
+  and is written last inside staging.
+- Each `<configDir>.css` is the single composed sheet an app installs: palette
+  legacy CSS (`colors.gtk.css` bytes), then the rendered palette role block
+  (`@define-color <role> <hex>;`), then the expanded skin CSS.
+- `current/appearance` is the only repointed hop. Stable
+  `config/<configDir>/appearance.css` links point at
+  `current/appearance/<configDir>.css`. v1 `skin.css`/`skin.json` pointers
+  keep being published until `REQ-015-appearance-v1-pointer-removal`.
+
+**Mode source.** Generation inspects `colors.yaml` for a
+`mode`/`scheme`/`appearance`/`variant` scalar (`dark`/`light`) or an
+`is_dark`/`dark` boolean. The current producer emits no mode field, so the
+documented fallback is `dark`. Mode is part of the identity: flipping it
+produces a new generation even with unchanged palette/skin hashes.
+
+**Retention.** Publication keeps the active generation, the newest keep-N and
+entries inside the grace window; older `cache/appearance/*` directories are
+removed. Convenience links are pruned only when they are runtime-owned (their
+raw target names `current/appearance`) and are no longer in the generation.
 
 - A cache entry name is a 64-char lowercase hex SHA-256; `meta.json` carries
   `hash_algorithm: "sha256"` and per-artifact hashes (`adapters/cache.py`).
