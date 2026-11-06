@@ -6,6 +6,7 @@
 
 ## Requirements
 
+- [REQ-020-generations-v3](./REQ-020-generations-v3/ticket.md) — Generations v3: one committed generation and one `converge(intent)` | `in-progress` | worktree: .worktrees/REQ-020/ | branch: ticket/REQ-020-generations-v3
 - [REQ-019-palette-mode-intent](./REQ-019-palette-mode-intent/ticket.md) — Desired palette mode (dark/light/smart) -> tpr settings env -> palette cache identity | `done` | worktree: .worktrees/REQ-019/ | branch: ticket/REQ-019-palette-mode-intent | tag: v0.9.5
 - [REQ-018-systemd-aware-restart](./REQ-018-systemd-aware-restart/ticket.md) — Systemd-aware AGS restart lane and the v2 pointer cutover | `done` | worktree: .worktrees/REQ-018/ | branch: ticket/REQ-018-systemd-aware-restart | tag: v0.9.3, v0.9.4
 - [REQ-017-supervision-doctor](./REQ-017-supervision-doctor/ticket.md) — Doctor supervision checks for the always-on AGS systemd --user units | `done` | worktree: .worktrees/REQ-017/ | branch: ticket/REQ-017-supervision-doctor | tag: v0.9.2
