@@ -1,8 +1,9 @@
 """Skin manifest v1 parser + deterministic expansion (FROZEN SKIN SPEC v1).
 
-The manifest fixture is byte-identical to the real
-``dotfiles-assets/skins/manifests/glass.toml``; the template fixture mirrors
-the canonical ``<configDir>.gtk.css.j2`` name and placeholder set.
+The manifest fixtures are byte-identical to the real
+``dotfiles-assets/skins/manifests/{glass,flat,paper}.toml`` files; the
+template fixture mirrors the canonical ``<configDir>.gtk.css.j2`` name and
+placeholder set.
 """
 
 from __future__ import annotations
@@ -18,9 +19,11 @@ from runtime.adapters.hashing import canonical_hash_dir, hash_file, skin_entry_h
 from runtime.adapters.skin_expander import SkinExpander
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "skins"
-_MANIFEST = _FIXTURES / "manifests" / "glass.toml"
+_MANIFESTS = _FIXTURES / "manifests"
+_MANIFEST = _MANIFESTS / "glass.toml"
 _TEMPLATES = _FIXTURES / "templates"
 _TEMPLATE = _TEMPLATES / "ags.gtk.css.j2"
+_GROUP_ORDER = ["version", "shape", "surface", "ink", "type", "rhythm", "layout"]
 
 
 def _entry_dir(manifest: Path, templates: Path, tmp_path: Path) -> Path:
@@ -63,6 +66,7 @@ def test_real_glass_fixture_expands_to_the_canonical_css_and_token_map(
     css = (work / "ags.css").read_text(encoding="utf-8")
     assert "border-radius: 12px;" in css
     assert "border: 1.5px solid @primary;" in css
+    assert "border: 1px solid @primary;" in css
     assert "padding: 8px 9px;" in css
     assert "min-width: 312px;" in css
     assert "font-size: 12.5px;" in css
@@ -71,15 +75,7 @@ def test_real_glass_fixture_expands_to_the_canonical_css_and_token_map(
     assert "min-height: 0px;" in css
 
     skin = json.loads((work / "skin.json").read_text(encoding="utf-8"))
-    assert list(skin) == [
-        "version",
-        "shape",
-        "surface",
-        "ink",
-        "type",
-        "rhythm",
-        "layout",
-    ]
+    assert list(skin) == _GROUP_ORDER
     assert skin["version"] == 1
     assert skin["shape"] == {
         "radius-panel": 12,
@@ -87,6 +83,7 @@ def test_real_glass_fixture_expands_to_the_canonical_css_and_token_map(
         "radius-cell": 7,
         "radius-pill": 20,
         "border-w": 1.5,
+        "hairline-w": 1,
     }
     assert skin["rhythm"] == {"gap": 8, "cell-pad": "8px 9px"}
     assert skin["surface"] == {
@@ -109,6 +106,26 @@ def test_real_glass_fixture_expands_to_the_canonical_css_and_token_map(
         "chip-min": 0,
     }
     assert "tokens" not in skin and "apps" not in skin
+
+
+@pytest.mark.parametrize(
+    ("name", "hairline"),
+    [("glass", 1), ("flat", 0), ("paper", 1)],
+)
+def test_real_skin_fixtures_accept_hairline_w(
+    tmp_path: Path, name: str, hairline: int
+) -> None:
+    manifest = _MANIFESTS / f"{name}.toml"
+    work = _entry_dir(manifest, _TEMPLATES, tmp_path)
+
+    SkinExpander().expand(name, manifest, _TEMPLATES, work)
+
+    css = (work / "ags.css").read_text(encoding="utf-8")
+    assert f"border: {hairline}px solid " in css
+    skin = json.loads((work / "skin.json").read_text(encoding="utf-8"))
+    assert list(skin) == _GROUP_ORDER
+    assert skin["shape"]["hairline-w"] == hairline
+    assert type(skin["shape"]["hairline-w"]) is int
 
 
 def test_json_manifest_is_equivalent(tmp_path: Path) -> None:
@@ -199,9 +216,21 @@ def _invalid_manifest_variants() -> list[tuple[str, str]]:
         ("unknown-token", text.replace("[shape]\n", "[shape]\nunknown = 1\n")),
         ("missing-token", text.replace("radius-panel = 12\n", "")),
         ("dimension-string", text.replace("border-w = 1.5", 'border-w = "1.5px"')),
+        ("hairline-unit-string", text.replace("hairline-w = 1", 'hairline-w = "1px"')),
         ("dimension-bool", text.replace("radius-panel = 12", "radius-panel = true")),
         ("string-token-number", text.replace('font-family = "inherit"', "font-family = 12")),
     ]
+
+
+def test_hairline_unit_string_fails_closed(tmp_path: Path) -> None:
+    text = _MANIFEST.read_text(encoding="utf-8").replace(
+        "hairline-w = 1", 'hairline-w = "1px"'
+    )
+    manifest = _copy_manifest(tmp_path, text)
+
+    with pytest.raises(ValueError, match=r"hairline-w.*unitless number"):
+        SkinExpander().expand("glass", manifest, _TEMPLATES, tmp_path / "out")
+    assert not (tmp_path / "out").exists()
 
 
 @pytest.mark.parametrize(

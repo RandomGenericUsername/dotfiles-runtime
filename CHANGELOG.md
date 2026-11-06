@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.8.1 — 2026-11-05
+
+Accept the skins v0.6.0 `shape.hairline-w` token (REQ-012). This corrects the
+v0.8.0 vocabulary, which still matched the 23-token v0.5.2 contract and
+therefore rejected every real assets manifest at the integration gate.
+
+- `hairline-w` joins the `shape` group and the numeric vocabulary (24 tokens
+  total). It is a unitless number; a unit string such as `"1px"` fails closed.
+- `border-w` remains the outer panel/frame border; `hairline-w` is the thinner
+  card, row-action and badge hairline. Layout tokens remain TSX-owned and the
+  runtime rendering path is unchanged.
+- Fixtures are the real `glass` (`hairline-w = 1`), `flat` (`0`) and `paper`
+  (`1`) manifests; tests assert the `1px` CSS rendering and the raw number in
+  `skin.json`.
+
 ## v0.8.0 — 2026-11-05
 
 Reconcile the skin expander to the canonical skin interface (REQ-011). This

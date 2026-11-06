@@ -16,6 +16,7 @@ Manifest v1 (JSON or TOML), one per skin under ``skins/manifests/``::
     radius-cell = 7
     radius-pill = 20
     border-w = 1.5
+    hairline-w = 1
 
     [rhythm]
     gap = 8
@@ -46,9 +47,13 @@ Manifest v1 (JSON or TOML), one per skin under ``skins/manifests/``::
     chip-min = 0
 
 There is no ``[tokens]`` table, no ``[apps]`` table and no structure/variant
-key. Dimensions are unitless numbers; a unit string in a manifest (for
-example ``radius-panel = "12px"``) is rejected. ``skin.json`` never carries
-units.
+key. The vocabulary is the frozen 24 tokens: the six shape radii/widths
+(``radius-panel``, ``radius-card``, ``radius-cell``, ``radius-pill``,
+``border-w``, ``hairline-w``), surface paint, ink, type, rhythm and layout.
+``border-w`` is the outer panel/frame border; ``hairline-w`` is the thinner
+card, row-action and badge hairline. Dimensions are unitless numbers; a unit
+string in a manifest (for example ``radius-panel = "12px"`` or
+``hairline-w = "1px"``) is rejected. ``skin.json`` never carries units.
 
 The shared template set holds one ``<configDir>.gtk.css.j2`` per target config
 dir. The expander discovers every ``*.gtk.css.j2`` and renders
@@ -89,6 +94,7 @@ _TOKEN_GROUPS: dict[str, tuple[str, ...]] = {
         "radius-cell",
         "radius-pill",
         "border-w",
+        "hairline-w",
     ),
     "surface": ("bg-panel", "bg-card", "border", "shadow", "blur"),
     "ink": ("ink", "ink-dim", "accent", "ink-over"),
@@ -105,6 +111,7 @@ _NUMERIC_TOKENS = frozenset(
         "radius-cell",
         "radius-pill",
         "border-w",
+        "hairline-w",
         "gap",
         "title-size",
         "text-size",

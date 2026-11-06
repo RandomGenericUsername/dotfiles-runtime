@@ -98,7 +98,8 @@ $XDG_STATE_HOME/dotfiles/
 - Skins are selected from `desired.json` (`"skin": "<name>"`, default `glass`). A skin is a
   palette/ink mapping + paint + rhythm only (no structure/variants). The canonical manifest is
   `schema_major = 1`, `name`, plus exactly `shape`/`surface`/`ink`/`type`/`rhythm`/`layout`;
-  dimensions must be unitless numbers and templates are `<configDir>.gtk.css.j2` →
+  the 24-token vocabulary separates the panel `border-w` from the thinner card/row/badge
+  `hairline-w`. Dimensions must be unitless numbers and templates are `<configDir>.gtk.css.j2` →
   `<configDir>.css`. Numeric tokens render `<number>px` and `skin.json` is the grouped
   `version: 1` map with raw numbers. A missing/invalid manifest keeps the previous skin and
   never touches app CSS.

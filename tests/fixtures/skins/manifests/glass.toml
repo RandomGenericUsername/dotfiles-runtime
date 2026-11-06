@@ -1,10 +1,9 @@
 # glass — the default/fallback skin. This manifest is the v1 parity target for
 # today's ags-bar look: a translucent panel, a low-alpha card, a solid primary
-# panel hairline, no shadow and no backdrop blur. Values are extracted from
-# ../ags-bar/style.css (:161-166, :181-186, :378-387, :422-429, :437-448); the
-# only token-level deviation is border-w, which keeps the panel's 1.5px and
-# therefore renders the 1px card/row hairlines 0.5px thicker (one token cannot
-# split panel from control).
+# panel frame, no shadow and no backdrop blur. Values are extracted from
+# ../ags-bar/style.css (:161-166, :181-186, :378-387, :422-429, :437-448).
+# border-w is the outer panel/frame border (1.5px); hairline-w is the card,
+# row-action and badge hairline (1px). The row/cell itself has no border.
 schema_major = 1
 name = "glass"
 
@@ -14,6 +13,7 @@ radius-card = 9
 radius-cell = 7
 radius-pill = 20
 border-w = 1.5
+hairline-w = 1
 
 [rhythm]
 gap = 8

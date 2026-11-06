@@ -1,0 +1,42 @@
+# paper — the light/palette axis, expressed only through palette.v1 roles.
+# The appearance is not baked into the skin: these roles read as paper only when
+# the active palette is in light mode (see skins/README.md). In dark mode the
+# same two container roles are dark sheets, which is the palette's decision.
+schema_major = 1
+name = "paper"
+
+[shape]
+radius-panel = 6
+radius-card = 4
+radius-cell = 3
+radius-pill = 999
+border-w = 1
+hairline-w = 1
+
+[rhythm]
+gap = 9
+cell-pad = "8px 10px"
+
+[surface]
+bg-panel = "@surface_container_lowest"
+bg-card = "@surface_container_low"
+border = "alpha(@on_surface, 0.22)"
+shadow = "0 10px 28px rgba(0,0,0,0.22)"
+blur = "none"
+
+[ink]
+ink = "@on_surface"
+ink-dim = "@on_surface_variant"
+accent = "@primary"
+ink-over = "auto"
+
+[type]
+font-family = "system-ui, \"Cantarell\", \"Noto Sans\", sans-serif"
+title-size = 15
+text-size = 13
+
+[layout]
+panel-width = 312
+bt-list-spacing = 6
+bar-row-height = 30
+chip-min = 52

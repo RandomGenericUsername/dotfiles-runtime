@@ -99,6 +99,7 @@ def _write_skin_assets(
         "radius-cell = 7\n"
         "radius-pill = 20\n"
         "border-w = 1.5\n"
+        "hairline-w = 1\n"
         "[rhythm]\n"
         "gap = 8\n"
         'cell-pad = "8px 9px"\n'
@@ -458,6 +459,7 @@ def test_inspect_prints_resolved_skin_and_tokens(tmp_path: Path) -> None:
             "radius-cell": 7,
             "radius-pill": 20,
             "border-w": 1.5,
+            "hairline-w": 1,
         },
         "surface": {
             "bg-panel": "alpha(@surface, 0.94)",

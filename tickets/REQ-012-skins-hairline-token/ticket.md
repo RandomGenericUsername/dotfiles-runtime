@@ -41,21 +41,21 @@ Required correction:
 
 ## Acceptance
 
-- [ ] `shape` and `_NUMERIC_TOKENS` include `hairline-w`; the vocabulary is 24
+- [x] `shape` and `_NUMERIC_TOKENS` include `hairline-w`; the vocabulary is 24
       tokens.
-- [ ] The expander docstring/example lists the 24-token vocabulary and names
+- [x] The expander docstring/example lists the 24-token vocabulary and names
       `hairline-w` as the card/row/badge hairline distinct from the panel
       `border-w`.
-- [ ] Fixtures under `tests/fixtures/skins/manifests/` are the real `glass`,
+- [x] Fixtures under `tests/fixtures/skins/manifests/` are the real `glass`,
       `flat` and `paper` manifests with `hairline-w` 1, 0 and 1.
-- [ ] A fixture expansion renders `hairline-w` as `1px` in CSS and stores
+- [x] A fixture expansion renders `hairline-w` as `1px` in CSS and stores
       `shape.hairline-w` as the raw number `1` in `skin.json`.
-- [ ] `hairline-w = "1px"` fails closed with the unitless-number error.
-- [ ] `skin.json` group order remains
+- [x] `hairline-w = "1px"` fails closed with the unitless-number error.
+- [x] `skin.json` group order remains
       `version,shape,surface,ink,type,rhythm,layout`; existing expansion
       assertions stay green.
-- [ ] Release metadata is the next patch (`v0.8.1`); no existing tag is moved.
-- [ ] `make gates` and `make gates-ci` pass.
+- [x] Release metadata is the next patch (`v0.8.1`); no existing tag is moved.
+- [x] `make gates` and `make gates-ci` pass.
 
 ## Evidence
 
@@ -82,4 +82,59 @@ vocabulary came from `src/runtime/adapters/skin_expander.py:_TOKEN_GROUPS`
 
 ## Implementation evidence
 
-(Recorded on completion.)
+Executed on the ticket worktree (2026-11-05):
+
+```sh
+uv run pytest -q tests/unit/test_skin_expander.py tests/unit/test_skins.py
+# 34 passed
+```
+
+The three fixtures are byte-identical to the real assets manifests
+(`cmp` exit 0 for each):
+
+```sh
+for s in glass flat paper; do
+  cmp tests/fixtures/skins/manifests/$s.toml \
+      /home/inumaki/Development/dotfiles/dotfiles-assets/skins/manifests/$s.toml
+done
+```
+
+Expanding the real assets templates/manifests now succeeds and renders the
+hairline:
+
+```text
+glass skin.shape.hairline-w = 1 | border: 1px solid alpha(@on_surface, 0.10);
+flat  skin.shape.hairline-w = 0 | border: 0px solid alpha(@on_surface, 0.10);
+paper skin.shape.hairline-w = 1 | border: 1px solid alpha(@on_surface, 0.10);
+```
+
+```sh
+make gates
+# test       2244 passed, 3 skipped, 10 deselected
+# lint       All checks passed
+# contracts  48 passed, 1 skipped
+# hermetic   2244 passed, 3 skipped, 10 deselected
+# lock-check Resolved 25 packages (no changes)
+# docs-check exit 0
+# make gates exit=0
+```
+
+```sh
+make gates-ci
+# same set and results as make gates; exit 0
+```
+
+Release metadata is `0.8.1` in `pyproject.toml`, `uv.lock` and
+`runtime.__version__`; the annotated `v0.8.1` tag is created after the merge.
+No existing tag was moved.
+
+## Implementation map
+
+- `src/runtime/adapters/skin_expander.py` — 24-token vocabulary, `hairline-w`
+  in `shape` and numeric tokens, docstring example/ownership note.
+- `tests/fixtures/skins/manifests/{glass,flat,paper}.toml` — real manifests.
+- `tests/fixtures/skins/templates/ags.gtk.css.j2` — hairline placeholder rule.
+- `tests/unit/test_skin_expander.py`, `tests/unit/test_skins.py` — acceptance,
+  rejection and raw-number assertions.
+- `README.md`, `docs/ARCHITECTURE.md`, `CHANGELOG.md`, `pyproject.toml`,
+  `uv.lock`, `src/runtime/__init__.py` — release metadata and docs.

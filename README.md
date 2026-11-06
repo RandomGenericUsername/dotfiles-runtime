@@ -28,6 +28,16 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**0.8.1** — accept the skins v0.6.0 `shape.hairline-w` token.
+
+- The shape group and numeric vocabulary gain `hairline-w` (24 tokens total).
+  `border-w` stays the outer panel/frame border; `hairline-w` is the thinner
+  card, row-action and badge hairline. Layout tokens stay TSX-owned; runtime
+  rendering is unchanged.
+- The expander fixtures are the real `glass` (`hairline-w = 1`), `flat` (`0`)
+  and `paper` (`1`) manifests, covering the raw number in `skin.json` and the
+  `1px` CSS rendering.
+
 **0.8.0** — canonical skin interface: grouped manifests, `*.gtk.css.j2` templates, raw-number token map.
 
 - The expander consumes the real assets shape: `schema_major = 1`, `name`, and the six
