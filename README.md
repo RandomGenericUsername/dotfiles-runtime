@@ -28,6 +28,26 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**0.9.5** — palette mode intent from `desired.json` through to `tpr`.
+
+- `desired.json` accepts an optional `"mode": "dark" | "light" | "smart"`
+  (default `smart`, meaning the producer picks dark/light from the wallpaper).
+  An absent mode keeps the runtime default; any other value is rejected and
+  unknown keys still fail the strict reader.
+- `tpr` receives the selected mode as `THEME__OUTPUT__DEFAULT_MODE` on its
+  settings env, alongside the existing `THEME__*` overrides. argv is unchanged.
+- The mode is folded into the palette entry key:
+  `sha256("tpr:" + engine + ":" + version + ":" + template_set_hash + ":" +
+  mode)`. `dark`, `light` and `smart` can never share a palette entry. The
+  one-time consequence is a palette cache miss for pre-mode entries; the next
+  apply (or a mode-aware reconcile) regenerates it.
+- Appearance identity is unchanged: `appearanceHash = f(palette, skin, mode)`,
+  and the appearance mode continues to come from the `mode` emitted in the
+  palette's `colors.yaml`.
+- Change the mode by editing `desired.json` and running
+  `dotfiles-runtime reconcile`; to force a fresh palette explicitly, run
+  `dotfiles-runtime wallpaper set "$(jq -r .wallpaper ~/.config/dotfiles/desired.json)"`.
+
 **0.9.4** — follow-up for the live symlinked spine config dirs.
 
 - The live spine exposes `<install>/config/<configDir>` as a symlink to the

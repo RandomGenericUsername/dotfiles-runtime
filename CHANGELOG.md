@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.9.5 — 2026-11-06
+
+Carry the desired palette mode into every palette generation and make it part
+of the cache identity (REQ-019).
+
+- `desired.json` gains an optional `mode` of `dark`, `light` or `smart`,
+  defaulting to `smart`. `DesiredState` carries it; the strict reader rejects
+  any other value and still rejects unknown keys. Every apply/reconcile/derive
+  composition root that reads the intent resolves the mode.
+- `TprAdapter` validates the mode and passes it to `tpr` as
+  `THEME__OUTPUT__DEFAULT_MODE=<mode>` in the child env (argv unchanged).
+- The palette entry seed now includes the mode:
+  `sha256("tpr:" + engine + ":" + version + ":" + template_set_hash + ":" +
+  mode)`, so `dark`/`light`/`smart` cannot collide. **Invalidation:** palettes
+  written before v0.9.5 have no mode in their key and become cache misses;
+  the next apply regenerates them. Reconcile also treats a mode-aware palette
+  whose key no longer matches an explicit intent as stale.
+- Appearance identity is still `f(palette, skin, mode)`. The appearance mode
+  remains the `mode` emitted by the generated palette (`tpr >= 0.6.0`), so
+  `smart` resolves to the producer's chosen dark/light generation.
+- Regression tests cover desired-state defaults/validation, the adapter env,
+  per-mode key stability/difference, smart/light pass-through, intent wiring in
+  reconcile/apply, mode-driven reconcile regeneration and cache hit/miss.
+- Tests now isolate `XDG_CONFIG_HOME` per test so a live host `desired.json`
+  cannot leak into CLI composition tests.
+
 ## v0.9.4 — 2026-11-06
 
 Follow-up to v0.9.3 for the live spine shape: `<install>/config/<configDir>`

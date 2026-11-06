@@ -43,24 +43,24 @@ through the producer and cache identity:
 
 ## Acceptance
 
-- [ ] `desired.json` accepts an optional `mode` in `dark|light|smart`; absent
+- [x] `desired.json` accepts an optional `mode` in `dark|light|smart`; absent
       means `smart`; any other value is rejected and unknown keys still fail.
-- [ ] `DesiredState` carries the mode and all desired-state consumers agree on
+- [x] `DesiredState` carries the mode and all desired-state consumers agree on
       the default.
-- [ ] The tpr child env contains `THEME__OUTPUT__DEFAULT_MODE` for the resolved
+- [x] The tpr child env contains `THEME__OUTPUT__DEFAULT_MODE` for the resolved
       mode, while argv is unchanged.
-- [ ] `palette_entry_hash` identity differs across `dark`/`light`/`smart` and
+- [x] `palette_entry_hash` identity differs across `dark`/`light`/`smart` and
       is stable for repeated resolution within one mode.
-- [ ] Apply/reconcile/derive composition roots resolve the intent mode and use
+- [x] Apply/reconcile/derive composition roots resolve the intent mode and use
       it for palette production; a mode change produces a cache miss and a
       repeat within one mode is a cache hit.
-- [ ] Appearance identity remains `f(palette, skin, mode)`, with the palette's
+- [x] Appearance identity remains `f(palette, skin, mode)`, with the palette's
       emitted mode as the appearance mode source.
-- [ ] Tests prove the parse rules, adapter env, hash behavior, pass-through,
+- [x] Tests prove the parse rules, adapter env, hash behavior, pass-through,
       intent wiring and cache hit/miss behavior.
-- [ ] README/CHANGELOG/docs describe the intent and the palette cache
+- [x] README/CHANGELOG/docs describe the intent and the palette cache
       invalidation; version metadata is `0.9.5`.
-- [ ] `make gates` and `make gates-ci` pass; release tag `v0.9.5` is created
+- [x] `make gates` and `make gates-ci` pass; release tag `v0.9.5` is created
       after the green commit and merged fast-forward to `main`.
 
 ## Evidence
@@ -87,6 +87,44 @@ rg -n 'unknown = set\(data\)|THEME__OUTPUT__DIRECTORY|palette_entry_hash_for_pro
   src/runtime/adapters/tpr_adapter.py \
   src/runtime/adapters/hashing.py \
   src/runtime/domain/models.py
+```
+
+## Final evidence
+
+Focused suite on the ticket branch:
+
+```sh
+uv run pytest -q tests/unit/test_desired_state.py \
+  tests/unit/test_tpr_adapter.py tests/unit/test_palette_producer_hash.py \
+  tests/unit/test_reconcile.py tests/unit/test_cli_producer_config.py
+# 111 passed
+```
+
+Full gates (ticket branch, before the release commit):
+
+```sh
+make gates
+# test        2362 passed, 3 skipped, 10 deselected
+# lint        All checks passed
+# contracts   54 passed, 1 skipped
+# hermetic    2362 passed, 3 skipped, 10 deselected
+# lock-check  Resolved 25 packages
+# docs-check  exit 0
+
+make gates-ci
+# same six gates; exit 0
+```
+
+Regenerate a palette after changing the mode (no `apply` was run here):
+
+```sh
+# 1. Edit ~/.config/dotfiles/desired.json, e.g. "mode": "light"
+# 2. Reconcile; an explicit dark/light intent regenerates a stale palette key.
+dotfiles-runtime reconcile
+# 3. Optional hard refresh of the palette from the desired wallpaper.
+dotfiles-runtime wallpaper set "$(jq -r .wallpaper ~/.config/dotfiles/desired.json)"
+# 4. Verify the resolved appearance mode.
+dotfiles-runtime inspect status --format json
 ```
 
 ## Implementation map

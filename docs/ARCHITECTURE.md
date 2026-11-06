@@ -64,7 +64,7 @@ not import the CLI, parse stdout as JSON, or `command -v` to choose a binary.
 
 | Adapter | argv | Injected env | Artifacts |
 | --- | --- | --- | --- |
-| `tpr_adapter.py` | `tpr generate <wallpaper> --format …` (8 formats) | `THEME__OUTPUT__DIRECTORY`, `THEME__OUTPUT__OVERWRITE=true`, `THEME__GENERATION__ENGINE`, `THEME__RUNTIME__MODE`, `THEME__TEMPLATES__DIRECTORY` | eight palette files, hashed |
+| `tpr_adapter.py` | `tpr generate <wallpaper> --format …` (8 formats) | `THEME__OUTPUT__DIRECTORY`, `THEME__OUTPUT__OVERWRITE=true`, `THEME__OUTPUT__DEFAULT_MODE`, `THEME__GENERATION__ENGINE`, `THEME__RUNTIME__MODE`, `THEME__TEMPLATES__DIRECTORY` | eight palette files, hashed |
 | `weg_adapter.py` | `weg batch all -- <wallpaper>` | `WALLPAPER__OUTPUT__DIRECTORY` | effect images, hashed |
 | `itr_adapter.py` | `itr render [<icons.yaml>]` | `ICON_RENDERER__OUTPUT__OUTPUT_DIR`, `ICON_RENDERER__COLOR_SCHEME__PATH`, `ICON_RENDERER__TEMPLATES__DIR` | SVGs, hashed |
 
@@ -115,15 +115,22 @@ into one immutable generation under `cache/appearance/<appearanceHash>/`:
   Appearance links, palette links, regular files and user symlinks are never
   pruned.
 
-**Mode source.** Generation inspects `colors.yaml` for a
-`mode`/`scheme`/`appearance`/`variant` scalar (`dark`/`light`) or an
-`is_dark`/`dark` boolean. The current `theme-producer` projection
-(`src/theme_producer/defaults/templates/colors.yaml.j2`) emits the role map and
-legacy `colors:` list but **no mode field**, so the documented fallback is
-`dark`. This is a known producer gap: the producer must eventually emit the
-selected mode so a light palette reaches the appearance plane without an
-authored `mode.light` override. Mode is part of the identity: flipping it
-produces a new generation even with unchanged palette/skin hashes.
+**Mode intent and source.** `desired.json` accepts an optional
+`"mode": "dark" | "light" | "smart"` (default `smart`). The runtime passes it
+to `tpr` as `THEME__OUTPUT__DEFAULT_MODE` (settings
+`output.default_mode`) and folds it into the palette entry seed:
+`sha256("tpr:" + engine + ":" + version + ":" + template_set_hash + ":" +
+mode)`. A mode flip is therefore always a new palette entry and, through the
+palette hash, a new appearance generation. Palettes produced before v0.9.5
+have no mode in their key and are regenerated on the next apply.
+
+Generation still reads the appearance mode from the generated `colors.yaml`
+(`mode`/`scheme`/`appearance`/`variant` scalar or an `is_dark`/`dark` boolean;
+fallback `dark`). `tpr >= 0.6.0` emits the resolved mode, including the
+dark/light choice made for `smart`, so the palette bytes remain the single
+source for `appearanceHash = f(palette, skin, mode)`. Mode is part of the
+identity: flipping it produces a new generation even with unchanged
+palette/skin hashes.
 
 **Manifest input.** `SkinExpander` accepts both the frozen v1
 (`schema_major = 1`, flat groups) and the contracts v0.7.0 v2
@@ -156,6 +163,8 @@ raw target names `current/appearance`) and are no longer in the generation.
   Reconcile prunes stale runtime-owned appearance
   links and every retired v1 `skin.css`/`skin.json` link; it never prunes the
   pinned palette/theme table, an appearance link, or a user-owned file.
+- Palette mode is selected from `desired.json` (`"mode": "dark"|"light"|"smart"`,
+  default `smart`) and forwarded to the producer; it is part of the palette cache key.
 - Skins are selected from `desired.json` (`"skin": "<name>"`, default `glass`). A skin is a
   palette/ink mapping + paint + rhythm only (no structure/variants). The canonical manifest is
   `schema_major = 1`, `name`, plus exactly `shape`/`surface`/`ink`/`type`/`rhythm`/`layout`;
