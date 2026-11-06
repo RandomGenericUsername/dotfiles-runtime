@@ -259,11 +259,10 @@ class SeedCacheUseCase:
             palette_entry_hash=palette_entry.entry_hash,
             effects_entry_hash=effects_entry.entry_hash if effects_entry else None,
             icons_entry_hash=icons_entry.entry_hash if icons_entry else None,
-            skin_entry=skin_entry,
         )
 
-        # 7a1. The one appearance pointer + convenience links. The v1 skin
-        # pointers are still repointed below (migration window).
+        # 7a1. The one appearance pointer + convenience links. The v2
+        # publication also prunes the retired v1 skin links.
         if appearance_entry is not None:
             self._seeder.publish_appearance(self._install_spine, appearance_entry)
 
@@ -273,7 +272,6 @@ class SeedCacheUseCase:
         self._seeder.repoint_consumer_symlinks(
             self._install_spine,
             palette_entry.entry_hash,
-            skin_entry=skin_entry,
         )
 
         # 7b. Write current.json via state_repo (atomic tmp + os.replace)

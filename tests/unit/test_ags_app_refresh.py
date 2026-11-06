@@ -17,7 +17,7 @@ import pytest
 
 from runtime.adapters import appearance_ledger as ledger_module
 from runtime.adapters.ags_app_refresh import AgsAppRefreshCoordinator
-from runtime.adapters.ags_reloader import AgsAppProcess
+from runtime.adapters.ags_reloader import AgsAppProcess, AgsRestartResult
 from runtime.adapters.appearance_ledger import (
     AppearanceLedger,
     appearance_hash_for_state,
@@ -178,6 +178,16 @@ class _RestartFake:
         self.calls: list[dict[str, object]] = []
 
     def restart_deployed_app(self, **kwargs: object) -> bool:
+        self.calls.append(kwargs)
+        return self.result
+
+
+class _UnitRestartFake:
+    def __init__(self, result: AgsRestartResult) -> None:
+        self.result = result
+        self.calls: list[dict[str, object]] = []
+
+    def restart_deployed_app(self, **kwargs: object) -> AgsRestartResult:
         self.calls.append(kwargs)
         return self.result
 
@@ -546,6 +556,54 @@ class TestRestartLane:
         second = coordinator.refresh(_state())
         assert second.records[0].status == "failed"
         assert len(restart.calls) == 2
+
+    def test_unit_restart_failure_is_surfaced_in_record_and_ledger(
+        self, tmp_path: Path
+    ) -> None:
+        spine = tmp_path / "install"
+        _deploy(
+            spine,
+            "ags",
+            _manifest(app="ags", instance="ags", config_dir="ags", mode="restart"),
+        )
+        failure = (
+            "systemctl --user restart dotfiles-ags-bar.service failed with code 1: boom"
+        )
+        restart = _UnitRestartFake(
+            AgsRestartResult(
+                ok=False,
+                argv=(
+                    "systemctl",
+                    "--user",
+                    "restart",
+                    "dotfiles-ags-bar.service",
+                ),
+                error=failure,
+            )
+        )
+        coordinator = _coordinator(
+            tmp_path,
+            live_runner=_LiveRunner(),
+            live_names=(),
+            restart=restart,  # type: ignore[arg-type]
+        )
+        outcome = coordinator.refresh(_state())
+
+        [record] = outcome.records
+        assert record.status == "failed"
+        assert record.argv == (
+            "systemctl",
+            "--user",
+            "restart",
+            "dotfiles-ags-bar.service",
+        )
+        assert record.reason == failure
+        assert record.error == failure
+        assert outcome.failures and outcome.failures[0].reason == failure
+        ledger = AppearanceLedger(tmp_path / "state").load()
+        assert ledger is not None
+        assert ledger.apps["ags"].status == "failed"
+        assert ledger.apps["ags"].reason == failure
 
     def test_restart_lane_is_serialized(self, tmp_path: Path) -> None:
         spine = tmp_path / "install"

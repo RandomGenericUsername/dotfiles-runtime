@@ -62,6 +62,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from runtime.adapters.ags_systemd_units import (
+    AgsSystemdUnit,
+    SystemdCommandResult,
+    SystemdCommandRunner,
+    discover_ags_systemd_units,
+    unit_for_config_dir,
+)
 from runtime.adapters.hyprland_reloader import _resolve_via_which
 from runtime.ports.desktop_reloader import IDesktopReloader
 
@@ -237,6 +244,15 @@ def _pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+@dataclass(frozen=True, slots=True)
+class AgsRestartResult:
+    """One deployed-app restart outcome and the exact command that ran."""
+
+    ok: bool
+    argv: tuple[str, ...]
+    error: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -418,6 +434,12 @@ class AgsReloader(IDesktopReloader):
         launch_lock_path: shared per-user launch-lock path (defaults to
             ``$XDG_RUNTIME_DIR/ags-launch.lock``; tests pass a tmp path).
         skip_config_dirs: config-dir names never restarted automatically.
+        systemd_unit_lister: injectable discovery of ``dotfiles-ags-*.service``
+            units (defaults to ``systemctl --user list-unit-files`` + one
+            ``ExecStart`` read per unit) — tests inject a fake.
+        systemctl_runner: injectable systemctl command seam (defaults to a
+            bounded ``subprocess.run``) used for unit discovery and restart.
+        systemctl: systemctl executable name/path.
     """
 
     def __init__(
@@ -430,6 +452,9 @@ class AgsReloader(IDesktopReloader):
         process_alive: Callable[[int], bool] = _pid_alive,
         launch_lock_path: Path | None = None,
         skip_config_dirs: frozenset[str] = DEFAULT_SKIP_CONFIG_DIRS,
+        systemd_unit_lister: Callable[[], Sequence[AgsSystemdUnit]] | None = None,
+        systemctl_runner: SystemdCommandRunner | None = None,
+        systemctl: str = "systemctl",
     ) -> None:
         self._ags_path: Path | None = _resolve_ags(ags_path)
         self._app_lister = app_lister
@@ -438,9 +463,31 @@ class AgsReloader(IDesktopReloader):
         self._process_alive = process_alive
         self._launch_lock_path = _resolve_launch_lock_path(launch_lock_path)
         self._skip_config_dirs = skip_config_dirs
+        self._systemd_unit_lister = systemd_unit_lister
+        self._systemctl_runner = systemctl_runner or self._default_systemctl_runner
+        self._systemctl = systemctl
 
     def _default_bar_pid_lister(self) -> Sequence[int]:
         return _discover_bar_pids(self._ags_path)
+
+    @staticmethod
+    def _default_systemctl_runner(argv: Sequence[str]) -> SystemdCommandResult:
+        from runtime.adapters.ags_systemd_units import run_systemctl
+
+        return run_systemctl(argv)
+
+    def _systemd_units(self) -> tuple[AgsSystemdUnit, ...]:
+        """Discover the provisioned AGS units (never fails the restart lane)."""
+        try:
+            if self._systemd_unit_lister is not None:
+                return tuple(self._systemd_unit_lister())
+            return discover_ags_systemd_units(
+                systemctl=self._systemctl,
+                command_runner=self._systemctl_runner,
+            )
+        except Exception as exc:  # adapter boundary: no units means non-unit path
+            logger.warning("AGS systemd discovery failed: %s", exc)
+            return ()
 
     def restart_deployed_app(
         self,
@@ -449,27 +496,96 @@ class AgsReloader(IDesktopReloader):
         config_dir: Path,
         argv: Sequence[str] | None = None,
         old_pids: Sequence[int] = (),
-    ) -> bool:
+    ) -> AgsRestartResult:
         """Restart one configured app discovered from its deployed config link.
 
-        Used by the manifest-driven restart lane (AD-28/AD-30). The app is
-        included even when its process is down: the quit step is harmless and
-        the confirmed-release wait succeeds immediately. Every launch takes the
-        shared per-user AGS launch lock and verifies the intended name, exactly
-        like :meth:`reload`.
+        Used by the manifest-driven restart lane (AD-28/AD-30). A unit whose
+        ``ExecStart`` targets this configDir is restarted only through
+        ``systemctl --user restart <unit>`` so systemd owns quit/start; that
+        path never calls ``ags quit``/``ags run`` and never falls back to a raw
+        launch. A non-unit app keeps the serialized quit + release-wait +
+        launch procedure. The app is included even when down: the quit step is
+        harmless and the confirmed-release wait succeeds immediately.
         """
+        unit = unit_for_config_dir(self._systemd_units(), config_dir)
+        if unit is not None:
+            return self._restart_unit(unit, instance=instance)
         if self._ags_path is None:
             logger.warning("ags not found in PATH; AGS restart skipped for %s", instance)
-            return False
+            return AgsRestartResult(
+                ok=False,
+                argv=tuple(argv or ()),
+                error="ags binary not found",
+            )
         run_argv = (
             list(argv) if argv is not None else [str(self._ags_path), "run", "-d", str(config_dir)]
         )
-        return self._restart(
+        ok = self._restart(
             self._ags_path,
             run_argv,
             instance=instance,
             old_pids=old_pids,
         )
+        return AgsRestartResult(
+            ok=ok,
+            argv=tuple(run_argv),
+            error="" if ok else "raw restart did not confirm the intended instance",
+        )
+
+    def _restart_unit(self, unit: AgsSystemdUnit, *, instance: str) -> AgsRestartResult:
+        """Restart one unit through systemd and verify the instance returns.
+
+        Deliberately does not take the AGS launch lock: the unit's
+        ``ags-run-locked`` ExecStart owns that lock, and holding it here would
+        deadlock the unit's own start. Serialization comes from the refresh
+        operation lock and the one-unit-at-a-time restart lane.
+        """
+        argv = (self._systemctl, "--user", "restart", unit.unit)
+        try:
+            result = self._systemctl_runner(argv)
+        except (FileNotFoundError, PermissionError, OSError, ValueError) as exc:
+            error = f"systemctl --user restart {unit.unit} failed: {exc}"
+            logger.warning("AGS restart failed for %s: %s", instance, error)
+            return AgsRestartResult(ok=False, argv=argv, error=error)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip() or "no stderr"
+            error = (
+                f"systemctl --user restart {unit.unit} failed with code "
+                f"{result.returncode}: {detail}"
+            )
+            logger.warning("AGS restart failed for %s: %s", instance, error)
+            return AgsRestartResult(ok=False, argv=argv, error=error)
+        if not self._wait_for_instance(instance, label=instance):
+            error = (
+                f"systemctl --user restart {unit.unit} returned 0 but instance "
+                f"{instance!r} did not return"
+            )
+            logger.warning("AGS restart failed for %s: %s", instance, error)
+            return AgsRestartResult(ok=False, argv=argv, error=error)
+        logger.info(
+            "AGS restart for %s: systemd restarted %s and the instance is registered",
+            instance,
+            unit.unit,
+        )
+        return AgsRestartResult(ok=True, argv=argv)
+
+    def _wait_for_instance(self, name: str, *, label: str) -> bool:
+        """Wait for the instance name after a systemd-owned restart."""
+        for poll_index in range(_STARTUP_WAIT_POLLS):
+            try:
+                if name in self._owned_instances():
+                    return True
+            except _AgsQueryError as exc:
+                logger.warning(
+                    "AGS restart failed for %s: cannot verify %s ownership: %s",
+                    label,
+                    name,
+                    exc,
+                )
+                return False
+            if poll_index < _STARTUP_WAIT_POLLS - 1:
+                time.sleep(_STARTUP_WAIT_POLL_INTERVAL)
+        return False
 
     def reload(self) -> bool:
         """Restart the bar and every running standalone AGS consumer.
@@ -490,7 +606,14 @@ class AgsReloader(IDesktopReloader):
             logger.warning("AGS restart failed for bar: cannot discover old wrapper pid: %s", exc)
             return False
 
-        bar_ok = self._restart(self._ags_path, [], instance=None, old_pids=bar_pids)
+        units = self._systemd_units()
+        restarted_units: set[str] = set()
+        bar_unit = unit_for_config_dir(units, BAR_INSTANCE_NAME)
+        if bar_unit is not None:
+            bar_ok = self._restart_unit(bar_unit, instance=BAR_INSTANCE_NAME).ok
+            restarted_units.add(bar_unit.unit)
+        else:
+            bar_ok = self._restart(self._ags_path, [], instance=None, old_pids=bar_pids)
 
         tools_ok = True
         seen_instances: set[str] = set()
@@ -510,6 +633,19 @@ class AgsReloader(IDesktopReloader):
                 )
                 continue
             seen_instances.add(app.instance)
+            unit = unit_for_config_dir(units, app.config_dir)
+            if unit is not None:
+                if unit.unit in restarted_units:
+                    logger.debug(
+                        "ags: %s already restarted through %s; not restarting twice",
+                        app.instance,
+                        unit.unit,
+                    )
+                    continue
+                restarted_units.add(unit.unit)
+                if not self._restart_unit(unit, instance=app.instance).ok:
+                    tools_ok = False
+                continue
             if not self._restart(
                 self._ags_path,
                 list(app.argv),

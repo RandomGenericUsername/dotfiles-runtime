@@ -293,10 +293,8 @@ class ReconcileDesktopStateUseCase:
                 palette_entry_hash=state.palette.entry_hash if state.palette else None,
                 effects_entry_hash=state.effects.entry_hash if state.effects else None,
                 icons_entry_hash=state.icons.entry_hash if state.icons else None,
-                skin_entry=skin,
             )
             # The one composed appearance generation + its single pointer.
-            # v1 skin pointers are still repointed below (migration window).
             appearance_entry = self._publish_appearance(palette, skin, regenerated)
             # R2 consumer-path symlinks (Epic 4): point the spine consumer
             # path at current/ so desktop consumers read the active palette.
@@ -307,7 +305,6 @@ class ReconcileDesktopStateUseCase:
             consumer_repointed = self._seeder.repoint_consumer_symlinks(
                 self._install_spine,
                 palette.entry_hash,
-                skin_entry=skin,
             )
             # D2 — cleanup stale symlinks
             stale_removed = self._cleanup_stale_symlinks(state, monitor_names, repointed)
@@ -715,15 +712,6 @@ class ReconcileDesktopStateUseCase:
             expected_names.add("effects")
         if state.icons is not None:
             expected_names.add("icons")
-        expected_skin_names: set[str] = set()
-        if state.skin is not None:
-            expected_skin_names = {
-                artifact
-                for artifact in state.skin.artifact_hashes
-                if artifact != "skin.json"
-            }
-            if "skin.json" in state.skin.artifact_hashes:
-                expected_names.add("skin.json")
 
         removed: list[str] = []
         for item in current_dir.iterdir():
@@ -747,17 +735,16 @@ class ReconcileDesktopStateUseCase:
                     except OSError:
                         pass
             elif item.name == "skin.json":
-                if item.name not in expected_names:
-                    try:
-                        if item.is_symlink() or item.is_file():
-                            item.unlink()
-                            removed.append(item.name)
-                    except OSError:
-                        pass
+                # Retired v1 cache pointer (REQ-015/REQ-018): never expected.
+                try:
+                    if item.is_symlink() or item.is_file():
+                        item.unlink()
+                        removed.append(item.name)
+                except OSError:
+                    pass
             elif item.name == "skins" and item.is_dir() and not item.is_symlink():
+                # Retired v1 cache pointer directory (REQ-015/REQ-018).
                 for skin_link in sorted(item.iterdir()):
-                    if skin_link.name in expected_skin_names:
-                        continue
                     try:
                         if skin_link.is_symlink() or skin_link.is_file():
                             skin_link.unlink()
@@ -816,11 +803,6 @@ class ReconcileDesktopStateUseCase:
                 "icons",
                 state.icons.entry_hash,
             )
-        if state.skin is not None:
-            skin_dir = cache_entry_path(self._state_root, "skins", state.skin.entry_hash)
-            for artifact in sorted(state.skin.artifact_hashes):
-                name = "skin.json" if artifact == "skin.json" else f"skins/{artifact}"
-                targets[name] = skin_dir / artifact
         return targets
 
     def _revert_stale_symlinks(self, state: DesktopState) -> list[Path]:

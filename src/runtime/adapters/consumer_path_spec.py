@@ -10,11 +10,10 @@ The table is contract data shared with ``shared-data-contract.md``
     btop    → {install}/config/btop/themes/colors.btop.theme →
                     current/colors.btop.theme
 
-Skin pointers are NOT listed here: they are data-derived per generation
-(``{install}/config/<configDir>/skin.css`` → ``current/skins/<configDir>.css``
-and ``.../skin.json`` → ``current/skin.json``) from the skin artifacts the
-current generation produced. See ``IConsumerPathSpec.skin_pointers`` and
-``skin_config_dirs``.
+Skin pointers were retired in REQ-018 (v2 cutover): consumers now read the
+stable ``{install}/config/<configDir>/appearance.css`` link, published by
+``IConsumerPathSpec.appearance_pointers``. No v1 ``skin.css``/``skin.json``
+pointer is emitted.
 
 Adding a consumer = ONE spec line + its ``@import`` — never adapter code.
 The ``config/gtk-{3,4}.0/`` spine dirs arrive in Story gt-3-1; until then

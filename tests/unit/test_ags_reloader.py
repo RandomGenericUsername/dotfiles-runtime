@@ -106,6 +106,7 @@ def _make_reloader(
     instance_lister: object = lambda: (),
     bar_pid_lister: object = lambda: (),
     process_alive: object = lambda pid: False,
+    unit_lister: object = lambda: (),
 ) -> AgsReloader:
     return AgsReloader(
         ags_path=ags_bin,
@@ -114,6 +115,7 @@ def _make_reloader(
         bar_pid_lister=bar_pid_lister,  # type: ignore[arg-type]
         process_alive=process_alive,  # type: ignore[arg-type]
         launch_lock_path=tmp_path / "ags-launch.lock",
+        systemd_unit_lister=unit_lister,  # type: ignore[arg-type]
     )
 
 
@@ -485,13 +487,12 @@ class TestAgsReloaderDeployedRestart:
             ) as mock_popen,
             patch("runtime.adapters.ags_reloader.time.sleep"),
         ):
-            assert (
-                reloader.restart_deployed_app(
-                    instance=BAR_INSTANCE_NAME,
-                    config_dir=link,
-                )
-                is True
+            result = reloader.restart_deployed_app(
+                instance=BAR_INSTANCE_NAME,
+                config_dir=link,
             )
+        assert result.ok is True
+        assert result.argv == (str(ags_bin), "run", "-d", str(link))
         mock_popen.assert_called_once_with(
             [str(ags_bin), "run", "-d", str(link)],
             stdin=subprocess.DEVNULL,

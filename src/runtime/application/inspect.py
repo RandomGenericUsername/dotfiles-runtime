@@ -66,8 +66,6 @@ from runtime.domain.history import HistoryTrigger
 from runtime.domain.models import (
     DEFAULT_MONITOR,
     DesktopState,
-    SkinEntry,
-    skin_config_dirs,
 )
 from runtime.ports.consumer_path_spec import IConsumerPathSpec
 from runtime.ports.state_repository import IStateRepository
@@ -228,7 +226,6 @@ class InspectStateUseCase:
             consumer_pointers = self._inspect_consumer_pointers(
                 self._install_spine,
                 self._consumer_spec,
-                skin_entry=state.skin,
             )
 
         appearance = read_current_appearance(self._state_root)
@@ -285,28 +282,26 @@ class InspectStateUseCase:
         )
 
     def _read_skin_tokens(self, state: DesktopState) -> dict[str, object] | None:
-        """Read the resolved token map from ``current/skin.json`` (read-only).
+        """Read the resolved token map from the skin cache entry (read-only).
 
-        Falls back to the cache entry's ``skin.json`` when the stable pointer
-        is missing; a malformed/missing map is reported as ``None`` rather than
-        failing the whole status projection.
+        The v1 ``current/skin.json`` pointer is retired (REQ-018), so the
+        cache entry named by the recorded state is the only source. A
+        malformed/missing map is reported as ``None`` rather than failing the
+        whole status projection.
         """
-        candidates = [self._state_root / "current" / "skin.json"]
-        if state.skin is not None:
-            candidates.append(
-                cache_entry_path(self._state_root, "skins", state.skin.entry_hash) / "skin.json"
-            )
-        for path in candidates:
-            try:
-                raw = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(data, dict):
-                return {str(key): value for key, value in data.items()}
+        if state.skin is None:
+            return None
+        path = cache_entry_path(self._state_root, "skins", state.skin.entry_hash) / "skin.json"
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(data, dict):
+            return {str(key): value for key, value in data.items()}
         return None
 
     # ------------------------------------------------------------------
@@ -326,8 +321,6 @@ class InspectStateUseCase:
         self,
         install_spine: Path,
         consumer_spec: IConsumerPathSpec,
-        *,
-        skin_entry: SkinEntry | None = None,
     ) -> dict[str, LinkStatus]:
         """Classify the spec'd spine consumer pointers (read-only, gt-2-2).
 
@@ -338,29 +331,17 @@ class InspectStateUseCase:
         dir (pre-gt-3-1 spine) reports ``missing`` — never a crash, never
         a write. Read-only invariant: Path reads only.
 
-        Skin pointers are derived from the recorded ``SkinEntry`` artifacts
-        (``config/<configDir>/skin.{css,json}``) and are reported only when
-        ``<install>/config/<configDir>`` exists. An absent app config dir
-        is not drift: the app is simply not installed.
+        The retired v1 skin pointers are not part of this projection
+        (REQ-015/REQ-018); the v2 ``appearance.css`` links are reported by
+        the appearance section instead.
 
         Requires a non-null palette (checked by ``run`` — a null palette
         omits the pointers entirely).
         """
         pointers = list(consumer_spec.consumer_pointers())
-        if skin_entry is not None:
-            pointers.extend(
-                consumer_spec.skin_pointers(skin_config_dirs(skin_entry.artifact_hashes))
-            )
         result: dict[str, LinkStatus] = {}
         for pointer in pointers:
-            is_skin = pointer.target == "skin.json" or pointer.target.startswith("skins/")
             dest = install_spine / pointer.path
-            if is_skin and not dest.parent.is_dir():
-                logger.debug(
-                    "inspect: skin consumer pointer omitted, config dir absent: %s",
-                    dest.parent,
-                )
-                continue
             expected = self._state_root / "current" / pointer.target
             result[pointer.path] = self._link_status(dest, expected)
         return result
@@ -453,11 +434,6 @@ class InspectStateUseCase:
                 "icons",
                 state.icons.entry_hash,
             )
-        if state.skin is not None:
-            skin_dir = cache_entry_path(self._state_root, "skins", state.skin.entry_hash)
-            for artifact in sorted(state.skin.artifact_hashes):
-                name = "skin.json" if artifact == "skin.json" else f"skins/{artifact}"
-                targets[name] = skin_dir / artifact
         return targets
 
 

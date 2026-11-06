@@ -189,6 +189,7 @@ def test_ags_reloader_integration_restart_with_shim(
         ags_path=shim,
         app_lister=lambda: [],
         bar_pid_lister=lambda: (),
+        systemd_unit_lister=lambda: (),
         launch_lock_path=tmp_path / "ags-launch.lock",
     )
     use_case = ReconcileDesktopStateUseCase(

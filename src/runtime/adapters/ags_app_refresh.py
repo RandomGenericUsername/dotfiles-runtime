@@ -658,24 +658,28 @@ class AgsAppRefreshCoordinator(IAgsAppRefresher):
             identity = app.identity
             started_at = _now_z()
             started = self._clock()
+            fallback_argv = (
+                str(self._ags_path or "ags"),
+                "run",
+                "-d",
+                identity.link_path,
+            )
             try:
-                ok = self._restart_reloader.restart_deployed_app(
+                outcome = self._restart_reloader.restart_deployed_app(
                     instance=identity.instance,
                     config_dir=Path(identity.link_path),
-                    argv=[
-                        str(self._ags_path or "ags"),
-                        "run",
-                        "-d",
-                        identity.link_path,
-                    ],
+                    argv=list(fallback_argv),
                     old_pids=app.pids,
                 )
             except Exception as exc:  # adapter boundary: never crash the trigger
                 logger.warning("ags restart lane failed for %s: %s", identity.instance, exc)
                 ok = False
                 error = str(exc)
+                argv = fallback_argv
             else:
-                error = ""
+                ok = bool(getattr(outcome, "ok", outcome))
+                error = str(getattr(outcome, "error", "") or "")
+                argv = tuple(getattr(outcome, "argv", ()) or fallback_argv)
             duration_ms = max(0, int((self._clock() - started) * 1000))
             if ok:
                 results.append(
@@ -689,18 +693,13 @@ class AgsAppRefreshCoordinator(IAgsAppRefresher):
                             started=started_at,
                             ended=_now_z(),
                             duration_ms=duration_ms,
-                            argv=(
-                                str(self._ags_path or "ags"),
-                                "run",
-                                "-d",
-                                identity.link_path,
-                            ),
+                            argv=argv,
                             exit_code=0,
                         ),
                     )
                 )
             else:
-                reason = "restart did not confirm the intended instance"
+                reason = error or "restart did not confirm the intended instance"
                 results.append(
                     (
                         app,
@@ -714,12 +713,7 @@ class AgsAppRefreshCoordinator(IAgsAppRefresher):
                             started=started_at,
                             ended=_now_z(),
                             duration_ms=duration_ms,
-                            argv=(
-                                str(self._ags_path or "ags"),
-                                "run",
-                                "-d",
-                                identity.link_path,
-                            ),
+                            argv=argv,
                             error=error or reason,
                         ),
                     )

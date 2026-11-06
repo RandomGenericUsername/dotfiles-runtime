@@ -358,12 +358,12 @@ class TestPointerAndConsumers:
             assert link.resolve() == target / f"{config_dir}.css"
         assert len(created) == 3
 
-    def test_v1_skin_pointers_kept_while_publishing_appearance(self, tmp_path: Path) -> None:
+    def test_v1_skin_pointers_are_pruned_while_publishing_appearance(
+        self, tmp_path: Path
+    ) -> None:
         entry, _, state_root = _generate(tmp_path)
         spine = _spine(tmp_path)
         seeder = CacheSeeder(state_root)
-        skin = _write_skin(state_root)
-        # Simulate the v1 publication that still runs during the migration.
         (state_root / "current").mkdir(parents=True, exist_ok=True)
         (state_root / "current" / "skins").mkdir(exist_ok=True)
         (state_root / "current" / "skins" / "ags.css").symlink_to(
@@ -372,11 +372,15 @@ class TestPointerAndConsumers:
         (state_root / "current" / "skin.json").symlink_to(
             cache_entry_path(state_root, "skins", SH) / "skin.json"
         )
-        seeder.repoint_consumer_symlinks(spine, PH, skin_entry=skin)
-        before = (spine / "config" / "ags" / "skin.css").readlink()
+        (spine / "config" / "ags" / "skin.css").symlink_to(
+            state_root / "current" / "skins" / "ags.css"
+        )
+        (spine / "config" / "ags" / "skin.json").symlink_to(
+            state_root / "current" / "skin.json"
+        )
         seeder.publish_appearance(spine, entry)  # type: ignore[arg-type]
-        assert (spine / "config" / "ags" / "skin.css").readlink() == before
-        assert (spine / "config" / "ags" / "skin.json").is_symlink()
+        assert not (spine / "config" / "ags" / "skin.css").is_symlink()
+        assert not (spine / "config" / "ags" / "skin.json").is_symlink()
         assert (spine / "config" / "ags" / "appearance.css").is_symlink()
 
     def test_prune_stale_appearance_entries_and_links(self, tmp_path: Path) -> None:
@@ -464,10 +468,13 @@ class TestReconcileInspectDoctor:
         assert result.appearance_skin == "glass" and result.appearance_mode == "dark"
         assert (state_root / "current" / "appearance").is_symlink()
         assert (spine / "config" / "ags" / "appearance.css").is_symlink()
-        # v1 pointers still published in the same flow.
-        assert (spine / "config" / "ags" / "skin.css").is_symlink()
+        # The v1 pointer family is retired (REQ-018).
+        assert not (spine / "config" / "ags" / "skin.css").exists()
+        assert not (spine / "config" / "ags" / "skin.json").exists()
 
-    def test_inspect_reports_appearance_and_doctor_detects_skew(self, tmp_path: Path) -> None:
+    def test_inspect_reports_appearance_and_doctor_has_no_skew(
+        self, tmp_path: Path
+    ) -> None:
         state_root = tmp_path / "state"
         spine = _spine(tmp_path)
         _write_palette(state_root)
@@ -500,6 +507,8 @@ class TestReconcileInspectDoctor:
         assert inspected.appearance_pointer.status == "ok"
         assert inspected.appearance_watch in ("ok", "unknown")
         assert inspected.consumer_pointers["config/ags/appearance.css"].status == "ok"
+        assert "config/ags/skin.css" not in inspected.consumer_pointers
+        assert "config/ags/skin.json" not in inspected.consumer_pointers
 
         report = DoctorUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
@@ -510,8 +519,21 @@ class TestReconcileInspectDoctor:
         assert by_name["appearance:pointer"].status == "ok"
         assert by_name["appearance:manifest"].status == "ok"
         assert by_name["appearance:watch"].status == "ok"
-        assert by_name["appearance:v1v2-skew"].status == "diverged"
-        assert "migration window" in by_name["appearance:v1v2-skew"].detail
+        assert "appearance:v1v2-skew" not in by_name
+
+        # A runtime-owned v1 pointer reappearing after the cutover is real
+        # drift, never the old expected-migration warning.
+        (spine / "config" / "ags" / "skin.css").symlink_to(
+            state_root / "current" / "skins" / "ags.css"
+        )
+        reappeared = DoctorUseCase(
+            state_repo=JsonStateRepository(state_root=state_root),
+            state_root=state_root,
+            install_spine=spine,
+        ).check()
+        skew = {item.name: item for item in reappeared.items}["appearance:v1v2-skew"]
+        assert skew.status == "diverged"
+        assert "retired v1 skin pointer reappeared" in skew.detail
 
     def test_stale_generation_is_diverged_against_the_state_identity(
         self, tmp_path: Path

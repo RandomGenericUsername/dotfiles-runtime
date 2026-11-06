@@ -38,7 +38,6 @@ from runtime.domain.models import (
     DEFAULT_MONITOR,
     DesktopState,
     HistoryLockError,
-    skin_config_dirs,
 )
 from runtime.ports.state_repository import IStateRepository
 
@@ -112,7 +111,6 @@ class DoctorUseCase:
         items.extend(self._check_entries(state))
         items.extend(self._check_vocabulary(state))
         items.extend(self._check_links(state))
-        items.extend(self._check_skin_consumer_pointers(state))
         items.extend(self._check_appearance(state))
         items.extend(self._check_input_provenance())
         items.extend(self._check_history(state))
@@ -414,57 +412,21 @@ class DoctorUseCase:
             expected["effects"] = self._entry_dir("effects", state.effects.entry_hash)
         if state.icons is not None:
             expected["icons"] = self._entry_dir("icons", state.icons.entry_hash)
-        if state.skin is not None:
-            skin_dir = self._entry_dir("skins", state.skin.entry_hash)
-            for artifact in sorted(state.skin.artifact_hashes):
-                name = "skin.json" if artifact == "skin.json" else f"skins/{artifact}"
-                expected[name] = skin_dir / artifact
         items: list[DriftItem] = []
         for name, target in expected.items():
             status, detail = self._link_status(current_dir / name, target)
             items.append(DriftItem(f"current/{name}", "symlink", status, detail))
         return items
 
-    def _check_skin_consumer_pointers(self, state: DesktopState) -> list[DriftItem]:
-        """Verify the derived skin pointers when a skin is recorded.
-
-        Read-only and spec-driven (never bespoke per-consumer code). The
-        config dirs come from the recorded ``SkinEntry`` artifacts, not a
-        fixed app list. Only existing ``<install>/config/<configDir>`` dirs
-        are checked: an absent app dir is not drift (the app is not
-        installed). When no skin is recorded the pointers are omitted
-        entirely: pre-skin machines must not be dirtied by the new layer.
-        """
-        if state.skin is None or self._install_spine is None:
-            return []
-        from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
-
-        spec = StaticConsumerPathSpec()
-        current_dir = self._state_root / "current"
-        items: list[DriftItem] = []
-        for pointer in spec.skin_pointers(skin_config_dirs(state.skin.artifact_hashes)):
-            dest = self._install_spine / pointer.path
-            if not dest.parent.is_dir():
-                logger.debug(
-                    "doctor: skin consumer pointer omitted, config dir absent: %s",
-                    dest.parent,
-                )
-                continue
-            expected = current_dir / pointer.target
-            status, detail = self._link_status(dest, expected)
-            items.append(DriftItem(f"consumer/{pointer.path}", "consumer", status, detail))
-        return items
-
     def _check_appearance(self, state: DesktopState) -> list[DriftItem]:
-        """Report the v2 appearance generation, pointer, watch and v1 skew.
+        """Report the v2 appearance generation, pointer, watch and v1 leftovers.
 
         Read-only. When the state has no skin yet (pre-skin machine) the leg
         is omitted entirely. Once a skin is recorded, ``current/appearance``
         must exist and resolve to the generation whose identity is
-        ``f(palette, skin, mode)``. During the migration window the v1
-        ``skin.css`` pointers are deliberately still published; their
-        coexistence with ``current/appearance`` is reported as a skew so the
-        cutover cannot be mistaken for complete (removal is a later ticket).
+        ``f(palette, skin, mode)``. The v1 cutover is complete (REQ-018), so
+        a runtime-owned ``skin.css``/``skin.json`` link that reappears is real
+        drift; a clean v2 host has no item.
         """
         pointer = self._state_root / "current" / "appearance"
         if state.skin is None:
@@ -548,7 +510,6 @@ class DoctorUseCase:
                 )
             )
         if manifest is not None:
-            spec_dirs = set(skin_config_dirs(state.skin.artifact_hashes))
             if self._install_spine is not None:
                 for config_dir in manifest.config_dirs:
                     dest = self._install_spine / "config" / config_dir / "appearance.css"
@@ -564,30 +525,52 @@ class DoctorUseCase:
                             c_detail,
                         )
                     )
-                # v1/v2 skew: an installed v1 skin pointer whose target is
-                # current/skins/ means the app still consumes the v1 plane.
-                for config_dir in sorted(spec_dirs):
-                    v1_link = self._install_spine / "config" / config_dir / "skin.css"
-                    if not v1_link.parent.is_dir() or not v1_link.is_symlink():
+                # v1 leftovers: after the completed cutover any runtime-owned
+                # skin.css/skin.json link is drift, not an expected skew. A
+                # user file/link is never reported (only the retired runtime
+                # target counts).
+                current_dir = Path(os.path.abspath(self._state_root / "current"))
+                v1_targets = (current_dir / "skin.json", current_dir / "skins")
+                config_root = self._install_spine / "config"
+                candidates = (
+                    sorted(
+                        path
+                        for path in config_root.iterdir()
+                        if path.is_dir() and not path.is_symlink()
+                    )
+                    if config_root.is_dir()
+                    else []
+                )
+                for config_dir in candidates:
+                    stale: Path | None = None
+                    for name in ("skin.css", "skin.json"):
+                        candidate = config_dir / name
+                        if candidate.is_symlink():
+                            stale = candidate
+                            break
+                    if stale is None:
                         continue
                     try:
-                        raw = os.readlink(v1_link)
+                        raw = os.readlink(stale)
                     except OSError:
                         continue
-                    if "current/skins/" in raw.replace("\\", "/"):
-                        items.append(
-                            DriftItem(
-                                "appearance:v1v2-skew",
-                                "appearance",
-                                "diverged",
-                                (
-                                    "v1 skin pointers are still published during the "
-                                    "migration window (apps still consume "
-                                    "current/skins/); remove them only after the v2 cutover"
-                                ),
-                            )
+                    raw_path = Path(raw)
+                    target = raw_path if raw_path.is_absolute() else stale.parent / raw_path
+                    target_path = Path(os.path.normpath(target))
+                    if target_path != v1_targets[0] and target_path.parent != v1_targets[1]:
+                        continue
+                    items.append(
+                        DriftItem(
+                            "appearance:v1v2-skew",
+                            "appearance",
+                            "diverged",
+                            (
+                                f"retired v1 skin pointer reappeared: {stale}; "
+                                "the v2 cutover is complete, remove it"
+                            ),
                         )
-                        break
+                    )
+                    break
         return items
 
     def _check_supervision(

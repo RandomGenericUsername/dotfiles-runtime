@@ -825,6 +825,7 @@ class TestSupervisionLeg:
         report = _check_with_probe(state_root, probe)
         assert report.clean is True
         assert _by_name(report)["supervision:unit/bar"] == "ok"
+        assert "appearance:v1v2-skew" not in _by_name(report)
         assert probe.calls and probe.calls[0]["expected_appearance_hash"] is None
 
     def test_inactive_unit_is_drift(self, tmp_path: Path) -> None:
