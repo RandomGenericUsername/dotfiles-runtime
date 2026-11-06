@@ -945,7 +945,10 @@ class CacheSeeder:
         skins_dir = current_dir / "skins"
         removed: list[Path] = []
         for config_dir in sorted(config_root.iterdir()):
-            if not config_dir.is_dir() or config_dir.is_symlink():
+            # A deployed config dir is normally a symlink to the app install
+            # (the live spine shape); the runtime-owned pointer links live
+            # inside it, so follow the dir but never the skin link itself.
+            if not config_dir.is_dir():
                 continue
             for name in ("skin.css", "skin.json"):
                 link = config_dir / name

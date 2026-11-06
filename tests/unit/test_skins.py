@@ -647,6 +647,36 @@ def test_stale_v1_links_pruned_but_palette_and_user_files_kept(
     assert user_link.is_symlink()
 
 
+def test_retired_v1_links_are_pruned_through_a_symlinked_config_dir(
+    tmp_path: Path,
+) -> None:
+    """The live spine exposes ``config/<configDir>`` as a symlink to the app."""
+    spine = tmp_path / "install"
+    app = spine / "apps" / "bar" / "v0.1.0"
+    app.mkdir(parents=True)
+    (spine / "config").mkdir(parents=True)
+    link = spine / "config" / "ags"
+    link.symlink_to(app, target_is_directory=True)
+    state_root = tmp_path / "state"
+    current = state_root / "current"
+    (current / "skins").mkdir(parents=True)
+    (current / "skin.json").write_text("{}\n", encoding="utf-8")
+    (app / "skin.css").symlink_to(current / "skins" / "ags.css")
+    (app / "skin.json").symlink_to(current / "skin.json")
+    appearance = app / "appearance.css"
+    appearance.symlink_to(current / "appearance" / "ags.css")
+    user_file = app / "notes.txt"
+    user_file.write_text("user-owned\n", encoding="utf-8")
+
+    removed = CacheSeeder(state_root).prune_v1_skin_pointers(spine)
+
+    assert set(removed) == {link / "skin.css", link / "skin.json"}
+    assert not (app / "skin.css").is_symlink()
+    assert not (app / "skin.json").is_symlink()
+    assert appearance.is_symlink()
+    assert user_file.read_text(encoding="utf-8") == "user-owned\n"
+
+
 def test_custom_app_gets_no_v1_pointer(tmp_path: Path) -> None:
     spine = tmp_path / "install"
     (spine / "config" / "ags").mkdir(parents=True)

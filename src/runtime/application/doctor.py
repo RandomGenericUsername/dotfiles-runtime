@@ -533,11 +533,7 @@ class DoctorUseCase:
                 v1_targets = (current_dir / "skin.json", current_dir / "skins")
                 config_root = self._install_spine / "config"
                 candidates = (
-                    sorted(
-                        path
-                        for path in config_root.iterdir()
-                        if path.is_dir() and not path.is_symlink()
-                    )
+                    sorted(path for path in config_root.iterdir() if path.is_dir())
                     if config_root.is_dir()
                     else []
                 )
