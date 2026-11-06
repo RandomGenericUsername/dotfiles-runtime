@@ -6,6 +6,7 @@
 
 ## Requirements
 
+- [REQ-017-supervision-doctor](./REQ-017-supervision-doctor/ticket.md) — Doctor supervision checks for the always-on AGS systemd --user units | `in-progress` | worktree: .worktrees/REQ-017/ | branch: ticket/REQ-017-supervision-doctor
 - [REQ-016-appearance-v2-manifests](./REQ-016-appearance-v2-manifests/ticket.md) — Consume the real v2 appearance manifests (TOML, nested groups, modes) | `done` | worktree: .worktrees/REQ-016/ | branch: ticket/REQ-016-appearance-v2-manifests | tag: v0.9.1
 - [REQ-015-appearance-v1-pointer-removal](./REQ-015-appearance-v1-pointer-removal/ticket.md) — Remove the v1 skin pointers after the appearance v2 cutover | `proposed`
 - [REQ-014-appearance-plane](./REQ-014-appearance-plane/ticket.md) — Publish one composed appearance generation behind one atomically repointed pointer | `done` | worktree: .worktrees/REQ-014/ | branch: ticket/REQ-014-appearance-plane | tag: v0.9.0
