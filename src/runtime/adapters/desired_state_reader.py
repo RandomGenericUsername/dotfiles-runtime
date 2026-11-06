@@ -9,7 +9,8 @@ the model itself is pure (``domain.models.DesiredState``).
 v1 schema contract (validated strictly — fail loud on typos, matching repo
 philosophy)::
 
-    {"version": 1, "wallpaper": "<path>", "keep": 5, "pinned": ["<64hex>", ...]}
+    {"version": 1, "wallpaper": "<path>", "keep": 5, "pinned": ["<64hex>", ...],
+     "skin": "glass"}
 
 - Absent file → ``None`` ("no declared intent"; plain ``reconcile`` keeps
   today's imperative behavior). Never creates the file — readers don't
@@ -19,6 +20,8 @@ philosophy)::
 - Unparseable / non-object / wrong ``version`` / empty ``wallpaper`` /
   negative or non-int ``keep`` / non-list ``pinned`` / non-64-hex pin /
   unknown key → ``ValueError`` naming the file and the offending field.
+- ``skin`` is optional and defaults to ``glass``; when present it must be a
+  safe lowercase name (``[a-z0-9][a-z0-9_-]*``).
 """
 
 from __future__ import annotations
@@ -26,9 +29,10 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 from pathlib import Path
 
-from runtime.domain.models import DesiredState
+from runtime.domain.models import DEFAULT_SKIN, DesiredState
 
 DESIRED_FILENAME = "desired.json"
 #: Config-home-relative directory holding the relocated intent document.
@@ -36,6 +40,7 @@ DESIRED_RELATIVE_DIR = "dotfiles"
 DESIRED_VERSION = 1
 
 _HEX_DIGITS = frozenset("0123456789abcdef")
+_SKIN_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 def resolve_desired_path(config_home: Path) -> Path:
@@ -78,7 +83,7 @@ def read_desired_state(intent_path: Path) -> DesiredState | None:
         raise ValueError(f"desired state is not valid JSON: {desired_path}: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError(f"desired state must be a JSON object: {desired_path}")
-    unknown = set(data) - {"version", "wallpaper", "keep", "pinned"}
+    unknown = set(data) - {"version", "wallpaper", "keep", "pinned", "skin"}
     if unknown:
         raise ValueError(f"desired state has unknown keys {sorted(unknown)}: {desired_path}")
     version = data.get("version", "<absent>")
@@ -103,4 +108,10 @@ def read_desired_state(intent_path: Path) -> DesiredState | None:
                 f"desired state pinned entry must be 64-char lowercase hex, "
                 f"got {entry_hash!r}: {desired_path}"
             )
-    return DesiredState(wallpaper=wallpaper, keep=keep, pinned=tuple(pinned))
+    skin = data.get("skin", DEFAULT_SKIN)
+    if not isinstance(skin, str) or not _SKIN_NAME_RE.match(skin):
+        raise ValueError(
+            f"desired state 'skin' must be a safe lowercase name "
+            f"([a-z0-9][a-z0-9_-]*), got {skin!r}: {desired_path}"
+        )
+    return DesiredState(wallpaper=wallpaper, keep=keep, pinned=tuple(pinned), skin=skin)

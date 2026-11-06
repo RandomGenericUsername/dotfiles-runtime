@@ -40,6 +40,7 @@ from runtime.application.bar_backdrop import with_bar_backdrops
 from runtime.application.derive import DerivationPipeline
 from runtime.domain.models import (
     DEFAULT_MONITOR,
+    DEFAULT_SKIN,
     BackendType,
     DesktopState,
     EffectsEntry,
@@ -47,6 +48,8 @@ from runtime.domain.models import (
     IconsEntry,
     MonitorWallpaperConfig,
     PaletteEntry,
+    SkinEntry,
+    SkinUnavailableError,
     WallpaperEntry,
 )
 from runtime.ports.color_scheme_generator import IColorSchemeGenerator
@@ -54,6 +57,7 @@ from runtime.ports.effects_generator import IEffectsGenerator
 from runtime.ports.icon_renderer import IIconRenderer
 from runtime.ports.monitor_source import IMonitorSource
 from runtime.ports.seed_mutex import ISeedMutex
+from runtime.ports.skin_expander import ISkinExpander
 from runtime.ports.state_repository import IStateRepository
 from runtime.ports.wallpaper_backend_factory import IWallpaperBackendFactory
 
@@ -90,6 +94,8 @@ class SeedCacheUseCase:
         seeder: CacheSeeder,
         mutex: ISeedMutex,
         monitor_source: IMonitorSource | None = None,
+        skin_name: str = DEFAULT_SKIN,
+        skin_expander: ISkinExpander | None = None,
     ) -> None:
         self._state_repo = state_repo
         self._factory = factory
@@ -98,6 +104,7 @@ class SeedCacheUseCase:
         self._seeder = seeder
         self._mutex = mutex
         self._monitor_source = monitor_source
+        self._skin_name = skin_name
         # Shared derivation plumbing (Story 1.13): spine discovery + per-layer
         # ensure-entry pattern live in application/derive.py; seed and apply
         # compose the same pipeline so behavior stays identical.
@@ -108,6 +115,7 @@ class SeedCacheUseCase:
             weg=weg,
             itr=itr,
             install_spine=install_spine,
+            skins=skin_expander,
         )
 
     def run(self) -> None:
@@ -188,6 +196,7 @@ class SeedCacheUseCase:
         # visible warning; history schema allows null entries (AC 3)
         effects_entry = self._populate_effects(default_png, wallpaper_hash)
         icons_entry = self._populate_icons(palette_entry.entry_hash)
+        skin_entry = self._populate_skin()
 
         # 6. Construct domain objects (real hashes from the adapters — the
         # seeded state must agree with the meta.json beside each cache entry)
@@ -225,6 +234,7 @@ class SeedCacheUseCase:
             effects=effects_entry,
             icons=icons_entry,
             applied_at=now,
+            skin=skin_entry,
         )
 
         # 7. Swap sequence (AD-6, AD-17)
@@ -235,6 +245,7 @@ class SeedCacheUseCase:
             palette_entry_hash=palette_entry.entry_hash,
             effects_entry_hash=effects_entry.entry_hash if effects_entry else None,
             icons_entry_hash=icons_entry.entry_hash if icons_entry else None,
+            skin_entry=skin_entry,
         )
 
         # 7a2. R2 consumer-path symlinks (Epic 4): point the spine consumer
@@ -255,6 +266,7 @@ class SeedCacheUseCase:
             palette_hash=palette_entry.entry_hash,
             effects_hash=effects_entry.entry_hash if effects_entry else None,
             icons_hash=icons_entry.entry_hash if icons_entry else None,
+            skin_hash=skin_entry.entry_hash if skin_entry else None,
             source_path="",
         )
 
@@ -286,4 +298,25 @@ class SeedCacheUseCase:
             return entry
         except Exception as exc:
             logger.warning("seeding: icon rendering failed; continuing: %s", exc)
+            return None
+
+    def _populate_skin(self) -> SkinEntry | None:
+        """Populate the selected skin. Fail-closed: None (with structured log) on failure."""
+        if not self._pipeline.has_skin_expander:
+            return None
+        try:
+            entry, _cache_hit = self._pipeline.ensure_skin(self._skin_name)
+            return entry
+        except SkinUnavailableError as exc:
+            logger.error(
+                "seeding: skin derivation failed; continuing without a skin: "
+                "skin=%s reason=%s manifest=%s templates=%s",
+                exc.name,
+                exc.reason,
+                exc.manifest_path,
+                exc.templates_dir,
+            )
+            return None
+        except Exception as exc:
+            logger.error("seeding: skin derivation failed unexpectedly; continuing: %s", exc)
             return None

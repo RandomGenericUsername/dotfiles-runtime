@@ -251,6 +251,19 @@ def _resolve_desired_path() -> Path:
     return resolve_desired_path(_resolve_config_home())
 
 
+def _resolve_skin_name() -> str:
+    """Resolve the selected skin from ``desired.json`` (default ``glass``).
+
+    Malformed intent propagates loudly (the same strict reader the declarative
+    planner uses); an absent document means the frozen default.
+    """
+    from runtime.adapters.desired_state_reader import read_desired_state
+    from runtime.domain.models import DEFAULT_SKIN
+
+    desired = read_desired_state(_resolve_desired_path())
+    return desired.skin if desired is not None else DEFAULT_SKIN
+
+
 def _run_seed_if_needed(*, producer: str | None = None) -> None:
     """Run first-run seeding if current.json is absent.
 
@@ -283,6 +296,7 @@ def _run_seed_if_needed(*, producer: str | None = None) -> None:
         from runtime.adapters.itr_adapter import ItrAdapter
         from runtime.adapters.json_state_repository import JsonStateRepository
         from runtime.adapters.seeder import CacheSeeder
+        from runtime.adapters.skin_expander import SkinExpander
         from runtime.adapters.weg_adapter import WegAdapter
         from runtime.application.palette_producer import create_palette_producer
         from runtime.application.seed_cache import SeedCacheUseCase
@@ -333,6 +347,8 @@ def _run_seed_if_needed(*, producer: str | None = None) -> None:
             seeder=seeder,
             mutex=mutex,
             monitor_source=HyprlandMonitorSource(),
+            skin_name=_resolve_skin_name(),
+            skin_expander=SkinExpander(),
         )
         use_case.run()
     except SeedLockedError as exc:
@@ -608,6 +624,7 @@ def _run_wallpaper_set(
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
+    from runtime.adapters.skin_expander import SkinExpander
     from runtime.adapters.weg_adapter import WegAdapter
     from runtime.application.apply_wallpaper import ApplyWallpaperUseCase
     from runtime.application.palette_producer import (
@@ -628,6 +645,7 @@ def _run_wallpaper_set(
     inner_mutex = PassThroughSeedMutex()
     producer_resolution = resolve_palette_producer(install_spine, producer=producer)
     palette_producer = create_palette_producer(install_spine, resolution=producer_resolution)
+    skin_name = _resolve_skin_name()
     current_stage = "generating_palette"
 
     def _seeder() -> CacheSeeder:
@@ -700,6 +718,8 @@ def _run_wallpaper_set(
             mutex=inner_mutex,
             reloaders=_build_reloaders(state_root, include_terminal=include_terminal),
             app_refresher=_build_app_refresher(state_root, install_spine),
+            skin_name=skin_name,
+            skin_expander=SkinExpander(),
         ).run(trigger="set", wallpaper_already_applied=True)
         return apply_result, reconcile_result
 
@@ -1302,6 +1322,7 @@ def _run_reconcile(
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
+    from runtime.adapters.skin_expander import SkinExpander
     from runtime.adapters.weg_adapter import WegAdapter
     from runtime.application.palette_producer import create_palette_producer
     from runtime.application.reconcile import ReconcileDesktopStateUseCase
@@ -1320,6 +1341,8 @@ def _run_reconcile(
         reloaders=_build_reloaders(state_root, include_terminal=include_terminal),
         wallpaper_applier=_build_wallpaper_applier(state_root),
         app_refresher=_build_app_refresher(state_root, install_spine),
+        skin_name=_resolve_skin_name(),
+        skin_expander=SkinExpander(),
     )
     return use_case.run()
 
@@ -1528,6 +1551,7 @@ def _run_regenerate_stale(
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
+    from runtime.adapters.skin_expander import SkinExpander
     from runtime.adapters.weg_adapter import WegAdapter
     from runtime.application.check_inputs import CheckInputsUseCase
     from runtime.application.derive import (
@@ -1567,6 +1591,7 @@ def _run_regenerate_stale(
             weg=weg,
             itr=itr,
             install_spine=install_spine,
+            skins=SkinExpander(),
         ),
         state_repo=state_repo,
         reconcile=ReconcileDesktopStateUseCase(
@@ -1581,6 +1606,8 @@ def _run_regenerate_stale(
             reloaders=_build_reloaders(state_root, include_terminal=include_terminal),
             wallpaper_applier=_build_wallpaper_applier(state_root),
             app_refresher=_build_app_refresher(state_root, install_spine),
+            skin_name=_resolve_skin_name(),
+            skin_expander=SkinExpander(),
         ),
         mutex=mutex,
         state_root=state_root,
@@ -1630,6 +1657,7 @@ def _run_doctor_repair(*, producer: str | None = None) -> RepairResult:
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
+    from runtime.adapters.skin_expander import SkinExpander
     from runtime.adapters.weg_adapter import WegAdapter
     from runtime.application.doctor import DoctorRepairUseCase, DoctorUseCase
     from runtime.application.palette_producer import create_palette_producer
@@ -1657,6 +1685,8 @@ def _run_doctor_repair(*, producer: str | None = None) -> RepairResult:
             reloaders=_build_reloaders(state_root),
             wallpaper_applier=_build_wallpaper_applier(state_root),
             app_refresher=_build_app_refresher(state_root, install_spine),
+            skin_name=_resolve_skin_name(),
+            skin_expander=SkinExpander(),
         ),
         state_root=state_root,
         heal_history_tail=seeder.heal_torn_history_tail,
@@ -2026,6 +2056,7 @@ def _run_reactive_converge(
             palette_hash=state.palette.entry_hash if state.palette else None,
             effects_hash=state.effects.entry_hash if state.effects else None,
             icons_hash=state.icons.entry_hash if state.icons else None,
+            skin_hash=state.skin.entry_hash if state.skin else None,
             source_path=state.wallpaper.source_path,
         )
 
@@ -3490,9 +3521,11 @@ def inspect_status(
     palette_desc = result.palette[:12] if result.palette is not None else "absent"
     effects_desc = result.effects[:12] if result.effects is not None else "absent"
     icons_desc = result.icons[:12] if result.icons is not None else "absent"
+    skin_desc = result.skin_name or "absent"
     summary = (
         f"desktop state: wallpaper {result.wallpaper[:12]}"
-        f" (palette {palette_desc}, effects {effects_desc}, icons {icons_desc})"
+        f" (palette {palette_desc}, effects {effects_desc}, icons {icons_desc},"
+        f" skin {skin_desc})"
         f", {len(result.current_symlinks)} symlink(s) checked"
     )
     renderer.custom(
@@ -3505,6 +3538,9 @@ def inspect_status(
                 "palette": result.palette,
                 "effects": result.effects,
                 "icons": result.icons,
+                "skin": result.skin,
+                "skin_name": result.skin_name,
+                "skin_tokens": result.skin_tokens,
                 "applied_at": result.applied_at,
                 "current_symlinks": {
                     name: {"status": status.status, "target": status.target}
@@ -3965,7 +4001,7 @@ def inspect_cache_list(
 
     Read-only inspection: reads ``cache/<layer>/<hash>/`` dir names and
     prints each layer's entries in canonical pipeline order
-    (wallpapers → palettes → effects → icons) with hashes sorted per
+    (wallpapers → palettes → effects → icons → skins) with hashes sorted per
     layer. Mutates nothing — no cache population, no current.json write,
     no current/ repoint, no history append, no seed side-effects. An
     absent or empty cache is clean (exit 0 with

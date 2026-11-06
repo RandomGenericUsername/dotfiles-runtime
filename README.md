@@ -28,6 +28,22 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**0.7.0** — skins derivation layer: palette-independent per-app CSS + token map.
+
+- `desired.json` accepts an optional `"skin": "<name>"` (default `glass`); v1 ships the
+  `glass`/`flat`/`paper` manifests in the pinned assets tag.
+- A skin is a palette/ink mapping + paint + rhythm only. The runtime expands the assets
+  template set with deterministic `{{SKIN_*}}` substitution and caches it under
+  `cache/skins/<sha256>/` keyed by `sha256(templates_hash ‖ manifest_hash)`, so a wallpaper or
+  palette change never re-expands CSS.
+- `current/skins/<app>.css` + `current/skin.json` are atomic pointers; AGS gets
+  `config/ags/skin.css` and `config/ags/skin.json`. The appearance hash includes the skin, so live
+  apps refresh through the existing `palette-refresh` lane (the restart-only bar is unchanged).
+- A missing/invalid manifest or template keeps the previous skin, logs a structured error, and
+  never touches app CSS. `current.json` carries `{hash, name, artifacts, generated_at}`.
+- `inspect status` prints the resolved skin and token map; doctor/verify/prune cover the new
+  `skins` cache layer.
+
 **0.5.1** — seam cleanup: the icon-contrast guard and the CSG producer are retired.
 
 - Icons render exactly what the manifest resolves; no runtime retargeting, no
@@ -89,9 +105,10 @@ src/runtime/
 ```
 
 `application/apply_wallpaper.py` is the visible-first chain: apply the wallpaper immediately, then
-generate the palette (tpr), effects (weg) and icons (itr), hash the artifacts into
-`$XDG_STATE_HOME/dotfiles/cache/<layer>/<sha256>/`, atomically repoint `current/`, and reload the
-consumers. A cache hit must invoke **zero** CLI subprocesses.
+generate the palette (tpr), effects (weg), icons (itr) and the selected skin (manifest + shared
+templates), hash the artifacts into `$XDG_STATE_HOME/dotfiles/cache/<layer>/<sha256>/`, atomically
+repoint `current/`, and reload the consumers. A cache hit must invoke **zero** CLI subprocesses;
+a skin cache hit re-expands no CSS across wallpaper changes.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the state layout, event bus and adapter
 contracts.

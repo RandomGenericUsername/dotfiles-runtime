@@ -2,12 +2,13 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://dotfiles.local/schemas/meta.schema.json",
   "title": "cache entry meta.json",
-  "description": "Single machine-checkable definition of the four per-layer meta.json shapes (AD-44).",
+  "description": "Single machine-checkable definition of the five per-layer meta.json shapes (AD-44).",
   "oneOf": [
     { "$ref": "#/definitions/wallpaper" },
     { "$ref": "#/definitions/palette" },
     { "$ref": "#/definitions/effects" },
-    { "$ref": "#/definitions/icons" }
+    { "$ref": "#/definitions/icons" },
+    { "$ref": "#/definitions/skin" }
   ],
   "definitions": {
     "artifactHashes": {
@@ -113,6 +114,30 @@
         "source_palette_hash": { "type": "string" },
         "input_templates_hash": { "type": "string" },
         "input_mappings_hash": { "type": "string" },
+        "artifact_hashes": { "$ref": "#/definitions/artifactHashes" },
+        "generated_at": { "type": "string" }
+      }
+    },
+    "skin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hash_algorithm",
+        "kind",
+        "entry_hash",
+        "name",
+        "input_templates_hash",
+        "input_manifest_hash",
+        "artifact_hashes",
+        "generated_at"
+      ],
+      "properties": {
+        "hash_algorithm": { "type": "string" },
+        "kind": { "const": "skin" },
+        "entry_hash": { "type": "string" },
+        "name": { "type": "string" },
+        "input_templates_hash": { "type": "string" },
+        "input_manifest_hash": { "type": "string" },
         "artifact_hashes": { "$ref": "#/definitions/artifactHashes" },
         "generated_at": { "type": "string" }
       }

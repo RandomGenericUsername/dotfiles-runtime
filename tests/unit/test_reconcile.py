@@ -183,6 +183,7 @@ class _SpySeeder(CacheSeeder):
         palette_entry_hash: str | None = None,
         effects_entry_hash: str | None = None,
         icons_entry_hash: str | None = None,
+        skin_entry: object | None = None,
     ) -> list[Path]:
         self.repoint_calls.append(
             {
@@ -191,6 +192,7 @@ class _SpySeeder(CacheSeeder):
                 "palette_entry_hash": palette_entry_hash,
                 "effects_entry_hash": effects_entry_hash,
                 "icons_entry_hash": icons_entry_hash,
+                "skin_entry": skin_entry,
             }
         )
         return super().repoint_current_symlinks(
@@ -199,6 +201,7 @@ class _SpySeeder(CacheSeeder):
             palette_entry_hash=palette_entry_hash,
             effects_entry_hash=effects_entry_hash,
             icons_entry_hash=icons_entry_hash,
+            skin_entry=skin_entry,  # type: ignore[arg-type]
         )
 
 
@@ -900,6 +903,8 @@ class TestReconcileStructuralScopeLock:
             "reloaders",
             "wallpaper_applier",
             "app_refresher",
+            "skin_name",
+            "skin_expander",
         }
         assert not any("backend" in p or "factory" in p for p in params)
 

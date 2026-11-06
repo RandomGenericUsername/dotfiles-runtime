@@ -18,7 +18,7 @@ from pathlib import Path
 from runtime.adapters.cache import cache_entry_path, populate_via_staging
 from runtime.application.inspect import InspectCacheUseCase
 
-_LAYERS = ("wallpapers", "palettes", "effects", "icons")
+_LAYERS = ("wallpapers", "palettes", "effects", "icons", "skins")
 
 
 def _populate(state_root: Path, layer: str, entry_hash: str) -> None:

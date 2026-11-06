@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.7.0 — 2026-11-05
+
+Skins derivation layer: palette-independent per-app CSS + resolved token map
+(REQ-010).
+
+- `desired.json` gains an optional `skin: "<name>"` (default `glass`); the v1
+  assets tag supplies `glass`, `flat` and `paper` manifests.
+- `SkinExpander` parses JSON/TOML manifests (`name`, `version: 1`, `tokens`,
+  non-empty `apps`), expands `{{SKIN_<TOKEN>}}` deterministically, and emits
+  `<app>.css` plus `skin.json`. No Jinja or new runtime dependency.
+- Cache key is `sha256(templates_hash ‖ manifest_hash)` under
+  `cache/skins/<sha256>/` with a `meta.json` (`kind: "skin"`). Wallpaper and
+  palette changes are cache hits; template/manifest changes are misses.
+- `current/skins/<app>.css` and `current/skin.json` are atomic symlinks; AGS
+  gains the stable consumer pointers `config/ags/skin.css` and
+  `config/ags/skin.json`.
+- `current.json` carries an optional `skin` projection (`hash`, `name`,
+  `artifacts`, `generated_at`); history lines may carry the skin hash.
+- `appearance_hash` includes the skin entry hash, so skin changes refresh live
+  apps through the existing `palette-refresh` lane; the restart-only bar lane
+  is unchanged.
+- Failure is fail-closed per skin: missing/invalid assets keep the previous
+  skin, log a structured error and never touch app CSS.
+- `inspect status` prints the resolved skin + token map; doctor, cache verify
+  and prune cover the new `skins` layer. Embedded and canonical schemas stay
+  byte-identical (`current`, `meta`, `history`).
+
 ## v0.6.1 — 2026-11-05
 
 Release metadata fix: `v0.6.0` shipped `pyproject.toml` and

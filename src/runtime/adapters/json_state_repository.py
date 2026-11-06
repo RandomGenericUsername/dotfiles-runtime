@@ -61,6 +61,8 @@ from runtime.domain.models import (
     MonitorWallpaperConfig,
     PaletteArtifacts,
     PaletteEntry,
+    SkinArtifacts,
+    SkinEntry,
     WallpaperEntry,
 )
 from runtime.ports.state_repository import IStateRepository
@@ -206,6 +208,16 @@ class JsonStateRepository(IStateRepository):
             "palette": _entry_projection(state.palette),
             "effects": _entry_projection(state.effects),
             "icons": _entry_projection(state.icons),
+            "skin": (
+                {
+                    "hash": state.skin.entry_hash,
+                    "name": state.skin.name,
+                    "artifacts": sorted(state.skin.artifact_hashes),
+                    "generated_at": state.skin.generated_at,
+                }
+                if state.skin is not None
+                else None
+            ),
             "applied_at": state.applied_at,
         }
 
@@ -260,6 +272,21 @@ class JsonStateRepository(IStateRepository):
                     raise ValueError(f"{key} must be dict or null")
                 _validate_hex64(f"{key}.hash", entry["hash"])
                 _validate_iso_z(f"{key}.generated_at", entry["generated_at"])
+
+        # skin projection validation (name is part of the projection)
+        skin = data.get("skin")
+        if skin is not None:
+            if not isinstance(skin, dict):
+                raise ValueError("skin must be dict or null")
+            _validate_hex64("skin.hash", skin["hash"])
+            if not isinstance(skin.get("name"), str) or not skin["name"]:
+                raise ValueError("skin.name must be a non-empty string")
+            artifacts = skin.get("artifacts")
+            if not isinstance(artifacts, list) or not artifacts or not all(
+                isinstance(item, str) and item for item in artifacts
+            ):
+                raise ValueError("skin.artifacts must be a non-empty list of filenames")
+            _validate_iso_z("skin.generated_at", skin["generated_at"])
 
         # applied_at validation
         _validate_iso_z("applied_at", data["applied_at"])
@@ -420,6 +447,35 @@ class JsonStateRepository(IStateRepository):
             "icons", wallpaper.content_hash, {"palette_hash": palette_hash}
         )
 
+        skin: SkinEntry | None = None
+        skin_raw = data.get("skin")
+        if skin_raw is not None:
+            if not isinstance(skin_raw, dict):
+                raise ValueError("skin must be dict or null")
+            _validate_hex64("skin.hash", skin_raw["hash"])
+            _validate_iso_z("skin.generated_at", skin_raw["generated_at"])
+            skin_name = skin_raw.get("name")
+            if not isinstance(skin_name, str) or not skin_name:
+                raise ValueError("skin.name must be a non-empty string")
+            artifacts_raw = skin_raw.get("artifacts")
+            if not isinstance(artifacts_raw, list) or not artifacts_raw or not all(
+                isinstance(item, str) and item for item in artifacts_raw
+            ):
+                raise ValueError("skin.artifacts must be a non-empty list of filenames")
+            artifact_hashes: SkinArtifacts = {
+                str(item): SENTINEL_HASH for item in artifacts_raw
+            }
+            skin = SkinEntry(
+                hash_algorithm="sha256",
+                kind="skin",
+                entry_hash=skin_raw["hash"],
+                name=skin_name,
+                input_templates_hash=SENTINEL_HASH,
+                input_manifest_hash=SENTINEL_HASH,
+                artifact_hashes=artifact_hashes,
+                generated_at=skin_raw["generated_at"],
+            )
+
         # Type narrowing for DesktopState construction
         palette: PaletteEntry | None = (
             palette_result if isinstance(palette_result, PaletteEntry) else None
@@ -444,4 +500,5 @@ class JsonStateRepository(IStateRepository):
             effects=effects,
             icons=icons,
             applied_at=applied_at,
+            skin=skin,
         )

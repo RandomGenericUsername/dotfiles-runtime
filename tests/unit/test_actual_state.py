@@ -103,12 +103,14 @@ REFS: dict[str, list[CacheEntryRef]] = {
     "palettes": [_ref(PH, 10), _ref(PINNED_PAL, 2)],
     "effects": [_ref(EH, 10), _ref(UNDATED_FX, None)],
     "icons": [_ref(IH, 10)],
+    "skins": [],
 }
 PINS: dict[str, set[str]] = {
     "wallpapers": set(),
     "palettes": {PINNED_PAL},
     "effects": {PINNED_FX},
     "icons": set(),
+    "skins": set(),
 }
 
 

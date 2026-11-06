@@ -99,9 +99,10 @@ class HistoryRecord:
     icons: str | None
     source_path: str
     details: dict[str, object] | None = None
+    skin: str | None = None
 
     def to_dict(self) -> dict[str, object]:
-        """Return the full dict in pinned schema order (details only when set)."""
+        """Return the full dict in pinned schema order (optional fields only when set)."""
         result: dict[str, object] = {
             "ts": self.ts,
             "trigger": self.trigger,
@@ -111,6 +112,8 @@ class HistoryRecord:
             "icons": self.icons,
             "source_path": self.source_path,
         }
+        if self.skin is not None:
+            result["skin"] = self.skin
         if self.details is not None:
             result["details"] = self.details
         return result
@@ -142,6 +145,9 @@ class InspectStatusResult:
     applied_at: str
     current_symlinks: dict[str, LinkStatus]
     consumer_pointers: dict[str, LinkStatus] = field(default_factory=dict)
+    skin: str | None = None
+    skin_name: str | None = None
+    skin_tokens: dict[str, object] | None = None
 
 
 class InspectStateUseCase:
@@ -206,7 +212,9 @@ class InspectStateUseCase:
             and (self._consumer_spec is not None)
         ):
             consumer_pointers = self._inspect_consumer_pointers(
-                self._install_spine, self._consumer_spec
+                self._install_spine,
+                self._consumer_spec,
+                include_skin=state.skin is not None,
             )
 
         return InspectStatusResult(
@@ -219,7 +227,35 @@ class InspectStateUseCase:
             applied_at=state.applied_at,
             current_symlinks=current_symlinks,
             consumer_pointers=consumer_pointers,
+            skin=state.skin.entry_hash if state.skin else None,
+            skin_name=state.skin.name if state.skin else None,
+            skin_tokens=self._read_skin_tokens(state),
         )
+
+    def _read_skin_tokens(self, state: DesktopState) -> dict[str, object] | None:
+        """Read the resolved token map from ``current/skin.json`` (read-only).
+
+        Falls back to the cache entry's ``skin.json`` when the stable pointer
+        is missing; a malformed/missing map is reported as ``None`` rather than
+        failing the whole status projection.
+        """
+        candidates = [self._state_root / "current" / "skin.json"]
+        if state.skin is not None:
+            candidates.append(
+                cache_entry_path(self._state_root, "skins", state.skin.entry_hash) / "skin.json"
+            )
+        for path in candidates:
+            try:
+                raw = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict):
+                return {str(key): value for key, value in data.items()}
+        return None
 
     # ------------------------------------------------------------------
     # AC 2 — live current/ symlink reflection (read-only)
@@ -238,6 +274,8 @@ class InspectStateUseCase:
         self,
         install_spine: Path,
         consumer_spec: IConsumerPathSpec,
+        *,
+        include_skin: bool = False,
     ) -> dict[str, LinkStatus]:
         """Classify the spec'd spine consumer pointers (read-only, gt-2-2).
 
@@ -253,6 +291,9 @@ class InspectStateUseCase:
         """
         result: dict[str, LinkStatus] = {}
         for pointer in consumer_spec.consumer_pointers():
+            is_skin = pointer.target == "skin.json" or pointer.target.startswith("skins/")
+            if is_skin and not include_skin:
+                continue
             dest = install_spine / pointer.path
             expected = self._state_root / "current" / pointer.target
             result[pointer.path] = self._link_status(dest, expected)
@@ -346,6 +387,11 @@ class InspectStateUseCase:
                 "icons",
                 state.icons.entry_hash,
             )
+        if state.skin is not None:
+            skin_dir = cache_entry_path(self._state_root, "skins", state.skin.entry_hash)
+            for artifact in sorted(state.skin.artifact_hashes):
+                name = "skin.json" if artifact == "skin.json" else f"skins/{artifact}"
+                targets[name] = skin_dir / artifact
         return targets
 
 
@@ -540,6 +586,7 @@ class InspectHistoryUseCase:
             icons=cast("str | None", record["icons"]),
             source_path=cast("str", record["source_path"]),
             details=cast("dict[str, object] | None", record.get("details")),
+            skin=cast("str | None", record.get("skin")),
         )
 
 
@@ -756,13 +803,14 @@ class InspectFailuresUseCase:
 # ----------------------------------------------------------------------
 
 # Canonical pipeline order (NOT alphabetical): wallpapers → palettes →
-# effects → icons. Validated against CACHE_LAYERS (adapters) — never
-# sorted(CACHE_LAYERS), which would yield effects/icons/palettes/wallpapers.
-CACHE_LAYER_ORDER: tuple[str, str, str, str] = (
+# effects → icons → skins. Validated against CACHE_LAYERS (adapters) — never
+# sorted(CACHE_LAYERS), which would yield effects/icons/palettes/skins/wallpapers.
+CACHE_LAYER_ORDER: tuple[str, str, str, str, str] = (
     "wallpapers",
     "palettes",
     "effects",
     "icons",
+    "skins",
 )
 
 _CACHE_STAGING_PREFIX = ".staging-"
@@ -817,7 +865,7 @@ class InspectCacheUseCase:
         """List cache entries per layer in canonical order (read-only).
 
         Returns:
-            ``InspectCacheResult`` with all four layers present (``()``
+            ``InspectCacheResult`` with all five layers present (``()``
             when the cache or a layer dir is absent — AC 3).
 
         Raises:
@@ -852,7 +900,7 @@ class InspectCacheUseCase:
 
     @staticmethod
     def _empty_result() -> InspectCacheResult:
-        """All four layers empty in canonical order (AC 3)."""
+        """All five layers empty in canonical order (AC 3)."""
         layers: dict[str, tuple[str, ...]] = {layer: () for layer in CACHE_LAYER_ORDER}
         counts: dict[str, int] = {layer: 0 for layer in CACHE_LAYER_ORDER}
         return InspectCacheResult(layers=layers, counts=counts, total=0)

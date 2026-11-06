@@ -53,6 +53,7 @@ from runtime.adapters.hashing import (
     effects_entry_hash,
     hash_file,
     icons_entry_hash,
+    skin_entry_hash,
 )
 from runtime.adapters.seeder import CacheSeeder
 from runtime.application.palette_conformance import require_palette_conformance
@@ -62,10 +63,13 @@ from runtime.domain.models import (
     IconsEntry,
     MissingDerivationInputError,
     PaletteEntry,
+    SkinEntry,
+    SkinUnavailableError,
 )
 from runtime.ports.color_scheme_generator import IColorSchemeGenerator
 from runtime.ports.effects_generator import IEffectsGenerator
 from runtime.ports.icon_renderer import IIconRenderer
+from runtime.ports.skin_expander import ISkinExpander
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +88,7 @@ _INPUT_LABELS: dict[str, str] = {
     "weg_effects": "effects catalog",
     "icon_templates": "icon templates dir",
     "icon_mappings": "icon mappings",
+    "skin_templates": "skin templates dir",
 }
 
 #: Keys already warned about a dev-checkout resolution (log once, not per call).
@@ -106,6 +111,22 @@ def _input_candidates(
     install_spine: Path,
 ) -> dict[str, tuple[list[tuple[Path, str]], list[tuple[Path, str]]]]:
     """Spine candidates (absolute) and repo candidates (relative to the dev root)."""
+    skin_templates_spine: list[tuple[Path, str]] = [
+        (install_spine / "skin-templates", _KIND_DIR),
+        (install_spine / "config" / "skin-templates", _KIND_DIR),
+        (install_spine / "config" / "skins" / "templates", _KIND_DIR),
+        (install_spine / "skins" / "templates", _KIND_DIR),
+    ]
+    # Pinned assets checkout: <install>/assets/<tag>/{skin-templates,skins/templates}.
+    assets_root = install_spine / "assets"
+    if assets_root.is_dir():
+        try:
+            for child in sorted(assets_root.iterdir()):
+                if child.is_dir():
+                    skin_templates_spine.append((child / "skin-templates", _KIND_DIR))
+                    skin_templates_spine.append((child / "skins" / "templates", _KIND_DIR))
+        except OSError:
+            pass
     return {
         "weg_effects": (
             [(install_spine / "config" / "weg" / "effects.yaml", _KIND_FILE)],
@@ -137,6 +158,13 @@ def _input_candidates(
                 # map; defaults.yaml sits beside it as the vocabulary.
                 (Path("icons/mappings/icons.yaml"), _KIND_FILE),
                 (Path("icons/mappings"), _KIND_DIR),
+            ],
+        ),
+        "skin_templates": (
+            skin_templates_spine,
+            [
+                (Path("skin-templates"), _KIND_DIR),
+                (Path("skins/templates"), _KIND_DIR),
             ],
         ),
     }
@@ -206,6 +234,69 @@ def find_icon_mappings(install_spine: Path) -> Path | None:
     """Resolve the ITR icon mappings (spine-only; dev override opt-in). None = absent."""
     path, _ = resolve_input("icon_mappings", install_spine)
     return path
+
+
+def find_skin_templates(install_spine: Path) -> Path | None:
+    """Resolve the shared skin template set (spine-only; dev override opt-in)."""
+    path, _ = resolve_input("skin_templates", install_spine)
+    return path
+
+
+def _skin_roots(install_spine: Path, dev: Path | None) -> list[Path]:
+    """Ordered skin roots: spine, config copy, pinned assets checkouts, dev."""
+    roots = [
+        install_spine / "skins",
+        install_spine / "config" / "skins",
+    ]
+    assets_root = install_spine / "assets"
+    if assets_root.is_dir():
+        try:
+            for child in sorted(assets_root.iterdir()):
+                if child.is_dir():
+                    roots.append(child / "skins")
+        except OSError:
+            pass
+    if dev is not None:
+        roots.append(dev / "skins")
+    return roots
+
+
+def _manifest_paths(root: Path, name: str) -> list[Path]:
+    return [
+        root / f"{name}.toml",
+        root / f"{name}.json",
+        root / name / "manifest.toml",
+        root / name / "manifest.json",
+        root / name / "skin.toml",
+        root / name / "skin.json",
+    ]
+
+
+def find_skin_manifest(name: str, install_spine: Path) -> tuple[Path | None, str]:
+    """Resolve one skin manifest; return ``(path, source)`` (source: spine/repo/missing).
+
+    ``source == "spine"`` covers the install spine, its ``config/skins`` copy
+    and the pinned ``assets/<tag>/skins`` checkout (all read-only spine reads).
+    ``source == "repo"`` is the explicit development override only.
+    """
+    if not name or "/" in name or "\\" in name or ".." in name or name.strip() != name:
+        return None, "missing"
+    dev = _dev_inputs_root()
+    for root in _skin_roots(install_spine, dev):
+        for candidate in _manifest_paths(root, name):
+            if _matches(candidate, _KIND_FILE):
+                source = "repo" if dev is not None and root == dev / "skins" else "spine"
+                if source == "repo" and "skin_manifest" not in _WARNED:
+                    _WARNED.add("skin_manifest")
+                    logger.warning(
+                        "skin manifest %r resolved from dev checkout (%s=%s); "
+                        "production reads the install spine only",
+                        name,
+                        _DEV_INPUTS_ROOT_ENV,
+                        dev,
+                    )
+                return candidate, source
+    return None, "missing"
 
 
 def _hash_path_input(path: Path, what: str) -> str:
@@ -299,6 +390,7 @@ class DerivationPipeline:
         weg: IEffectsGenerator,
         itr: IIconRenderer,
         install_spine: Path,
+        skins: ISkinExpander | None = None,
     ) -> None:
         self._state_root = state_root
         self._seeder = seeder
@@ -306,6 +398,7 @@ class DerivationPipeline:
         self._weg = weg
         self._itr = itr
         self._install_spine = install_spine
+        self._skins = skins
 
     def ensure_palette(
         self, wallpaper_path: Path, wallpaper_hash: str
@@ -492,3 +585,88 @@ class DerivationPipeline:
         if created:
             return entry_holder[0], False
         return self._seeder.load_icons_entry(target), True
+
+    @property
+    def has_skin_expander(self) -> bool:
+        """True when a skin adapter is wired (legacy callers/tests may omit it)."""
+        return self._skins is not None
+
+    def ensure_skin(self, name: str) -> tuple[SkinEntry, bool]:
+        """Ensure the selected skin cache entry (FROZEN SKIN SPEC v1).
+
+        Identity is ``sha256(templates_hash ‖ manifest_hash)`` — palette- and
+        wallpaper-independent by construction, so changing either never
+        re-expands a skin.
+
+        Raises:
+            SkinUnavailableError: when the manifest/templates are missing,
+                malformed or expansion fails. The caller applies the
+                fail-closed policy (keep the previous skin; never touch CSS).
+        """
+        if self._skins is None:
+            raise SkinUnavailableError(
+                f"skin expander not configured for {name!r}",
+                name=name,
+                reason="no skin expander injected",
+            )
+        manifest_path, _source = find_skin_manifest(name, self._install_spine)
+        if manifest_path is None:
+            raise SkinUnavailableError(
+                f"skin manifest not found for {name!r} in the install spine",
+                name=name,
+                reason="manifest missing",
+                hint="install the pinned assets skin tree / select an existing skin",
+            )
+        templates_dir = find_skin_templates(self._install_spine)
+        if templates_dir is None:
+            raise SkinUnavailableError(
+                f"skin templates not found for {name!r} in the install spine",
+                name=name,
+                reason="templates missing",
+                manifest_path=str(manifest_path),
+                hint="install the pinned assets skin template set",
+            )
+        try:
+            templates_hash = _hash_path_input(templates_dir, "skin templates")
+            manifest_hash = hash_file(manifest_path)
+            seh = skin_entry_hash(templates_hash, manifest_hash)
+            target = cache_entry_path(self._state_root, "skins", seh)
+            if target.exists():
+                return self._seeder.load_skin_entry(target), True
+
+            entry_holder: list[SkinEntry] = []
+
+            def _populate(staging: Path) -> None:
+                work = staging / seh
+                generated = self._skins.expand(name, manifest_path, templates_dir, work)
+                if generated.entry_hash != seh:
+                    raise RuntimeError(
+                        f"adapter entry hash mismatch: adapter={generated.entry_hash} "
+                        f"computed={seh} (skin manifest/templates divergence)"
+                    )
+                self._seeder.drain_work_dir(work, staging)
+                self._seeder.write_skin_meta_in(
+                    staging,
+                    entry_hash=seh,
+                    name=generated.name,
+                    input_templates_hash=templates_hash,
+                    input_manifest_hash=manifest_hash,
+                    artifact_hashes=cast("dict[str, str]", generated.artifact_hashes),
+                    generated_at=generated.generated_at,
+                )
+                entry_holder.append(generated)
+
+            created = populate_via_staging(target, _populate)
+            if created:
+                return entry_holder[0], False
+            return self._seeder.load_skin_entry(target), True
+        except SkinUnavailableError:
+            raise
+        except Exception as exc:
+            raise SkinUnavailableError(
+                f"skin expansion failed for {name!r}: {exc}",
+                name=name,
+                reason=str(exc),
+                manifest_path=str(manifest_path),
+                templates_dir=str(templates_dir),
+            ) from exc

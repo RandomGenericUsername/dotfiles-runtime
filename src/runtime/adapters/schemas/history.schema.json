@@ -16,6 +16,7 @@
     "palette": { "type": ["string", "null"] },
     "effects": { "type": ["string", "null"] },
     "icons": { "type": ["string", "null"] },
+    "skin": { "type": ["string", "null"] },
     "source_path": { "type": "string" },
     "details": {
       "type": "object",

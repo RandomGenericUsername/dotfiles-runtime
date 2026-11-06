@@ -19,13 +19,14 @@ from runtime.domain.models import CacheEntryRef
 
 logger = logging.getLogger(__name__)
 
-_LAYERS: frozenset[str] = frozenset({"wallpapers", "palettes", "effects", "icons"})
+_LAYERS: frozenset[str] = frozenset({"wallpapers", "palettes", "effects", "icons", "skins"})
 _HEX = frozenset("0123456789abcdef")
 _SEED_FIELD_TO_LAYER = {
     "wallpaper": "wallpapers",
     "palette": "palettes",
     "effects": "effects",
     "icons": "icons",
+    "skin": "skins",
 }
 
 

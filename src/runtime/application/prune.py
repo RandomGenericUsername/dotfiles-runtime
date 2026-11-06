@@ -19,8 +19,14 @@ from dataclasses import dataclass
 from runtime.domain.models import CacheEntryRef
 from runtime.ports.state_repository import IStateRepository
 
-#: Canonical layers (mirrors the cache layout / inspect order).
-LAYERS: tuple[str, str, str, str] = ("wallpapers", "palettes", "effects", "icons")
+#: Canonical layers (mirrors the cache layout / inspect order, including skins).
+LAYERS: tuple[str, str, str, str, str] = (
+    "wallpapers",
+    "palettes",
+    "effects",
+    "icons",
+    "skins",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,4 +97,6 @@ class PruneUseCase:
             active["effects"].add(state.effects.entry_hash)
         if state.icons is not None:
             active["icons"].add(state.icons.entry_hash)
+        if state.skin is not None:
+            active["skins"].add(state.skin.entry_hash)
         return active

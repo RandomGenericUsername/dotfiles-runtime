@@ -2,7 +2,7 @@
 id: REQ-010
 title: "Skins derivation layer: palette-independent per-app CSS + token map"
 kind: requirement
-status: in-progress
+status: done
 lane: 2
 links:
   openspec: skins-derivation-layer
@@ -39,31 +39,31 @@ The layer mirrors the existing palette/effects/icons layers:
 
 ## Acceptance
 
-- [ ] `desired.json` accepts an optional `skin` string (default `glass`); malformed values
+- [x] `desired.json` accepts an optional `skin` string (default `glass`); malformed values
       fail loud with the path and field.
-- [ ] `current.json` carries an optional `skin` projection (`hash`, `name`, `generated_at`)
+- [x] `current.json` carries an optional `skin` projection (`hash`, `name`, `generated_at`)
       validated by the embedded/canonical schema pair.
-- [ ] `SkinExpander` parses JSON and TOML manifests, validates the frozen v1 shape, substitutes
+- [x] `SkinExpander` parses JSON and TOML manifests, validates the frozen v1 shape, substitutes
       `{{SKIN_*}}` tokens deterministically, and writes `<app>.css` plus `skin.json`.
-- [ ] The cache key is exactly `sha256(templates_hash ‖ manifest_hash)`; wallpaper/palette
+- [x] The cache key is exactly `sha256(templates_hash ‖ manifest_hash)`; wallpaper/palette
       changes are cache hits and template/manifest changes are misses.
-- [ ] A skin cache entry is `cache/skins/<hash>/` with `meta.json` containing
+- [x] A skin cache entry is `cache/skins/<hash>/` with `meta.json` containing
       `hash_algorithm: "sha256"`, `kind: "skin"`, `entry_hash`, `name`, input hashes and
       `artifact_hashes`.
-- [ ] `reconcile`/`seed`/`wallpaper set` derive the selected skin; missing skin assets keep
+- [x] `reconcile`/`seed`/`wallpaper set` derive the selected skin; missing skin assets keep
       the previous skin, emit a structured log and leave app CSS/pointers untouched.
-- [ ] `current/skins/<app>.css` and `current/skin.json` are atomic symlinks; AGS consumer
+- [x] `current/skins/<app>.css` and `current/skin.json` are atomic symlinks; AGS consumer
       pointers are in the static spec table and skip safely when absent.
-- [ ] `appearance_hash` changes when the skin hash changes; `appearance_hash_for_state`
+- [x] `appearance_hash` changes when the skin hash changes; `appearance_hash_for_state`
       includes the skin.
-- [ ] `inspect status` prints the resolved skin and its token map; doctor covers the skin
+- [x] `inspect status` prints the resolved skin and its token map; doctor covers the skin
       cache entry, current links and AGS consumer pointers.
-- [ ] `inspect cache list --verify` and prune include the `skins` layer.
-- [ ] Tests cover cache-hit stability, cache misses, invalid-manifest fallback, atomic
+- [x] `inspect cache list --verify` and prune include the `skins` layer.
+- [x] Tests cover cache-hit stability, cache misses, invalid-manifest fallback, atomic
       repoint, appearance-hash sensitivity and the `glass` default.
-- [ ] `make gates` (test lint contracts-check hermetic lock-check docs-check) and
+- [x] `make gates` (test lint contracts-check hermetic lock-check docs-check) and
       `make gates-ci` pass; ARCHITECTURE/README/CHANGELOG updated.
-- [ ] Release tag is the next annotated minor (`v0.7.0`); no existing tag is moved.
+- [x] Release tag is the next annotated minor (`v0.7.0`); no existing tag is moved.
 
 ## Frozen spec inputs
 
@@ -113,3 +113,44 @@ make gates
 - `src/runtime/adapters/{json_state_repository,desired_state_reader,appearance_ledger}.py`.
 - `schemas/{current,meta,history}` embedded + canonical copies, `desired` reader docstring.
 - `src/runtime/cli/main.py` — desired-skin resolution, wiring, inspect output.
+
+
+## Implementation evidence
+
+Executed on the ticket worktree (2026-11-05):
+
+```sh
+uv run pytest -q tests/unit/test_skin_expander.py tests/unit/test_skins.py
+# 18 passed
+```
+
+```sh
+make gates
+# test       2228 passed, 3 skipped, 10 deselected
+# lint       All checks passed
+# contracts  48 passed, 1 skipped
+# hermetic   2228 passed, 3 skipped, 10 deselected
+# lock-check Resolved 25 packages (no changes)
+# docs-check exit 0
+```
+
+Focused integration proof (fakes, no live desktop):
+
+```sh
+uv run pytest -q tests/integration/test_wallpaper_set_capstone_integration.py \
+  tests/integration/test_inspect_cache_list_integration.py \
+  tests/integration/test_reconcile_integration.py
+# 18 passed
+```
+
+Evidence map (verify with `rg`/`sed`):
+
+- `src/runtime/adapters/skin_expander.py` — manifest JSON/TOML parse + v1
+  validation + deterministic `{{SKIN_*}}` expansion.
+- `src/runtime/adapters/hashing.py:skin_entry_hash` — `sha256(templates ‖ manifest)`.
+- `src/runtime/adapters/hashing.py:appearance_hash` — includes `skins`.
+- `src/runtime/application/derive.py:ensure_skin` — staging cache entry + fail-closed error.
+- `src/runtime/application/reconcile.py:_ensure_entries` — derive/keep-previous skin + repoint.
+- `src/runtime/adapters/consumer_path_spec.py` — AGS `skin.css`/`skin.json` pointers.
+- `src/runtime/adapters/schemas/{current,meta,history}.schema.json` + `contracts/schemas/` — byte-identical.
+- `tests/unit/test_skins.py` — cache hit/miss, invalid fallback, atomic repoint, appearance, glass default.

@@ -594,6 +594,7 @@ class TestCapstoneGoldenSchema:
     "hash": "0a1470089dcedb08b07af5f8cb88c7e81f025ad6a8763e8cf31101d18aa01e70"
   },
   "schema_version": 2,
+  "skin": null,
   "wallpaper": {
     "applied_at": "<TS>",
     "hash": "619cd350283e11c3cc9ee7b3d67dce93738e87e7fefa16144840ebd716534381",

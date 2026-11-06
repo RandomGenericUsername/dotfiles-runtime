@@ -9,6 +9,8 @@ The table is contract data shared with ``shared-data-contract.md``
     rofi    → {install}/config/rofi/colors.rasi   → current/colors.rasi
     btop    → {install}/config/btop/themes/colors.btop.theme →
                     current/colors.btop.theme
+    ags skin→ {install}/config/ags/skin.css       → current/skins/ags.css
+            → {install}/config/ags/skin.json      → current/skin.json
 
 Adding a consumer = ONE spec line + its ``@import`` — never adapter code.
 The ``config/gtk-{3,4}.0/`` spine dirs arrive in Story gt-3-1; until then
@@ -27,7 +29,7 @@ from runtime.ports.consumer_path_spec import IConsumerPathSpec
 
 
 class StaticConsumerPathSpec(IConsumerPathSpec):
-    """Module-default spec: the pinned 5-entry table + default rules."""
+    """Module-default spec: the pinned 7-entry table + default rules."""
 
     def consumer_pointers(self) -> tuple[ConsumerPointer, ...]:
         """Return the pinned table in contract order (ags, gtk-3.0, gtk-4.0,
@@ -54,6 +56,8 @@ class StaticConsumerPathSpec(IConsumerPathSpec):
                 path="config/btop/themes/colors.btop.theme",
                 target="colors.btop.theme",
             ),
+            ConsumerPointer(path="config/ags/skin.css", target="skins/ags.css"),
+            ConsumerPointer(path="config/ags/skin.json", target="skin.json"),
         )
 
     def rules(self) -> ConsumerPointerRules:

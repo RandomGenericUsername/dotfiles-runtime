@@ -62,6 +62,9 @@ def _quiet_seed_hook(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     weg = spine / "config" / "weg"
     weg.mkdir(parents=True)
     (weg / "effects.yaml").write_text("effects: {}\n", encoding="utf-8")
+    skin_templates = spine / "skin-templates"
+    skin_templates.mkdir(parents=True)
+    (skin_templates / "ags.css.tpl").write_text("x", encoding="utf-8")
     monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(spine))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
 

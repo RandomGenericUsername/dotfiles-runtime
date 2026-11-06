@@ -89,13 +89,14 @@ def appearance_hash(
     icons_hash: str | None,
     icon_templates_hash: str | None,
     icon_mappings_hash: str | None,
+    skins_hash: str | None = None,
 ) -> str:
     """Stable hash of the applied appearance (AD-29).
 
-    Inputs are palette + effects + icons entry hashes plus the icon-manifest
-    inputs (templates + mappings). The serialization is canonical JSON so the
-    same appearance always yields the same hash; ``None`` layers are explicit
-    nulls so a degraded layer cannot collide with a populated one.
+    Inputs are palette + effects + icons + skin entry hashes plus the
+    icon-manifest inputs (templates + mappings). The serialization is canonical
+    JSON so the same appearance always yields the same hash; ``None`` layers
+    are explicit nulls so a degraded layer cannot collide with a populated one.
     """
     payload = json.dumps(
         {
@@ -104,6 +105,7 @@ def appearance_hash(
             "icons": icons_hash,
             "iconTemplates": icon_templates_hash,
             "iconMappings": icon_mappings_hash,
+            "skins": skins_hash,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -351,3 +353,16 @@ def icons_entry_hash(
     if seed is not None:
         base += seed
     return hashlib.sha256(base.encode("utf-8")).hexdigest()
+
+
+def skin_entry_hash(templates_hash: str, manifest_hash: str) -> str:
+    """Entry hash for ``cache/skins/<sh>/`` (FROZEN SKIN SPEC v1).
+
+    ``sha256(templates_hash ‖ manifest_hash)``. Wallpaper and palette hashes are
+    deliberately absent: a skin expansion is palette-independent and must stay
+    a cache hit across wallpaper changes.
+    """
+
+    _validate_hex64("templates_hash", templates_hash)
+    _validate_hex64("manifest_hash", manifest_hash)
+    return hashlib.sha256(f"{templates_hash}{manifest_hash}".encode()).hexdigest()

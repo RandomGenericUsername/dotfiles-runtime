@@ -224,8 +224,9 @@ def test_imperative_render_golden() -> None:
             "palettes": ("aa" * 32,),
             "effects": (),
             "icons": (),
+            "skins": (),
         },
-        kept={"wallpapers": 1, "palettes": 5, "effects": 0, "icons": 0},
+        kept={"wallpapers": 1, "palettes": 5, "effects": 0, "icons": 0, "skins": 0},
         total_removable=1,
         keep=5,
         prune_pinned=False,
@@ -246,8 +247,9 @@ def test_imperative_render_golden() -> None:
             "palettes": ["aa" * 32],
             "effects": [],
             "icons": [],
+            "skins": [],
         },
-        "kept": {"wallpapers": 1, "palettes": 5, "effects": 0, "icons": 0},
+        "kept": {"wallpapers": 1, "palettes": 5, "effects": 0, "icons": 0, "skins": 0},
         "total_removable": 1,
         "keep": 5,
         "prune_pinned": False,
@@ -277,8 +279,15 @@ def test_floor_fixture_active_undated_survive_zero_keep() -> None:
         ],
         "effects": [],
         "icons": [],
+        "skins": [],
     }
-    pins = {"wallpapers": set(), "palettes": {pinned}, "effects": set(), "icons": set()}
+    pins = {
+        "wallpapers": set(),
+        "palettes": {pinned},
+        "effects": set(),
+        "icons": set(),
+        "skins": set(),
+    }
     current = DesktopState(
         schema_version=2,
         wallpaper=WallpaperEntry(

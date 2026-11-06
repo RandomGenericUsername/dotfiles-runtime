@@ -1,6 +1,6 @@
 """Domain models for the derivation graph.
 
-Pure, zero-I/O representations of wallpapers, palettes, effects, icons,
+Pure, zero-I/O representations of wallpapers, palettes, effects, icons, skins,
 and per-monitor wallpaper configuration. No filesystem or network access.
 """
 
@@ -161,6 +161,75 @@ class IconsEntry:
     generated_at: str  # ISO-8601 UTC timestamp
 
 
+class SkinArtifacts(TypedDict, total=False):
+    """Artifact hashes for skin entries.
+
+    Keys are the published filenames — ``<app>.css`` files plus ``skin.json``.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class SkinEntry:
+    """Palette-independent skin expansion (FROZEN SKIN SPEC v1).
+
+    A skin maps palette/ink roles, paint and rhythm into per-app CSS plus a
+    resolved token map for ``skinValue`` consumers. It deliberately carries no
+    structure or variant tokens.
+
+    ``entry_hash`` is ``sha256(templates_hash ‖ manifest_hash)``: wallpaper and
+    palette changes never invalidate a skin.
+    """
+
+    hash_algorithm: Literal["sha256"]
+    kind: Literal["skin"]
+    entry_hash: str
+    name: str
+    input_templates_hash: str
+    input_manifest_hash: str
+    artifact_hashes: SkinArtifacts
+    generated_at: str
+
+
+#: Default skin when ``desired.json`` carries no selection.
+DEFAULT_SKIN: Final[str] = "glass"
+
+
+class SkinUnavailableError(RuntimeError):
+    """A selected skin could not be resolved, parsed or expanded.
+
+    Carries the traceability fields the CLI/log surfaces: the skin name, the
+    reason, and the resolved asset paths (if any). The caller applies the
+    fail-closed policy: keep the previous skin and never touch app CSS.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        name: str,
+        reason: str,
+        manifest_path: str = "",
+        templates_dir: str = "",
+        hint: str = "check the pinned assets skin tree; the previous skin is kept",
+    ) -> None:
+        super().__init__(message)
+        self.name = name
+        self.reason = reason
+        self.manifest_path = manifest_path
+        self.templates_dir = templates_dir
+        self.hint = hint
+
+    def to_details(self) -> dict[str, str]:
+        """String-valued fields for structured logs/CLI error details."""
+        return {
+            "skin": self.name,
+            "reason": self.reason,
+            "manifest_path": self.manifest_path,
+            "templates_dir": self.templates_dir,
+            "hint": self.hint,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class MonitorWallpaperConfig:
     """Per-monitor wallpaper backend selection and parameters."""
@@ -195,6 +264,7 @@ class DesktopState:
     effects: EffectsEntry | None  # None only when never derived
     icons: IconsEntry | None  # None only when never derived
     applied_at: str  # ISO-8601 UTC timestamp
+    skin: SkinEntry | None = None  # None until a skin is derived; v1 default glass
 
 
 class SeedLockedError(RuntimeError):
@@ -316,6 +386,7 @@ class DesiredState:
     wallpaper: str
     keep: int
     pinned: tuple[str, ...]
+    skin: str = DEFAULT_SKIN
 
 
 @dataclass(frozen=True, slots=True)

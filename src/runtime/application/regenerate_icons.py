@@ -146,6 +146,7 @@ class RegenerateIconsUseCase:
             palette_hash=saved.palette.entry_hash if saved.palette else None,
             effects_hash=saved.effects.entry_hash if saved.effects else None,
             icons_hash=saved.icons.entry_hash if saved.icons else None,
+            skin_hash=saved.skin.entry_hash if saved.skin else None,
             source_path=saved.wallpaper.source_path,
             details={"layers": {"icons": 1}},
         )

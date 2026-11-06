@@ -51,7 +51,9 @@ from runtime.domain.models import CorruptCacheError, EntryHealth
 if HASH_ALGORITHM != "sha256":
     raise AssertionError(f"HASH_ALGORITHM must be 'sha256', got {HASH_ALGORITHM!r}")
 
-CACHE_LAYERS: Final[frozenset[str]] = frozenset({"wallpapers", "palettes", "effects", "icons"})
+CACHE_LAYERS: Final[frozenset[str]] = frozenset(
+    {"wallpapers", "palettes", "effects", "icons", "skins"}
+)
 CACHE_STAGING_PREFIX: Final[str] = ".staging-"
 CACHE_QUARANTINE_DIR: Final[str] = ".quarantine"
 # Grace window before a dead-PID staging dir is reaped — protects against

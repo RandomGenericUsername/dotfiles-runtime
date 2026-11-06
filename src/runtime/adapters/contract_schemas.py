@@ -29,6 +29,7 @@ _KIND_TO_DEFINITION = {
     "palette": "#/definitions/palette",
     "effects": "#/definitions/effects",
     "icons": "#/definitions/icons",
+    "skin": "#/definitions/skin",
 }
 
 

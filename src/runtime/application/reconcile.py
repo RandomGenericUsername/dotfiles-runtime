@@ -55,11 +55,14 @@ from runtime.domain.ags_apps import AppRefreshRecord, ReloadFailure
 from runtime.domain.history import HISTORY_TRIGGERS
 from runtime.domain.models import (
     DEFAULT_MONITOR,
+    DEFAULT_SKIN,
     DesktopState,
     EffectsEntry,
     IconsEntry,
     PaletteEntry,
     PaletteUnavailableError,
+    SkinEntry,
+    SkinUnavailableError,
 )
 from runtime.ports.ags_app_refresher import IAgsAppRefresher
 from runtime.ports.color_scheme_generator import IColorSchemeGenerator
@@ -67,6 +70,7 @@ from runtime.ports.desktop_reloader import IDesktopReloader
 from runtime.ports.effects_generator import IEffectsGenerator
 from runtime.ports.icon_renderer import IIconRenderer
 from runtime.ports.seed_mutex import ISeedMutex
+from runtime.ports.skin_expander import ISkinExpander
 from runtime.ports.state_repository import IStateRepository
 from runtime.ports.wallpaper_applier import IWallpaperApplier
 
@@ -125,6 +129,8 @@ class ReconcileDesktopStateUseCase:
         reloaders: list[IDesktopReloader] | None = None,
         wallpaper_applier: IWallpaperApplier | None = None,
         app_refresher: IAgsAppRefresher | None = None,
+        skin_name: str = DEFAULT_SKIN,
+        skin_expander: ISkinExpander | None = None,
     ) -> None:
         self._state_repo = state_repo
         self._state_root = state_root
@@ -139,6 +145,8 @@ class ReconcileDesktopStateUseCase:
         #: lane and the configured restart lane; it is NOT an ordinary
         #: ``IDesktopReloader`` because its failures are structured per app.
         self._app_refresher = app_refresher
+        self._skin_name = skin_name
+        self._skin_expander = skin_expander
         self._pipeline = DerivationPipeline(
             state_root=state_root,
             seeder=seeder,
@@ -146,6 +154,7 @@ class ReconcileDesktopStateUseCase:
             weg=weg,
             itr=itr,
             install_spine=install_spine,
+            skins=skin_expander,
         )
 
     def run(
@@ -198,7 +207,7 @@ class ReconcileDesktopStateUseCase:
         # Derivation (step 1) happens OUTSIDE the lock (staging is race-
         # safe; tool invocations stay parallel — same split as apply).
         regenerated: list[str] = []
-        palette, effects, icons = self._ensure_entries(state, regenerated)
+        palette, effects, icons, skin = self._ensure_entries(state, regenerated)
         pre_lock_wallpaper_hash = state.wallpaper.content_hash
 
         # Re-read after derivation: state may have changed concurrently
@@ -218,7 +227,7 @@ class ReconcileDesktopStateUseCase:
             if state.wallpaper.content_hash != pre_lock_wallpaper_hash:
                 # Re-derive for the authoritative state inside the lock.
                 # This serializes tool invocations only on contention.
-                palette, effects, icons = self._ensure_entries(state, regenerated)
+                palette, effects, icons, skin = self._ensure_entries(state, regenerated)
             else:
                 # Re-validate palette/effects/icons hashes against reloaded
                 # state to catch stale derivation even when wallpaper hash
@@ -240,6 +249,7 @@ class ReconcileDesktopStateUseCase:
                 effects=effects,
                 icons=icons,
                 applied_at=state.applied_at,
+                skin=skin,
             )
 
             # Monitor name validation P1 — fail loud on traversal
@@ -266,6 +276,7 @@ class ReconcileDesktopStateUseCase:
                 palette_entry_hash=state.palette.entry_hash if state.palette else None,
                 effects_entry_hash=state.effects.entry_hash if state.effects else None,
                 icons_entry_hash=state.icons.entry_hash if state.icons else None,
+                skin_entry=skin,
             )
             # R2 consumer-path symlinks (Epic 4): point the spine consumer
             # path at current/ so desktop consumers read the active palette.
@@ -294,6 +305,7 @@ class ReconcileDesktopStateUseCase:
                 effects=effects,
                 icons=icons,
                 applied_at=now,
+                skin=skin,
             )
             self._state_repo.save(saved)
 
@@ -314,6 +326,7 @@ class ReconcileDesktopStateUseCase:
             palette_hash=saved.palette.entry_hash if saved.palette else None,
             effects_hash=saved.effects.entry_hash if saved.effects else None,
             icons_hash=saved.icons.entry_hash if saved.icons else None,
+            skin_hash=saved.skin.entry_hash if saved.skin else None,
             source_path=saved.wallpaper.source_path,
         )
 
@@ -410,10 +423,10 @@ class ReconcileDesktopStateUseCase:
         self,
         state: DesktopState,
         regenerated: list[str],
-    ) -> tuple[PaletteEntry, EffectsEntry | None, IconsEntry | None]:
+    ) -> tuple[PaletteEntry, EffectsEntry | None, IconsEntry | None, SkinEntry | None]:
         """Ensure every cache entry referenced by the state exists.
 
-        Returns the (possibly-rebuilt) palette/effects/icons entries and
+        Returns the (possibly-rebuilt) palette/effects/icons/skin entries and
         appends layer names to ``regenerated`` for actual cache misses.
         The palette check uses the SHARED completeness guard
         (``ensure_palette_entry_complete``) so a pre-growth partial
@@ -422,6 +435,10 @@ class ReconcileDesktopStateUseCase:
 
         The palette is REQUIRED (BUG-001): a null-palette state raises
         ``PaletteUnavailableError`` before any entry/link work.
+
+        The skin layer is optional infrastructure (legacy callers may not wire
+        an expander) and fail-closed: a resolution/expansion failure returns
+        the previous entry when its cache bytes still exist, else ``None``.
         """
         self._ensure_wallpaper_entry(state, regenerated)
         cached_wallpaper_img = (
@@ -480,7 +497,39 @@ class ReconcileDesktopStateUseCase:
                 icons = entry_i
                 regenerated.append("icons")
 
-        return palette, effects, icons
+        skin = state.skin
+        if self._skin_expander is not None:
+            try:
+                entry_s, cache_hit = self._pipeline.ensure_skin(self._skin_name)
+            except SkinUnavailableError as exc:
+                logger.error(
+                    "reconcile: skin derivation failed; keeping previous skin: "
+                    "skin=%s reason=%s manifest=%s templates=%s",
+                    exc.name,
+                    exc.reason,
+                    exc.manifest_path,
+                    exc.templates_dir,
+                )
+                skin = self._previous_skin_if_cached(state.skin)
+            except Exception as exc:
+                logger.error(
+                    "reconcile: skin derivation failed unexpectedly; keeping previous skin: %s",
+                    exc,
+                )
+                skin = self._previous_skin_if_cached(state.skin)
+            else:
+                skin = entry_s
+                if not cache_hit:
+                    regenerated.append("skin")
+
+        return palette, effects, icons, skin
+
+    def _previous_skin_if_cached(self, previous: SkinEntry | None) -> SkinEntry | None:
+        """Keep a previous skin only while its cache entry still exists."""
+        if previous is None:
+            return None
+        entry_dir = cache_entry_path(self._state_root, "skins", previous.entry_hash)
+        return previous if entry_dir.is_dir() else None
 
     def _ensure_wallpaper_entry(self, state: DesktopState, regenerated: list[str]) -> None:
         """Ensure the wallpaper cache entry exists (re-import from source)."""
@@ -558,6 +607,9 @@ class ReconcileDesktopStateUseCase:
             expected["effects"] = "effects cache entry missing"
         if state.icons is not None:
             expected["icons"] = "icons cache entry missing"
+        if state.skin is not None:
+            for artifact in sorted(state.skin.artifact_hashes):
+                expected[artifact] = "skin artifact missing from cache entry"
 
         created = {p.name for p in repointed}
         skipped: list[str] = []
@@ -602,6 +654,15 @@ class ReconcileDesktopStateUseCase:
             expected_names.add("effects")
         if state.icons is not None:
             expected_names.add("icons")
+        expected_skin_names: set[str] = set()
+        if state.skin is not None:
+            expected_skin_names = {
+                artifact
+                for artifact in state.skin.artifact_hashes
+                if artifact != "skin.json"
+            }
+            if "skin.json" in state.skin.artifact_hashes:
+                expected_names.add("skin.json")
 
         removed: list[str] = []
         for item in current_dir.iterdir():
@@ -624,6 +685,28 @@ class ReconcileDesktopStateUseCase:
                             removed.append(item.name)
                     except OSError:
                         pass
+            elif item.name == "skin.json":
+                if item.name not in expected_names:
+                    try:
+                        if item.is_symlink() or item.is_file():
+                            item.unlink()
+                            removed.append(item.name)
+                    except OSError:
+                        pass
+            elif item.name == "skins" and item.is_dir() and not item.is_symlink():
+                for skin_link in sorted(item.iterdir()):
+                    if skin_link.name in expected_skin_names:
+                        continue
+                    try:
+                        if skin_link.is_symlink() or skin_link.is_file():
+                            skin_link.unlink()
+                            removed.append(f"skins/{skin_link.name}")
+                    except OSError:
+                        pass
+                try:
+                    item.rmdir()  # only removes an empty skins/ dir
+                except OSError:
+                    pass
         return removed
 
     def _build_expected_targets(self, state: DesktopState) -> dict[str, Path]:
@@ -672,6 +755,11 @@ class ReconcileDesktopStateUseCase:
                 "icons",
                 state.icons.entry_hash,
             )
+        if state.skin is not None:
+            skin_dir = cache_entry_path(self._state_root, "skins", state.skin.entry_hash)
+            for artifact in sorted(state.skin.artifact_hashes):
+                name = "skin.json" if artifact == "skin.json" else f"skins/{artifact}"
+                targets[name] = skin_dir / artifact
         return targets
 
     def _revert_stale_symlinks(self, state: DesktopState) -> list[Path]:

@@ -350,6 +350,7 @@ class ApplyWallpaperUseCase:
                 effects=effects,
                 icons=icons,
                 applied_at=now,
+                skin=existing.skin if existing is not None else None,
             )
             self._state_repo.save(state)
 

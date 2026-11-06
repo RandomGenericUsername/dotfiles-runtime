@@ -380,8 +380,15 @@ class TestCliShape:
                 "palettes": [],
                 "effects": ["a" * 64],
                 "icons": [],
+                "skins": [],
             },
-            "counts": {"wallpapers": 0, "palettes": 0, "effects": 1, "icons": 0},
+            "counts": {
+                "wallpapers": 0,
+                "palettes": 0,
+                "effects": 1,
+                "icons": 0,
+                "skins": 0,
+            },
             "total": 1,
         }
 

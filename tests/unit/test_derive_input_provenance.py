@@ -19,12 +19,12 @@ from runtime.application.derive import (
 )
 from runtime.domain.models import MissingDerivationInputError
 
-_KEYS = ("weg_effects", "icon_templates", "icon_mappings")
+_KEYS = ("weg_effects", "icon_templates", "icon_mappings", "skin_templates")
 
 #: Inputs that still carry a dev-checkout candidate. ``weg_effects`` lost its
 #: repo candidate in cli-tools-repos S5 (the CLI is consumed from its pinned
 #: repo), so it is spine-only.
-_REPO_KEYS = ("icon_templates", "icon_mappings")
+_REPO_KEYS = ("icon_templates", "icon_mappings", "skin_templates")
 
 
 def _populate_spine(spine: Path) -> None:
@@ -35,6 +35,8 @@ def _populate_spine(spine: Path) -> None:
     weg = spine / "config" / "weg"
     weg.mkdir(parents=True)
     (weg / "effects.yaml").write_text("effects: {}\n", encoding="utf-8")
+    (spine / "skin-templates").mkdir(parents=True)
+    (spine / "skin-templates" / "x.css.tpl").write_text("x", encoding="utf-8")
 
 
 def _populate_repo(repo: Path) -> None:
@@ -42,6 +44,7 @@ def _populate_repo(repo: Path) -> None:
     # icons/-relative (the composition-repo trees were retired).
     dirs = [
         "icons/templates",
+        "skin-templates",
     ]
     for rel in dirs:
         d = repo / rel

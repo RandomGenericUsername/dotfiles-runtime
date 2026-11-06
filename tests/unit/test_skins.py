@@ -1,0 +1,439 @@
+"""Skins derivation layer: identity, cache, fallback, pointers, appearance.
+
+Covers the frozen v1 requirements: palette-independent cache identity, template
+and manifest misses, fail-closed fallback to the previous skin, atomic current
+pointers, appearance-hash participation and the ``glass`` default.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import cast
+
+import pytest
+
+from runtime.adapters.cache import cache_entry_path
+from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
+from runtime.adapters.appearance_ledger import appearance_hash_for_state
+from runtime.adapters.desired_state_reader import read_desired_state, resolve_desired_path
+from runtime.adapters.hashing import (
+    appearance_hash,
+    canonical_hash_dir,
+    hash_file,
+    skin_entry_hash,
+)
+from runtime.adapters.json_state_repository import JsonStateRepository
+from runtime.adapters.seeder import CacheSeeder
+from runtime.adapters.skin_expander import SkinExpander
+from runtime.application.derive import DerivationPipeline
+from runtime.application.inspect import InspectStateUseCase
+from runtime.application.reconcile import ReconcileDesktopStateUseCase
+from runtime.domain.models import (
+    BackendType,
+    DesktopState,
+    FitMode,
+    MonitorWallpaperConfig,
+    PaletteEntry,
+    SkinArtifacts,
+    SkinEntry,
+    WallpaperEntry,
+)
+from runtime.ports.skin_expander import ISkinExpander
+from tests.support.palette_fakes import v1_colors_yaml, v1_gtk_css
+
+WH = __import__("hashlib").sha256(b"wallpaper").hexdigest()
+PH = "aa" * 32
+TS = "2026-11-05T00:00:00Z"
+PALETTE_FILES = (
+    "colors.conf",
+    "colors.gtk.css",
+    "colors.yaml",
+    "colors.adw.css",
+    "colors.sequences",
+    "colors.rasi",
+    "colors.kitty",
+    "colors.btop.theme",
+)
+
+
+class _Unused:
+    """Stand-ins for palette/effects/icon producers (never invoked by skin)."""
+
+
+class _CountingExpander(ISkinExpander):
+    def __init__(self) -> None:
+        self._inner = SkinExpander()
+        self.calls = 0
+
+    def expand(
+        self,
+        name: str,
+        manifest_path: Path,
+        templates_dir: Path,
+        output_dir: Path,
+    ) -> SkinEntry:
+        self.calls += 1
+        return self._inner.expand(name, manifest_path, templates_dir, output_dir)
+
+
+def _write_skin_assets(
+    spine: Path,
+    *,
+    name: str = "glass",
+    body: str = ".panel { border-radius: {{SKIN_RADIUS}}; }\n",
+    token: str = "12px",
+) -> tuple[Path, Path]:
+    templates = spine / "skin-templates"
+    templates.mkdir(parents=True, exist_ok=True)
+    (templates / "ags.css.tpl").write_text(body, encoding="utf-8")
+    skins = spine / "skins"
+    skins.mkdir(parents=True, exist_ok=True)
+    manifest = skins / f"{name}.toml"
+    manifest.write_text(
+        f'name = "{name}"\n'
+        "version = 1\n"
+        "[tokens]\n"
+        f'radius = "{token}"\n'
+        "[apps]\n"
+        'ags = "ags.css.tpl"\n',
+        encoding="utf-8",
+    )
+    return manifest, templates
+
+
+def _pipeline(tmp_path: Path, spine: Path, expander: ISkinExpander) -> DerivationPipeline:
+    return DerivationPipeline(
+        state_root=tmp_path / "state",
+        seeder=CacheSeeder(tmp_path / "state"),
+        palette_producer=cast("object", _Unused()),  # type: ignore[arg-type]
+        weg=cast("object", _Unused()),  # type: ignore[arg-type]
+        itr=cast("object", _Unused()),  # type: ignore[arg-type]
+        install_spine=spine,
+        skins=expander,
+    )
+
+
+def _write_palette_cache(state_root: Path) -> None:
+    entry = cache_entry_path(state_root, "palettes", PH)
+    entry.mkdir(parents=True)
+    data = {name: name.encode() for name in PALETTE_FILES}
+    data["colors.yaml"] = v1_colors_yaml().encode()
+    data["colors.gtk.css"] = v1_gtk_css().encode()
+    hashes = {}
+    for name, raw in data.items():
+        (entry / name).write_bytes(raw)
+        import hashlib
+
+        hashes[name] = hashlib.sha256(raw).hexdigest()
+    (entry / "meta.json").write_text(
+        json.dumps(
+            {
+                "hash_algorithm": "sha256",
+                "kind": "palette",
+                "entry_hash": PH,
+                "source_wallpaper_hash": WH,
+                "input_template_hash": "t" * 64,
+                "artifact_hashes": hashes,
+                "generated_at": TS,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_wallpaper_cache(state_root: Path) -> Path:
+    entry = cache_entry_path(state_root, "wallpapers", WH)
+    entry.mkdir(parents=True, exist_ok=True)
+    image = entry / "wallpaper.png"
+    image.write_bytes(b"wallpaper")
+    return image
+
+
+def _desktop_state(skin: SkinEntry | None = None) -> DesktopState:
+    return DesktopState(
+        schema_version=2,
+        wallpaper=WallpaperEntry(
+            hash_algorithm="sha256",
+            kind="wallpaper",
+            content_hash=WH,
+            source_path="/img/wall.png",
+            imported_at=TS,
+        ),
+        monitors={
+            "DP-1": MonitorWallpaperConfig(
+                backend=BackendType.hyprpaper,
+                source_hash=WH,
+                fit_mode=FitMode.cover,
+                mpv_options=None,
+                ipc_socket=None,
+            )
+        },
+        palette=PaletteEntry(
+            hash_algorithm="sha256",
+            kind="palette",
+            entry_hash=PH,
+            source_wallpaper_hash=WH,
+            input_template_hash="t" * 64,
+            artifact_hashes={},
+            generated_at=TS,
+        ),
+        effects=None,
+        icons=None,
+        applied_at=TS,
+        skin=skin,
+    )
+
+
+def _reconcile(tmp_path: Path, spine: Path, expander: ISkinExpander) -> ReconcileDesktopStateUseCase:
+    state_root = tmp_path / "state"
+    return ReconcileDesktopStateUseCase(
+        state_repo=JsonStateRepository(state_root=state_root),
+        palette_producer=cast("object", _Unused()),  # type: ignore[arg-type]
+        weg=cast("object", _Unused()),  # type: ignore[arg-type]
+        itr=cast("object", _Unused()),  # type: ignore[arg-type]
+        install_spine=spine,
+        state_root=state_root,
+        seeder=CacheSeeder(state_root),
+        mutex=_NoLock(),
+        skin_name="glass",
+        skin_expander=expander,
+    )
+
+
+class _NoLock:
+    def hold(self, blocking: bool = True) -> "_NoLock":
+        return self
+
+    def __enter__(self) -> "_NoLock":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+
+def _make_reconcile_world(tmp_path: Path) -> tuple[Path, Path, _CountingExpander]:
+    spine = tmp_path / "install"
+    _write_skin_assets(spine)
+    (spine / "config" / "ags").mkdir(parents=True)
+    state_root = tmp_path / "state"
+    _write_palette_cache(state_root)
+    _write_wallpaper_cache(state_root)
+    JsonStateRepository(state_root=state_root).save(_desktop_state())
+    return spine, state_root, _CountingExpander()
+
+
+def test_skin_cache_hit_when_only_wallpaper_or_palette_changes(tmp_path: Path) -> None:
+    spine = tmp_path / "install"
+    _write_skin_assets(spine)
+    expander = _CountingExpander()
+    pipeline = _pipeline(tmp_path, spine, expander)
+
+    first, hit = pipeline.ensure_skin("glass")
+    assert hit is False and expander.calls == 1
+    second, hit = pipeline.ensure_skin("glass")
+    assert hit is True and expander.calls == 1
+    assert second.entry_hash == first.entry_hash
+
+    # Unrelated layers churn; the skin key has no wallpaper/palette input.
+    other_wall = cache_entry_path(tmp_path / "state", "wallpapers", "1" * 64)
+    other_wall.mkdir(parents=True)
+    (other_wall / "wallpaper.png").write_bytes(b"different")
+    other_pal = cache_entry_path(tmp_path / "state", "palettes", "2" * 64)
+    other_pal.mkdir(parents=True)
+    (other_pal / "colors.yaml").write_text("x", encoding="utf-8")
+
+    third, hit = pipeline.ensure_skin("glass")
+    assert hit is True and expander.calls == 1
+    assert third.entry_hash == first.entry_hash
+
+
+def test_skin_cache_miss_on_template_and_manifest_change(tmp_path: Path) -> None:
+    spine = tmp_path / "install"
+    manifest, templates = _write_skin_assets(spine)
+    expander = _CountingExpander()
+    pipeline = _pipeline(tmp_path, spine, expander)
+
+    first, hit = pipeline.ensure_skin("glass")
+    assert hit is False and expander.calls == 1
+
+    (templates / "ags.css.tpl").write_text(
+        ".panel { border-radius: {{SKIN_RADIUS}}; padding: 1px; }\n", encoding="utf-8"
+    )
+    after_template, hit = pipeline.ensure_skin("glass")
+    assert hit is False and expander.calls == 2
+    assert after_template.entry_hash != first.entry_hash
+    assert after_template.input_templates_hash != first.input_templates_hash
+
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace('radius = "12px"', 'radius = "16px"'),
+        encoding="utf-8",
+    )
+    after_manifest, hit = pipeline.ensure_skin("glass")
+    assert hit is False and expander.calls == 3
+    assert after_manifest.entry_hash != after_template.entry_hash
+    assert after_manifest.input_manifest_hash != after_template.input_manifest_hash
+
+
+def test_invalid_manifest_keeps_previous_skin_and_never_touches_css(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    spine, state_root, expander = _make_reconcile_world(tmp_path)
+    reconcile = _reconcile(tmp_path, spine, expander)
+
+    first = reconcile.run()
+    assert first.state.skin is not None
+    skin_hash = first.state.skin.entry_hash
+    cache_css = cache_entry_path(state_root, "skins", skin_hash) / "ags.css"
+    css_before = cache_css.read_bytes()
+    link_before = (state_root / "current" / "skins" / "ags.css").readlink()
+    ags_before = (spine / "config" / "ags" / "skin.css").readlink()
+
+    manifest = spine / "skins" / "glass.toml"
+    manifest.write_text("name = [not valid", encoding="utf-8")
+    with caplog.at_level("ERROR"):
+        second = reconcile.run()
+
+    assert second.state.skin is not None
+    assert second.state.skin.entry_hash == skin_hash
+    assert cache_css.read_bytes() == css_before
+    assert (state_root / "current" / "skins" / "ags.css").readlink() == link_before
+    assert (spine / "config" / "ags" / "skin.css").readlink() == ags_before
+    assert any("skin derivation failed" in record.getMessage() for record in caplog.records)
+
+
+def test_current_skin_links_repoint_atomically(tmp_path: Path) -> None:
+    spine, state_root, _ = _make_reconcile_world(tmp_path)
+    seeder = CacheSeeder(state_root)
+    image = _write_wallpaper_cache(state_root)
+
+    def _entry(entry_hash: str) -> SkinEntry:
+        entry_dir = cache_entry_path(state_root, "skins", entry_hash)
+        entry_dir.mkdir(parents=True)
+        (entry_dir / "ags.css").write_text(entry_hash, encoding="utf-8")
+        (entry_dir / "skin.json").write_text("{}", encoding="utf-8")
+        return SkinEntry(
+            hash_algorithm="sha256",
+            kind="skin",
+            entry_hash=entry_hash,
+            name="glass",
+            input_templates_hash="1" * 64,
+            input_manifest_hash="2" * 64,
+            artifact_hashes=cast(
+                "SkinArtifacts", {"ags.css": "3" * 64, "skin.json": "4" * 64}
+            ),
+            generated_at=TS,
+        )
+
+    old, new = _entry("a" * 64), _entry("b" * 64)
+    seeder.repoint_current_symlinks(
+        wallpaper_target=image, monitor_names=["DP-1"], skin_entry=old
+    )
+    seeder.repoint_current_symlinks(
+        wallpaper_target=image, monitor_names=["DP-1"], skin_entry=new
+    )
+
+    assert (state_root / "current" / "skins" / "ags.css").resolve() == (
+        cache_entry_path(state_root, "skins", new.entry_hash) / "ags.css"
+    )
+    assert (state_root / "current" / "skin.json").resolve() == (
+        cache_entry_path(state_root, "skins", new.entry_hash) / "skin.json"
+    )
+    assert list((state_root / "current").rglob("*.tmp.*")) == []
+
+
+def test_appearance_hash_changes_with_skin_hash() -> None:
+    base = appearance_hash(
+        palette_hash=PH,
+        effects_hash=None,
+        icons_hash=None,
+        icon_templates_hash=None,
+        icon_mappings_hash=None,
+        skins_hash="a" * 64,
+    )
+    other = appearance_hash(
+        palette_hash=PH,
+        effects_hash=None,
+        icons_hash=None,
+        icon_templates_hash=None,
+        icon_mappings_hash=None,
+        skins_hash="b" * 64,
+    )
+    assert base != other
+
+
+def test_appearance_hash_for_state_includes_skin() -> None:
+    plain = _desktop_state()
+    skinned = _desktop_state(
+        SkinEntry(
+            hash_algorithm="sha256",
+            kind="skin",
+            entry_hash="a" * 64,
+            name="glass",
+            input_templates_hash="b" * 64,
+            input_manifest_hash="c" * 64,
+            artifact_hashes=cast("SkinArtifacts", {"ags.css": "d" * 64, "skin.json": "e" * 64}),
+            generated_at=TS,
+        )
+    )
+    assert appearance_hash_for_state(plain) != appearance_hash_for_state(skinned)
+
+
+def test_desired_state_defaults_to_glass(tmp_path: Path) -> None:
+    path = resolve_desired_path(tmp_path / "config")
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"version": 1, "wallpaper": "/img/w.png", "keep": 5, "pinned": []}),
+        encoding="utf-8",
+    )
+    desired = read_desired_state(path)
+    assert desired is not None and desired.skin == "glass"
+
+    path.write_text(
+        json.dumps(
+            {"version": 1, "wallpaper": "/img/w.png", "keep": 5, "pinned": [], "skin": "flat"}
+        ),
+        encoding="utf-8",
+    )
+    desired = read_desired_state(path)
+    assert desired is not None and desired.skin == "flat"
+
+    path.write_text(
+        json.dumps(
+            {"version": 1, "wallpaper": "/img/w.png", "keep": 5, "pinned": [], "skin": "../x"}
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="skin"):
+        read_desired_state(path)
+
+
+def test_inspect_prints_resolved_skin_and_tokens(tmp_path: Path) -> None:
+    spine, state_root, expander = _make_reconcile_world(tmp_path)
+    result = _reconcile(tmp_path, spine, expander).run()
+
+    inspected = InspectStateUseCase(
+        state_repo=JsonStateRepository(state_root=state_root),
+        state_root=state_root,
+        install_spine=spine,
+        consumer_spec=StaticConsumerPathSpec(),
+    ).run()
+
+    assert inspected.skin == result.state.skin.entry_hash  # type: ignore[union-attr]
+    assert inspected.skin_name == "glass"
+    assert inspected.skin_tokens == {"radius": "12px"}
+    assert inspected.consumer_pointers["config/ags/skin.css"].status == "ok"
+    assert inspected.consumer_pointers["config/ags/skin.json"].status == "ok"
+
+
+def test_skin_entry_hash_ignores_wallpaper_and_palette() -> None:
+    templates_hash = "a" * 64
+    manifest_hash = "b" * 64
+    assert skin_entry_hash(templates_hash, manifest_hash) == skin_entry_hash(
+        templates_hash, manifest_hash
+    )
+    assert canonical_hash_dir(Path(__file__).parent) == canonical_hash_dir(
+        Path(__file__).parent
+    )
+    assert hash_file(Path(__file__)) == hash_file(Path(__file__))

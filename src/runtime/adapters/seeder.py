@@ -42,6 +42,8 @@ from runtime.domain.models import (
     IconsEntry,
     PaletteArtifacts,
     PaletteEntry,
+    SkinArtifacts,
+    SkinEntry,
 )
 from runtime.ports.consumer_path_spec import IConsumerPathSpec
 
@@ -52,7 +54,7 @@ logger = logging.getLogger(__name__)
 #: which the completeness/migration path uses to tolerate partial legacy entries.
 #: Validation is kind-dispatched so a same-kind shape failure names the field;
 #: the generic gate handles an unknown/missing kind.
-_KNOWN_META_KINDS = ("wallpaper", "palette", "effects", "icons")
+_KNOWN_META_KINDS = ("wallpaper", "palette", "effects", "icons", "skin")
 
 
 def _validate_meta(data: dict[str, Any], entry_dir: Path) -> None:
@@ -437,6 +439,60 @@ class CacheSeeder:
         }
         _write_meta_json(entry_dir / "meta.json", payload)
 
+    def write_skin_meta(
+        self,
+        entry_hash: str,
+        name: str,
+        input_templates_hash: str,
+        input_manifest_hash: str,
+        artifact_hashes: dict[str, str],
+        generated_at: str | None = None,
+    ) -> None:
+        """Write skin cache meta.json to its final cache entry dir."""
+        entry_dir = self._state_root / "cache" / "skins" / entry_hash
+        self.write_skin_meta_in(
+            entry_dir,
+            entry_hash=entry_hash,
+            name=name,
+            input_templates_hash=input_templates_hash,
+            input_manifest_hash=input_manifest_hash,
+            artifact_hashes=artifact_hashes,
+            generated_at=generated_at,
+        )
+
+    def write_skin_meta_in(
+        self,
+        entry_dir: Path,
+        *,
+        entry_hash: str,
+        name: str,
+        input_templates_hash: str,
+        input_manifest_hash: str,
+        artifact_hashes: dict[str, str],
+        generated_at: str | None = None,
+    ) -> None:
+        """Write skin cache meta.json into ``entry_dir`` (staging or final).
+
+        Schema per FROZEN SKIN SPEC v1:
+        {hash_algorithm, kind: "skin", entry_hash, name, input_templates_hash,
+         input_manifest_hash, artifact_hashes, generated_at}
+        """
+        if generated_at is None:
+            generated_at = _now_iso_z()
+        _write_meta_json(
+            entry_dir / "meta.json",
+            {
+                "hash_algorithm": _META_HASH_ALGORITHM,
+                "kind": "skin",
+                "entry_hash": entry_hash,
+                "name": name,
+                "input_templates_hash": input_templates_hash,
+                "input_manifest_hash": input_manifest_hash,
+                "artifact_hashes": artifact_hashes,
+                "generated_at": generated_at,
+            },
+        )
+
     def read_entry_meta(self, entry_dir: Path) -> dict[str, Any]:
         """Read a cache entry's meta.json into a dict.
 
@@ -527,6 +583,27 @@ class CacheSeeder:
             generated_at=meta["generated_at"],
         )
 
+    def load_skin_entry(self, entry_dir: Path) -> SkinEntry:
+        """Rebuild a SkinEntry from a cache entry's meta.json (real hashes)."""
+        meta = self.read_entry_meta(entry_dir)
+        _validate_meta(meta, entry_dir)
+        if meta.get("kind") != "skin":
+            raise ValueError(
+                f"invalid cache meta.json in {entry_dir}: "
+                f"expected kind 'skin', got {meta.get('kind')!r}"
+            )
+        artifact_hashes: SkinArtifacts = cast("SkinArtifacts", meta.get("artifact_hashes", {}))
+        return SkinEntry(
+            hash_algorithm="sha256",
+            kind="skin",
+            entry_hash=meta["entry_hash"],
+            name=meta["name"],
+            input_templates_hash=meta["input_templates_hash"],
+            input_manifest_hash=meta["input_manifest_hash"],
+            artifact_hashes=artifact_hashes,
+            generated_at=meta["generated_at"],
+        )
+
     def drain_work_dir(self, work_dir: Path, staging_dir: Path) -> None:
         """Move adapter-generated artifacts from work dir into the staging dir.
 
@@ -585,6 +662,7 @@ class CacheSeeder:
         palette_entry_hash: str | None = None,
         effects_entry_hash: str | None = None,
         icons_entry_hash: str | None = None,
+        skin_entry: SkinEntry | None = None,
     ) -> list[Path]:
         """Repoint all current/ symlinks atomically (AD-6, AD-17).
 
@@ -676,6 +754,24 @@ class CacheSeeder:
                 created.append(self.repoint_current_symlink("icons", icons_dir))
             else:
                 logger.warning("seeding: icons entry missing, consumer symlink skipped")
+
+        # Skin artifacts: current/skins/<app>.css + current/skin.json.
+        # Each is a regular AD-6 atomic symlink into the content-addressed
+        # entry; nothing is written into the install spine here.
+        if skin_entry is not None:
+            skin_dir = self._state_root / "cache" / "skins" / skin_entry.entry_hash
+            for artifact_name in sorted(skin_entry.artifact_hashes):
+                target = skin_dir / artifact_name
+                if not (target.exists() or target.is_symlink()):
+                    logger.warning(
+                        "seeding: skin artifact missing, consumer symlink skipped: %s",
+                        target,
+                    )
+                    continue
+                link_name = (
+                    "skin.json" if artifact_name == "skin.json" else f"skins/{artifact_name}"
+                )
+                created.append(self.repoint_current_symlink(link_name, target))
 
         return created
 
@@ -885,6 +981,7 @@ class CacheSeeder:
         icons_hash: str | None = None,
         source_path: str = "",
         details: dict[str, object] | None = None,
+        skin_hash: str | None = None,
     ) -> None:
         """Append a line to history.jsonl atomically (AD-4, AR-3).
 
@@ -911,6 +1008,8 @@ class CacheSeeder:
             details: optional trigger-specific payload (e.g. prune counts);
                 omitted from the line when None so pre-existing lines are
                 byte-identical
+            skin_hash: SHA-256 hex of skin entry or None; omitted when None
+                (pre-skin history lines stay byte-identical)
         """
         if self._suppress_history:
             return
@@ -924,6 +1023,8 @@ class CacheSeeder:
             "icons": icons_hash,
             "source_path": source_path,
         }
+        if skin_hash is not None:
+            record["skin"] = skin_hash
         if details is not None:
             record["details"] = details
         line = json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n"

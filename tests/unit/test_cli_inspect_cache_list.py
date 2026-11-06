@@ -32,22 +32,24 @@ def _cache_result(
     palettes: tuple[str, ...] = ("c" * 64,),
     effects: tuple[str, ...] = (),
     icons: tuple[str, ...] = (),
+    skins: tuple[str, ...] = (),
 ) -> InspectCacheResult:
     layers = {
         "wallpapers": wallpapers,
         "palettes": palettes,
         "effects": effects,
         "icons": icons,
+        "skins": skins,
     }
     counts = {layer: len(entries) for layer, entries in layers.items()}
     return InspectCacheResult(layers=layers, counts=counts, total=sum(counts.values()))
 
 
 def _empty_result() -> InspectCacheResult:
-    layers = {"wallpapers": (), "palettes": (), "effects": (), "icons": ()}
+    layers = {"wallpapers": (), "palettes": (), "effects": (), "icons": (), "skins": ()}
     return InspectCacheResult(
         layers=layers,
-        counts={"wallpapers": 0, "palettes": 0, "effects": 0, "icons": 0},
+        counts={"wallpapers": 0, "palettes": 0, "effects": 0, "icons": 0, "skins": 0},
         total=0,
     )
 
@@ -76,6 +78,7 @@ class TestInspectCacheListCliSuccess:
         assert "palettes (1):" in result.output
         assert "effects (0):" in result.output
         assert "icons (0):" in result.output
+        assert "skins (0):" in result.output
         assert ("a" * 12) in result.output
         assert ("b" * 12) in result.output
 
@@ -89,6 +92,7 @@ class TestInspectCacheListCliSuccess:
         assert result.output.index("wallpapers") < result.output.index("palettes")
         assert result.output.index("palettes") < result.output.index("effects")
         assert result.output.index("effects") < result.output.index("icons")
+        assert result.output.index("icons") < result.output.index("skins")
 
     def test_plain_hashes_truncated_indented(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _fake_composition(monkeypatch, lambda: _cache_result())

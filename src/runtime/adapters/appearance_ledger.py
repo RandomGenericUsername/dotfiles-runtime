@@ -94,7 +94,7 @@ def hold_operation_lock(state_root: Path, *, timeout: float = 10.0) -> Iterator[
 
 
 def appearance_hash_for_state(state: object) -> str:
-    """Compute the appearance hash from a ``DesktopState`` (palette/icons/effects).
+    """Compute the appearance hash from a ``DesktopState`` (palette/icons/effects/skin).
 
     Imports are local so domain models stay the only direct dependency of the
     caller; the hash formula lives in the adapter hashing module.
@@ -104,12 +104,14 @@ def appearance_hash_for_state(state: object) -> str:
     palette = getattr(state, "palette", None)
     effects = getattr(state, "effects", None)
     icons = getattr(state, "icons", None)
+    skin = getattr(state, "skin", None)
     return appearance_hash(
         palette_hash=getattr(palette, "entry_hash", None),
         effects_hash=getattr(effects, "entry_hash", None),
         icons_hash=getattr(icons, "entry_hash", None),
         icon_templates_hash=getattr(icons, "input_templates_hash", None),
         icon_mappings_hash=getattr(icons, "input_mappings_hash", None),
+        skins_hash=getattr(skin, "entry_hash", None),
     )
 
 

@@ -94,6 +94,7 @@ class DoctorUseCase:
         items.extend(self._check_entries(state))
         items.extend(self._check_vocabulary(state))
         items.extend(self._check_links(state))
+        items.extend(self._check_skin_consumer_pointers(state))
         items.extend(self._check_input_provenance())
         items.extend(self._check_history(state))
         clean = all(item.status == "ok" for item in items)
@@ -175,12 +176,14 @@ class DoctorUseCase:
             state.palette.entry_hash if state.palette is not None else None,
             state.effects.entry_hash if state.effects is not None else None,
             state.icons.entry_hash if state.icons is not None else None,
+            state.skin.entry_hash if state.skin is not None else None,
         )
         tail_projection = (
             tail.wallpaper,
             tail.palette,
             tail.effects,
             tail.icons,
+            tail.skin,
         )
         if store_projection == tail_projection:
             return [
@@ -191,7 +194,7 @@ class DoctorUseCase:
                     detail=f"history tail agrees with current.json (trigger={tail.trigger!r})",
                 )
             ]
-        layers = ("wallpaper", "palette", "effects", "icons")
+        layers = ("wallpaper", "palette", "effects", "icons", "skin")
         differing = sorted(
             layer
             for layer, before, after in zip(layers, store_projection, tail_projection, strict=True)
@@ -225,6 +228,8 @@ class DoctorUseCase:
             layers.append(("effects", state.effects.entry_hash, []))
         if state.icons is not None:
             layers.append(("icons", state.icons.entry_hash, []))
+        if state.skin is not None:
+            layers.append(("skins", state.skin.entry_hash, ["skin.json"]))
         items: list[DriftItem] = []
         for layer, entry_hash, fixed_files in layers:
             assert entry_hash is not None
@@ -388,10 +393,38 @@ class DoctorUseCase:
             expected["effects"] = self._entry_dir("effects", state.effects.entry_hash)
         if state.icons is not None:
             expected["icons"] = self._entry_dir("icons", state.icons.entry_hash)
+        if state.skin is not None:
+            skin_dir = self._entry_dir("skins", state.skin.entry_hash)
+            for artifact in sorted(state.skin.artifact_hashes):
+                name = "skin.json" if artifact == "skin.json" else f"skins/{artifact}"
+                expected[name] = skin_dir / artifact
         items: list[DriftItem] = []
         for name, target in expected.items():
             status, detail = self._link_status(current_dir / name, target)
             items.append(DriftItem(f"current/{name}", "symlink", status, detail))
+        return items
+
+    def _check_skin_consumer_pointers(self, state: DesktopState) -> list[DriftItem]:
+        """Verify the stable AGS skin pointers when a skin is recorded.
+
+        Read-only and spec-driven (never bespoke per-consumer code). When no
+        skin is recorded the pointers are omitted entirely: pre-skin machines
+        must not be dirtied by the new layer.
+        """
+        if state.skin is None or self._install_spine is None:
+            return []
+        from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
+
+        spec = StaticConsumerPathSpec()
+        current_dir = self._state_root / "current"
+        items: list[DriftItem] = []
+        for pointer in spec.consumer_pointers():
+            if not (pointer.target == "skin.json" or pointer.target.startswith("skins/")):
+                continue
+            dest = self._install_spine / pointer.path
+            expected = current_dir / pointer.target
+            status, detail = self._link_status(dest, expected)
+            items.append(DriftItem(f"consumer/{pointer.path}", "consumer", status, detail))
         return items
 
     def _link_status(self, link: Path, expected_target: Path) -> tuple[LinkStatusKind, str]:
@@ -565,6 +598,7 @@ class DoctorRepairUseCase:
                 palette_hash=state.palette.entry_hash if state.palette is not None else None,
                 effects_hash=state.effects.entry_hash if state.effects is not None else None,
                 icons_hash=state.icons.entry_hash if state.icons is not None else None,
+                skin_hash=state.skin.entry_hash if state.skin is not None else None,
                 source_path=state.wallpaper.source_path,
             )
         except (OSError, HistoryLockError) as exc:
@@ -590,4 +624,5 @@ class DoctorRepairUseCase:
             and tail_record.effects
             == (state.effects.entry_hash if state.effects is not None else None)
             and tail_record.icons == (state.icons.entry_hash if state.icons is not None else None)
+            and tail_record.skin == (state.skin.entry_hash if state.skin is not None else None)
         )

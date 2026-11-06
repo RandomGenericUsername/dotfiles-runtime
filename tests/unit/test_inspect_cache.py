@@ -17,7 +17,7 @@ import pytest
 
 from runtime.application.inspect import InspectCacheResult, InspectCacheUseCase
 
-_LAYERS = ("wallpapers", "palettes", "effects", "icons")
+_LAYERS = ("wallpapers", "palettes", "effects", "icons", "skins")
 
 
 def _make_entry(state_root: Path, layer: str, entry_hash: str) -> Path:
@@ -67,6 +67,7 @@ class TestInspectCacheListing:
             "palettes": 1,
             "effects": 2,
             "icons": 1,
+            "skins": 0,
         }
         assert result.total == 6
 

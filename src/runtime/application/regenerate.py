@@ -170,7 +170,7 @@ class RegenerateStaleUseCase:
             self._state_repo.save(updated)
 
 
-def _projection(state: DesktopState) -> tuple[str | None, str | None, str | None, str | None]:
+def _projection(state: DesktopState) -> tuple[str | None, ...]:
     """Derivation-relevant identity: exactly what ``save()`` overwrites.
 
     Timestamp/metadata churn (``applied_at``, monitors) never aborts;
@@ -181,4 +181,5 @@ def _projection(state: DesktopState) -> tuple[str | None, str | None, str | None
         state.palette.entry_hash if state.palette else None,
         state.effects.entry_hash if state.effects else None,
         state.icons.entry_hash if state.icons else None,
+        state.skin.entry_hash if state.skin else None,
     )

@@ -43,6 +43,7 @@
     "palette": { "$ref": "#/definitions/entry" },
     "effects": { "$ref": "#/definitions/entry" },
     "icons": { "$ref": "#/definitions/entry" },
+    "skin": { "$ref": "#/definitions/skin" },
     "applied_at": { "type": "string" }
   },
   "definitions": {
@@ -52,6 +53,20 @@
       "required": ["hash", "generated_at"],
       "properties": {
         "hash": { "type": "string" },
+        "generated_at": { "type": "string" }
+      }
+    },
+    "skin": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["hash", "name", "artifacts", "generated_at"],
+      "properties": {
+        "hash": { "type": "string" },
+        "name": { "type": "string" },
+        "artifacts": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
         "generated_at": { "type": "string" }
       }
     }

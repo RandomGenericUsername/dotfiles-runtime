@@ -39,12 +39,15 @@ not import `os`, `pathlib`, `io`, `subprocess`, `socket` or `shutil`.
 ## 3. The `wallpaper set` chain
 
 1. **Apply** the image immediately (visible-first), so the desktop never waits on derivation.
-2. **Derive** the wallpaper entry, palette, effects and icons:
+2. **Derive** the wallpaper entry, palette, effects, icons and selected skin:
    - `tpr generate <wallpaper> --format …` (8 formats),
    - `weg batch all -- <wallpaper>`,
-   - `itr render [<icons.yaml>]`.
+   - `itr render [<icons.yaml>]`,
+   - skin manifest + shared templates (`{{SKIN_*}}` expansion, palette-independent).
 3. **Cache** every artifact by its content hash under
    `$XDG_STATE_HOME/dotfiles/cache/<layer>/<sha256>/`, with a co-located `meta.json`.
+   The skin layer is palette-independent: its key is `sha256(templates_hash ‖ manifest_hash)`, so
+   wallpaper/palette changes never re-expand CSS.
 4. **Swap** `current/*` atomically (tmp link + `os.replace`).
 5. **Reload** Hyprland, AGS, kitty and the terminal palette.
 6. **Persist** `current.json` and append a `history.jsonl` record.
@@ -78,7 +81,9 @@ $XDG_STATE_HOME/dotfiles/
   current.json                         # desired state (machine-defined, schema-validated)
   current/                             # symlinks: colors.{conf,yaml,gtk.css,adw.css,
                                        #   sequences,rasi,kitty,btop.theme}, icons/
-  cache/<layer>/<sha256>/meta.json     # layers: wallpapers,palettes,effects,icons
+  current/skins/<app>.css              # expanded skin CSS (palette-independent)
+  current/skin.json                    # resolved skin token map for skinValue consumers
+  cache/<layer>/<sha256>/meta.json     # layers: wallpapers,palettes,effects,icons,skins
   history.jsonl                        # append-only, atomic, symlink-guarded
 ```
 
@@ -86,7 +91,12 @@ $XDG_STATE_HOME/dotfiles/
   `hash_algorithm: "sha256"` and per-artifact hashes (`adapters/cache.py`).
 - Repoints are atomic and symlink-guarded (`adapters/seeder.py`).
 - Consumer pointers are a static table (`adapters/consumer_path_spec.py`): `ags`, `gtk-3.0`,
-  `gtk-4.0`, `rofi`, `btop`; adding one is a spec line plus its `@import`.
+  `gtk-4.0`, `rofi`, `btop`, plus the AGS skin pair `config/ags/skin.css` →
+  `current/skins/ags.css` and `config/ags/skin.json` → `current/skin.json`; adding one is a spec
+  line plus its `@import`.
+- Skins are selected from `desired.json` (`"skin": "<name>"`, default `glass`). A skin is a
+  palette/ink mapping + paint + rhythm only (`{{SKIN_*}}` tokens, no structure/variants); a
+  missing/invalid manifest keeps the previous skin and never touches app CSS.
 - Clipboard history is separate: `$XDG_STATE_HOME/clipboard/history.json` with images under
   `$XDG_CACHE_HOME/clipboard/` (config at `$XDG_CONFIG_HOME/clipboard/config.json`). The old
   `hypr-pano` paths are a one-time migration source only (AD-35).
@@ -110,7 +120,8 @@ AGS refresh (`adapters/ags_app_refresh.py`). Discovery reads every deployed link
 Running live apps refresh in parallel through
 `ags request palette-refresh <appearance-hash> -i <instance>` with a 5 s timeout; restart apps
 (the bar) go through the serialized BUG-006 quit/confirm/launch procedure and are included even
-when down. The runtime owns the applied-appearance ledger
+when down. The appearance hash now includes the skin entry hash alongside palette/effects/icons
+and the icon-manifest inputs; the runtime owns the applied-appearance ledger
 (`$XDG_STATE_HOME/dotfiles/appearance-ledger.json`), one operation lock, and per-app JSONL records
 under `$XDG_STATE_HOME/dotfiles/logs/ags-app-refresh/<runId>/`. `wallpaper.state` remains the
 progress/UI event only; it is not a palette-refresh trigger (AD-27).
