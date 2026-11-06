@@ -212,6 +212,13 @@ class SkinEntry:
 #: Default skin when ``desired.json`` carries no selection.
 DEFAULT_SKIN: Final[str] = "glass"
 
+#: Palette modes accepted by ``desired.json``. ``smart`` lets the producer
+#: choose the final dark/light palette from the wallpaper.
+DesiredMode = Literal["dark", "light", "smart"]
+
+#: Default palette mode when ``desired.json`` carries no selection.
+DEFAULT_DESIRED_MODE: Final[DesiredMode] = "smart"
+
 
 @dataclass(frozen=True, slots=True)
 class AppearanceEntry:
@@ -419,15 +426,17 @@ class DesiredState:
     """Declared intent for Phase 4 declarative convergence (Story 4.2).
 
     Pure value type: the wallpaper the desktop should show, the keep policy
-    the planner must obey, and explicitly pinned entry hashes. Carries no
-    file-format version (validated at load, not carried) and performs no I/O.
-    Nothing consumes this yet — the diff engine (Epic 3) will.
+    the planner must obey, explicitly pinned entry hashes, and the selected
+    palette mode. Carries no file-format version (validated at load, not
+    carried) and performs no I/O. ``mode=smart`` asks the producer to choose
+    the final dark/light palette from the wallpaper.
     """
 
     wallpaper: str
     keep: int
     pinned: tuple[str, ...]
     skin: str = DEFAULT_SKIN
+    mode: DesiredMode = DEFAULT_DESIRED_MODE
 
 
 @dataclass(frozen=True, slots=True)

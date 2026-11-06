@@ -45,7 +45,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from runtime.adapters.appearance import AppearanceGenerator
+from runtime.adapters.appearance import AppearanceGenerator, palette_declares_mode
 from runtime.adapters.cache import cache_entry_path
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder, _repoint_symlink
@@ -156,6 +156,10 @@ class ReconcileDesktopStateUseCase:
         self._appearance_keep = appearance_keep
         #: Real producer identity for typed failures.
         self._producer_name = getattr(palette_producer, "producer_name", "tpr")
+        #: Mode-aware producers (tpr) expose ``mode``. When present, a recorded
+        #: palette whose key no longer matches the current intent is stale and
+        #: regenerated, even though the entry directory still exists.
+        self._palette_mode = getattr(palette_producer, "mode", None)
         self._reloaders: list[IDesktopReloader] = list(reloaders) if reloaders is not None else []
         self._wallpaper_applier = wallpaper_applier
         #: Manifest-driven AGS app refresh (AD-27…30). It owns both the live
@@ -252,7 +256,21 @@ class ReconcileDesktopStateUseCase:
                 # _ensure_entries already validated, but re-check in case
                 # state was mutated concurrently for derived layers.
                 if palette is not None and state.palette is not None:
-                    self._assert_hash_matches(state.palette.entry_hash, palette.entry_hash)
+                    # A mode-aware producer may have deliberately moved the
+                    # palette key to the current intent; that is not a spine
+                    # hash mismatch.
+                    expected_palette = (
+                        self._pipeline.expected_palette_hash(state.wallpaper.content_hash)
+                        if self._mode_key_applies(state.palette)
+                        else None
+                    )
+                    if (
+                        expected_palette is None
+                        or expected_palette == state.palette.entry_hash
+                    ):
+                        self._assert_hash_matches(
+                            state.palette.entry_hash, palette.entry_hash
+                        )
                 if effects is not None and state.effects is not None:
                     self._assert_hash_matches(state.effects.entry_hash, effects.entry_hash)
                 if icons is not None and state.icons is not None:
@@ -477,14 +495,25 @@ class ReconcileDesktopStateUseCase:
             # missing entry dir is regenerated below (the pipeline validates
             # the fresh build).
             require_palette_conformance(palette_dir)
-        if not ensure_palette_entry_complete(palette_dir, self._seeder):
+        expected_palette = (
+            self._pipeline.expected_palette_hash(state.wallpaper.content_hash)
+            if self._mode_key_applies(palette)
+            else None
+        )
+        mode_changed = (
+            expected_palette is not None and expected_palette != palette.entry_hash
+        )
+        if mode_changed or not ensure_palette_entry_complete(palette_dir, self._seeder):
             try:
                 entry, _cache_hit = self._pipeline.ensure_palette(
                     cached_wallpaper_img, state.wallpaper.content_hash
                 )
             except Exception as exc:
                 raise RuntimeError(f"palette reconcile failed: {exc}") from exc
-            self._assert_hash_matches(palette.entry_hash, entry.entry_hash)
+            if not mode_changed:
+                # Same recorded identity: a divergent rebuild means the spine
+                # inputs moved under us and the state must not silently change.
+                self._assert_hash_matches(palette.entry_hash, entry.entry_hash)
             palette = entry
             regenerated.append("palette")
 
@@ -624,6 +653,27 @@ class ReconcileDesktopStateUseCase:
             )
         self._seeder.import_wallpaper(src, wh, source_mutable=True)
         regenerated.append("wallpaper")
+
+    def _mode_key_applies(self, palette: PaletteEntry) -> bool:
+        """Whether the palette key should follow the current desired mode.
+
+        An explicit ``dark``/``light`` intent always applies. ``smart`` only
+        applies once the recorded palette was produced by a mode-emitting
+        producer (tpr >= 0.6.0 writes ``mode``): legacy/fixture palettes with
+        no mode field keep the historical recorded-key behavior.
+        """
+        if self._palette_mode not in ("dark", "light", "smart"):
+            return False
+        if self._palette_mode in ("dark", "light"):
+            return True
+        colors_path = (
+            cache_entry_path(self._state_root, "palettes", palette.entry_hash)
+            / "colors.yaml"
+        )
+        try:
+            return palette_declares_mode(colors_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            return False
 
     @staticmethod
     def _assert_hash_matches(recorded: str, regenerated: str) -> None:

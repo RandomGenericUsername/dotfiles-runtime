@@ -18,3 +18,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture(autouse=True)
 def _repo_root_cwd(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(REPO_ROOT)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_xdg_config_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Keep a live host's ``desired.json`` out of the suite.
+
+    Several CLI tests exercise composition roots that read the relocated
+    intent document. Without this, a developer machine with a real
+    ``$XDG_CONFIG_HOME/dotfiles/desired.json`` makes those tests converge the
+    live intent instead of their fixture state. Tests that need a specific
+    config home still set it themselves (their monkeypatch runs after this).
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config-home"))

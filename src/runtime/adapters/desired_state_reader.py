@@ -10,7 +10,7 @@ v1 schema contract (validated strictly — fail loud on typos, matching repo
 philosophy)::
 
     {"version": 1, "wallpaper": "<path>", "keep": 5, "pinned": ["<64hex>", ...],
-     "skin": "glass"}
+     "skin": "glass", "mode": "smart"}
 
 - Absent file → ``None`` ("no declared intent"; plain ``reconcile`` keeps
   today's imperative behavior). Never creates the file — readers don't
@@ -22,6 +22,9 @@ philosophy)::
   unknown key → ``ValueError`` naming the file and the offending field.
 - ``skin`` is optional and defaults to ``glass``; when present it must be a
   safe lowercase name (``[a-z0-9][a-z0-9_-]*``).
+- ``mode`` is optional and defaults to ``smart``; when present it must be
+  exactly ``dark``, ``light`` or ``smart`` (the producer projects the final
+  dark/light palette for ``smart``).
 """
 
 from __future__ import annotations
@@ -32,12 +35,14 @@ import os
 import re
 from pathlib import Path
 
-from runtime.domain.models import DEFAULT_SKIN, DesiredState
+from runtime.domain.models import DEFAULT_DESIRED_MODE, DEFAULT_SKIN, DesiredState
 
 DESIRED_FILENAME = "desired.json"
 #: Config-home-relative directory holding the relocated intent document.
 DESIRED_RELATIVE_DIR = "dotfiles"
 DESIRED_VERSION = 1
+#: Accepted ``mode`` values; absent means ``DEFAULT_DESIRED_MODE``.
+DESIRED_MODES = ("dark", "light", "smart")
 
 _HEX_DIGITS = frozenset("0123456789abcdef")
 _SKIN_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
@@ -83,7 +88,7 @@ def read_desired_state(intent_path: Path) -> DesiredState | None:
         raise ValueError(f"desired state is not valid JSON: {desired_path}: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError(f"desired state must be a JSON object: {desired_path}")
-    unknown = set(data) - {"version", "wallpaper", "keep", "pinned", "skin"}
+    unknown = set(data) - {"version", "wallpaper", "keep", "pinned", "skin", "mode"}
     if unknown:
         raise ValueError(f"desired state has unknown keys {sorted(unknown)}: {desired_path}")
     version = data.get("version", "<absent>")
@@ -114,4 +119,16 @@ def read_desired_state(intent_path: Path) -> DesiredState | None:
             f"desired state 'skin' must be a safe lowercase name "
             f"([a-z0-9][a-z0-9_-]*), got {skin!r}: {desired_path}"
         )
-    return DesiredState(wallpaper=wallpaper, keep=keep, pinned=tuple(pinned), skin=skin)
+    mode = data.get("mode", DEFAULT_DESIRED_MODE)
+    if not isinstance(mode, str) or mode not in DESIRED_MODES:
+        accepted = "|".join(DESIRED_MODES)
+        raise ValueError(
+            f"desired state 'mode' must be one of {accepted}, got {mode!r}: {desired_path}"
+        )
+    return DesiredState(
+        wallpaper=wallpaper,
+        keep=keep,
+        pinned=tuple(pinned),
+        skin=skin,
+        mode=mode,
+    )

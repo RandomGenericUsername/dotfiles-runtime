@@ -295,6 +295,7 @@ def create_palette_producer(
     producer: str | None = None,
     env: Mapping[str, str] | None = None,
     resolution: ProducerResolution | None = None,
+    mode: str | None = None,
 ) -> IColorSchemeGenerator:
     """Compose the selected ``IColorSchemeGenerator`` for a composition root.
 
@@ -303,6 +304,10 @@ def create_palette_producer(
     resolves ``config/theme-producer/templates`` and pins the provisioned
     ``config/theme-producer/settings.toml`` (image tag/container engine) when
     that file exists.
+
+    ``mode`` is the resolved ``desired.json`` palette mode (default ``smart``
+    in the adapter when omitted). It is forwarded to tpr's
+    ``settings.output.default_mode`` and folded into the palette entry key.
     """
     if resolution is None:
         resolution = resolve_palette_producer(install_spine, producer=producer, env=env)
@@ -317,4 +322,5 @@ def create_palette_producer(
         engine=resolution.engine,
         runtime=resolution.runtime,
         settings_path=settings_path if settings_path.is_file() else None,
+        mode=mode,
     )

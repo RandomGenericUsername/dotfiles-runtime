@@ -40,7 +40,7 @@ _EXPECTED_FORMAT_ARGS = [
 
 def _make_templates_dir(tmp_path: Path) -> Path:
     tdir = tmp_path / "tpr-templates"
-    tdir.mkdir(parents=True)
+    tdir.mkdir(parents=True, exist_ok=True)
     (tdir / "colors.yaml.j2").write_text("background: {{ bg }}\n")
     return tdir
 
@@ -112,6 +112,7 @@ def test_generate_invokes_contract_and_copies_only_eight_artifacts(
     assert env["THEME__GENERATION__ENGINE"] == "native"
     # REQ-005: container is the production default, never a forced local mode.
     assert env["THEME__RUNTIME__MODE"] == "container"
+    assert env["THEME__OUTPUT__DEFAULT_MODE"] == "smart"
     assert env["THEME__TEMPLATES__DIRECTORY"] == str(adapter.templates_dir)
     assert Path(env["THEME__OUTPUT__DIRECTORY"]) != output_dir
 
@@ -141,9 +142,32 @@ def test_explicit_local_runtime_is_available_for_tests(
     assert env["THEME__RUNTIME__MODE"] == "local"
 
 
+@pytest.mark.parametrize("mode", ["dark", "light", "smart"])
+def test_mode_is_passed_through_to_settings_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    wallpaper = _copy_wallpaper_fixture(tmp_path)
+    adapter = _adapter(tmp_path, mode=mode)
+    output_dir = _output_dir(tmp_path, adapter, hash_file(wallpaper))
+    captured: dict[str, object] = {}
+    monkeypatch.setattr("runtime.adapters.tpr_adapter.run_producer", _runner(captured))
+
+    adapter.generate(wallpaper, output_dir)
+
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["THEME__OUTPUT__DEFAULT_MODE"] == mode
+    assert adapter.mode == mode
+
+
 def test_invalid_runtime_fails_loud(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="tpr runtime"):
         TprAdapter(templates_dir=_make_templates_dir(tmp_path), runtime="vm")
+
+
+def test_invalid_mode_fails_loud(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="tpr mode"):
+        TprAdapter(templates_dir=_make_templates_dir(tmp_path), mode="auto")
 
 
 def test_provisioned_settings_are_pinned_when_present(
@@ -234,13 +258,15 @@ def test_version_probe_falls_back_when_binary_missing(
     assert adapter.version() == TPR_VERSION_FALLBACK
 
 
-def test_entry_hash_seed_includes_engine_version_and_templates(tmp_path: Path) -> None:
+def test_entry_hash_seed_includes_engine_version_templates_and_mode(
+    tmp_path: Path,
+) -> None:
     wallpaper = _copy_wallpaper_fixture(tmp_path)
     wallpaper_hash = hash_file(wallpaper)
     adapter = _adapter(tmp_path)
     template_hash = adapter.template_set_hash()
     seed = palette_producer_seed(
-        "tpr", template_hash, engine="native", version="v0.1.0"
+        "tpr", template_hash, engine="native", version="v0.1.0", mode="smart"
     )
     assert seed is not None
     assert adapter.expected_entry_hash(wallpaper_hash) == palette_entry_hash(
@@ -259,3 +285,79 @@ def test_entry_hash_seed_includes_engine_version_and_templates(tmp_path: Path) -
     assert other_version.expected_entry_hash(wallpaper_hash) != adapter.expected_entry_hash(
         wallpaper_hash
     )
+
+
+def test_palette_entry_hash_differs_by_mode_and_is_stable_within_one(
+    tmp_path: Path,
+) -> None:
+    wallpaper = _copy_wallpaper_fixture(tmp_path)
+    wallpaper_hash = hash_file(wallpaper)
+    dark = _adapter(tmp_path, mode="dark")
+    light = _adapter(tmp_path, mode="light")
+    smart = _adapter(tmp_path, mode="smart")
+
+    hashes = {
+        dark.expected_entry_hash(wallpaper_hash),
+        light.expected_entry_hash(wallpaper_hash),
+        smart.expected_entry_hash(wallpaper_hash),
+    }
+    assert len(hashes) == 3
+    # Same mode, same inputs: the key is stable across fresh adapter instances.
+    assert (
+        _adapter(tmp_path, mode="light").expected_entry_hash(wallpaper_hash)
+        == light.expected_entry_hash(wallpaper_hash)
+    )
+
+
+def test_pipeline_mode_change_is_a_cache_miss_and_same_mode_is_a_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from runtime.adapters.cache import cache_entry_path
+    from runtime.adapters.seeder import CacheSeeder
+    from runtime.application.derive import DerivationPipeline
+    from tests.support.palette_fakes import v1_colors_yaml, v1_gtk_css
+
+    def conforming_run(args: list[str], env: dict[str, str], timeout: int) -> ProducerRunResult:  # noqa: ARG001
+        out = Path(env["THEME__OUTPUT__DIRECTORY"])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "colors.yaml").write_text(v1_colors_yaml())
+        (out / "colors.gtk.css").write_text(v1_gtk_css())
+        (out / "colors.conf").write_text("colors {}")
+        for name in (
+            "colors.adw.css",
+            "colors.sequences",
+            "colors.rasi",
+            "colors.kitty",
+            "colors.btop.theme",
+        ):
+            (out / name).write_text(name)
+        return ProducerRunResult(
+            returncode=0, stdout="", stderr="", timed_out=False, elapsed_seconds=0.01
+        )
+
+    monkeypatch.setattr("runtime.adapters.tpr_adapter.run_producer", MagicMock(side_effect=conforming_run))
+    wallpaper = _copy_wallpaper_fixture(tmp_path)
+    wallpaper_hash = hash_file(wallpaper)
+    state_root = tmp_path / "state"
+
+    def pipeline(mode: str) -> DerivationPipeline:
+        return DerivationPipeline(
+            state_root=state_root,
+            seeder=CacheSeeder(state_root),
+            palette_producer=_adapter(tmp_path, mode=mode),
+            weg=None,  # type: ignore[arg-type]
+            itr=None,  # type: ignore[arg-type]
+            install_spine=tmp_path,
+        )
+
+    dark_entry, dark_hit = pipeline("dark").ensure_palette(wallpaper, wallpaper_hash)
+    again_entry, again_hit = pipeline("dark").ensure_palette(wallpaper, wallpaper_hash)
+    light_entry, light_hit = pipeline("light").ensure_palette(wallpaper, wallpaper_hash)
+
+    assert dark_hit is False
+    assert again_hit is True
+    assert again_entry.entry_hash == dark_entry.entry_hash
+    assert light_hit is False
+    assert light_entry.entry_hash != dark_entry.entry_hash
+    assert cache_entry_path(state_root, "palettes", dark_entry.entry_hash).is_dir()
+    assert cache_entry_path(state_root, "palettes", light_entry.entry_hash).is_dir()

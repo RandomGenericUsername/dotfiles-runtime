@@ -404,6 +404,14 @@ class DerivationPipeline:
         self._install_spine = install_spine
         self._skins = skins
 
+    def expected_palette_hash(self, wallpaper_hash: str) -> str:
+        """The active producer's current palette key for ``wallpaper_hash``.
+
+        Mode is part of the producer seed, so a mode flip changes this key even
+        when the wallpaper and templates are unchanged.
+        """
+        return self._palette_producer.expected_entry_hash(wallpaper_hash)
+
     def ensure_palette(
         self, wallpaper_path: Path, wallpaper_hash: str
     ) -> tuple[PaletteEntry, bool]:

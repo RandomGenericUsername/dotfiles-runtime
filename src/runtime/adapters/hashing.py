@@ -296,19 +296,35 @@ def palette_entry_hash(wallpaper_hash: str, template_set_hash: str, seed: str | 
     return hashlib.sha256(base.encode("utf-8")).hexdigest()
 
 
+#: Palette modes the producer may receive; ``smart`` lets it choose the final
+#: dark/light palette from the wallpaper.
+PALETTE_MODES: Final[tuple[str, ...]] = ("dark", "light", "smart")
+
+
+def _validate_palette_mode(mode: str) -> None:
+    if mode not in PALETTE_MODES:
+        accepted = "|".join(PALETTE_MODES)
+        raise ValueError(f"palette mode must be one of {accepted}, got {mode!r}")
+
+
 def palette_producer_seed(
     producer_name: str,
     template_set_hash: str,
     *,
     engine: str | None = None,
     version: str | None = None,
+    mode: str | None = None,
 ) -> str | None:
     """Seed that folds a palette producer's identity into the entry key.
 
-    ``tpr`` adds a 64-char hex fingerprint over its engine, version and
-    template set:
+    ``tpr`` adds a 64-char hex fingerprint over its engine, version, template
+    set and requested mode:
 
-    ``sha256("tpr:" + engine + ":" + version + ":" + template_set_hash)``
+    ``sha256("tpr:" + engine + ":" + version + ":" + template_set_hash [":" + mode])``
+
+    Mode is part of the identity so ``dark``/``light``/``smart`` can never
+    collide on one palette entry. Callers that omit ``mode`` keep the legacy
+    pre-mode formula; every runtime path passes it explicitly.
 
     Single source for the seed formula (``TprAdapter`` and any caller that
     recomputes the key). Unknown producers fail loud rather than silently
@@ -321,6 +337,9 @@ def palette_producer_seed(
         if not version:
             raise ValueError("tpr producer seed requires a non-empty version")
         material = f"tpr:{engine}:{version}:{template_set_hash}"
+        if mode is not None:
+            _validate_palette_mode(mode)
+            material = f"{material}:{mode}"
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
     raise ValueError(f"unknown palette producer: {producer_name!r}")
 
@@ -332,6 +351,7 @@ def palette_entry_hash_for_producer(
     *,
     engine: str | None = None,
     version: str | None = None,
+    mode: str | None = None,
 ) -> str:
     """Producer-aware palette entry hash.
 
@@ -339,7 +359,7 @@ def palette_entry_hash_for_producer(
     so adapters never re-implement the fingerprint formula.
     """
     seed = palette_producer_seed(
-        producer_name, template_set_hash, engine=engine, version=version
+        producer_name, template_set_hash, engine=engine, version=version, mode=mode
     )
     return palette_entry_hash(wallpaper_hash, template_set_hash, seed=seed)
 

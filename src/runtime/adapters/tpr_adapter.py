@@ -8,7 +8,9 @@ copies exactly those eight files into the palette entry, and leaves
 
 The cache key carries a producer fingerprint: ``tpr`` seeds
 :func:`runtime.adapters.hashing.palette_entry_hash` with
-``sha256("tpr:" + engine + ":" + version + ":" + template_set_hash)``.
+``sha256("tpr:" + engine + ":" + version + ":" + template_set_hash + ":" + mode)``.
+The requested mode is also passed to tpr as ``THEME__OUTPUT__DEFAULT_MODE``;
+it is part of the entry key so dark/light/smart palettes cannot collide.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ from runtime.adapters.producer_process import (
     validate_wallpaper,
 )
 from runtime.domain.models import (
+    DEFAULT_DESIRED_MODE,
     PALETTE_ARTIFACT_NAMES,
     PaletteEntry,
     PaletteUnavailableError,
@@ -57,6 +60,11 @@ TPR_DEFAULT_ENGINE: Final[str] = "native"
 #: ship ``tpr-native``/``matugen``, so a fresh host needs no host helper.
 TPR_DEFAULT_RUNTIME: Final[str] = "container"
 VALID_TPR_RUNTIMES: Final[tuple[str, ...]] = ("local", "container")
+
+#: Desired palette mode forwarded to ``settings.output.default_mode``. The
+#: runtime default is ``smart``; the producer resolves it to dark/light.
+TPR_DEFAULT_MODE: Final[str] = DEFAULT_DESIRED_MODE
+VALID_TPR_MODES: Final[tuple[str, ...]] = ("dark", "light", "smart")
 
 #: Pinned fallback when ``tpr --version`` is unavailable (matches contracts
 #: v0.4.0's tpr record era).
@@ -117,6 +125,7 @@ class TprAdapter(IColorSchemeGenerator):
         runtime: str | None = None,
         settings_path: Path | None = None,
         version: str | None = None,
+        mode: str | None = None,
     ) -> None:
         if not isinstance(timeout, int):
             raise ValueError(f"timeout must be int, got {type(timeout).__name__}")
@@ -131,6 +140,11 @@ class TprAdapter(IColorSchemeGenerator):
             accepted = "|".join(VALID_TPR_RUNTIMES)
             raise ValueError(f"tpr runtime must be one of {accepted}, got {resolved_runtime!r}")
         self._runtime = resolved_runtime
+        resolved_mode = (mode or TPR_DEFAULT_MODE).strip() or TPR_DEFAULT_MODE
+        if resolved_mode not in VALID_TPR_MODES:
+            accepted = "|".join(VALID_TPR_MODES)
+            raise ValueError(f"tpr mode must be one of {accepted}, got {resolved_mode!r}")
+        self._mode = resolved_mode
         self._settings_path = settings_path
         self._version = version
         self._resolved_version: str | None = version
@@ -148,6 +162,11 @@ class TprAdapter(IColorSchemeGenerator):
     def runtime(self) -> str:
         """Resolved tpr runtime mode (``container`` unless explicitly local)."""
         return self._runtime
+
+    @property
+    def mode(self) -> str:
+        """Requested palette mode (``dark``/``light``/``smart``)."""
+        return self._mode
 
     @property
     def settings_path(self) -> Path | None:
@@ -208,6 +227,7 @@ class TprAdapter(IColorSchemeGenerator):
             self.template_set_hash(),
             engine=self._engine,
             version=self.version(),
+            mode=self._mode,
         )
 
     def is_available(self) -> bool:
@@ -262,6 +282,9 @@ class TprAdapter(IColorSchemeGenerator):
                 "THEME__OUTPUT__OVERWRITE": "true",
                 "THEME__GENERATION__ENGINE": self._engine,
                 "THEME__RUNTIME__MODE": self._runtime,
+                # settings.output.default_mode: dark/light/smart intent. The
+                # mode is also part of the cache key, so a flip is a new entry.
+                "THEME__OUTPUT__DEFAULT_MODE": self._mode,
                 # Pin the SAME catalog the adapter hashes; CWD discovery must
                 # never select an unrelated templates/ tree.
                 "THEME__TEMPLATES__DIRECTORY": str(self._resolve_templates_dir()),

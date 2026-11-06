@@ -36,15 +36,30 @@ def test_resolve_desired_path_is_under_config_home_dotfiles() -> None:
 def test_valid_file_round_trips(tmp_path: Path) -> None:
     _write(tmp_path, VALID_DOC)
     assert read_desired_state(_intent_path(tmp_path)) == DesiredState(
-        wallpaper="/pics/wall.jpg", keep=5, pinned=(VALID_HASH,)
+        wallpaper="/pics/wall.jpg", keep=5, pinned=(VALID_HASH,), mode="smart"
     )
 
 
 def test_valid_file_empty_pinned(tmp_path: Path) -> None:
     _write(tmp_path, {**VALID_DOC, "pinned": []})
     assert read_desired_state(_intent_path(tmp_path)) == DesiredState(
-        wallpaper="/pics/wall.jpg", keep=5, pinned=()
+        wallpaper="/pics/wall.jpg", keep=5, pinned=(), mode="smart"
     )
+
+
+@pytest.mark.parametrize("mode", ["dark", "light", "smart"])
+def test_valid_mode_round_trips(tmp_path: Path, mode: str) -> None:
+    _write(tmp_path, {**VALID_DOC, "mode": mode})
+    desired = read_desired_state(_intent_path(tmp_path))
+    assert desired is not None
+    assert desired.mode == mode
+
+
+def test_absent_mode_defaults_to_smart(tmp_path: Path) -> None:
+    _write(tmp_path, VALID_DOC)
+    desired = read_desired_state(_intent_path(tmp_path))
+    assert desired is not None
+    assert desired.mode == "smart"
 
 
 def test_absent_file_returns_none_and_creates_nothing(tmp_path: Path) -> None:
@@ -80,7 +95,12 @@ def test_absent_file_returns_none_and_creates_nothing(tmp_path: Path) -> None:
         {**VALID_DOC, "pinned": ["short"]},
         {**VALID_DOC, "pinned": ["A" * 64]},
         {**VALID_DOC, "pinned": [123]},
+        {**VALID_DOC, "mode": "auto"},
+        {**VALID_DOC, "mode": ""},
+        {**VALID_DOC, "mode": None},
+        {**VALID_DOC, "mode": 1},
         {**VALID_DOC, "typoo": 1},
+        {**VALID_DOC, "modes": "dark"},
     ],
 )
 def test_malformations_raise_value_error(tmp_path: Path, payload: object) -> None:

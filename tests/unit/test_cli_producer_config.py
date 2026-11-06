@@ -204,6 +204,49 @@ def test_daemon_reconcile_composition_uses_config_tpr(
     assert isinstance(producer, TprAdapter)
     assert producer.runtime == "container"
     assert producer.engine == "native"
+    # Absent desired.json -> the runtime default palette mode.
+    assert producer.mode == "smart"
+
+
+def test_reconcile_composition_uses_desired_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    spine = _isolate(monkeypatch, tmp_path)
+    _write_config(spine)
+    intent = tmp_path / "config-home" / "dotfiles" / "desired.json"
+    intent.parent.mkdir(parents=True)
+    intent.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "wallpaper": "/img/wall.png",
+                "keep": 5,
+                "pinned": [],
+                "mode": "light",
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, Any] = {}
+
+    class _FakeReconcile:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        def run(self) -> object:
+            return "reconciled"
+
+    monkeypatch.setattr(
+        "runtime.application.reconcile.ReconcileDesktopStateUseCase", _FakeReconcile
+    )
+    monkeypatch.setattr(cli_main, "_build_reloaders", lambda *a, **k: [])
+    monkeypatch.setattr(cli_main, "_build_wallpaper_applier", lambda *a, **k: object())
+    monkeypatch.setattr(cli_main, "_build_app_refresher", lambda *a, **k: None)
+
+    assert cli_main._run_reconcile() == "reconciled"
+    producer = captured["palette_producer"]
+    assert isinstance(producer, TprAdapter)
+    assert producer.mode == "light"
 
 
 def test_wallpaper_set_json_includes_resolved_producer(

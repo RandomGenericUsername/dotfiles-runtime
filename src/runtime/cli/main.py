@@ -261,6 +261,20 @@ def _resolve_skin_name() -> str:
     return desired.skin if desired is not None else DEFAULT_SKIN
 
 
+def _resolve_desired_mode() -> str:
+    """Resolve the palette mode from ``desired.json`` (default ``smart``).
+
+    Malformed intent propagates loudly before any palette work; an absent
+    document means the runtime default. The mode is forwarded to tpr's
+    ``settings.output.default_mode`` and folded into the palette cache key.
+    """
+    from runtime.adapters.desired_state_reader import read_desired_state
+    from runtime.domain.models import DEFAULT_DESIRED_MODE
+
+    desired = read_desired_state(_resolve_desired_path())
+    return desired.mode if desired is not None else DEFAULT_DESIRED_MODE
+
+
 def _run_seed_if_needed(*, producer: str | None = None) -> None:
     """Run first-run seeding if current.json is absent.
 
@@ -306,7 +320,9 @@ def _run_seed_if_needed(*, producer: str | None = None) -> None:
         )
 
         state_repo = JsonStateRepository(state_root=state_root)
-        palette_producer = create_palette_producer(install_spine, producer=producer)
+        palette_producer = create_palette_producer(
+            install_spine, producer=producer, mode=_resolve_desired_mode()
+        )
         weg = WegAdapter()
         itr = ItrAdapter()
         seeder = CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec())
@@ -639,7 +655,11 @@ def _run_wallpaper_set(
 
     inner_mutex = PassThroughSeedMutex()
     producer_resolution = resolve_palette_producer(install_spine, producer=producer)
-    palette_producer = create_palette_producer(install_spine, resolution=producer_resolution)
+    palette_producer = create_palette_producer(
+        install_spine,
+        resolution=producer_resolution,
+        mode=_resolve_desired_mode(),
+    )
     skin_name = _resolve_skin_name()
     current_stage = "generating_palette"
 
@@ -1323,7 +1343,9 @@ def _run_reconcile(
 
     use_case = ReconcileDesktopStateUseCase(
         state_repo=JsonStateRepository(state_root=state_root),
-        palette_producer=create_palette_producer(install_spine, producer=producer),
+        palette_producer=create_palette_producer(
+            install_spine, producer=producer, mode=_resolve_desired_mode()
+        ),
         weg=WegAdapter(),
         itr=ItrAdapter(),
         install_spine=install_spine,
@@ -1456,7 +1478,9 @@ def _run_reconcile_plan(
     # Fail fast on malformed intent: before any invalidation work, loud
     # ValueError on bad file (AC 4) — never silent fallback to imperative.
     desired = read_desired_state(_resolve_desired_path())
-    palette_producer = create_palette_producer(install_spine, producer=producer)
+    palette_producer = create_palette_producer(
+        install_spine, producer=producer, mode=_resolve_desired_mode()
+    )
     invalidation = InvalidationQueryAdapter(
         state_root=state_root,
         catalog_path=find_effects_catalog(install_spine),
@@ -1563,7 +1587,9 @@ def _run_regenerate_stale(
         state_root, consumer_spec=StaticConsumerPathSpec(), suppress_history=suppress_history
     )
     mutex = FlockSeedMutex(state_root / ".seed.lock")
-    palette_producer = create_palette_producer(install_spine, producer=producer)
+    palette_producer = create_palette_producer(
+        install_spine, producer=producer, mode=_resolve_desired_mode()
+    )
     weg, itr = WegAdapter(), ItrAdapter()
     invalidation = InvalidationQueryAdapter(
         state_root=state_root,
@@ -1675,7 +1701,9 @@ def _run_doctor_repair(*, producer: str | None = None) -> RepairResult:
     state_repo = JsonStateRepository(state_root=state_root)
     seeder = CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec())
     mutex = FlockSeedMutex(state_root / ".seed.lock")
-    palette_producer = create_palette_producer(install_spine, producer=producer)
+    palette_producer = create_palette_producer(
+        install_spine, producer=producer, mode=_resolve_desired_mode()
+    )
     weg, itr = WegAdapter(), ItrAdapter()
     probe = _build_supervision_probe()
     repairer = _build_supervision_repair()

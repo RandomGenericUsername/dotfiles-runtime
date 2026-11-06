@@ -131,6 +131,19 @@ def parse_colors_yaml(text: str) -> dict[str, str]:
     return values
 
 
+def palette_declares_mode(colors_yaml: str) -> bool:
+    """True when the palette carries an explicit mode selector field.
+
+    Used to distinguish a mode-aware palette (tpr >= 0.6.0 emits ``mode``)
+    from legacy/fixture palettes with no mode metadata: only the former can
+    participate in a mode-driven cache-key invalidation on reconcile.
+    """
+    values = parse_colors_yaml(colors_yaml)
+    return any(key in values for key in _MODE_KEYS) or any(
+        key in values for key in _DARK_BOOL_KEYS
+    )
+
+
 def detect_palette_mode(colors_yaml: str) -> str:
     """Derive the appearance mode from the generated palette.
 

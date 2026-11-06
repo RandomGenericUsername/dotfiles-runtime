@@ -113,6 +113,26 @@ class _FakeProducer(PaletteProducerStub):
         )
 
 
+class _ModeProducer(_FakeProducer):
+    """Mode-aware fake: its palette key folds the requested mode (like tpr)."""
+
+    def __init__(self, mode: str) -> None:
+        super().__init__()
+        self.mode = mode
+
+    def expected_entry_hash(self, wallpaper_hash: str) -> str:
+        from runtime.adapters.hashing import palette_entry_hash_for_producer
+
+        return palette_entry_hash_for_producer(
+            "tpr",
+            wallpaper_hash,
+            self.template_set_hash(),
+            engine="native",
+            version="v0.1.0",
+            mode=self.mode,
+        )
+
+
 class _FakeWeg:
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
@@ -261,6 +281,7 @@ def _apply_state(
     img_bytes: bytes = b"user wallpaper bytes",
     weg_fail: bool = False,
     itr_fail: bool = False,
+    producer_mode: str | None = None,
 ) -> _Applied:
     """Establish the reconcile Given: apply produced current.json (ahead of
     the symlinks) plus real cache entries, via the REAL JsonStateRepository
@@ -271,7 +292,10 @@ def _apply_state(
     _setup_spine(install_spine)
     state_root = tmp_path / "state"
     repo = JsonStateRepository(state_root=state_root)
-    palette_producer, weg, itr = _FakeProducer(), _FakeWeg(fail=weg_fail), _FakeItr(fail=itr_fail)
+    palette_producer = (
+        _ModeProducer(producer_mode) if producer_mode is not None else _FakeProducer()
+    )
+    weg, itr = _FakeWeg(fail=weg_fail), _FakeItr(fail=itr_fail)
     palette_producer.templates_dir = install_spine / "config" / "theme-producer" / "templates"
     img = tmp_path / "wall.png"
     img.write_bytes(img_bytes)
@@ -750,6 +774,28 @@ class TestReconcileCacheMissRegeneration:
         assert saved_raw["palette"]["hash"] == recorded_peh
         links = _symlink_map(applied.state_root / "current")
         assert links["colors.conf"] == str(entry_dir / "colors.conf")
+
+    def test_mode_change_regenerates_the_palette_entry(self, tmp_path: Path) -> None:
+        """desired.json mode changes the palette key, so reconcile regenerates."""
+        applied = _apply_state(tmp_path, producer_mode="dark")
+        loaded = applied.repo.load_current()
+        assert loaded is not None
+        assert loaded.palette is not None
+        dark_hash = loaded.palette.entry_hash
+
+        applied.palette_producer.mode = "light"
+        result = _make_reconcile(applied).run()
+
+        assert "palette" in result.cache_regenerated
+        assert applied.palette_producer.calls == 1
+        assert result.state.palette is not None
+        assert result.state.palette.entry_hash != dark_hash
+        assert (
+            applied.state_root
+            / "cache"
+            / "palettes"
+            / result.state.palette.entry_hash
+        ).is_dir()
 
     def test_hash_mismatch_fails_loud_and_never_repoints(self, tmp_path: Path) -> None:
         """Spine inputs changed since wallpaper set: regeneration produces a

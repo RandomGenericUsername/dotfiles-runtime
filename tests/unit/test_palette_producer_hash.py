@@ -33,16 +33,21 @@ def test_tpr_key_includes_engine_version_and_templates(tmp_path: Path) -> None:
     )
 
     seed = hashlib.sha256(
-        f"tpr:native:v0.1.0:{template_hash}".encode("utf-8")
+        f"tpr:native:v0.1.0:{template_hash}:smart".encode("utf-8")
     ).hexdigest()
     assert palette_producer_seed(
-        "tpr", template_hash, engine="native", version="v0.1.0"
+        "tpr", template_hash, engine="native", version="v0.1.0", mode="smart"
     ) == seed
     assert adapter.expected_entry_hash(_WALLPAPER_HASH) == palette_entry_hash(
         _WALLPAPER_HASH, template_hash, seed=seed
     )
     assert adapter.expected_entry_hash(_WALLPAPER_HASH) == palette_entry_hash_for_producer(
-        "tpr", _WALLPAPER_HASH, template_hash, engine="native", version="v0.1.0"
+        "tpr",
+        _WALLPAPER_HASH,
+        template_hash,
+        engine="native",
+        version="v0.1.0",
+        mode="smart",
     )
 
 
@@ -58,6 +63,29 @@ def test_engine_and_version_change_the_entry_key(tmp_path: Path) -> None:
         newer.expected_entry_hash(_WALLPAPER_HASH),
     }
     assert len(keys) == 3
+
+
+def test_mode_changes_the_entry_key(tmp_path: Path) -> None:
+    templates = _templates(tmp_path)
+    template_hash = canonical_hash_dir(templates)
+    keys = {
+        palette_entry_hash_for_producer(
+            "tpr", _WALLPAPER_HASH, template_hash,
+            engine="native", version="v0.1.0", mode=mode,
+        )
+        for mode in ("dark", "light", "smart")
+    }
+    assert len(keys) == 3
+    assert (
+        palette_entry_hash_for_producer(
+            "tpr", _WALLPAPER_HASH, template_hash,
+            engine="native", version="v0.1.0", mode="light",
+        )
+        == palette_entry_hash_for_producer(
+            "tpr", _WALLPAPER_HASH, template_hash,
+            engine="native", version="v0.1.0", mode="light",
+        )
+    )
 
 
 @pytest.mark.parametrize("producer", ["csg", "bogus"])
