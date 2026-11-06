@@ -18,6 +18,7 @@ class IAppearanceGenerator(Protocol):
         skin_entry: SkinEntry,
         install_spine: Path,
         manifest_path: Path | None = None,
+        templates_dir: Path | None = None,
         keep: int = 5,
     ) -> tuple[AppearanceEntry, bool]:
         """Return ``(entry, cache_hit)`` for the composed generation.

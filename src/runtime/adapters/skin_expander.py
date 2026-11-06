@@ -1,71 +1,26 @@
-"""Skin manifest parser + deterministic template expander (FROZEN SKIN SPEC v1).
+"""Skin manifest parser + deterministic template expander (v1 + v2).
 
-The adapter owns all filesystem reads/writes for the skin layer. The frozen
-scope is a palette/ink mapping + paint + rhythm: no structure or variant
-tokens, and no Jinja runtime — expansion is the literal ``{{SKIN_<TOKEN>}}``
-substitution the spec pins.
+The adapter owns all filesystem reads/writes for the skin layer. Two manifest
+generations are accepted:
 
-Manifest v1 (JSON or TOML), one per skin under ``skins/manifests/``::
-
-    schema_major = 1
-    name = "glass"
-
-    [shape]
-    radius-panel = 12
-    radius-card = 9
-    radius-cell = 7
-    radius-pill = 20
-    border-w = 1.5
-    hairline-w = 1
-
-    [rhythm]
-    gap = 8
-    cell-pad = "8px 9px"
-
-    [surface]
-    bg-panel = "alpha(@surface, 0.94)"
-    bg-card = "alpha(@surface_container_high, 0.18)"
-    border = "@primary"
-    shadow = "none"
-    blur = "none"
-
-    [ink]
-    ink = "@on_surface"
-    ink-dim = "alpha(@on_surface, 0.62)"
-    accent = "@primary"
-    ink-over = "auto"
-
-    [type]
-    font-family = "inherit"
-    title-size = 12.5
-    text-size = 13
-
-    [layout]
-    panel-width = 312
-    bt-list-spacing = 4
-    bar-row-height = 0
-    chip-min = 0
-
-There is no ``[tokens]`` table, no ``[apps]`` table and no structure/variant
-key. The vocabulary is the frozen 24 tokens: the six shape radii/widths
-(``radius-panel``, ``radius-card``, ``radius-cell``, ``radius-pill``,
-``border-w``, ``hairline-w``), surface paint, ink, type, rhythm and layout.
-``border-w`` is the outer panel/frame border; ``hairline-w`` is the thinner
-card, row-action and badge hairline. Dimensions are unitless numbers; a unit
-string in a manifest (for example ``radius-panel = "12px"`` or
-``hairline-w = "1px"``) is rejected. ``skin.json`` never carries units.
+* **v1** (``schema_major = 1``): the frozen flat groups ``shape``,
+  ``surface``, ``ink``, ``type``, ``rhythm`` and ``layout``.
+* **v2** (``schemaVersion = 2``): the ``contracts v0.7.0`` appearance model with
+  nested ``[groups.surface.<role>]`` / ``[groups.state.<state>]`` /
+  ``[groups.type]`` / ``[groups.ink]`` / ``[groups.layout.<app>]`` and optional
+  ``[mode.dark]`` / ``[mode.light]`` complete same-shape overrides. v2
+  documents are validated against the vendored ``appearance-manifest`` schema.
 
 The shared template set holds one ``<configDir>.gtk.css.j2`` per target config
 dir. The expander discovers every ``*.gtk.css.j2`` and renders
-``<configDir>.css``. A placeholder is the token name uppercased with every
-non-alphanumeric run replaced by ``_``: ``radius-panel`` →
-``{{SKIN_RADIUS_PANEL}}``. Unknown placeholders and unresolved placeholders
-fail closed.
+``<configDir>.css``.
 
-In CSS a numeric token renders as ``<number>px`` (``12`` → ``12px``, ``1.5`` →
-``1.5px``); ``cell-pad`` and every string token render verbatim. ``skin.json``
-is the grouped token map ``{"version": 1, "<group>": {...}}`` with numeric
-tokens stored as raw numbers, which is the shape ``parseSkinJson`` accepts.
+Placeholders are the token path uppercased with every non-alphanumeric run
+replaced by ``_``: v1 ``radius-panel`` → ``{{SKIN_RADIUS_PANEL}}``; v2
+``surface.panel.bg`` → ``{{SKIN_SURFACE_PANEL_BG}}``. v2 lengths render
+``<number>px``, ``letter-spacing`` renders ``<number>em`` and ``font-weight``
+stays unitless. Unknown/unresolved placeholders, layout placeholders in CSS and
+conditional syntax fail closed.
 
 Validation is fail-closed: unknown keys, unsafe paths, non-scalar tokens and
 unresolved placeholders raise ``ValueError`` naming the manifest/template and
@@ -74,6 +29,7 @@ nothing is written outside the entry work dir.
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
@@ -82,11 +38,27 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+import fastjsonschema
+
+from runtime.adapters.contract_schemas import (
+    appearance_json_validator,
+    appearance_manifest_validator,
+)
 from runtime.adapters.hashing import hash_file, skin_entry_hash
 from runtime.domain.models import SkinArtifacts, SkinEntry
 from runtime.ports.skin_expander import ISkinExpander
 
-#: Canonical group order (the ``skin.json`` / ``parseSkinJson`` group set).
+#: Manifest generations. v1 stays readable until the assets tuple bump.
+MANIFEST_V1 = 1
+MANIFEST_V2 = 2
+
+#: v2 top-level groups (the resolved document's keys plus ``version``).
+_V2_GROUPS = ("surface", "state", "type", "ink", "layout")
+#: v2 groups a template may expand. ``layout.<app>`` is TSX-owned, never CSS.
+_V2_CSS_GROUPS = ("surface", "state", "type", "ink")
+_V2_MODES = frozenset({"dark", "light"})
+
+#: Canonical v1 group order (the ``skin.json`` / ``parseSkinJson`` group set).
 _TOKEN_GROUPS: dict[str, tuple[str, ...]] = {
     "shape": (
         "radius-panel",
@@ -103,7 +75,7 @@ _TOKEN_GROUPS: dict[str, tuple[str, ...]] = {
     "layout": ("panel-width", "bt-list-spacing", "bar-row-height", "chip-min"),
 }
 
-#: Tokens rendered as ``<number>px`` and stored as raw numbers in ``skin.json``.
+#: v1 tokens rendered as ``<number>px`` and stored as raw numbers in ``skin.json``.
 _NUMERIC_TOKENS = frozenset(
     {
         "radius-panel",
@@ -122,10 +94,12 @@ _NUMERIC_TOKENS = frozenset(
     }
 )
 
-_MANIFEST_META_KEYS = frozenset({"schema_major", "name"})
+_V1_MANIFEST_META_KEYS = frozenset({"schema_major", "name"})
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _TEMPLATE_SUFFIX = ".gtk.css.j2"
 _PLACEHOLDER_RE = re.compile(r"\{\{(.*?)\}\}", re.DOTALL)
+#: v2 templates are unconditional (contracts v0.7.0). GTK has no runtime.
+_CONDITIONAL_RE = re.compile(r"\{%|%\}|\{\{#|\{\{/")
 
 Scalar = str | int | float
 
@@ -134,9 +108,14 @@ def _now_z() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
-def _token_placeholder(key: str) -> str:
-    normalized = re.sub(r"[^A-Za-z0-9]+", "_", key).strip("_").upper()
+def _flatten_placeholder(path: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9]+", "_", path).strip("_").upper()
     return f"SKIN_{normalized}"
+
+
+def _token_placeholder(key: str) -> str:
+    """v1 token name -> placeholder (``radius-panel`` -> ``SKIN_RADIUS_PANEL``)."""
+    return _flatten_placeholder(key)
 
 
 def _format_number(value: int | float) -> str:
@@ -161,7 +140,8 @@ def _parse_number(value: Any, *, token: str, path: Path) -> int | float:
     )
 
 
-def _load_manifest(path: Path) -> dict[str, Any]:
+def load_skin_manifest(path: Path) -> dict[str, Any]:
+    """Read a JSON or TOML skin manifest as an object."""
     try:
         raw = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
@@ -184,10 +164,28 @@ def _load_manifest(path: Path) -> dict[str, Any]:
     return cast("dict[str, Any]", data)
 
 
-def _validate_manifest(
+def manifest_schema_version(data: dict[str, Any], path: Path) -> int:
+    """Return 1 for ``schema_major`` or 2 for ``schemaVersion``; reject ambiguity."""
+    has_v1 = "schema_major" in data
+    has_v2 = "schemaVersion" in data
+    if has_v1 and has_v2:
+        raise ValueError(
+            "skin manifest declares both 'schema_major' (v1) and "
+            f"'schemaVersion' (v2): {path}"
+        )
+    if has_v1:
+        return MANIFEST_V1
+    if has_v2:
+        return MANIFEST_V2
+    raise ValueError(
+        f"skin manifest must declare 'schema_major' (v1) or 'schemaVersion' (v2): {path}"
+    )
+
+
+def _validate_v1_manifest(
     data: dict[str, Any], selected_name: str, path: Path
 ) -> dict[str, dict[str, Scalar]]:
-    unknown = set(data) - _MANIFEST_META_KEYS - set(_TOKEN_GROUPS)
+    unknown = set(data) - _V1_MANIFEST_META_KEYS - set(_TOKEN_GROUPS)
     if unknown:
         raise ValueError(f"skin manifest has unknown keys {sorted(unknown)}: {path}")
 
@@ -239,6 +237,132 @@ def _validate_manifest(
     return groups
 
 
+def validate_v2_manifest(
+    data: dict[str, Any], selected_name: str, path: Path
+) -> dict[str, Any]:
+    """Validate a v2 appearance manifest against the vendored canonical schema."""
+    try:
+        appearance_manifest_validator()(data)
+    except fastjsonschema.JsonSchemaValueException as exc:
+        raise ValueError(
+            f"skin manifest is not a v2 appearance manifest: {exc.message}: {path}"
+        ) from exc
+    name = data.get("name")
+    if name != selected_name:
+        raise ValueError(
+            f"skin manifest name {name!r} does not match selected skin {selected_name!r}: {path}"
+        )
+    return data
+
+
+def resolve_v2_token_document(
+    manifest: dict[str, Any], mode: str | None
+) -> dict[str, Any]:
+    """Resolve base v2 groups plus one mode override into the tokens document.
+
+    An override group replaces the base group as a whole (no deep merge). A
+    ``mode=None`` selects the base groups unchanged; callers writing a
+    generation always pass the selected palette mode. The result is validated
+    against the vendored ``appearance-json`` schema.
+    """
+    groups = manifest.get("groups")
+    if not isinstance(groups, dict):
+        raise ValueError("appearance manifest has no 'groups' object")
+    resolved = copy.deepcopy(groups)
+    if mode is not None:
+        if mode not in _V2_MODES:
+            raise ValueError(f"appearance mode must be 'dark' or 'light', got {mode!r}")
+        overrides = manifest.get("mode")
+        if isinstance(overrides, dict):
+            selected = overrides.get(mode)
+            if selected is not None:
+                if not isinstance(selected, dict):
+                    raise ValueError(f"appearance mode.{mode} override must be an object")
+                resolved.update(copy.deepcopy(selected))
+    tokens: dict[str, Any] = {"version": 2, **resolved}
+    try:
+        appearance_json_validator()(tokens)
+    except fastjsonschema.JsonSchemaValueException as exc:
+        raise ValueError(
+            f"resolved v2 tokens document is not appearance-json conformant: {exc.message}"
+        ) from exc
+    return tokens
+
+
+def _leaves(value: Any, prefix: str) -> list[tuple[str, Any]]:
+    leaves: list[tuple[str, Any]] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            path = f"{prefix}.{key}" if prefix else key
+            leaves.extend(_leaves(child, path))
+    else:
+        leaves.append((prefix, value))
+    return leaves
+
+
+def _css_v2_value(path: str, value: Any) -> str:
+    """Render one v2 token in its CSS position (contracts v0.7.0 unit rule)."""
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, (int, float)):
+        number = _format_number(value)
+        if path.endswith("letter-spacing"):
+            return f"{number}em"
+        if path.endswith("font-weight"):
+            return number
+        return f"{number}px"
+    return cast("str", value)
+
+
+def _v2_placeholder_values(
+    resolved: dict[str, Any],
+) -> tuple[dict[str, str], frozenset[str]]:
+    """Flatten the CSS token leaves and record the forbidden layout placeholders."""
+    values: dict[str, str] = {}
+    for group in _V2_CSS_GROUPS:
+        for path, value in _leaves(resolved.get(group, {}), group):
+            placeholder = _flatten_placeholder(path)
+            if placeholder in values:
+                raise ValueError(f"skin tokens collide on placeholder {placeholder!r}")
+            values[placeholder] = _css_v2_value(path, value)
+    layout = frozenset(
+        _flatten_placeholder(path)
+        for path, _value in _leaves(resolved.get("layout", {}), "layout")
+    )
+    return values, layout
+
+
+def expand_v2_template(
+    text: str,
+    resolved: dict[str, Any],
+    *,
+    template: Path | str = "<template>",
+) -> str:
+    """Expand a v2 template with mode-resolved tokens, fail-closed."""
+    values, layout = _v2_placeholder_values(resolved)
+    return _substitute(
+        text,
+        values,
+        template,
+        layout_placeholders=layout,
+        reject_conditionals=True,
+    )
+
+
+def render_v2_templates(
+    templates_dir: Path, resolved: dict[str, Any]
+) -> dict[str, str]:
+    """Render every discovered v2 template with one resolved token document."""
+    rendered: dict[str, str] = {}
+    for template, output in _discover_templates(templates_dir):
+        try:
+            source = template.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ValueError(f"cannot read skin template {template}: {exc}") from exc
+        rendered[output] = expand_v2_template(source, resolved, template=template)
+    return rendered
+
+
 def _css_value(token: str, value: Scalar) -> str:
     if token in _NUMERIC_TOKENS:
         return f"{_format_number(cast('int | float', value))}px"
@@ -285,9 +409,26 @@ def _discover_templates(templates_dir: Path) -> list[tuple[Path, str]]:
     return templates
 
 
-def _substitute(text: str, values: dict[str, str], template: Path) -> str:
+def _substitute(
+    text: str,
+    values: dict[str, str],
+    template: Path | str,
+    *,
+    layout_placeholders: frozenset[str] = frozenset(),
+    reject_conditionals: bool = False,
+) -> str:
+    if reject_conditionals and _CONDITIONAL_RE.search(text):
+        raise ValueError(
+            f"skin template {template} has conditional syntax; v2 templates are unconditional"
+        )
+
     def _replace(match: re.Match[str]) -> str:
         placeholder = match.group(1).strip()
+        if placeholder in layout_placeholders:
+            raise ValueError(
+                f"skin template {template} uses layout placeholder "
+                f"{{{{{placeholder}}}}}; layout.<app> is TSX-owned and never CSS"
+            )
         if placeholder not in values:
             raise ValueError(
                 f"skin template {template} references unknown placeholder "
@@ -302,7 +443,7 @@ def _substitute(text: str, values: dict[str, str], template: Path) -> str:
 
 
 class SkinExpander(ISkinExpander):
-    """Deterministic JSON/TOML manifest expansion into a cache work dir."""
+    """Deterministic v1/v2 manifest expansion into a cache work dir."""
 
     def expand(
         self,
@@ -315,9 +456,22 @@ class SkinExpander(ISkinExpander):
             raise ValueError(f"skin name must be a safe lowercase name, got {name!r}")
         if not templates_dir.is_dir():
             raise ValueError(f"skin templates dir not found: {templates_dir}")
-        manifest = _load_manifest(manifest_path)
-        groups = _validate_manifest(manifest, name, manifest_path)
-        values = _placeholder_values(groups)
+        manifest = load_skin_manifest(manifest_path)
+        version = manifest_schema_version(manifest, manifest_path)
+        if version == MANIFEST_V1:
+            groups = _validate_v1_manifest(manifest, name, manifest_path)
+            token_doc: dict[str, Any] = {"version": MANIFEST_V1, **groups}
+            values = _placeholder_values(groups)
+            layout_placeholders: frozenset[str] = frozenset()
+            reject_conditionals = False
+        else:
+            validate_v2_manifest(manifest, name, manifest_path)
+            # The skin cache is palette/mode-independent. Appearance generation
+            # re-renders the templates with the selected mode before composing.
+            token_doc = resolve_v2_token_document(manifest, None)
+            values, layout_placeholders = _v2_placeholder_values(token_doc)
+            reject_conditionals = True
+
         templates = _discover_templates(templates_dir)
 
         templates_hash = _canonical_templates_hash(templates_dir)
@@ -334,11 +488,15 @@ class SkinExpander(ISkinExpander):
                 source = template.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError) as exc:
                 raise ValueError(f"cannot read skin template {template}: {exc}") from exc
-            rendered[output] = _substitute(source, values, template)
+            rendered[output] = _substitute(
+                source,
+                values,
+                template,
+                layout_placeholders=layout_placeholders,
+                reject_conditionals=reject_conditionals,
+            )
 
-        token_map = json.dumps(
-            {"version": 1, **groups}, indent=2, ensure_ascii=False
-        ) + "\n"
+        token_map = json.dumps(token_doc, indent=2, ensure_ascii=False) + "\n"
         output_dir.mkdir(parents=True, exist_ok=False)
         try:
             for filename, text in sorted(rendered.items()):

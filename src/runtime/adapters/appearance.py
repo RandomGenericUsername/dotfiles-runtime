@@ -22,7 +22,6 @@ build leaves the old pointer untouched (fail closed).
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import logging
@@ -42,6 +41,14 @@ from runtime.adapters.contract_schemas import (
     appearance_json_validator,
 )
 from runtime.adapters.hashing import appearance_generation_hash, hash_file
+from runtime.adapters.skin_expander import (
+    MANIFEST_V2,
+    load_skin_manifest,
+    manifest_schema_version,
+    render_v2_templates,
+    resolve_v2_token_document,
+    validate_v2_manifest,
+)
 from runtime.domain.models import (
     AppearanceEntry,
     PaletteEntry,
@@ -305,18 +312,7 @@ def tokens_from_v1_skin(skin_json: dict[str, Any]) -> dict[str, Any]:
 
 def tokens_from_v2_manifest(manifest: dict[str, Any], mode: str) -> dict[str, Any]:
     """Resolve a v2 manifest for one mode (override replaces a whole group)."""
-    groups = manifest.get("groups")
-    if not isinstance(groups, dict):
-        raise ValueError("appearance manifest has no 'groups' object")
-    resolved = copy.deepcopy(groups)
-    overrides = manifest.get("mode")
-    if isinstance(overrides, dict):
-        selected = overrides.get(mode)
-        if selected is not None:
-            if not isinstance(selected, dict):
-                raise ValueError(f"appearance mode.{mode} override must be an object")
-            resolved.update(copy.deepcopy(selected))
-    return {"version": 2, **resolved}
+    return resolve_v2_token_document(manifest, mode)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -330,18 +326,17 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def _load_v2_manifest(path: Path | None) -> dict[str, Any] | None:
-    """Read a v2 manifest candidate; return ``None`` for a v1/TOML manifest."""
+    """Read a v2 manifest candidate (TOML or JSON); ``None`` for v1/absent."""
     if path is None or not path.is_file():
         return None
-    if path.suffix == ".toml":
-        return None
     try:
-        data = _load_json(path)
+        data = load_skin_manifest(path)
+        version = manifest_schema_version(data, path)
     except ValueError:
         return None
-    if data.get("schemaVersion") == 2 and isinstance(data.get("groups"), dict):
-        return data
-    return None
+    # A v2 envelope is authoritative: malformed groups fail in
+    # ``validate_v2_manifest`` instead of silently falling back to v1.
+    return data if version == MANIFEST_V2 else None
 
 
 def resolve_tokens(
@@ -354,6 +349,8 @@ def resolve_tokens(
     """Resolve the v2 token document for this skin + mode, fail-closed."""
     manifest = _load_v2_manifest(manifest_path)
     if manifest is not None:
+        assert manifest_path is not None
+        validate_v2_manifest(manifest, skin_entry.name, manifest_path)
         tokens = tokens_from_v2_manifest(manifest, mode)
     else:
         skin_json = _load_json(skin_dir / "skin.json")
@@ -381,12 +378,7 @@ def _render_palette_block(colors_yaml: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _compose_css(
-    palette_dir: Path,
-    skin_dir: Path,
-    config_dir: str,
-    colors_yaml: str,
-) -> str:
+def _compose_css(palette_dir: Path, skin_css: str, colors_yaml: str) -> str:
     """Compose the single sheet the app applies.
 
     Order is frozen by the contract: legacy palette CSS, then the rendered
@@ -394,7 +386,6 @@ def _compose_css(
     mandatory: without it ``@role`` references resolve to nothing.
     """
     legacy = (palette_dir / "colors.gtk.css").read_text(encoding="utf-8")
-    skin_css = (skin_dir / f"{config_dir}.css").read_text(encoding="utf-8")
     role_block = _render_palette_block(colors_yaml)
     return (
         legacy.rstrip("\n")
@@ -596,6 +587,7 @@ class AppearanceGenerator:
         skin_entry: SkinEntry,
         install_spine: Path,
         manifest_path: Path | None = None,
+        templates_dir: Path | None = None,
         keep: int = APPEARANCE_KEEP,
     ) -> tuple[AppearanceEntry, bool]:
         palette_dir = cache_entry_path(
@@ -626,9 +618,24 @@ class AppearanceGenerator:
         config_dirs = skin_config_dirs(skin_entry.artifact_hashes)
         if not config_dirs:
             raise ValueError(f"appearance skin {skin_entry.name!r} has no <configDir>.css targets")
-        tokens = resolve_tokens(
-            skin_entry, skin_dir, manifest_path=manifest_path, mode=mode
-        )
+        manifest = _load_v2_manifest(manifest_path)
+        rendered: dict[str, str] | None = None
+        if manifest is not None:
+            # v2 templates must be expanded AFTER the mode override is applied.
+            # The skin cache's base render is migration-only and never composed.
+            assert manifest_path is not None
+            validate_v2_manifest(manifest, skin_entry.name, manifest_path)
+            tokens = tokens_from_v2_manifest(manifest, mode)
+            if templates_dir is None or not templates_dir.is_dir():
+                raise ValueError(
+                    "appearance v2 manifest requires a skin templates dir to "
+                    f"expand mode={mode!r}: {templates_dir}"
+                )
+            rendered = render_v2_templates(templates_dir, tokens)
+        else:
+            tokens = resolve_tokens(
+                skin_entry, skin_dir, manifest_path=manifest_path, mode=mode
+            )
 
         root = appearance_cache_root(self._state_root)
         root.mkdir(parents=True, exist_ok=True)
@@ -643,8 +650,24 @@ class AppearanceGenerator:
                 encoding="utf-8",
             )
             for config_dir in config_dirs:
+                if rendered is not None:
+                    skin_css = rendered.get(f"{config_dir}.css")
+                    if skin_css is None:
+                        raise ValueError(
+                            f"appearance skin {skin_entry.name!r} has no rendered "
+                            f"{config_dir}.css"
+                        )
+                else:
+                    try:
+                        skin_css = (skin_dir / f"{config_dir}.css").read_text(
+                            encoding="utf-8"
+                        )
+                    except (OSError, UnicodeDecodeError) as exc:
+                        raise ValueError(
+                            f"appearance CSS composition failed for {config_dir!r}: {exc}"
+                        ) from exc
                 try:
-                    css = _compose_css(palette_dir, skin_dir, config_dir, colors_yaml)
+                    css = _compose_css(palette_dir, skin_css, colors_yaml)
                 except (OSError, UnicodeDecodeError) as exc:
                     raise ValueError(
                         f"appearance CSS composition failed for {config_dir!r}: {exc}"

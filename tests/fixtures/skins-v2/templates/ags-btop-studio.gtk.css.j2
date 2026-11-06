@@ -1,0 +1,791 @@
+/*
+ * skins/templates/ags-btop-studio.gtk.css.j2 — btop theme studio paint.
+ *
+ * Extracted from ../ags-btop-theme-studio/style.css. The studio is a full
+ * window: the root carries surface.panel.bg, ink, text-size and font-family. Its rails,
+ * cards, tree rows and controls take surface.card.bg/surface.card.radius or surface.control.radius plus
+ * surface.*.border-width. Ink, accent and type.size-title/type.size-body are skin knobs. Region widths,
+ * stage geometry, small type, monospace faces and selection tints stay source
+ * literals expressed as palette roles.
+ *
+ * The source's content-stage/terminal hexes are content, not chrome, so they
+ * are expressed with the darkest surface-container role at the same alpha; the
+ * no-hex rule holds and the stage still reads as a neutral well.
+ */
+.btop-theme-studio {
+  background-color: {{SKIN_SURFACE_PANEL_BG}};
+  color: {{SKIN_INK_INK}};
+  font-size: {{SKIN_TYPE_SIZE_BODY}};
+  font-weight: {{SKIN_TYPE_FONT_WEIGHT}};
+  font-family: {{SKIN_TYPE_FONT_FAMILY}};
+}
+
+.studio-shell {
+  background-color: {{SKIN_SURFACE_PANEL_BG}};
+}
+
+.studio-header {
+  padding: {{SKIN_SURFACE_CONTROL_PADDING}} 16px;
+  background-color: alpha(@surface_container, 0.45);
+  border-bottom: {{SKIN_SURFACE_CONTROL_BORDER_WIDTH}} solid alpha({{SKIN_INK_INK}}, 0.12);
+}
+
+.studio-title {
+  font-size: {{SKIN_TYPE_SIZE_TITLE}};
+  font-weight: 700;
+}
+
+.studio-subtitle {
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+  color: alpha({{SKIN_INK_INK}}, 0.45);
+}
+
+.studio-root {
+  background-color: {{SKIN_SURFACE_PANEL_BG}};
+}
+
+.studio-left-scroll {
+  min-width: 280px;
+  background-color: alpha(@surface_container, 0.26);
+  border-right: {{SKIN_SURFACE_CONTROL_BORDER_WIDTH}} solid alpha({{SKIN_INK_INK}}, 0.12);
+}
+
+.studio-left {
+  background-color: {{SKIN_SURFACE_CONTROL_BG}};
+}
+
+.section-header {
+  padding: 12px 14px 6px;
+}
+
+.section-title {
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+  font-weight: 700;
+  color: alpha({{SKIN_INK_INK}}, 0.48);
+}
+
+.section-sub {
+  font-size: 10px;
+  color: alpha({{SKIN_INK_INK}}, 0.32);
+}
+
+.studio-body {
+  padding: 0 14px 10px;
+}
+
+.field-label {
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+  color: alpha({{SKIN_INK_INK}}, 0.48);
+}
+
+.hint {
+  color: alpha({{SKIN_INK_INK}}, 0.45);
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+}
+
+.warn {
+  color: @tertiary;
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+}
+
+.status {
+  color: {{SKIN_INK_ACCENT}};
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+}
+
+.studio-status {
+  padding: 0 14px 8px;
+}
+
+.studio-path {
+  background-color: @surface_container;
+  border: {{SKIN_SURFACE_CONTROL_BORDER_WIDTH}} solid alpha({{SKIN_INK_INK}}, 0.14);
+  border-radius: {{SKIN_SURFACE_CONTROL_RADIUS}};
+  padding: {{SKIN_SURFACE_CONTROL_PADDING}} 8px;
+  font-family: monospace;
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+  color: {{SKIN_INK_INK}};
+}
+
+.studio-path.rw {
+  border-color: @tertiary;
+}
+
+.studio-cfg {
+  font-family: monospace;
+  font-size: 10px;
+  color: alpha({{SKIN_INK_INK}}, 0.55);
+}
+
+.stock-note {
+  padding: 0 14px 10px;
+  font-size: 10px;
+  color: alpha({{SKIN_INK_INK}}, 0.34);
+}
+
+.toggle,
+.btn,
+.pchip,
+.item,
+.titem,
+.named-row,
+.cell {
+  background-image: none;
+  box-shadow: none;
+  text-shadow: none;
+}
+
+.toggle {
+  background-color: @surface_container;
+  border: {{SKIN_SURFACE_CONTROL_BORDER_WIDTH}} solid alpha({{SKIN_INK_INK}}, 0.14);
+  color: {{SKIN_INK_INK}};
+  border-radius: {{SKIN_SURFACE_CONTROL_RADIUS}};
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+  padding: {{SKIN_SURFACE_CONTROL_PADDING}} 9px;
+  min-height: 0;
+}
+
+.toggle:hover {
+  border-color: alpha({{SKIN_INK_INK}}, 0.28);
+}
+
+.toggle.on {
+  border-color: {{SKIN_INK_ACCENT}};
+  color: {{SKIN_INK_ACCENT}};
+  background-color: alpha({{SKIN_INK_ACCENT}}, 0.10);
+}
+
+.lib-actions {
+  padding: 4px 14px 8px;
+}
+
+.lib-actions .toggle {
+  font-size: 10px;
+  padding: {{SKIN_SURFACE_CONTROL_PADDING}} 6px;
+}
+
+.studio-lib {
+  padding: 0 4px;
+}
+
+.titem {
+  background-color: {{SKIN_SURFACE_CELL_BG}};
+  border: {{SKIN_SURFACE_CELL_BORDER_WIDTH}} solid {{SKIN_SURFACE_CELL_BORDER}};
+  border-radius: {{SKIN_SURFACE_CELL_RADIUS}};
+  padding: {{SKIN_SURFACE_CELL_PADDING}} 9px;
+  min-height: 0;
+}
+
+.titem:hover {
+  background-color: {{SKIN_STATE_HOVER_FILL}};
+}
+
+.titem.active {
+  background-color: alpha(@primary_container, 0.18);
+  border-color: alpha(@primary_container, 0.45);
+}
+
+.star {
+  font-size: {{SKIN_TYPE_SIZE_BODY}};
+  color: alpha({{SKIN_INK_INK}}, 0.24);
+  min-width: 16px;
+}
+
+.star.on {
+  color: @tertiary;
+}
+
+.tname {
+  font-family: monospace;
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+}
+
+.badge {
+  font-size: 9px;
+  padding: {{SKIN_SURFACE_PILL_PADDING}} 5px;
+  border-radius: {{SKIN_SURFACE_PILL_RADIUS}};
+}
+
+.badge.generated {
+  background-color: alpha(@secondary_container, 0.55);
+  color: @on_secondary_container;
+}
+
+.badge.authored {
+  background-color: alpha(@primary_container, 0.55);
+  color: @on_primary_container;
+}
+
+.badge.active {
+  background-color: alpha(@tertiary_container, 0.55);
+  color: @on_tertiary_container;
+}
+
+.tree {
+  padding: 0 6px 14px;
+}
+
+.group {
+  padding: 9px 8px 3px;
+  font-size: 9px;
+  font-weight: 700;
+  color: alpha({{SKIN_INK_INK}}, 0.38);
+}
+
+.item {
+  background-color: {{SKIN_SURFACE_CONTROL_BG}};
+  border: {{SKIN_SURFACE_CONTROL_BORDER_WIDTH}} solid transparent;
+  border-radius: {{SKIN_SURFACE_CONTROL_RADIUS}};
+  padding: 3px 8px 3px 12px;
+  min-height: 0;
+}
+
+.item:hover {
+  background-color: {{SKIN_STATE_HOVER_FILL}};
+}
+
+.item.active {
+  background-color: alpha(@primary_container, 0.20);
+}
+
+.key-label {
+  font-family: monospace;
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+}
+
+.dot {
+  min-width: 11px;
+  min-height: 11px;
+  border-radius: {{SKIN_SURFACE_PILL_RADIUS}};
+  border: {{SKIN_SURFACE_PILL_BORDER_WIDTH}} solid alpha(@outline, 0.5);
+}
+
+.studio-center {
+  background-color: {{SKIN_SURFACE_PANEL_BG}};
+}
+
+.canvas-bar {
+  padding: {{SKIN_SURFACE_CONTROL_PADDING}} 14px;
+  background-color: alpha(@surface_container, 0.42);
+  border-bottom: {{SKIN_SURFACE_CONTROL_BORDER_WIDTH}} solid alpha({{SKIN_INK_INK}}, 0.12);
+}
+
+.slider-label {
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+  color: alpha({{SKIN_INK_INK}}, 0.45);
+}
+
+.slider-value {
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+  color: {{SKIN_INK_INK}};
+}
+
+.load-scale {
+  min-width: 110px;
+}
+
+.load-scale trough {
+  min-height: 4px;
+  border-radius: 2px;
+  background-color: alpha({{SKIN_INK_INK}}, 0.15);
+}
+
+.load-scale highlight {
+  background-color: {{SKIN_INK_ACCENT}};
+  border-radius: 2px;
+}
+
+.pbar {
+  padding: {{SKIN_SURFACE_CONTROL_PADDING}} 14px;
+  background-color: alpha(@surface_container_lowest, 0.18);
+  border-bottom: {{SKIN_SURFACE_CONTROL_BORDER_WIDTH}} solid alpha({{SKIN_INK_INK}}, 0.12);
+}
+
+.pbar-label {
+  font-size: 10px;
+  color: alpha({{SKIN_INK_INK}}, 0.4);
+}
+
+.pchip {
+  background-color: transparent;
+  border: {{SKIN_SURFACE_PILL_BORDER_WIDTH}} solid {{SKIN_SURFACE_PILL_BORDER}};
+  border-radius: {{SKIN_SURFACE_PILL_RADIUS}};
+  padding: {{SKIN_SURFACE_PILL_PADDING}} 9px;
+  font-size: 10px;
+  font-family: monospace;
+  color: alpha({{SKIN_INK_INK}}, 0.55);
+  min-height: 0;
+}
+
+.pchip.on {
+  background-color: alpha(@primary_container, 0.60);
+  border-color: {{SKIN_INK_ACCENT}};
+  color: @on_primary_container;
+}
+
+.pdesc {
+  font-size: 10px;
+  color: alpha({{SKIN_INK_INK}}, 0.35);
+}
+
+.banner {
+  padding: {{SKIN_SURFACE_CONTROL_PADDING}} 14px;
+  background-color: alpha(@tertiary_container, 0.55);
+  border-bottom: {{SKIN_SURFACE_CONTROL_BORDER_WIDTH}} solid alpha({{SKIN_INK_INK}}, 0.12);
+}
+
+.banner-icon {
+  color: @on_tertiary_container;
+}
+
+.banner-text {
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+  color: @on_tertiary_container;
+}
+
+.canvas {
+  background-color: @surface_container_lowest;
+  padding: {{SKIN_SURFACE_CONTROL_PADDING}};
+}
+
+.stage {
+}
+
+.stage-cap {
+  font-family: monospace;
+  font-size: 10px;
+  color: alpha({{SKIN_INK_INK}}, 0.5);
+}
+
+.bgrid {
+  padding: 0;
+}
+
+.bbox {
+  border: {{SKIN_SURFACE_CONTROL_BORDER_WIDTH}} solid alpha({{SKIN_INK_INK}}, 0.14);
+  border-radius: {{SKIN_SURFACE_CONTROL_RADIUS}};
+  padding: {{SKIN_SURFACE_CONTROL_PADDING}} 7px;
+  min-width: 100px;
+  background-color: alpha(@surface_container_lowest, 0.12);
+}
+
+.btitle {
+  font-weight: 700;
+  font-size: 10px;
+  color: alpha({{SKIN_INK_INK}}, 0.75);
+}
+
+.el {
+  font-size: 10px;
+  color: alpha({{SKIN_INK_INK}}, 0.62);
+  padding: 1px 0;
+}
+
+.el.hl {
+  outline: 1px solid {{SKIN_INK_ACCENT}};
+  border-radius: 3px;
+  color: {{SKIN_INK_INK}};
+}
+
+.live-bar {
+}
+
+.live-frame {
+  font-family: "JetBrainsMono Nerd Font", "Adwaita Mono", "DejaVu Sans Mono", monospace;
+  font-size: 9px;
+  color: {{SKIN_INK_INK}};
+  background-color: @surface_container_lowest;
+  border: {{SKIN_SURFACE_PILL_BORDER_WIDTH}} solid alpha({{SKIN_INK_INK}}, 0.10);
+  border-radius: {{SKIN_SURFACE_CARD_RADIUS}};
+  padding: {{SKIN_SURFACE_PILL_PADDING}};
+}
+
+.diag {
+  border-top: {{SKIN_SURFACE_CONTROL_BORDER_WIDTH}} solid alpha({{SKIN_INK_INK}}, 0.12);
+  background-color: alpha(@surface_container_lowest, 0.22);
+  padding: {{SKIN_SURFACE_CONTROL_PADDING}} 14px;
+}
+
+.diag-row {
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+  padding: 2px 0;
+}
+
+.diag-row.ok {
+  color: {{SKIN_INK_ACCENT}};
+}
+
+.diag-row.warn {
+  color: @tertiary;
+}
+
+.diag-row.error {
+  color: @error;
+}
+
+.diff {
+  border-top: {{SKIN_SURFACE_CONTROL_BORDER_WIDTH}} solid alpha({{SKIN_INK_INK}}, 0.12);
+  background-color: alpha(@surface_container_lowest, 0.22);
+  padding: {{SKIN_SURFACE_CONTROL_PADDING}} 14px;
+}
+
+.diff-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: alpha({{SKIN_INK_INK}}, 0.4);
+}
+
+.diff-file {
+  font-family: monospace;
+  font-size: 10px;
+  color: @secondary;
+}
+
+.diff-del {
+  font-family: monospace;
+  font-size: 10px;
+  color: @error;
+}
+
+.diff-add {
+  font-family: monospace;
+  font-size: 10px;
+  color: {{SKIN_INK_ACCENT}};
+}
+
+.diff-ctx {
+  font-family: monospace;
+  font-size: 10px;
+  color: alpha({{SKIN_INK_INK}}, 0.35);
+}
+
+.studio-right {
+  min-width: 320px;
+  background-color: alpha(@surface_container, 0.26);
+  border-left: {{SKIN_SURFACE_CONTROL_BORDER_WIDTH}} solid alpha({{SKIN_INK_INK}}, 0.12);
+}
+
+.studio-right-content {
+  background-color: {{SKIN_SURFACE_CONTROL_BG}};
+}
+
+.kv {
+  padding: 2px 0;
+}
+
+.kv-label {
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+  color: alpha({{SKIN_INK_INK}}, 0.45);
+}
+
+.kv-value {
+  font-family: monospace;
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+}
+
+.where-label {
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+}
+
+.sites {
+  font-family: monospace;
+  font-size: 10px;
+  color: alpha({{SKIN_INK_INK}}, 0.4);
+}
+
+.grad .stop {
+  font-family: monospace;
+  font-size: 10px;
+}
+
+.grad-note {
+  font-size: 10px;
+  color: alpha({{SKIN_INK_INK}}, 0.35);
+}
+
+.picker-title {
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+}
+
+.picker-label {
+  font-size: 9px;
+  font-weight: 700;
+  color: alpha({{SKIN_INK_INK}}, 0.35);
+}
+
+.cell {
+  padding: 0;
+  min-width: 24px;
+  min-height: 24px;
+  border-radius: {{SKIN_SURFACE_CELL_RADIUS}};
+  border: 2px solid transparent;
+}
+
+.cell:hover {
+  border-color: alpha({{SKIN_INK_INK}}, 0.5);
+}
+
+.cell.current {
+  border-color: {{SKIN_INK_INK}};
+}
+
+.named {
+}
+
+.named-row {
+  background-color: {{SKIN_SURFACE_CELL_BG}};
+  border: {{SKIN_SURFACE_CELL_BORDER_WIDTH}} solid {{SKIN_SURFACE_CELL_BORDER}};
+  border-radius: {{SKIN_SURFACE_CELL_RADIUS}};
+  padding: {{SKIN_SURFACE_CELL_PADDING}} 9px;
+  min-height: 0;
+}
+
+.named-row:hover {
+  background-color: {{SKIN_STATE_HOVER_FILL}};
+}
+
+.named-row.current {
+  border-color: {{SKIN_INK_ACCENT}};
+  background-color: alpha({{SKIN_INK_ACCENT}}, 0.10);
+}
+
+.chip {
+  min-width: 20px;
+  min-height: 20px;
+  border-radius: {{SKIN_SURFACE_PILL_RADIUS}};
+  border: {{SKIN_SURFACE_PILL_BORDER_WIDTH}} solid alpha(@outline, 0.4);
+}
+
+.ph {
+  font-family: monospace;
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+}
+
+.tok {
+  font-family: monospace;
+  font-size: 10px;
+  color: alpha({{SKIN_INK_INK}}, 0.4);
+}
+
+.hexrow {
+  padding-top: 2px;
+}
+
+.hex-entry {
+  background-color: @surface_container;
+  border: {{SKIN_SURFACE_CONTROL_BORDER_WIDTH}} solid alpha({{SKIN_INK_INK}}, 0.14);
+  border-radius: {{SKIN_SURFACE_CONTROL_RADIUS}};
+  padding: {{SKIN_SURFACE_CONTROL_PADDING}} 7px;
+  font-family: monospace;
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+  color: {{SKIN_INK_INK}};
+  min-height: 0;
+}
+
+.color-button {
+  background-color: @surface_container;
+  border: {{SKIN_SURFACE_CONTROL_BORDER_WIDTH}} solid alpha({{SKIN_INK_INK}}, 0.14);
+  border-radius: {{SKIN_SURFACE_CONTROL_RADIUS}};
+  padding: 0;
+  min-width: 44px;
+  min-height: 28px;
+}
+
+.scope-row {
+}
+
+.footer {
+  background-color: alpha(@surface_container, 0.55);
+  border-top: {{SKIN_SURFACE_CONTROL_BORDER_WIDTH}} solid alpha({{SKIN_INK_INK}}, 0.12);
+  padding: {{SKIN_SURFACE_CONTROL_PADDING}} 14px;
+}
+
+.btn {
+  background-color: @surface_container;
+  border: {{SKIN_SURFACE_CONTROL_BORDER_WIDTH}} solid alpha({{SKIN_INK_INK}}, 0.14);
+  border-radius: {{SKIN_SURFACE_CONTROL_RADIUS}};
+  color: {{SKIN_INK_INK}};
+  font-size: {{SKIN_TYPE_SIZE_BODY}};
+  padding: {{SKIN_SURFACE_CONTROL_PADDING}};
+  min-height: 0;
+}
+
+.btn.primary {
+  background-color: {{SKIN_INK_ACCENT}};
+  border-color: {{SKIN_INK_ACCENT}};
+  color: @on_primary;
+}
+
+.anat {
+  margin-top: 4px;
+  padding: {{SKIN_SURFACE_CARD_PADDING}} 11px;
+  border: {{SKIN_SURFACE_CARD_BORDER_WIDTH}} solid {{SKIN_SURFACE_CARD_BORDER}};
+  border-radius: {{SKIN_SURFACE_CARD_RADIUS}};
+  background-color: {{SKIN_SURFACE_CARD_BG}};
+}
+
+.anat-title {
+  font-size: 9px;
+  font-weight: 700;
+  color: alpha({{SKIN_INK_INK}}, 0.45);
+}
+
+.anat-swatch {
+  min-width: 18px;
+  min-height: 18px;
+  border-radius: {{SKIN_SURFACE_CARD_RADIUS}};
+  border: {{SKIN_SURFACE_CARD_BORDER_WIDTH}} solid alpha(@outline, 0.4);
+}
+
+.modchip {
+  font-family: monospace;
+  font-size: 9px;
+  padding: {{SKIN_SURFACE_PILL_PADDING}} 6px;
+  border-radius: {{SKIN_SURFACE_PILL_RADIUS}};
+  background-color: alpha({{SKIN_INK_INK}}, 0.08);
+  color: alpha({{SKIN_INK_INK}}, 0.45);
+}
+
+.modchip.on {
+  background-color: alpha({{SKIN_INK_ACCENT}}, 0.35);
+  color: @on_primary;
+}
+
+.modchip.off {
+  background-color: transparent;
+  border: {{SKIN_SURFACE_PILL_BORDER_WIDTH}} dashed alpha({{SKIN_INK_INK}}, 0.30);
+  color: alpha({{SKIN_INK_INK}}, 0.35);
+}
+
+.coverage-meter-label {
+  font-size: 9px;
+  color: alpha({{SKIN_INK_INK}}, 0.45);
+}
+
+.coverage-meter {
+  font-family: monospace;
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+}
+
+.btop-frame {
+  border-radius: {{SKIN_SURFACE_CARD_RADIUS}};
+  padding: {{SKIN_SURFACE_CARD_PADDING}} 10px;
+  font-family: "JetBrainsMono Nerd Font", "Adwaita Mono", "DejaVu Sans Mono", monospace;
+  font-size: {{SKIN_TYPE_SIZE_META}};
+}
+
+.btop-topbar-row {
+  padding-bottom: 4px;
+  margin-bottom: 2px;
+  font-size: 10px;
+}
+
+.btop-column {
+  min-width: 0;
+}
+
+.btop-box {
+  border: {{SKIN_SURFACE_CONTROL_BORDER_WIDTH}} solid transparent;
+  border-radius: {{SKIN_SURFACE_CONTROL_RADIUS}};
+  padding: 2px 5px 4px;
+  background-color: alpha(@surface_container_lowest, 0.12);
+}
+
+.btop-row {
+  min-height: 0;
+}
+
+.btop-text {
+  font-size: {{SKIN_TYPE_SIZE_CAPTION}};
+}
+
+.btop-title {
+  font-weight: 700;
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+}
+
+.btop-value,
+.btop-lab {
+  font-size: {{SKIN_TYPE_SIZE_CAPTION}};
+}
+
+.btop-graph {
+  font-family: "JetBrainsMono Nerd Font", "Adwaita Mono", "DejaVu Sans Mono", monospace;
+  font-size: 9.5px;
+  letter-spacing: {{SKIN_TYPE_LETTER_SPACING}};
+}
+
+.btop-meter {
+  font-family: "JetBrainsMono Nerd Font", "Adwaita Mono", "DejaVu Sans Mono", monospace;
+  font-size: {{SKIN_SURFACE_CONTROL_FONT_SIZE}};
+}
+
+.btop-meter-bar {
+  min-height: 14px;
+}
+
+.btop-core-name {
+  font-size: 9.5px;
+}
+
+.btop-cores {
+  padding: 1px 0;
+}
+
+.btop-tabs {
+  font-size: 9.5px;
+}
+
+.btop-subbox {
+  border: {{SKIN_SURFACE_CONTROL_BORDER_WIDTH}} solid transparent;
+  border-radius: {{SKIN_SURFACE_CONTROL_RADIUS}};
+  padding: {{SKIN_SURFACE_CONTROL_PADDING}} 4px;
+  background-color: alpha(@surface_container_lowest, 0.10);
+}
+
+.btop-proc-cell {
+  font-size: 9px;
+}
+
+.btop-chip {
+  font-size: 9px;
+  border-radius: {{SKIN_SURFACE_PILL_RADIUS}};
+  padding: 0 3px;
+}
+
+.btop-dim {
+  opacity: 0.85;
+}
+
+.leader-line {
+  min-height: 1px;
+  margin-top: 7px;
+}
+
+.key-hit {
+  background-color: {{SKIN_SURFACE_CONTROL_BG}};
+  background-image: none;
+  border: {{SKIN_SURFACE_CONTROL_BORDER_WIDTH}} solid transparent;
+  border-radius: {{SKIN_SURFACE_CONTROL_RADIUS}};
+  padding: 0 1px;
+  min-height: 0;
+  min-width: 0;
+  box-shadow: none;
+  text-shadow: none;
+}
+
+.key-hit:hover {
+  border-color: alpha({{SKIN_INK_INK}}, 0.35);
+  background-color: {{SKIN_STATE_HOVER_FILL}};
+}
+
+.meter-hit,
+.value-hit,
+.title-hit,
+.leader-hit,
+.tab-hit,
+.graph-hit,
+.chip-hit,
+.topbar-battery {
+  padding: 0;
+}

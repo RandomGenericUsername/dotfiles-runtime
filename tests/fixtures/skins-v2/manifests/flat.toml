@@ -1,0 +1,112 @@
+# flat — zero chrome. Panels, cards and borders disappear; rhythm is tighter
+# and the only paint is ink over the wallpaper/palette background. The v1
+# values convert directly: radii 0, border-w 0, hairline-w 0, transparent
+# surfaces, pill radius 999.
+schemaVersion = 2
+name = "flat"
+
+[groups.surface.panel]
+bg = "transparent"
+border = "transparent"
+border-width = 0
+radius = 0
+padding = 11
+shadow = "none"
+blur = "none"
+
+[groups.surface.card]
+bg = "transparent"
+border = "transparent"
+border-width = 0
+radius = 0
+padding = 10
+
+[groups.surface.cell]
+bg = "transparent"
+border = "transparent"
+border-width = 0
+radius = 0
+padding = 7
+hover-bg = "alpha(@on_surface, 0.08)"
+
+[groups.surface.control]
+bg = "transparent"
+border = "transparent"
+border-width = 0
+radius = 0
+padding = 4
+font-size = 11
+font-weight = 600
+
+[groups.surface.pill]
+bg = "transparent"
+border = "transparent"
+border-width = 0
+radius = 999
+padding = 2
+font-size = 9.5
+letter-spacing = 0.05
+
+[groups.state.hover]
+fill = "alpha(@on_surface, 0.08)"
+ink = "@on_surface"
+ring = "@primary"
+
+[groups.state.selected]
+fill = "@primary"
+ink = "@on_primary"
+ring = "@primary"
+
+[groups.state.focus]
+fill = "transparent"
+ink = "@on_surface"
+ring = "@primary"
+
+[groups.state.disabled]
+fill = "transparent"
+ink = "alpha(@on_surface, 0.38)"
+ring = "transparent"
+
+[groups.type]
+font-family = "system-ui, \"Cantarell\", \"Noto Sans\", sans-serif"
+font-weight = 400
+letter-spacing = 0
+size-caption = 10.5
+size-meta = 11
+size-body = 13
+size-title = 15
+size-display = 16
+
+[groups.ink]
+ink = "@on_surface"
+ink-dim = "@on_surface_variant"
+accent = "@primary"
+accent-muted = "alpha(@primary, 0.18)"
+ink-over = "auto"
+
+[groups.layout.ags]
+panel-width = 312
+bt-list-spacing = 4
+bar-row-height = 28
+chip-min = 48
+
+[groups.layout.ags-capture]
+panel-width = 560
+
+[groups.layout.ags-clipboard]
+card-width = 260
+
+[groups.layout.ags-notifications]
+card-width = 380
+
+[groups.layout.ags-wallpaper-selector]
+root-width = 920
+root-height = 600
+
+[groups.layout.ags-icme]
+root-width = 960
+root-height = 600
+
+[groups.layout.ags-btop-studio]
+left-width = 280
+right-width = 320

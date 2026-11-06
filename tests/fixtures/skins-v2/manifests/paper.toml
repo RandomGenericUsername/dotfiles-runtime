@@ -1,0 +1,184 @@
+# paper — the light/palette axis, expressed through palette.v1 roles. The base
+# groups are the v1 paper values converted faithfully and are the deliberate
+# dark-paper branch (a dark palette + paper keeps them). `mode.light` is
+# authored explicitly so a light palette + paper reads light without guessing
+# the palette mode. No literal hex; the v1 soft shadow keeps its rgba form
+# because it is a shadow paint, not a surface colour.
+schemaVersion = 2
+name = "paper"
+
+[groups.surface.panel]
+bg = "@surface_container_lowest"
+border = "alpha(@on_surface, 0.22)"
+border-width = 1
+radius = 6
+padding = 11
+shadow = "0 10px 28px rgba(0,0,0,0.22)"
+blur = "none"
+
+[groups.surface.card]
+bg = "@surface_container_low"
+border = "alpha(@on_surface, 0.10)"
+border-width = 1
+radius = 4
+padding = 10
+
+[groups.surface.cell]
+bg = "transparent"
+border = "transparent"
+border-width = 0
+radius = 3
+padding = 8
+hover-bg = "alpha(@on_surface, 0.08)"
+
+[groups.surface.control]
+bg = "transparent"
+border = "alpha(@on_surface, 0.22)"
+border-width = 1
+radius = 3
+padding = 4
+font-size = 11
+font-weight = 600
+
+[groups.surface.pill]
+bg = "alpha(@on_surface, 0.12)"
+border = "alpha(@on_surface, 0.22)"
+border-width = 1
+radius = 999
+padding = 2
+font-size = 9.5
+letter-spacing = 0.05
+
+[groups.state.hover]
+fill = "alpha(@on_surface, 0.08)"
+ink = "@on_surface"
+ring = "@primary"
+
+[groups.state.selected]
+fill = "@primary_container"
+ink = "@on_primary_container"
+ring = "@primary"
+
+[groups.state.focus]
+fill = "transparent"
+ink = "@on_surface"
+ring = "@primary"
+
+[groups.state.disabled]
+fill = "transparent"
+ink = "alpha(@on_surface, 0.38)"
+ring = "transparent"
+
+[groups.type]
+font-family = "system-ui, \"Cantarell\", \"Noto Sans\", sans-serif"
+font-weight = 400
+letter-spacing = 0
+size-caption = 10.5
+size-meta = 11
+size-body = 13
+size-title = 15
+size-display = 16
+
+[groups.ink]
+ink = "@on_surface"
+ink-dim = "@on_surface_variant"
+accent = "@primary"
+accent-muted = "alpha(@primary, 0.18)"
+ink-over = "auto"
+
+[groups.layout.ags]
+panel-width = 312
+bt-list-spacing = 6
+bar-row-height = 30
+chip-min = 52
+
+[groups.layout.ags-capture]
+panel-width = 560
+
+[groups.layout.ags-clipboard]
+card-width = 260
+
+[groups.layout.ags-notifications]
+card-width = 380
+
+[groups.layout.ags-wallpaper-selector]
+root-width = 920
+root-height = 600
+
+[groups.layout.ags-icme]
+root-width = 960
+root-height = 600
+
+[groups.layout.ags-btop-studio]
+left-width = 280
+right-width = 320
+
+# Authored light branch: explicit same-shape groups, not a palette guess.
+[mode.light.surface.panel]
+bg = "@surface_container_lowest"
+border = "alpha(@on_surface, 0.16)"
+border-width = 1
+radius = 6
+padding = 11
+shadow = "0 8px 22px alpha(@shadow, 0.16)"
+blur = "none"
+
+[mode.light.surface.card]
+bg = "@surface_container_low"
+border = "alpha(@on_surface, 0.10)"
+border-width = 1
+radius = 4
+padding = 10
+
+[mode.light.surface.cell]
+bg = "transparent"
+border = "transparent"
+border-width = 0
+radius = 3
+padding = 8
+hover-bg = "alpha(@on_surface, 0.06)"
+
+[mode.light.surface.control]
+bg = "transparent"
+border = "alpha(@on_surface, 0.22)"
+border-width = 1
+radius = 3
+padding = 4
+font-size = 11
+font-weight = 600
+
+[mode.light.surface.pill]
+bg = "alpha(@on_surface, 0.10)"
+border = "alpha(@on_surface, 0.16)"
+border-width = 1
+radius = 999
+padding = 2
+font-size = 9.5
+letter-spacing = 0.05
+
+[mode.light.state.hover]
+fill = "alpha(@on_surface, 0.06)"
+ink = "@on_surface"
+ring = "@primary"
+
+[mode.light.state.selected]
+fill = "@primary_container"
+ink = "@on_primary_container"
+ring = "@primary"
+
+[mode.light.state.focus]
+fill = "transparent"
+ink = "@on_surface"
+ring = "@primary"
+
+[mode.light.state.disabled]
+fill = "transparent"
+ink = "alpha(@on_surface, 0.38)"
+ring = "transparent"
+
+[mode.light.ink]
+ink = "@on_surface"
+ink-dim = "@on_surface_variant"
+accent = "@primary"
+accent-muted = "alpha(@primary, 0.18)"
+ink-over = "auto"

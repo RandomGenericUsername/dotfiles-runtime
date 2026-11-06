@@ -38,7 +38,11 @@ from runtime.adapters.appearance import AppearanceGenerator
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder
 from runtime.application.bar_backdrop import with_bar_backdrops
-from runtime.application.derive import DerivationPipeline, find_skin_manifest
+from runtime.application.derive import (
+    DerivationPipeline,
+    find_skin_manifest,
+    find_skin_templates,
+)
 from runtime.domain.models import (
     DEFAULT_MONITOR,
     DEFAULT_SKIN,
@@ -326,11 +330,13 @@ class SeedCacheUseCase:
             manifest_path, _source = find_skin_manifest(
                 skin_entry.name, self._install_spine
             )
+            templates_dir = find_skin_templates(self._install_spine)
             entry, _cache_hit = self._appearance.ensure(
                 palette_entry=palette_entry,
                 skin_entry=skin_entry,
                 install_spine=self._install_spine,
                 manifest_path=manifest_path,
+                templates_dir=templates_dir,
                 keep=self._appearance_keep,
             )
             return entry

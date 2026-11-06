@@ -1,0 +1,226 @@
+/*
+ * skins/templates/ags-clipboard.gtk.css.j2 — clipboard overlay paint.
+ *
+ * Extracted from ../ags-clipboard/style.css. The window root and the panel are
+ * the only global surfaces: surface.panel.bg/surface.panel.border-width/border/radius/shadow/blur
+ * come from the skin. Cards take surface.card.bg/surface.card.radius and the hairline width;
+ * fields and action buttons take the control radius. Ink, dim ink, accent and
+ * type.size-title/type.size-body are skin knobs. Everything else (head plate, kind colours,
+ * index badge, body geometry, small type) is a component literal from the
+ * source, expressed only as palette.v1 roles/alpha derivatives.
+ *
+ * The per-kind selection colours are per-element state, not skin tokens: they
+ * stay the source roles so the card keeps its type-coded outline.
+ *
+ * RADIUS CLIPPING: GTK has no overflow property; the app must set overflow
+ * HIDDEN on the widget carrying .clipboard-card and .clipboard-panel when
+ * their children can reach a corner.
+ */
+window#clipboard-window {
+  background-color: {{SKIN_SURFACE_CONTROL_BG}};
+  color: {{SKIN_INK_INK}};
+  font-family: {{SKIN_TYPE_FONT_FAMILY}};
+}
+
+.clipboard-panel {
+  background-color: {{SKIN_SURFACE_PANEL_BG}};
+  border: {{SKIN_SURFACE_PANEL_BORDER_WIDTH}} solid {{SKIN_SURFACE_PANEL_BORDER}};
+  border-radius: {{SKIN_SURFACE_PANEL_RADIUS}};
+  padding: {{SKIN_SURFACE_CONTROL_PADDING}};
+  box-shadow: {{SKIN_SURFACE_PANEL_SHADOW}};
+  backdrop-filter: {{SKIN_SURFACE_PANEL_BLUR}};
+}
+
+/* Unified field: the source keeps the solid one-step-above surface. */
+.clipboard-search {
+  background-color: @surface_container;
+  color: {{SKIN_INK_INK}};
+  border: none;
+  border-radius: {{SKIN_SURFACE_CONTROL_RADIUS}};
+  padding: {{SKIN_SURFACE_CONTROL_PADDING}} 8px;
+  min-height: 26px;
+}
+
+.clipboard-search placeholder {
+  color: alpha({{SKIN_INK_INK}}, 0.55);
+}
+
+.clipboard-incognito {
+  min-width: 120px;
+  background-color: {{SKIN_INK_ACCENT_MUTED}};
+  border: {{SKIN_SURFACE_CONTROL_BORDER_WIDTH}} solid {{SKIN_INK_ACCENT}};
+  color: {{SKIN_INK_INK}};
+  border-radius: {{SKIN_SURFACE_CONTROL_RADIUS}};
+}
+
+.clipboard-incognito:hover {
+  background-color: alpha({{SKIN_INK_ACCENT}}, 0.30);
+}
+
+.clipboard-clear {
+  min-width: 64px;
+  background-color: @error_container;
+  color: @on_error_container;
+  border-radius: {{SKIN_SURFACE_CONTROL_RADIUS}};
+}
+
+.clipboard-clear:hover {
+  background-color: alpha(@error_container, 0.82);
+}
+
+.clipboard-ui-icon {
+  opacity: 0.9;
+}
+
+.clipboard-list {
+  min-height: 150px;
+}
+
+.clipboard-card {
+  min-width: 260px;
+  border-radius: {{SKIN_SURFACE_CARD_RADIUS}};
+  background-color: {{SKIN_SURFACE_CARD_BG}};
+  border: {{SKIN_SURFACE_CARD_BORDER_WIDTH}} solid {{SKIN_SURFACE_CARD_BORDER}};
+}
+
+.clipboard-card:hover {
+  border-color: {{SKIN_STATE_HOVER_RING}};
+}
+
+.kind-text.selected {
+  border-color: @tertiary;
+  background-color: alpha(@tertiary, 0.12);
+  box-shadow: 0 0 0 2px alpha(@tertiary, 0.6);
+}
+
+.kind-code.selected {
+  border-color: @surface_container_lowest;
+  background-color: alpha(@surface_container_lowest, 0.12);
+  box-shadow: 0 0 0 2px alpha(@surface_container_lowest, 0.6);
+}
+
+.kind-color.selected {
+  border-color: @error;
+  background-color: alpha(@error, 0.12);
+  box-shadow: 0 0 0 2px alpha(@error, 0.6);
+}
+
+.kind-image.selected {
+  border-color: @error_container;
+  background-color: alpha(@error_container, 0.12);
+  box-shadow: 0 0 0 2px alpha(@error_container, 0.6);
+}
+
+.kind-link.selected {
+  border-color: @primary;
+  background-color: alpha(@primary, 0.12);
+  box-shadow: 0 0 0 2px alpha(@primary, 0.6);
+}
+
+.kind-emoji.selected {
+  border-color: @secondary;
+  background-color: alpha(@secondary, 0.12);
+  box-shadow: 0 0 0 2px alpha(@secondary, 0.6);
+}
+
+.clipboard-head {
+  min-height: 36px;
+  padding: 0 12px;
+}
+
+.clipboard-head.on-dark {
+  color: @on_surface;
+}
+
+.clipboard-head.on-light {
+  color: @on_primary;
+}
+
+.kind-text .clipboard-head {
+  background-color: @tertiary;
+}
+
+.kind-code .clipboard-head {
+  background-color: @surface_container_lowest;
+}
+
+.kind-color .clipboard-head {
+  background-color: @error;
+}
+
+.kind-image .clipboard-head {
+  background-color: @error_container;
+}
+
+.kind-link .clipboard-head {
+  background-color: @primary;
+}
+
+.kind-emoji .clipboard-head {
+  background-color: @secondary;
+}
+
+.clipboard-index {
+  min-width: 18px;
+  min-height: 18px;
+  padding: 0;
+  border-radius: {{SKIN_SURFACE_CONTROL_RADIUS}};
+  font-size: 0.75rem;
+  font-weight: 800;
+  background-color: alpha(@surface, 0.32);
+  color: inherit;
+}
+
+.clipboard-head-label {
+  font-size: {{SKIN_TYPE_SIZE_TITLE}};
+  font-weight: 700;
+}
+
+.clipboard-time {
+  font-size: 0.7rem;
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+.clipboard-body {
+  padding: {{SKIN_SURFACE_CONTROL_PADDING}};
+  min-height: 122px;
+}
+
+.clipboard-text,
+.clipboard-code {
+  color: {{SKIN_INK_INK}};
+}
+
+.clipboard-text {
+  font-size: {{SKIN_TYPE_SIZE_BODY}};
+}
+
+.clipboard-code {
+  font-family: monospace;
+  font-size: 0.72rem;
+}
+
+.clipboard-link {
+  color: {{SKIN_INK_ACCENT}};
+}
+
+.clipboard-emoji {
+  font-size: 2rem;
+}
+
+.clipboard-thumb-wrap,
+.clipboard-swatch-wrap {
+  border-radius: 8px;
+}
+
+.clipboard-hex {
+  font-family: monospace;
+  font-size: 0.75rem;
+  color: {{SKIN_INK_INK}};
+}
+
+.clipboard-empty {
+  color: {{SKIN_INK_INK_DIM}};
+  padding: {{SKIN_SURFACE_CONTROL_PADDING}};
+}

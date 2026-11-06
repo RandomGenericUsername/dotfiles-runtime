@@ -54,6 +54,7 @@ from runtime.application.derive import (
     DerivationPipeline,
     ensure_palette_entry_complete,
     find_skin_manifest,
+    find_skin_templates,
 )
 from runtime.application.palette_conformance import require_palette_conformance
 from runtime.domain.ags_apps import AppRefreshRecord, ReloadFailure
@@ -565,11 +566,13 @@ class ReconcileDesktopStateUseCase:
             return None
         try:
             manifest_path, _source = find_skin_manifest(skin.name, self._install_spine)
+            templates_dir = find_skin_templates(self._install_spine)
             entry, cache_hit = self._appearance.ensure(
                 palette_entry=palette,
                 skin_entry=skin,
                 install_spine=self._install_spine,
                 manifest_path=manifest_path,
+                templates_dir=templates_dir,
                 keep=self._appearance_keep,
             )
             self._seeder.publish_appearance(self._install_spine, entry)

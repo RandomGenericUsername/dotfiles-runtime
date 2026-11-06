@@ -1,0 +1,114 @@
+# glass — the default/fallback skin and the v1→v2 parity target. This is a
+# faithful conversion of today's ags-bar look: a translucent panel, a low-alpha
+# card, a solid primary panel frame, no shadow and no backdrop blur. Values are
+# extracted from ../ags-bar/style.css (:161-166, :181-186, :378-387, :422-429,
+# :437-448). Per-role borders replace the v1 global border-w/hairline-w split:
+# the panel owns 1.5, the card/cell/control/pill own their own width.
+schemaVersion = 2
+name = "glass"
+
+[groups.surface.panel]
+bg = "alpha(@surface, 0.94)"
+border = "@primary"
+border-width = 1.5
+radius = 12
+padding = 11
+shadow = "none"
+blur = "none"
+
+[groups.surface.card]
+bg = "alpha(@surface_container_high, 0.18)"
+border = "alpha(@on_surface, 0.10)"
+border-width = 1
+radius = 9
+padding = 10
+
+[groups.surface.cell]
+bg = "transparent"
+border = "transparent"
+border-width = 0
+radius = 7
+padding = 8
+hover-bg = "alpha(@on_surface, 0.08)"
+
+[groups.surface.control]
+bg = "transparent"
+border = "alpha(@on_surface, 0.26)"
+border-width = 1
+radius = 7
+padding = 4
+font-size = 11
+font-weight = 600
+
+[groups.surface.pill]
+bg = "alpha(@on_surface, 0.12)"
+border = "alpha(@on_surface, 0.14)"
+border-width = 1
+radius = 20
+padding = 2
+font-size = 9.5
+letter-spacing = 0.05
+
+[groups.state.hover]
+fill = "alpha(@on_surface, 0.08)"
+ink = "@on_surface"
+ring = "@primary"
+
+[groups.state.selected]
+fill = "@primary_container"
+ink = "@on_primary_container"
+ring = "@primary"
+
+[groups.state.focus]
+fill = "transparent"
+ink = "@on_surface"
+ring = "@primary"
+
+[groups.state.disabled]
+fill = "transparent"
+ink = "alpha(@on_surface, 0.38)"
+ring = "transparent"
+
+[groups.type]
+font-family = "inherit"
+font-weight = 400
+letter-spacing = 0
+size-caption = 10.5
+size-meta = 11
+size-body = 13
+size-title = 12.5
+size-display = 16
+
+[groups.ink]
+ink = "@on_surface"
+ink-dim = "alpha(@on_surface, 0.62)"
+accent = "@primary"
+accent-muted = "alpha(@primary, 0.18)"
+ink-over = "auto"
+
+[groups.layout.ags]
+panel-width = 312
+bt-list-spacing = 4
+bar-row-height = 0
+chip-min = 0
+
+[groups.layout.ags-capture]
+panel-width = 560
+
+[groups.layout.ags-clipboard]
+card-width = 260
+
+[groups.layout.ags-notifications]
+card-width = 380
+
+[groups.layout.ags-wallpaper-selector]
+root-width = 920
+root-height = 600
+
+[groups.layout.ags-icme]
+root-width = 960
+root-height = 600
+
+[groups.layout.ags-btop-studio]
+left-width = 280
+right-width = 320

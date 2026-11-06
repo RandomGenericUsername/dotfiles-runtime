@@ -192,6 +192,7 @@ def _generate(
     skin_hash: str = SH,
     mode: str | None = None,
     manifest_path: Path | None = None,
+    templates_dir: Path | None = None,
 ) -> tuple[object, bool, Path]:
     state_root = tmp_path / "state"
     palette = _write_palette(state_root, palette_hash, mode=mode)
@@ -201,6 +202,7 @@ def _generate(
         skin_entry=skin,
         install_spine=_spine(tmp_path),
         manifest_path=manifest_path,
+        templates_dir=templates_dir,
     )
     return entry, hit, state_root
 
@@ -282,7 +284,18 @@ class TestGeneration:
         }
         manifest_path = tmp_path / "glass.json"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        entry, _, state_root = _generate(tmp_path, mode="light", manifest_path=manifest_path)
+        templates_dir = tmp_path / "templates"
+        templates_dir.mkdir()
+        for config_dir in ("ags", "ags-clipboard"):
+            (templates_dir / f"{config_dir}.gtk.css.j2").write_text(
+                ".x { color: {{SKIN_INK_ACCENT}}; }\n", encoding="utf-8"
+            )
+        entry, _, state_root = _generate(
+            tmp_path,
+            mode="light",
+            manifest_path=manifest_path,
+            templates_dir=templates_dir,
+        )
         tokens = json.loads(
             (state_root / "cache" / "appearance" / entry.appearance_hash / "tokens.json").read_text(  # type: ignore[attr-defined]
                 encoding="utf-8"
