@@ -110,10 +110,10 @@ reconcile publication, inspect reporting and doctor skew detection.
 
 ```sh
 make gates
-# test       2272 passed, 3 skipped, 10 deselected
+# test       2273 passed, 3 skipped, 10 deselected
 # lint       All checks passed
 # contracts  54 passed, 1 skipped
-# hermetic   2272 passed, 3 skipped, 10 deselected
+# hermetic   2273 passed, 3 skipped, 10 deselected
 # lock-check Resolved 25 packages
 # docs-check exit 0
 # make gates exit=0
