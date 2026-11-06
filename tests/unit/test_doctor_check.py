@@ -67,6 +67,9 @@ def _quiet_seed_hook(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     (skin_templates / "ags.css.tpl").write_text("x", encoding="utf-8")
     monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(spine))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
+    # The doctor supervision leg is a live host surface; these state/cache
+    # tests inject their own probe where relevant. Keep the default hermetic.
+    monkeypatch.setattr(cli_main, "_build_supervision_probe", lambda: None)
 
 
 def _h(data: bytes) -> str:
@@ -744,3 +747,234 @@ class TestStoreHistoryDivergence:
             details={"removed": 0, "layers": {}},
         )
         assert _check(state_root).clean is True
+
+
+class _FakeProbe:
+    """Injectable live-supervision probe for the doctor leg."""
+
+    def __init__(self, report: object) -> None:
+        self.report = report
+        self.calls: list[dict[str, object]] = []
+
+    def inspect(self, **kwargs: object) -> object:
+        self.calls.append(kwargs)
+        return self.report
+
+
+def _unit(
+    app: str,
+    *,
+    unit: str,
+    instance: str,
+    healthy: bool,
+    stale: bool | None = None,
+) -> object:
+    from runtime.adapters.ags_supervision import UnitSupervision
+
+    return UnitSupervision(
+        app=app,
+        unit=unit,
+        instance=instance,
+        active=healthy,
+        main_pid=100 if healthy else 0,
+        main_pid_alive=healthy,
+        bus_owner_pid=101 if healthy else None,
+        bus_owner_in_unit=True if healthy else None,
+        instance_live=True if healthy else False,
+        stale_appearance=stale,
+        healthy=healthy,
+        detail="test",
+    )
+
+
+def _check_with_probe(state_root: Path, probe: object) -> DoctorReport:
+    from runtime.adapters.json_state_repository import JsonStateRepository
+
+    return DoctorUseCase(
+        state_repo=JsonStateRepository(state_root=state_root),
+        state_root=state_root,
+        supervision_probe=probe,  # type: ignore[arg-type]
+    ).check()
+
+
+class TestSupervisionLeg:
+    def test_active_units_are_reported_ok(self, tmp_path: Path) -> None:
+        from runtime.adapters.ags_supervision import SupervisionReport
+
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        probe = _FakeProbe(
+            SupervisionReport(
+                available=True,
+                units=(
+                    _unit(
+                        "bar",
+                        unit="dotfiles-ags-bar.service",
+                        instance="ags",
+                        healthy=True,
+                    ),
+                    _unit(
+                        "notifications",
+                        unit="dotfiles-ags-notifications.service",
+                        instance="notifications",
+                        healthy=True,
+                    ),
+                ),
+            )
+        )
+        report = _check_with_probe(state_root, probe)
+        assert report.clean is True
+        assert _by_name(report)["supervision:unit/bar"] == "ok"
+        assert probe.calls and probe.calls[0]["expected_appearance_hash"] is None
+
+    def test_inactive_unit_is_drift(self, tmp_path: Path) -> None:
+        from runtime.adapters.ags_supervision import SupervisionReport
+
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        report = _check_with_probe(
+            state_root,
+            _FakeProbe(
+                SupervisionReport(
+                    available=True,
+                    units=(
+                        _unit(
+                            "bar",
+                            unit="dotfiles-ags-bar.service",
+                            instance="ags",
+                            healthy=False,
+                        ),
+                    ),
+                )
+            ),
+        )
+        assert report.clean is False
+        assert _by_name(report)["supervision:unit/bar"] == "diverged"
+
+    def test_absent_systemd_is_a_skip_note_not_drift(self, tmp_path: Path) -> None:
+        from runtime.adapters.ags_supervision import SupervisionReport
+
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        report = _check_with_probe(
+            state_root,
+            _FakeProbe(
+                SupervisionReport(
+                    available=False,
+                    note="Failed to connect to bus: No medium found",
+                )
+            ),
+        )
+        assert report.clean is True
+        item = next(item for item in report.items if item.name == "supervision:systemd")
+        assert item.status == "ok"
+        assert "skipped" in item.detail
+
+    def test_orphan_is_drift(self, tmp_path: Path) -> None:
+        from runtime.adapters.ags_supervision import OrphanProcess, SupervisionReport
+
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        report = _check_with_probe(
+            state_root,
+            _FakeProbe(
+                SupervisionReport(
+                    available=True,
+                    units=(
+                        _unit(
+                            "bar",
+                            unit="dotfiles-ags-bar.service",
+                            instance="ags",
+                            healthy=True,
+                        ),
+                    ),
+                    orphans=(
+                        OrphanProcess(
+                            pid=300,
+                            kind="ags-run",
+                            app="bar",
+                            unit="dotfiles-ags-bar.service",
+                            instance="ags",
+                            config_dir="ags",
+                            argv=("ags", "run", "-d", "/spine/config/ags"),
+                        ),
+                    ),
+                )
+            ),
+        )
+        assert report.clean is False
+        assert _by_name(report)["supervision:orphan/300"] == "diverged"
+
+    def test_stale_appearance_adds_note_and_drift(self, tmp_path: Path) -> None:
+        from runtime.adapters.ags_supervision import SupervisionReport
+
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        report = _check_with_probe(
+            state_root,
+            _FakeProbe(
+                SupervisionReport(
+                    available=True,
+                    units=(
+                        _unit(
+                            "bar",
+                            unit="dotfiles-ags-bar.service",
+                            instance="ags",
+                            healthy=False,
+                            stale=True,
+                        ),
+                    ),
+                )
+            ),
+        )
+        assert report.clean is False
+        assert _by_name(report)["supervision:appearance/bar"] == "diverged"
+
+    def test_cli_surfaces_the_absent_systemd_skip_note(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from runtime.adapters.ags_supervision import SupervisionReport
+        from runtime.application.doctor import DriftItem
+
+        report = DoctorReport(
+            items=(
+                DriftItem(
+                    "supervision:systemd",
+                    "supervision",
+                    "ok",
+                    "skipped: Failed to connect to bus: No medium found",
+                ),
+            ),
+            clean=True,
+            supervision=SupervisionReport(
+                available=False,
+                note="Failed to connect to bus: No medium found",
+            ),
+        )
+        monkeypatch.setattr(cli_main, "_run_doctor_check", lambda: report)
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0
+        assert "skipped: Failed to connect to bus" in result.output
+
+    def test_cli_surfaces_supervision_issues(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from runtime.adapters.ags_supervision import SupervisionReport
+        from runtime.application.doctor import DriftItem
+
+        report = DoctorReport(
+            items=(
+                DriftItem(
+                    "supervision:unit/bar",
+                    "supervision",
+                    "diverged",
+                    "dotfiles-ags-bar.service (ags): unit inactive",
+                ),
+            ),
+            clean=False,
+            supervision=SupervisionReport(available=True),
+        )
+        monkeypatch.setattr(cli_main, "_run_doctor_check", lambda: report)
+        result = runner.invoke(app, ["doctor", "--format", "json"])
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        assert payload["supervision"]["available"] is True
+        assert payload["items"][0]["status"] == "diverged"

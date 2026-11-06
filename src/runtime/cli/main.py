@@ -26,6 +26,7 @@ from runtime.domain.models import PaletteUnavailableError
 if TYPE_CHECKING:
     from cli_output.adapters.factory import Renderer
 
+    from runtime.adapters.ags_supervision import AgsSupervisionProbe, AgsSupervisionRepair
     from runtime.adapters.daemon_status import DaemonReport, DaemonStatusSnapshot
     from runtime.adapters.dbus_event_bus import HubService, SignalSink
     from runtime.adapters.gtk4_app_subscriber import Gtk4AppSubscriber
@@ -176,9 +177,7 @@ def _resolve_state_root(session_id: str | None = None) -> Path:
     """
     xdg_state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
     base = (xdg_state / "dotfiles").expanduser().resolve()
-    scoped = (
-        _sanitize_session_id(session_id) if session_id is not None else _resolve_session_id()
-    )
+    scoped = _sanitize_session_id(session_id) if session_id is not None else _resolve_session_id()
     if scoped is None:
         return base
     return (base / "sessions" / scoped).resolve()
@@ -188,9 +187,7 @@ def _resolve_state_root(session_id: str | None = None) -> Path:
 #: historical single-session path is used byte-identically.
 _SESSION_ID_ENV = "DOTFILES_SESSION_ID"
 _SESSION_SCOPE_ENV = "DOTFILES_SESSION_SCOPE"
-_SESSION_ID_ALLOWED = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
-)
+_SESSION_ID_ALLOWED = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 
 
 def _truthy_env(value: str | None) -> bool:
@@ -461,9 +458,7 @@ def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list
     return reloaders
 
 
-def _build_app_refresher(
-    state_root: Path, install_spine: Path
-) -> IAgsAppRefresher:
+def _build_app_refresher(state_root: Path, install_spine: Path) -> IAgsAppRefresher:
     """Build the manifest-driven AGS refresh coordinator (AD-27…AD-30).
 
     Discovery reads only the installed spine's ``config/`` links; the ledger
@@ -695,9 +690,7 @@ def _run_wallpaper_set(
         def publish_stage(stage: str) -> None:
             nonlocal current_stage
             current_stage = stage
-            _publish_wallpaper_state(
-                client, "visible", prepared.wallpaper_hash, "set", stage=stage
-            )
+            _publish_wallpaper_state(client, "visible", prepared.wallpaper_hash, "set", stage=stage)
 
         apply_result = apply_use_case.run(
             image_path,
@@ -1038,7 +1031,7 @@ def _run_icons_regenerate(
 
     try:
         live = JsonStateRepository(state_root).load_current()
-    except (ValueError, RuntimeError, OSError):
+    except ValueError, RuntimeError, OSError:
         _publish_wallpaper_state(client, "error", "", "regenerate")
         raise
     if live is None:
@@ -1061,9 +1054,7 @@ def _run_icons_regenerate(
                 itr=ItrAdapter(),
                 install_spine=install_spine,
                 state_root=state_root,
-                seeder=CacheSeeder(
-                    state_root, consumer_spec=StaticConsumerPathSpec()
-                ),
+                seeder=CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec()),
                 mutex=inner_mutex,
                 reloaders=[],
                 app_refresher=_build_app_refresher(state_root, install_spine),
@@ -1618,24 +1609,39 @@ def _run_regenerate_stale(
     return use_case.run(reconcile=reconcile)
 
 
+def _build_supervision_probe() -> AgsSupervisionProbe | None:
+    """Build the live systemd --user supervision probe (RFC §4.3)."""
+    from runtime.adapters.ags_supervision import AgsSupervisionProbe
+
+    return AgsSupervisionProbe(install_spine=_resolve_install_spine())
+
+
+def _build_supervision_repair() -> AgsSupervisionRepair | None:
+    """Build the safe restart/quit supervision repair (RFC §4.2/§4.3)."""
+    from runtime.adapters.ags_supervision import AgsSupervisionRepair
+
+    return AgsSupervisionRepair()
+
+
 def _run_doctor_check() -> DoctorReport:
     """Compose and run DoctorUseCase.check (doctor command).
 
     Read-only wiring (Story 2.1): resolve state_root (absolute), construct
     the JSON state repository, inject both into ``DoctorUseCase``. No seeder,
     mutex, derivation adapters, or reloaders — the check mutates nothing.
-    Shaped forward-compatibly: Story 2.2 adds ``--repair`` to the same
-    command and a ``repair()`` step on the same use case.
+    The live supervision probe is read-only too (systemctl/ags/busctl/proc).
     """
     state_root = _resolve_state_root()
 
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.application.doctor import DoctorUseCase
 
+    probe = _build_supervision_probe()
     use_case = DoctorUseCase(
         state_repo=JsonStateRepository(state_root=state_root),
         state_root=state_root,
         install_spine=_resolve_install_spine(),
+        supervision_probe=probe,
     )
     return use_case.check()
 
@@ -1671,9 +1677,14 @@ def _run_doctor_repair(*, producer: str | None = None) -> RepairResult:
     mutex = FlockSeedMutex(state_root / ".seed.lock")
     palette_producer = create_palette_producer(install_spine, producer=producer)
     weg, itr = WegAdapter(), ItrAdapter()
+    probe = _build_supervision_probe()
+    repairer = _build_supervision_repair()
     use_case = DoctorRepairUseCase(
         doctor=DoctorUseCase(
-            state_repo=state_repo, state_root=state_root, install_spine=install_spine
+            state_repo=state_repo,
+            state_root=state_root,
+            install_spine=install_spine,
+            supervision_probe=probe,
         ),
         quarantine=lambda layer, entry_hash: quarantine_entry(state_root, layer, entry_hash),
         reconcile=ReconcileDesktopStateUseCase(
@@ -1695,6 +1706,7 @@ def _run_doctor_repair(*, producer: str | None = None) -> RepairResult:
         heal_history_tail=seeder.heal_torn_history_tail,
         append_history=seeder.append_history,
         state_repo=state_repo,
+        supervision_repair=repairer.repair if repairer is not None else None,
     )
     return use_case.repair()
 
@@ -1745,10 +1757,29 @@ def doctor(
             logger.error("doctor --repair: reload failed for %s", failed)
             renderer.error(ErrorView(kind="ReloadError", message=f"reload failed for: {failed}"))
             raise typer.Exit(code=1) from None
+        failed_actions = [
+            action for action in repair_result.supervision_actions if action.returncode != 0
+        ]
+        if failed_actions:
+            failed = ", ".join(f"{a.kind} {a.target}" for a in failed_actions)
+            logger.error("doctor --repair: supervision action failed: %s", failed)
+            renderer.error(
+                ErrorView(kind="SupervisionError", message=f"supervision action failed: {failed}")
+            )
+            raise typer.Exit(code=1) from None
+        action_note = ""
+        if repair_result.supervision_actions:
+            action_note = "; supervision: " + ", ".join(
+                f"{action.kind} {action.target}" for action in repair_result.supervision_actions
+            )
         if repair_result.history_trigger is None and repair_result.history_tail_quarantined is None:
-            plain = "already clean: nothing to repair"
+            plain = (
+                f"repaired: {action_note.removeprefix('; ')}"
+                if action_note
+                else "already clean: nothing to repair"
+            )
         elif repair_result.history_trigger is None:
-            plain = "repaired: healed torn history tail"
+            plain = f"repaired: healed torn history tail{action_note}"
         else:
             repopulated = ", ".join(repair_result.repopulated) or "none"
             tail_note = (
@@ -1758,7 +1789,7 @@ def doctor(
             )
             plain = (
                 f"repaired: quarantined {len(repair_result.quarantined)}, "
-                f"regenerated {repopulated}{tail_note}"
+                f"regenerated {repopulated}{tail_note}{action_note}"
             )
         renderer.custom(
             CustomView(
@@ -1773,6 +1804,16 @@ def doctor(
                         else None
                     ),
                     "reload_failures": list(repair_result.reload_failures),
+                    "supervision_actions": [
+                        {
+                            "kind": action.kind,
+                            "app": action.app,
+                            "target": action.target,
+                            "argv": list(action.argv),
+                            "returncode": action.returncode,
+                        }
+                        for action in repair_result.supervision_actions
+                    ],
                 },
                 rich=plain,
             )
@@ -1812,9 +1853,8 @@ def doctor(
     if health is None:
         watch_desc = "watch health: unknown (daemon has not reported)"
     elif health.degraded:
-        watch_desc = (
-            f"watch health: degraded ({len(health.failed_roots)} unwatched)"
-            + (f": {health.last_error}" if health.last_error else "")
+        watch_desc = f"watch health: degraded ({len(health.failed_roots)} unwatched)" + (
+            f": {health.last_error}" if health.last_error else ""
         )
     else:
         watch_desc = "watch health: ok"
@@ -1830,6 +1870,21 @@ def doctor(
     )
     if vocabulary_item is not None:
         plain = f"{plain}; {vocabulary_item.detail}"
+    supervision_items = [item for item in report.items if item.kind == "supervision"]
+    if supervision_items:
+        skipped = next(
+            (item for item in supervision_items if item.name == "supervision:systemd"),
+            None,
+        )
+        if skipped is not None:
+            plain = f"{plain}; {skipped.detail}"
+        else:
+            unhealthy = [item for item in supervision_items if item.status != "ok"]
+            if unhealthy:
+                details = "; ".join(item.detail for item in unhealthy)
+                plain = f"{plain}; supervision: {len(unhealthy)} issue(s): {details}"
+            else:
+                plain = f"{plain}; supervision: ok"
     renderer.custom(
         CustomView(
             plain=plain,
@@ -1841,6 +1896,42 @@ def doctor(
                     else {
                         "status": vocabulary_item.status,
                         "detail": vocabulary_item.detail,
+                    }
+                ),
+                "supervision": (
+                    None
+                    if report.supervision is None
+                    else {
+                        "available": report.supervision.available,
+                        "note": report.supervision.note,
+                        "units": [
+                            {
+                                "app": unit.app,
+                                "unit": unit.unit,
+                                "instance": unit.instance,
+                                "active": unit.active,
+                                "main_pid": unit.main_pid,
+                                "main_pid_alive": unit.main_pid_alive,
+                                "bus_owner_pid": unit.bus_owner_pid,
+                                "bus_owner_in_unit": unit.bus_owner_in_unit,
+                                "instance_live": unit.instance_live,
+                                "stale_appearance": unit.stale_appearance,
+                                "healthy": unit.healthy,
+                                "detail": unit.detail,
+                            }
+                            for unit in report.supervision.units
+                        ],
+                        "orphans": [
+                            {
+                                "pid": orphan.pid,
+                                "kind": orphan.kind,
+                                "app": orphan.app,
+                                "unit": orphan.unit,
+                                "instance": orphan.instance,
+                                "config_dir": orphan.config_dir,
+                            }
+                            for orphan in report.supervision.orphans
+                        ],
                     }
                 ),
                 "items": [
@@ -2304,9 +2395,7 @@ def _run_daemon_run(
             except Exception:
                 logger.exception("daemon: converge-on-start failed (recoverable); continuing")
         if watch_source is not None and converge is not None:
-            coordinator = WatchCoordinator(
-                watch_source, converge, on_status=watch_health.write
-            )
+            coordinator = WatchCoordinator(watch_source, converge, on_status=watch_health.write)
             try:
                 watch_source.start()
             except Exception:
@@ -2567,8 +2656,15 @@ def _notify_recording_saved(path: str, duration_s: float) -> None:
         size = os.path.getsize(path)
     except OSError:
         size = None
-    argv = ["notify", "--kind", "recording-saved", "--path", path,
-            "--duration", str(max(0.0, float(duration_s)))]
+    argv = [
+        "notify",
+        "--kind",
+        "recording-saved",
+        "--path",
+        path,
+        "--duration",
+        str(max(0.0, float(duration_s))),
+    ]
     if size is not None:
         argv += ["--size", str(size)]
     _spawn_capture_notification(argv)
@@ -2581,8 +2677,15 @@ def _notify_capture_failed(message: str) -> None:
     typed kinds); the full message travels as details, never a traceback.
     """
     short = (message or "").strip().splitlines()[0].strip() if message else ""
-    argv = ["notify", "--kind", "failed", "--message", short or "Capture failed",
-            "--details", (message or "")[:2000]]
+    argv = [
+        "notify",
+        "--kind",
+        "failed",
+        "--message",
+        short or "Capture failed",
+        "--details",
+        (message or "")[:2000],
+    ]
     _spawn_capture_notification(argv)
 
 
@@ -2636,18 +2739,12 @@ def _run_capture_host(
     from runtime.application.capture import DEFAULT_CAPTURE_CADENCE
     from runtime.application.capture_host import CaptureHost
 
-    if (
-        isinstance(duration, bool)
-        or not isinstance(duration, (int, float))
-        or duration < 0
-    ):
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or duration < 0:
         raise ValueError(f"capture duration must be >= 0 seconds, got {duration!r}")
     if gif_output is not None and gif_input is None:
         raise ValueError("capture --gif-output requires --gif-input")
     if gif_size not in GIF_SIZE_SCALES:
-        raise ValueError(
-            f"unknown GIF size {gif_size!r}; known: {sorted(GIF_SIZE_SCALES)}"
-        )
+        raise ValueError(f"unknown GIF size {gif_size!r}; known: {sorted(GIF_SIZE_SCALES)}")
     resolved_clock: Callable[[], float] = time.monotonic if clock is None else clock
     if recorder is None:
         argv = shlex.split(command)
@@ -2670,7 +2767,10 @@ def _run_capture_host(
     if client is None:
         client = _build_capture_client()
     host = CaptureHost(
-        client, recorder, clock=resolved_clock, duration=float(duration),
+        client,
+        recorder,
+        clock=resolved_clock,
+        duration=float(duration),
         stop_event=stop_event,
     )
     restore = _install_capture_stop_handlers(host) if stop_event is None else _noop
@@ -2709,9 +2809,7 @@ def _run_capture_host(
         try:
             Path(gif_input).unlink(missing_ok=True)
         except OSError:
-            logger.warning(
-                "capture: could not remove GIF intermediate %s", gif_input
-            )
+            logger.warning("capture: could not remove GIF intermediate %s", gif_input)
     # Finalize toast (add-ags-notifd-notifications): the GIF pipeline reports
     # the converted .gif, otherwise the launcher-threaded output path. Fires
     # only when the launcher told us what to report — unit/integration runs
@@ -3220,7 +3318,7 @@ def reconcile(
         read_desired_state(_resolve_desired_path())
         try:
             live = JsonStateRepository(state_root=_resolve_state_root()).load_current()
-        except (ValueError, RuntimeError, OSError):
+        except ValueError, RuntimeError, OSError:
             live = None
         pending_hash = live.wallpaper.content_hash if live is not None else ""
         _publish_wallpaper_state(client, "applying", pending_hash, "reconcile")

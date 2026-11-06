@@ -40,6 +40,10 @@ TS = "2026-09-10T00:00:00Z"
 def _quiet_seed_hook(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(tmp_path / "install"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
+    # Live supervision is a host surface; the real CLI composition must never
+    # probe or restart the developer's units from the unit suite.
+    monkeypatch.setattr(cli_main, "_build_supervision_probe", lambda: None)
+    monkeypatch.setattr(cli_main, "_build_supervision_repair", lambda: None)
 
 
 #: meta.json artifact key -> PaletteArtifacts TypedDict field. Written out
@@ -57,6 +61,7 @@ _ARTIFACT_KEY: dict[str, str] = {
     "colors.btop.theme": "colors_btop",
     "colors.btop.theme": "colors_btop",
 }
+
 
 def _h(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -757,3 +762,87 @@ class TestStoreHistoryRepair:
         )
         with pytest.raises(RuntimeError, match="now absent"):
             use_case.repair()
+
+
+class TestSupervisionRepair:
+    def test_pure_supervision_drift_uses_only_safe_actions(self, tmp_path: Path) -> None:
+        """RFC §4.3: no reconcile, no kill; only restart/quit for the units."""
+        from runtime.adapters.ags_supervision import (
+            SupervisionAction,
+            SupervisionReport,
+            UnitSupervision,
+        )
+        from runtime.application.doctor import DoctorReport, DriftItem
+
+        unit = UnitSupervision(
+            app="bar",
+            unit="dotfiles-ags-bar.service",
+            instance="ags",
+            active=False,
+            main_pid=0,
+            main_pid_alive=False,
+            bus_owner_pid=None,
+            bus_owner_in_unit=None,
+            instance_live=False,
+            stale_appearance=None,
+            healthy=False,
+            detail="unit inactive",
+        )
+        actions = (
+            SupervisionAction(
+                kind="restart",
+                app="bar",
+                target=unit.unit,
+                argv=("systemctl", "--user", "restart", unit.unit),
+                returncode=0,
+            ),
+        )
+
+        class _Doctor:
+            def check(self) -> DoctorReport:
+                return DoctorReport(
+                    items=(
+                        DriftItem("supervision:unit/bar", "supervision", "diverged", "inactive"),
+                    ),
+                    clean=False,
+                    supervision=SupervisionReport(available=True, units=(unit,)),
+                )
+
+        class _Reconcile:
+            def run(self, trigger: str) -> object:
+                raise AssertionError("pure supervision drift must not reconcile")
+
+        use_case = DoctorRepairUseCase(
+            doctor=_Doctor(),  # type: ignore[arg-type]
+            quarantine=lambda layer, entry_hash: None,
+            reconcile=_Reconcile(),  # type: ignore[arg-type]
+            state_root=tmp_path,
+            supervision_repair=lambda report: actions,
+        )
+        result = use_case.repair()
+        assert result.supervision_actions == actions
+        assert result.quarantined == ()
+        assert result.history_trigger is None
+
+    def test_supervision_action_failure_exits_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from runtime.adapters.ags_supervision import SupervisionAction
+
+        failed = RepairResult(
+            quarantined=(),
+            repopulated=(),
+            history_trigger=None,
+            reload_failures=(),
+            supervision_actions=(
+                SupervisionAction(
+                    kind="restart",
+                    app="bar",
+                    target="dotfiles-ags-bar.service",
+                    argv=("systemctl", "--user", "restart", "dotfiles-ags-bar.service"),
+                    returncode=1,
+                ),
+            ),
+        )
+        monkeypatch.setattr(cli_main, "_run_doctor_repair", lambda: failed)
+        result = runner.invoke(app, ["doctor", "--repair"])
+        assert result.exit_code == 1
+        assert "supervision action failed" in result.output

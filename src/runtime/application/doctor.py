@@ -21,7 +21,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from runtime.adapters.ags_supervision import (
+    AgsSupervisionProbe,
+    SupervisionAction,
+    SupervisionReport,
+)
 from runtime.adapters.appearance import expected_mode, read_current_appearance
+from runtime.adapters.appearance_ledger import AppearanceLedger
 from runtime.adapters.cache import resolve_entry_artifact
 from runtime.adapters.hashing import appearance_generation_hash, hash_file
 from runtime.adapters.watch_health import WatchHealthStore
@@ -74,6 +80,7 @@ class DoctorReport:
 
     items: tuple[DriftItem, ...]
     clean: bool
+    supervision: SupervisionReport | None = None
 
 
 class DoctorUseCase:
@@ -84,10 +91,14 @@ class DoctorUseCase:
         state_repo: IStateRepository,
         state_root: Path,
         install_spine: Path | None = None,
+        supervision_probe: AgsSupervisionProbe | None = None,
     ) -> None:
         self._state_repo = state_repo
         self._state_root = state_root
         self._install_spine = install_spine
+        # Optional by default so direct/unit construction stays hermetic; the
+        # CLI injects the real live probe.
+        self._supervision_probe = supervision_probe
 
     def check(self) -> DoctorReport:
         """Run the check; return per-item verdicts. Mutates nothing."""
@@ -105,8 +116,10 @@ class DoctorUseCase:
         items.extend(self._check_appearance(state))
         items.extend(self._check_input_provenance())
         items.extend(self._check_history(state))
+        supervision_items, supervision = self._check_supervision(state)
+        items.extend(supervision_items)
         clean = all(item.status == "ok" for item in items)
-        return DoctorReport(items=tuple(items), clean=clean)
+        return DoctorReport(items=tuple(items), clean=clean, supervision=supervision)
 
     def _check_input_provenance(self) -> list[DriftItem]:
         """R-3/AD-43: report where each derivation input resolved from.
@@ -541,12 +554,7 @@ class DoctorUseCase:
                     dest = self._install_spine / "config" / config_dir / "appearance.css"
                     if not dest.parent.is_dir():
                         continue
-                    expected = (
-                        self._state_root
-                        / "current"
-                        / "appearance"
-                        / f"{config_dir}.css"
-                    )
+                    expected = self._state_root / "current" / "appearance" / f"{config_dir}.css"
                     c_status, c_detail = self._link_status(dest, expected)
                     items.append(
                         DriftItem(
@@ -582,6 +590,90 @@ class DoctorUseCase:
                         break
         return items
 
+    def _check_supervision(
+        self, state: DesktopState
+    ) -> tuple[list[DriftItem], SupervisionReport | None]:
+        """Report live systemd --user/unit/bus/orphan health (RFC §4.3).
+
+        Optional and read-only: with no probe the leg is omitted (direct
+        constructions stay hermetic). An absent systemd/user session is an
+        explicit skip item, never drift. Stale appearance freshness comes from
+        the ledger; absent ledger/entry is reported as unknown, never guessed.
+        """
+        if self._supervision_probe is None:
+            return [], None
+        expected_hash = self._expected_appearance_hash(state)
+        applied = AppearanceLedger(self._state_root).load() if expected_hash is not None else None
+        try:
+            report = self._supervision_probe.inspect(
+                expected_appearance_hash=expected_hash,
+                applied=applied,
+            )
+        except OSError as exc:
+            return [
+                DriftItem(
+                    "supervision:systemd",
+                    "supervision",
+                    "ok",
+                    f"skipped: supervision unavailable ({exc})",
+                )
+            ], None
+        if not report.available:
+            return [
+                DriftItem(
+                    "supervision:systemd",
+                    "supervision",
+                    "ok",
+                    f"skipped: {report.note}",
+                )
+            ], report
+
+        items: list[DriftItem] = []
+        for unit in report.units:
+            items.append(
+                DriftItem(
+                    f"supervision:unit/{unit.app}",
+                    "supervision",
+                    "ok" if unit.healthy else "diverged",
+                    f"{unit.unit} ({unit.instance}): {unit.detail}",
+                )
+            )
+            if unit.stale_appearance is True:
+                items.append(
+                    DriftItem(
+                        f"supervision:appearance/{unit.app}",
+                        "supervision",
+                        "diverged",
+                        (
+                            f"{unit.instance} last applied an older appearance hash than "
+                            "the current generation; restart the unit to apply it"
+                        ),
+                    )
+                )
+        for orphan in report.orphans:
+            items.append(
+                DriftItem(
+                    f"supervision:orphan/{orphan.pid}",
+                    "supervision",
+                    "diverged",
+                    (
+                        f"{orphan.kind} pid {orphan.pid} for configDir "
+                        f"{orphan.config_dir!r} is outside {orphan.unit}; "
+                        f"quit instance {orphan.instance!r} and restart the unit"
+                    ),
+                )
+            )
+        return items, report
+
+    def _expected_appearance_hash(self, state: DesktopState) -> str | None:
+        """The recorded-state appearance identity (None before palette+skin)."""
+        if state.palette is None or state.skin is None:
+            return None
+        palette_mode = expected_mode(self._state_root, state.palette)
+        return appearance_generation_hash(
+            state.palette.entry_hash, state.skin.entry_hash, palette_mode
+        )
+
     def _link_status(self, link: Path, expected_target: Path) -> tuple[LinkStatusKind, str]:
         """Classify one symlink against its expected target (inspect-identical)."""
         if not link.is_symlink():
@@ -610,6 +702,7 @@ class RepairResult:
     history_trigger: str | None
     reload_failures: tuple[str, ...]
     history_tail_quarantined: Path | None = None
+    supervision_actions: tuple[SupervisionAction, ...] = ()
 
 
 class DoctorRepairUseCase:
@@ -644,6 +737,8 @@ class DoctorRepairUseCase:
         heal_history_tail: Callable[[], Path | None] | None = None,
         append_history: Callable[..., None] | None = None,
         state_repo: IStateRepository | None = None,
+        supervision_repair: Callable[[SupervisionReport], tuple[SupervisionAction, ...]]
+        | None = None,
     ) -> None:
         self._doctor = doctor
         self._quarantine = quarantine
@@ -656,6 +751,9 @@ class DoctorRepairUseCase:
         # ``doctor`` line as part of its tail.
         self._append_history = append_history
         self._state_repo = state_repo
+        # Optional live-supervision repair (RFC §4.3): only the safe
+        # systemctl restart / ags quit actions are allowed.
+        self._repair_supervision = supervision_repair
 
     def repair(self) -> RepairResult:
         """Quarantine bad entries and reconverge. No-op when already clean."""
@@ -664,16 +762,35 @@ class DoctorRepairUseCase:
             tail = self._heal_tail() if self._heal_tail is not None else None
         except (OSError, HistoryLockError) as exc:
             raise RuntimeError(f"history tail heal failed: {exc}") from exc
+        history_dirty = any(item.kind == "history" and item.status != "ok" for item in report.items)
+        supervision_dirty = any(
+            item.kind == "supervision" and item.status != "ok" for item in report.items
+        )
+        other_dirty = any(
+            item.kind not in ("history", "supervision") and item.status != "ok"
+            for item in report.items
+        )
+        supervision_actions: tuple[SupervisionAction, ...] = ()
+        if supervision_dirty and report.supervision is not None and self._repair_supervision:
+            supervision_actions = self._repair_supervision(report.supervision)
         if report.clean and tail is None:
             return RepairResult((), (), None, ())
-        history_dirty = any(item.kind == "history" and item.status != "ok" for item in report.items)
-        other_dirty = any(item.kind != "history" and item.status != "ok" for item in report.items)
         if history_dirty and not other_dirty:
-            healed = self._repair_history_only(tail)
+            healed = self._repair_history_only(tail, supervision_actions)
             if healed is not None:
                 return healed
             # Seams absent (backward-compatible ctor): fall through to the
             # full reconverge, whose tail appends the same doctor line.
+        if supervision_dirty and not other_dirty and not history_dirty:
+            # Pure supervision drift: only the safe restart/quit actions run.
+            return RepairResult(
+                (),
+                (),
+                None,
+                (),
+                history_tail_quarantined=tail,
+                supervision_actions=supervision_actions,
+            )
         quarantined: list[Path] = []
         for item in report.items:
             if item.kind not in ("entry", "vocabulary") or item.status not in (
@@ -711,9 +828,14 @@ class DoctorRepairUseCase:
             history_trigger="doctor",
             reload_failures=tuple(reconciled.reload_failures),
             history_tail_quarantined=tail,
+            supervision_actions=supervision_actions,
         )
 
-    def _repair_history_only(self, tail: Path | None) -> RepairResult | None:
+    def _repair_history_only(
+        self,
+        tail: Path | None,
+        supervision_actions: tuple[SupervisionAction, ...] = (),
+    ) -> RepairResult | None:
         """Append one ``doctor`` line for the authoritative store (R-5).
 
         Pure store↔history divergence only: entries and symlinks are
@@ -745,6 +867,7 @@ class DoctorRepairUseCase:
                 history_trigger=None,
                 reload_failures=(),
                 history_tail_quarantined=tail,
+                supervision_actions=supervision_actions,
             )
         try:
             self._append_history(
@@ -764,6 +887,7 @@ class DoctorRepairUseCase:
             history_trigger="doctor",
             reload_failures=(),
             history_tail_quarantined=tail,
+            supervision_actions=supervision_actions,
         )
 
     def _history_agrees(self, state: DesktopState) -> bool:
