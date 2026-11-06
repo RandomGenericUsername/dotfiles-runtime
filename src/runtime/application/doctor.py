@@ -26,7 +26,12 @@ from runtime.adapters.hashing import hash_file
 from runtime.application.inspect import InspectHistoryUseCase, LinkStatusKind
 from runtime.application.palette_conformance import check_palette_entry
 from runtime.application.reconcile import ReconcileDesktopStateUseCase
-from runtime.domain.models import DEFAULT_MONITOR, DesktopState, HistoryLockError
+from runtime.domain.models import (
+    DEFAULT_MONITOR,
+    DesktopState,
+    HistoryLockError,
+    skin_config_dirs,
+)
 from runtime.ports.state_repository import IStateRepository
 
 logger = logging.getLogger(__name__)
@@ -405,11 +410,14 @@ class DoctorUseCase:
         return items
 
     def _check_skin_consumer_pointers(self, state: DesktopState) -> list[DriftItem]:
-        """Verify the stable AGS skin pointers when a skin is recorded.
+        """Verify the derived skin pointers when a skin is recorded.
 
-        Read-only and spec-driven (never bespoke per-consumer code). When no
-        skin is recorded the pointers are omitted entirely: pre-skin machines
-        must not be dirtied by the new layer.
+        Read-only and spec-driven (never bespoke per-consumer code). The
+        config dirs come from the recorded ``SkinEntry`` artifacts, not a
+        fixed app list. Only existing ``<install>/config/<configDir>`` dirs
+        are checked: an absent app dir is not drift (the app is not
+        installed). When no skin is recorded the pointers are omitted
+        entirely: pre-skin machines must not be dirtied by the new layer.
         """
         if state.skin is None or self._install_spine is None:
             return []
@@ -418,10 +426,14 @@ class DoctorUseCase:
         spec = StaticConsumerPathSpec()
         current_dir = self._state_root / "current"
         items: list[DriftItem] = []
-        for pointer in spec.consumer_pointers():
-            if not (pointer.target == "skin.json" or pointer.target.startswith("skins/")):
-                continue
+        for pointer in spec.skin_pointers(skin_config_dirs(state.skin.artifact_hashes)):
             dest = self._install_spine / pointer.path
+            if not dest.parent.is_dir():
+                logger.debug(
+                    "doctor: skin consumer pointer omitted, config dir absent: %s",
+                    dest.parent,
+                )
+                continue
             expected = current_dir / pointer.target
             status, detail = self._link_status(dest, expected)
             items.append(DriftItem(f"consumer/{pointer.path}", "consumer", status, detail))

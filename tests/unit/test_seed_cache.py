@@ -1043,7 +1043,7 @@ class TestConsumerPointerSpec:
         if btop:
             (install_spine / "config" / "btop" / "themes").mkdir(parents=True)
 
-    def test_all_seven_pointers_created_when_parents_exist(self, tmp_path: Path) -> None:
+    def test_all_pinned_pointers_created_when_parents_exist(self, tmp_path: Path) -> None:
         install_spine = tmp_path / "install"
         self._parents(install_spine, btop=True)
         self._provision_current(tmp_path)

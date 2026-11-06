@@ -137,6 +137,7 @@ class RegenerateIconsUseCase:
             consumer_symlinks = self._seeder.repoint_consumer_symlinks(
                 self._install_spine,
                 state.palette.entry_hash,
+                skin_entry=saved.skin,
             )
             self._state_repo.save(saved)
 

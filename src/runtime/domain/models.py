@@ -6,6 +6,7 @@ and per-monitor wallpaper configuration. No filesystem or network access.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final, Literal, TypedDict
@@ -164,8 +165,26 @@ class IconsEntry:
 class SkinArtifacts(TypedDict, total=False):
     """Artifact hashes for skin entries.
 
-    Keys are the published filenames — ``<app>.css`` files plus ``skin.json``.
+    Keys are the published filenames — ``<configDir>.css`` files plus
+    ``skin.json``.
     """
+
+
+def skin_config_dirs(artifact_hashes: Mapping[str, str]) -> tuple[str, ...]:
+    """Derive the skin target config dirs from a generation's artifacts.
+
+    The expander renders one ``<configDir>.css`` per ``<configDir>.gtk.css.j2``
+    template; ``skin.json`` is the shared token map, not a config-dir
+    artifact. This is the single derivation rule — callers never keep a
+    fixed app list. The result is sorted and de-duplicated so pointer order
+    is deterministic.
+    """
+    dirs = {
+        name[: -len(".css")]
+        for name in artifact_hashes
+        if name.endswith(".css") and len(name) > len(".css")
+    }
+    return tuple(sorted(dirs))
 
 
 @dataclass(frozen=True, slots=True)

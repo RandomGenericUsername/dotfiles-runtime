@@ -287,6 +287,7 @@ class ReconcileDesktopStateUseCase:
             consumer_repointed = self._seeder.repoint_consumer_symlinks(
                 self._install_spine,
                 palette.entry_hash,
+                skin_entry=skin,
             )
             # D2 — cleanup stale symlinks
             stale_removed = self._cleanup_stale_symlinks(state, monitor_names, repointed)

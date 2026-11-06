@@ -28,6 +28,20 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**0.8.2** — skin pointers for every skin target, derived from the generation.
+
+- The static consumer table no longer hardcodes AGS skin entries. For every
+  `<configDir>.css` artifact in the active skin, the runtime points
+  `<install>/config/<configDir>/skin.css` at `current/skins/<configDir>.css`
+  and `<install>/config/<configDir>/skin.json` at `current/skin.json` — only
+  when the app config dir exists. The runtime never creates an app config dir.
+- Config dirs come from the artifact set, so all seven AGS targets (bar,
+  clipboard, notifications, wallpaper selector, capture, icme, btop-studio)
+  and any future target get pointers without a code change.
+- Reconcile prunes stale runtime-owned skin pointers when a generation drops a
+  target; the pinned palette/theme pointers are never pruned. `inspect status`
+  and `doctor` report the derived pointer set and omit uninstalled app dirs.
+
 **0.8.1** — accept the skins v0.6.0 `shape.hairline-w` token.
 
 - The shape group and numeric vocabulary gain `hairline-w` (24 tokens total).

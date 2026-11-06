@@ -59,6 +59,8 @@ from runtime.domain.history import HistoryTrigger
 from runtime.domain.models import (
     DEFAULT_MONITOR,
     DesktopState,
+    SkinEntry,
+    skin_config_dirs,
 )
 from runtime.ports.consumer_path_spec import IConsumerPathSpec
 from runtime.ports.state_repository import IStateRepository
@@ -214,7 +216,7 @@ class InspectStateUseCase:
             consumer_pointers = self._inspect_consumer_pointers(
                 self._install_spine,
                 self._consumer_spec,
-                include_skin=state.skin is not None,
+                skin_entry=state.skin,
             )
 
         return InspectStatusResult(
@@ -275,26 +277,40 @@ class InspectStateUseCase:
         install_spine: Path,
         consumer_spec: IConsumerPathSpec,
         *,
-        include_skin: bool = False,
+        skin_entry: SkinEntry | None = None,
     ) -> dict[str, LinkStatus]:
         """Classify the spec'd spine consumer pointers (read-only, gt-2-2).
 
-        Spec-driven — zero bespoke per-consumer code. For each spec
+        Spec-driven — zero bespoke per-consumer code. For each fixed
         pointer: ``dest = install_spine / pointer.path`` and
         ``expected = state_root / "current" / pointer.target``, classified
         with the SAME semantics as :meth:`_link_status`. An absent parent
         dir (pre-gt-3-1 spine) reports ``missing`` — never a crash, never
         a write. Read-only invariant: Path reads only.
 
+        Skin pointers are derived from the recorded ``SkinEntry`` artifacts
+        (``config/<configDir>/skin.{css,json}``) and are reported only when
+        ``<install>/config/<configDir>`` exists. An absent app config dir
+        is not drift: the app is simply not installed.
+
         Requires a non-null palette (checked by ``run`` — a null palette
         omits the pointers entirely).
         """
+        pointers = list(consumer_spec.consumer_pointers())
+        if skin_entry is not None:
+            pointers.extend(
+                consumer_spec.skin_pointers(skin_config_dirs(skin_entry.artifact_hashes))
+            )
         result: dict[str, LinkStatus] = {}
-        for pointer in consumer_spec.consumer_pointers():
+        for pointer in pointers:
             is_skin = pointer.target == "skin.json" or pointer.target.startswith("skins/")
-            if is_skin and not include_skin:
-                continue
             dest = install_spine / pointer.path
+            if is_skin and not dest.parent.is_dir():
+                logger.debug(
+                    "inspect: skin consumer pointer omitted, config dir absent: %s",
+                    dest.parent,
+                )
+                continue
             expected = self._state_root / "current" / pointer.target
             result[pointer.path] = self._link_status(dest, expected)
         return result

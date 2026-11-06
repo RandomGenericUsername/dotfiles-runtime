@@ -254,6 +254,7 @@ class SeedCacheUseCase:
         self._seeder.repoint_consumer_symlinks(
             self._install_spine,
             palette_entry.entry_hash,
+            skin_entry=skin_entry,
         )
 
         # 7b. Write current.json via state_repo (atomic tmp + os.replace)

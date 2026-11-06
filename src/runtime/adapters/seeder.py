@@ -44,6 +44,7 @@ from runtime.domain.models import (
     PaletteEntry,
     SkinArtifacts,
     SkinEntry,
+    skin_config_dirs,
 )
 from runtime.ports.consumer_path_spec import IConsumerPathSpec
 
@@ -779,17 +780,32 @@ class CacheSeeder:
         self,
         install_spine: Path,
         palette_entry_hash: str,
+        *,
+        skin_entry: SkinEntry | None = None,
     ) -> list[Path]:
         """Repoint spine consumer pointers at ``current/`` (R2, Epic 4).
 
         AD-11 exception (recorded in ARCHITECTURE-SPINE.md): the seeder
         may write under the install spine ONLY the pointer symlinks
-        returned by the injected :class:`IConsumerPathSpec` (the pinned
-        ``StaticConsumerPathSpec`` table: ``config/ags/colors.css``,
-        ``config/gtk-3.0/colors.css``, ``config/gtk-4.0/colors.css``,
-        ``config/rofi/colors.rasi``, ``config/btop/themes/colors.btop-
-        {minimal,balanced,full}.theme``) — nothing else. The content lives
-        in ``cache/`` (runtime-owned); these paths are consumer pointers.
+        returned by the injected :class:`IConsumerPathSpec` — nothing else.
+        The content lives in ``cache/`` (runtime-owned); these paths are
+        consumer pointers.
+
+        The fixed palette/theme table
+        (``StaticConsumerPathSpec.consumer_pointers``) is:
+        ``config/ags/colors.css``, ``config/gtk-3.0/colors.css``,
+        ``config/gtk-4.0/colors.css``, ``config/rofi/colors.rasi``,
+        ``config/btop/themes/colors.btop.theme``.
+
+        The skin pointer set is data-derived, never a fixed app list. When
+        ``skin_entry`` is supplied, its ``<configDir>.css`` artifact keys
+        name every target: ``config/<configDir>/skin.css`` →
+        ``current/skins/<configDir>.css`` and
+        ``config/<configDir>/skin.json`` → ``current/skin.json``. A target
+        whose ``<install>/config/<configDir>`` does not exist is skipped at
+        DEBUG level — the runtime NEVER creates an app config dir. For
+        direct callers without a ``skin_entry`` the config dirs are read
+        from the live ``current/skins/*.css`` set.
 
         - ``<install>/config/ags/colors.css`` → ``current/colors.gtk.css``
           (note the rename: cache artifact is ``colors.gtk.css``).
@@ -799,8 +815,8 @@ class CacheSeeder:
           ``current/colors.adw.css``.
         - ``<install>/config/rofi/colors.rasi`` →
           ``current/colors.rasi``.
-        - ``<install>/config/btop/themes/colors.btop-{minimal,balanced,
-          full}.theme`` → ``current/colors.btop-<difficulty>.theme``.
+        - ``<install>/config/btop/themes/colors.btop.theme`` →
+          ``current/colors.btop.theme``.
           Unlike the four above these are NOT a rename-on-link: the
           destination BASENAME must equal the cache artifact name, because
           btop resolves its ``color_theme`` by matching that name against
@@ -820,6 +836,15 @@ class CacheSeeder:
         with the resolved ``current/`` path; the ITR settings template
         points at ``current/colors.yaml`` as a static string).
 
+        Stale skin pruning: when ``skin_entry`` is supplied, a
+        ``skin.css`` / ``skin.json`` symlink under an existing config dir
+        is removed if it is runtime-owned (resolves to
+        ``current/skins/`` or ``current/skin.json``) and its target's
+        config dir is no longer in the generation. Non-skin pointers and
+        any user-owned file are never pruned. Without a ``skin_entry``
+        pointers are still repointed from the live ``current/skins`` set,
+        but nothing is pruned (no authoritative generation to compare).
+
         Args:
             install_spine: provisioning install spine root (read for
                 validation, written ONLY for the spec'd pointer symlinks).
@@ -827,6 +852,8 @@ class CacheSeeder:
                 REQUIRED artifact (BUG-001): ``None`` is rejected loudly —
                 the seeder never removes consumer pointers to "degrade" a
                 missing palette.
+            skin_entry: active skin generation; its artifacts derive the
+                skin pointer set and the prune baseline.
 
         Returns:
             List of created/updated symlink paths (empty when skipped).
@@ -847,6 +874,8 @@ class CacheSeeder:
           warning — never ``mkdir`` under the install spine (the spine
           dirs are provisioning's: ``config/gtk-{3,4}.0/`` arrive in
           Story gt-3-1).
+        - A missing app config dir for a skin target is skipped at DEBUG
+          level (not an error): the app is simply not installed.
         """
         if palette_entry_hash is None:
             raise ValueError(
@@ -873,7 +902,104 @@ class CacheSeeder:
                 continue
             _repoint_symlink(dest, target)
             created.append(dest)
+
+        skin_created = self._repoint_skin_consumer_symlinks(
+            install_spine,
+            self._skin_consumer_config_dirs(skin_entry),
+        )
+        created.extend(skin_created)
+        if skin_entry is not None:
+            self._prune_stale_skin_consumer_pointers(install_spine, set(skin_created))
         return created
+
+    def _skin_consumer_config_dirs(self, skin_entry: SkinEntry | None) -> tuple[str, ...]:
+        """Return the skin target config dirs for this repoint.
+
+        A supplied generation is authoritative (``<configDir>.css`` artifact
+        keys). Direct callers without one fall back to the live
+        ``current/skins/*.css`` artifacts, which is the same derived set
+        observed on disk. Never a fixed app list.
+        """
+        if skin_entry is not None:
+            return skin_config_dirs(skin_entry.artifact_hashes)
+        skins_dir = self._state_root / "current" / "skins"
+        if not skins_dir.is_dir():
+            return ()
+        return skin_config_dirs(
+            {path.name: "" for path in skins_dir.glob("*.css") if path.is_file()}
+        )
+
+    def _repoint_skin_consumer_symlinks(
+        self,
+        install_spine: Path,
+        config_dirs: tuple[str, ...],
+    ) -> list[Path]:
+        """Repoint ``config/<configDir>/skin.{css,json}`` for existing dirs."""
+        created: list[Path] = []
+        for pointer in self._consumer_spec.skin_pointers(config_dirs):
+            dest = install_spine / pointer.path
+            if not dest.parent.is_dir():
+                # Optional target: the app config dir is provisioning's and
+                # may simply not be installed on this host.
+                logger.debug(
+                    "seeding: skin consumer symlink skipped, config dir absent: %s",
+                    dest.parent,
+                )
+                continue
+            target = self._state_root / "current" / pointer.target
+            if not target.exists() and not target.is_symlink():
+                logger.warning(
+                    "seeding: current/%s missing, skin consumer symlink skipped",
+                    pointer.target,
+                )
+                continue
+            _repoint_symlink(dest, target)
+            created.append(dest)
+        return created
+
+    def _prune_stale_skin_consumer_pointers(
+        self,
+        install_spine: Path,
+        wanted: set[Path],
+    ) -> list[Path]:
+        """Remove runtime-owned skin pointers whose target is gone.
+
+        Scope is deliberately narrow: only ``skin.css`` / ``skin.json``
+        symlinks under existing ``<install>/config/*`` dirs that resolve
+        into this runtime's ``current/skins/`` or ``current/skin.json``.
+        Everything else — the pinned palette/theme pointers, regular files,
+        user symlinks — is left untouched.
+        """
+        config_root = install_spine / "config"
+        if not config_root.is_dir():
+            return []
+        current_dir = Path(os.path.abspath(self._state_root / "current"))
+        skin_json = current_dir / "skin.json"
+        skins_dir = current_dir / "skins"
+        removed: list[Path] = []
+        for config_dir in sorted(config_root.iterdir()):
+            if not config_dir.is_dir() or config_dir.is_symlink():
+                continue
+            for name in ("skin.css", "skin.json"):
+                link = config_dir / name
+                if link in wanted or not link.is_symlink():
+                    continue
+                try:
+                    raw = os.readlink(link)
+                except OSError:
+                    continue
+                raw_path = Path(raw)
+                target = raw_path if raw_path.is_absolute() else link.parent / raw_path
+                target_path = Path(os.path.normpath(target))
+                if target_path != skin_json and target_path.parent != skins_dir:
+                    continue
+                try:
+                    link.unlink()
+                except OSError:
+                    continue
+                logger.info("seeding: pruned stale skin consumer pointer %s", link)
+                removed.append(link)
+        return removed
 
     def heal_torn_history_tail(self) -> Path | None:
         """Heal a torn trailing history line (AD-23, Story 2.3).

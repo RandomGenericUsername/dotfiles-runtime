@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.8.2 — 2026-11-06
+
+Emit skin consumer pointers for every skin target, not just AGS (REQ-013).
+This corrects v0.7.0–v0.8.1, whose static consumer table hardcoded
+`config/ags/skin.{css,json}` while the runtime already emitted
+`current/skins/<configDir>.css` for all seven targets.
+
+- Remove the hardcoded AGS skin pair from `StaticConsumerPathSpec`. The
+  fixed table keeps only the palette/theme consumers (`ags`, `gtk-3.0`,
+  `gtk-4.0`, `rofi`, `btop`).
+- Derive skin pointers from the active `SkinEntry` artifacts: for every
+  `<configDir>.css`, ensure `<install>/config/<configDir>/skin.css` →
+  `current/skins/<configDir>.css` and
+  `<install>/config/<configDir>/skin.json` → `current/skin.json`. Config
+  dirs are data-derived, so all seven AGS apps (and future targets) work
+  without a runtime change.
+- Only existing app config dirs are touched; an absent dir is a DEBUG
+  skip, never an error and never an mkdir into the install spine.
+- Reconcile prunes stale runtime-owned skin pointers when a generation
+  drops a target. The pinned palette/theme pointers and user-owned files
+  are never removed. Repoints remain atomic (`tmp` symlink + `os.replace`)
+  and idempotent.
+- `inspect status` and `doctor` project the derived skin pointer set for
+  installed apps and do not report absent app dirs as drift.
+
 ## v0.8.1 — 2026-11-05
 
 Accept the skins v0.6.0 `shape.hairline-w` token (REQ-012). This corrects the

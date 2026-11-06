@@ -91,10 +91,17 @@ $XDG_STATE_HOME/dotfiles/
 - A cache entry name is a 64-char lowercase hex SHA-256; `meta.json` carries
   `hash_algorithm: "sha256"` and per-artifact hashes (`adapters/cache.py`).
 - Repoints are atomic and symlink-guarded (`adapters/seeder.py`).
-- Consumer pointers are a static table (`adapters/consumer_path_spec.py`): `ags`, `gtk-3.0`,
-  `gtk-4.0`, `rofi`, `btop`, plus the AGS skin pair `config/ags/skin.css` →
-  `current/skins/ags.css` and `config/ags/skin.json` → `current/skin.json`; adding one is a spec
-  line plus its `@import`.
+- Consumer pointers: the pinned palette/theme table
+  (`adapters/consumer_path_spec.py`) is `ags`, `gtk-3.0`, `gtk-4.0`, `rofi`,
+  `btop`. Skin pointers are **derived per generation**: every
+  `<configDir>.css` artifact in the active `SkinEntry` yields
+  `config/<configDir>/skin.css` → `current/skins/<configDir>.css` and
+  `config/<configDir>/skin.json` → `current/skin.json`. There is no app list;
+  an AGS app added later gets pointers as soon as its template is in the skin.
+  A pointer whose `<install>/config/<configDir>` is absent is skipped (the
+  runtime never creates an app config dir). Reconcile prunes stale
+  runtime-owned skin symlinks when a generation drops a target; it never
+  prunes the pinned palette/theme table or a user-owned file.
 - Skins are selected from `desired.json` (`"skin": "<name>"`, default `glass`). A skin is a
   palette/ink mapping + paint + rhythm only (no structure/variants). The canonical manifest is
   `schema_major = 1`, `name`, plus exactly `shape`/`surface`/`ink`/`type`/`rhythm`/`layout`;

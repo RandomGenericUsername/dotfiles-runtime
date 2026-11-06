@@ -8,6 +8,7 @@ pointers, appearance-hash participation and the ``glass`` default.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import cast
 
@@ -27,6 +28,7 @@ from runtime.adapters.json_state_repository import JsonStateRepository
 from runtime.adapters.seeder import CacheSeeder
 from runtime.adapters.skin_expander import SkinExpander
 from runtime.application.derive import DerivationPipeline
+from runtime.application.doctor import DoctorUseCase
 from runtime.application.inspect import InspectStateUseCase
 from runtime.application.reconcile import ReconcileDesktopStateUseCase
 from runtime.domain.models import (
@@ -83,11 +85,13 @@ def _write_skin_assets(
     name: str = "glass",
     body: str = ".panel { border-radius: {{SKIN_RADIUS_PANEL}}; }\n",
     radius: str = "12",
+    config_dirs: tuple[str, ...] = ("ags",),
 ) -> tuple[Path, Path]:
     """Write the canonical assets layout: skins/manifests + skins/templates."""
     templates = spine / "skins" / "templates"
     templates.mkdir(parents=True, exist_ok=True)
-    (templates / "ags.gtk.css.j2").write_text(body, encoding="utf-8")
+    for config_dir in config_dirs:
+        (templates / f"{config_dir}.gtk.css.j2").write_text(body, encoding="utf-8")
     manifests = spine / "skins" / "manifests"
     manifests.mkdir(parents=True, exist_ok=True)
     manifest = manifests / f"{name}.toml"
@@ -239,10 +243,16 @@ class _NoLock:
         return None
 
 
-def _make_reconcile_world(tmp_path: Path) -> tuple[Path, Path, _CountingExpander]:
+def _make_reconcile_world(
+    tmp_path: Path,
+    *,
+    config_dirs: tuple[str, ...] = ("ags",),
+    installed_config_dirs: tuple[str, ...] = ("ags",),
+) -> tuple[Path, Path, _CountingExpander]:
     spine = tmp_path / "install"
-    _write_skin_assets(spine)
-    (spine / "config" / "ags").mkdir(parents=True)
+    _write_skin_assets(spine, config_dirs=config_dirs)
+    for config_dir in installed_config_dirs:
+        (spine / "config" / config_dir).mkdir(parents=True, exist_ok=True)
     state_root = tmp_path / "state"
     _write_palette_cache(state_root)
     _write_wallpaper_cache(state_root)
@@ -491,14 +501,222 @@ def test_inspect_prints_resolved_skin_and_tokens(tmp_path: Path) -> None:
     assert inspected.consumer_pointers["config/ags/skin.json"].status == "ok"
 
 
-def test_consumer_pointer_table_includes_the_ags_skin_pair() -> None:
-    pointers = {
-        pointer.path: pointer.target
-        for pointer in StaticConsumerPathSpec().consumer_pointers()
-    }
+def test_skin_pointers_are_derived_not_a_fixed_table() -> None:
+    spec = StaticConsumerPathSpec()
+    assert all("skin" not in pointer.path for pointer in spec.consumer_pointers())
 
-    assert pointers["config/ags/skin.css"] == "skins/ags.css"
-    assert pointers["config/ags/skin.json"] == "skin.json"
+    pointers = spec.skin_pointers(["ags", "ags-clipboard", "custom-app"])
+    by_path = {pointer.path: pointer.target for pointer in pointers}
+
+    assert by_path == {
+        "config/ags/skin.css": "skins/ags.css",
+        "config/ags/skin.json": "skin.json",
+        "config/ags-clipboard/skin.css": "skins/ags-clipboard.css",
+        "config/ags-clipboard/skin.json": "skin.json",
+        "config/custom-app/skin.css": "skins/custom-app.css",
+        "config/custom-app/skin.json": "skin.json",
+    }
+    assert spec.skin_pointers([]) == ()
+    assert spec.skin_pointers(["../escape"]) == ()
+
+
+def test_every_skin_artifact_gets_a_pointer_pair(tmp_path: Path) -> None:
+    config_dirs = ("ags", "ags-clipboard", "ags-notifications")
+    spine, state_root, expander = _make_reconcile_world(
+        tmp_path,
+        config_dirs=config_dirs,
+        installed_config_dirs=config_dirs,
+    )
+
+    result = _reconcile(tmp_path, spine, expander).run()
+
+    assert result.state.skin is not None
+    for config_dir in config_dirs:
+        css = spine / "config" / config_dir / "skin.css"
+        token_map = spine / "config" / config_dir / "skin.json"
+        assert css.is_symlink()
+        assert css.resolve() == (
+            state_root / "current" / "skins" / f"{config_dir}.css"
+        ).resolve()
+        assert token_map.is_symlink()
+        assert token_map.resolve() == (state_root / "current" / "skin.json").resolve()
+
+
+def test_absent_app_config_dir_is_skipped_not_created(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    spine, state_root, expander = _make_reconcile_world(
+        tmp_path,
+        config_dirs=("ags", "ags-capture"),
+        installed_config_dirs=("ags",),
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="runtime.adapters.seeder"):
+        _reconcile(tmp_path, spine, expander).run()
+
+    assert (spine / "config" / "ags" / "skin.css").is_symlink()
+    assert not (spine / "config" / "ags-capture").exists()
+    assert any(
+        "config dir absent" in record.getMessage()
+        and "ags-capture" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_inspect_and_doctor_report_every_derived_pointer(tmp_path: Path) -> None:
+    config_dirs = ("ags", "ags-clipboard")
+    spine, state_root, expander = _make_reconcile_world(
+        tmp_path,
+        config_dirs=(*config_dirs, "ags-icme"),
+        installed_config_dirs=config_dirs,
+    )
+    _reconcile(tmp_path, spine, expander).run()
+
+    inspected = InspectStateUseCase(
+        state_repo=JsonStateRepository(state_root=state_root),
+        state_root=state_root,
+        install_spine=spine,
+        consumer_spec=StaticConsumerPathSpec(),
+    ).run()
+    for config_dir in config_dirs:
+        assert inspected.consumer_pointers[f"config/{config_dir}/skin.css"].status == "ok"
+        assert inspected.consumer_pointers[f"config/{config_dir}/skin.json"].status == "ok"
+    assert "config/ags-icme/skin.css" not in inspected.consumer_pointers
+
+    report = DoctorUseCase(
+        state_repo=JsonStateRepository(state_root=state_root),
+        state_root=state_root,
+        install_spine=spine,
+    ).check()
+    consumer = {
+        item.name: item.status for item in report.items if item.kind == "consumer"
+    }
+    for config_dir in config_dirs:
+        assert consumer[f"consumer/config/{config_dir}/skin.css"] == "ok"
+        assert consumer[f"consumer/config/{config_dir}/skin.json"] == "ok"
+    assert "consumer/config/ags-icme/skin.css" not in consumer
+
+
+def _write_skin_cache_entry(
+    state_root: Path,
+    entry_hash: str,
+    config_dirs: tuple[str, ...],
+) -> SkinEntry:
+    entry_dir = cache_entry_path(state_root, "skins", entry_hash)
+    entry_dir.mkdir(parents=True, exist_ok=True)
+    artifacts: dict[str, str] = {}
+    for config_dir in config_dirs:
+        filename = f"{config_dir}.css"
+        (entry_dir / filename).write_text(
+            f"/* {entry_hash} {config_dir} */\n", encoding="utf-8"
+        )
+        artifacts[filename] = hash_file(entry_dir / filename)
+    (entry_dir / "skin.json").write_text("{}", encoding="utf-8")
+    artifacts["skin.json"] = hash_file(entry_dir / "skin.json")
+    return SkinEntry(
+        hash_algorithm="sha256",
+        kind="skin",
+        entry_hash=entry_hash,
+        name="glass",
+        input_templates_hash="1" * 64,
+        input_manifest_hash="2" * 64,
+        artifact_hashes=cast("SkinArtifacts", artifacts),
+        generated_at=TS,
+    )
+
+
+def test_skin_consumer_pointers_repoint_to_new_generation(tmp_path: Path) -> None:
+    spine = tmp_path / "install"
+    for config_dir in ("ags", "ags-clipboard"):
+        (spine / "config" / config_dir).mkdir(parents=True)
+    state_root = tmp_path / "state"
+    wallpaper = _write_wallpaper_cache(state_root)
+    seeder = CacheSeeder(state_root)
+
+    old = _write_skin_cache_entry(state_root, "a" * 64, ("ags", "ags-clipboard"))
+    seeder.repoint_current_symlinks(
+        wallpaper_target=wallpaper, monitor_names=["DP-1"], skin_entry=old
+    )
+    seeder.repoint_consumer_symlinks(spine, PH, skin_entry=old)
+
+    new = _write_skin_cache_entry(state_root, "b" * 64, ("ags", "ags-clipboard"))
+    seeder.repoint_current_symlinks(
+        wallpaper_target=wallpaper, monitor_names=["DP-1"], skin_entry=new
+    )
+    first = seeder.repoint_consumer_symlinks(spine, PH, skin_entry=new)
+    second = seeder.repoint_consumer_symlinks(spine, PH, skin_entry=new)
+
+    assert second == first
+    current = state_root / "current"
+    for config_dir in ("ags", "ags-clipboard"):
+        assert (spine / "config" / config_dir / "skin.css").resolve() == (
+            current / "skins" / f"{config_dir}.css"
+        ).resolve()
+        assert (current / "skins" / f"{config_dir}.css").resolve().parent == (
+            cache_entry_path(state_root, "skins", new.entry_hash)
+        ).resolve()
+        assert (spine / "config" / config_dir / "skin.json").resolve() == (
+            current / "skin.json"
+        ).resolve()
+
+
+def test_stale_skin_pointers_pruned_but_non_skin_and_user_files_kept(
+    tmp_path: Path,
+) -> None:
+    spine = tmp_path / "install"
+    for config_dir in ("ags", "ags-clipboard"):
+        (spine / "config" / config_dir).mkdir(parents=True)
+    state_root = tmp_path / "state"
+    wallpaper = _write_wallpaper_cache(state_root)
+    for name in ("colors.gtk.css", "colors.adw.css", "colors.rasi", "colors.btop.theme"):
+        (state_root / "current").mkdir(parents=True, exist_ok=True)
+        (state_root / "current" / name).write_text(f"/* {name} */\n", encoding="utf-8")
+    seeder = CacheSeeder(state_root)
+
+    old = _write_skin_cache_entry(state_root, "a" * 64, ("ags", "ags-clipboard"))
+    seeder.repoint_current_symlinks(
+        wallpaper_target=wallpaper, monitor_names=["DP-1"], skin_entry=old
+    )
+    seeder.repoint_consumer_symlinks(spine, PH, skin_entry=old)
+    ags_colors_before = (spine / "config" / "ags" / "colors.css").readlink()
+    user_file = spine / "config" / "ags-clipboard" / "notes.txt"
+    user_file.write_text("user-owned\n", encoding="utf-8")
+    user_link = spine / "config" / "ags-clipboard" / "skin.css.user"
+    user_link.symlink_to(tmp_path / "elsewhere.css")
+
+    new = _write_skin_cache_entry(state_root, "b" * 64, ("ags",))
+    seeder.repoint_current_symlinks(
+        wallpaper_target=wallpaper, monitor_names=["DP-1"], skin_entry=new
+    )
+    seeder.repoint_consumer_symlinks(spine, PH, skin_entry=new)
+
+    assert (spine / "config" / "ags" / "skin.css").is_symlink()
+    assert (spine / "config" / "ags" / "skin.json").is_symlink()
+    assert not (spine / "config" / "ags-clipboard" / "skin.css").is_symlink()
+    assert not (spine / "config" / "ags-clipboard" / "skin.json").is_symlink()
+    assert (spine / "config" / "ags" / "colors.css").readlink() == ags_colors_before
+    assert user_file.read_text(encoding="utf-8") == "user-owned\n"
+    assert user_link.is_symlink()
+
+
+def test_skin_pointer_set_comes_from_artifacts_not_known_apps(tmp_path: Path) -> None:
+    spine = tmp_path / "install"
+    (spine / "config" / "ags").mkdir(parents=True)
+    (spine / "config" / "custom-app").mkdir(parents=True)
+    state_root = tmp_path / "state"
+    wallpaper = _write_wallpaper_cache(state_root)
+    seeder = CacheSeeder(state_root)
+    entry = _write_skin_cache_entry(state_root, "a" * 64, ("custom-app",))
+    seeder.repoint_current_symlinks(
+        wallpaper_target=wallpaper, monitor_names=["DP-1"], skin_entry=entry
+    )
+
+    seeder.repoint_consumer_symlinks(spine, PH, skin_entry=entry)
+
+    assert (spine / "config" / "custom-app" / "skin.css").is_symlink()
+    assert (spine / "config" / "custom-app" / "skin.json").is_symlink()
+    assert not (spine / "config" / "ags" / "skin.css").exists()
+    assert not (spine / "config" / "ags" / "skin.json").exists()
 
 
 def test_skin_entry_hash_ignores_wallpaper_and_palette() -> None:
