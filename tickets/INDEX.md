@@ -29,6 +29,7 @@
 
 ## Bugs
 
+- [BUG-010-converge-job-trigger-payload](./BUG-010-converge-job-trigger-payload/ticket.md) — Daemon converge jobs write an invalid history trigger (`daemon`) and `wallpaper.state` can exceed/stage-violate the event contract | `in-progress` | severity: high | worktree: .worktrees/BUG-010/ | branch: ticket/BUG-010-converge-job-trigger-payload
 - [BUG-009-release-version-metadata](./BUG-009-release-version-metadata/ticket.md) — v0.6.0 release metadata still reports 0.5.2; provisioning verify fails | `done` | severity: high | worktree: .worktrees/BUG-009/ | branch: ticket/BUG-009-release-version-metadata | fix: v0.6.1
 - [BUG-008-bare-ags-run-discovery](./BUG-008-bare-ags-run-discovery/ticket.md) — Bar refresh fails: discovery skips bare `ags run` | `done` | severity: high | tag: v0.5.2 | fix: 8ef66b1 | live proof 2026-11-04
 - [BUG-001-required-palette](./BUG-001-required-palette/ticket.md) — Palette is mandatory: fail before the visible swap, refuse null on reconcile | `done` | severity: high | tag: v0.2.0
