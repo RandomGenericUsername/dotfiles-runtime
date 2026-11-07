@@ -143,6 +143,11 @@ def _seed_state(state_root: Path) -> None:
             "generated_at": TS,
         },
     )
+    from runtime.adapters.appearance import AppearanceGenerator
+    from runtime.adapters.seeder import CacheSeeder
+    from runtime.application.reconcile import default_skin_entry
+
+    skin = default_skin_entry(state_root, CacheSeeder(state_root))
     ico_dir = state_root / "cache" / "icons" / IH
     ico_dir.mkdir(parents=True)
     (ico_dir / "icon.svg").write_bytes(b"<svg/>")
@@ -158,8 +163,7 @@ def _seed_state(state_root: Path) -> None:
             "generated_at": TS,
         },
     )
-    JsonStateRepository(state_root=state_root).save(
-        DesktopState(
+    state = DesktopState(
             schema_version=2,
             wallpaper=WallpaperEntry(
                 hash_algorithm="sha256",
@@ -217,16 +221,35 @@ def _seed_state(state_root: Path) -> None:
                 generated_at=TS,
             ),
             applied_at=TS,
+            skin=skin,
+        )
+    JsonStateRepository(state_root=state_root).save(state)
+    appearance = AppearanceGenerator(state_root).ensure(
+        palette_entry=state.palette,
+        skin_entry=skin,
+        install_spine=state_root.parent / "install",
+    )[0]
+    from runtime.adapters.generation_store import (
+        GenerationSpec,
+        GenerationStore,
+        generation_intent_hash,
+    )
+
+    GenerationStore(state_root).commit(
+        GenerationSpec(
+            state=state,
+            appearance=appearance,
+            mode="dark",
+            skin_name=skin.name,
+            skin_hash=skin.entry_hash,
+            intent_hash=generation_intent_hash(
+                wallpaper=WH, palette=PH, skin=skin.name, mode="dark",
+                effects=EH, icons=IH,
+            ),
+            monitor_names=("DP-1",),
+            source_kind="cli",
         )
     )
-    current = state_root / "current"
-    current.mkdir(parents=True)
-    os.symlink(wall_dir / "wallpaper.png", current / "wallpaper-DP-1.png")
-    os.symlink(wall_dir / "wallpaper.png", current / "wallpaper.png")
-    for name in PALETTE_FILES:
-        os.symlink(pal_dir / name, current / name)
-    os.symlink(eff_dir, current / "effects", target_is_directory=True)
-    os.symlink(ico_dir, current / "icons", target_is_directory=True)
     # R-5: the seeded store is audited — the history tail agrees with
     # current.json, so the clean-machine baseline stays clean.
     from runtime.adapters.seeder import CacheSeeder
@@ -237,8 +260,17 @@ def _seed_state(state_root: Path) -> None:
         palette_hash=PH,
         effects_hash=EH,
         icons_hash=IH,
+        skin_hash=skin.entry_hash,
         source_path="/img/wall.png",
     )
+
+
+def _skin_hash(state_root: Path) -> str:
+    from runtime.adapters.json_state_repository import JsonStateRepository
+
+    state = JsonStateRepository(state_root=state_root).load_current()
+    assert state is not None and state.skin is not None
+    return state.skin.entry_hash
 
 
 def _check(state_root: Path) -> DoctorReport:
@@ -658,6 +690,7 @@ class TestStoreHistoryDivergence:
             palette_hash=PH,
             effects_hash=EH,
             icons_hash=IH,
+            skin_hash=_skin_hash(state_root),
             source_path="/img/wall.png",
             details={"removed": 3, "layers": {"effects": 3}},
         )
@@ -676,6 +709,7 @@ class TestStoreHistoryDivergence:
             palette_hash=PH,
             effects_hash=EH,
             icons_hash=IH,
+            skin_hash=_skin_hash(state_root),
             source_path="/img/wall.png",
         )
         with pytest.raises(ValueError, match=r"history\.jsonl line 2"):
@@ -715,6 +749,7 @@ class TestStoreHistoryDivergence:
             palette_hash=PH,
             effects_hash=EH,
             icons_hash=IH,
+            skin_hash=_skin_hash(state_root),
             source_path="/img/wall.png",
         )
         assert _check(state_root).clean is True
@@ -743,6 +778,7 @@ class TestStoreHistoryDivergence:
             palette_hash=PH,
             effects_hash=EH,
             icons_hash=IH,
+            skin_hash=_skin_hash(state_root),
             source_path="/img/wall.png",
             details={"removed": 0, "layers": {}},
         )
@@ -826,7 +862,8 @@ class TestSupervisionLeg:
         assert report.clean is True
         assert _by_name(report)["supervision:unit/bar"] == "ok"
         assert "appearance:v1v2-skew" not in _by_name(report)
-        assert probe.calls and probe.calls[0]["expected_appearance_hash"] is None
+        assert probe.calls
+        assert probe.calls[0]["expected_appearance_hash"] is not None
 
     def test_inactive_unit_is_drift(self, tmp_path: Path) -> None:
         from runtime.adapters.ags_supervision import SupervisionReport

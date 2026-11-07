@@ -233,11 +233,10 @@ class TestRegenerateIconsUseCase:
         assert result.cache_hit is False
         # REQ-007 regression: the spine mappings reach the renderer verbatim.
         assert ctx["itr"].seen_mappings[0] == ctx["mappings_file"]
-        # Icons-only repoint: exactly the current/icons symlink.
-        assert result.repointed == [ctx["state_root"] / "current" / "icons"]
-        assert (ctx["state_root"] / "current" / "icons").resolve() == (
-            ctx["state_root"] / "cache" / "icons" / result.icons.entry_hash
-        )
+        # v3: the use case records the new icons input; the next converge
+        # commits a generation. It never writes a per-family current/ link.
+        assert result.repointed == []
+        assert result.consumer_symlinks == []
         # State carries the new icons entry.
         saved = ctx["repo"].load_current()
         assert saved is not None and saved.icons is not None

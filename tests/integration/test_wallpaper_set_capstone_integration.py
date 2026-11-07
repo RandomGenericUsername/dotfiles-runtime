@@ -280,7 +280,11 @@ def _full_set(applied: _Capstone, reloaders: list[Any] | None = None, img: Path 
 def _symlink_map(current_dir: Path) -> dict[str, str]:
     import os
 
-    return {p.name: str(Path(os.readlink(p))) for p in sorted(current_dir.iterdir())}
+    return {
+        p.name: str(Path(os.readlink(p)))
+        for p in sorted(current_dir.iterdir())
+        if p.is_symlink()
+    }
 
 
 class TestCapstoneE2E:
@@ -296,6 +300,7 @@ class TestCapstoneE2E:
         wh = applied.repo.load_current().wallpaper.content_hash  # type: ignore[union-attr]
         links = _symlink_map(applied.state_root / "current")
         assert set(links) == {
+            "palette",
             "wallpaper-DP-1.png",
             "wallpaper.png",
             "colors.conf",
@@ -309,11 +314,12 @@ class TestCapstoneE2E:
             "effects",
             "icons",
         }
-        for target in links.values():
-            assert target.startswith(str(applied.state_root / "cache"))
-        assert links["wallpaper-DP-1.png"] == (
-            str(applied.state_root / "cache" / "wallpapers" / wh / "wallpaper.png")
-        )
+        current = applied.state_root / "current"
+        for name in links:
+            assert str((current / name).resolve()).startswith(str(applied.state_root / "cache"))
+        assert (current / "wallpaper-DP-1.png").resolve() == (
+            applied.state_root / "cache" / "wallpapers" / wh / "wallpaper.png"
+        ).resolve()
         # current.json written (schema v2, refreshed applied_at)
         saved_raw = json.loads((applied.state_root / "current.json").read_text())
         assert saved_raw["schema_version"] == 2
@@ -421,21 +427,17 @@ class TestCapstoneCrashRepair:
         with caplog.at_level(logging.INFO, logger="runtime.application.reconcile"):
             result = _full_set(applied)
 
-        # Pin the TRANSIENT revert, not just the final state: the
-        # reconcile-start recovery log is the direct observable that
-        # _revert_stale_symlinks ran (a final-state-only assertion would
-        # pass even with the revert disabled — the idempotent same-image
-        # set masks it).
-        reverted_logs = [r for r in caplog.records if "recovery: reverted" in r.message]
-        assert reverted_logs, "reconcile-start stray-symlink revert did not run"
-        assert "colors.gtk.css" in reverted_logs[0].getMessage()
-
-        # Final state converged to the new last-good target too
-        links = _symlink_map(applied.state_root / "current")
+        # v3 repairs a mutated immutable generation by rebuilding it; the
+        # commit pointer stays authoritative.
+        repair_logs = [
+            r for r in caplog.records if "inconsistent" in r.message
+        ]
+        assert repair_logs, "inconsistent generation was not rebuilt"
+        current = applied.state_root / "current"
         loaded_after = applied.repo.load_current()
         assert loaded_after is not None and loaded_after.palette is not None
         pal_dir = applied.state_root / "cache" / "palettes" / loaded_after.palette.entry_hash
-        assert links["colors.gtk.css"] == str(pal_dir / "colors.gtk.css")
+        assert (current / "colors.gtk.css").resolve() == (pal_dir / "colors.gtk.css").resolve()
         assert result.reload_failures == []
 
 
@@ -567,7 +569,7 @@ class TestCapstoneGoldenSchema:
         '"icons": "1e60f93c2e0ab87daa0bd7192f19d1fbe8f52a5cbfd9f0b875dc8c637e6db0c5", '
         '"source_path": "'
         + str(FIXTURES / "wallpaper.png")
-        + '"}'
+        + '", "skin": "a47ef887de51e05792942dbb838cba413bc36f0932bf36fa7285d04325aa33fc"}'
     )
     GOLDEN_CURRENT = """{
   "applied_at": "<TS>",
@@ -594,7 +596,15 @@ class TestCapstoneGoldenSchema:
     "hash": "0a1470089dcedb08b07af5f8cb88c7e81f025ad6a8763e8cf31101d18aa01e70"
   },
   "schema_version": 2,
-  "skin": null,
+  "skin": {
+    "artifacts": [
+      "ags.css",
+      "skin.json"
+    ],
+    "generated_at": "<TS>",
+    "hash": "a47ef887de51e05792942dbb838cba413bc36f0932bf36fa7285d04325aa33fc",
+    "name": "default"
+  },
   "wallpaper": {
     "applied_at": "<TS>",
     "hash": "619cd350283e11c3cc9ee7b3d67dce93738e87e7fefa16144840ebd716534381",

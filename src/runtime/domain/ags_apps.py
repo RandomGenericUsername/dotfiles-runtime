@@ -19,8 +19,8 @@ from typing import Literal
 AppMode = Literal["live", "restart"]
 AppStatus = Literal["applied", "deferred", "failed", "skipped"]
 
-#: Fixed live-refresh request command (AD-27). One argument: the appearance hash.
-PALETTE_REFRESH_COMMAND = "palette-refresh"
+#: Fixed v3 live-refresh request command. One argument: the generation hash.
+APPEARANCE_REFRESH_COMMAND = "appearance-refresh"
 
 
 class ReloadFailure(str):

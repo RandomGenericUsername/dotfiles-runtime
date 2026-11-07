@@ -505,16 +505,29 @@ class HubService(IEventPublisher, IEventSubscriber):
         emitter: SignalEmitter | None = None,
         registry_factory: Callable[[], IJobRegistry] | None = None,
         control_channel: IControlChannel | None = None,
+        registry_lock: threading.Lock | None = None,
+        job_submitter: Callable[[str, float], str | None] | None = None,
     ) -> None:
         self._registry = registry
         self._validator = validator if validator is not None else EmitValidator()
-        self._lock = threading.Lock()
+        #: Shared with the converge queue so every registry mutation stays on
+        #: the EventHub single-threaded-caller contract.
+        self._lock = registry_lock if registry_lock is not None else threading.Lock()
+        #: Daemon converge queue hook: a ``converge:<intentHash>`` BeginJob is
+        #: allocated by the queue owner (which emits JobStarted) instead of the
+        #: generic client-owned job path.
+        self._job_submitter = job_submitter
         self._sink = sink
         self._emitter: SignalEmitter = emitter if emitter is not None else _drop_signal
         self._registry_factory = registry_factory
         self._control_channel = control_channel
         self._handlers: dict[str, list[Callable[[str, Mapping[str, object]], None]]] = {}
         self._handlers_lock = threading.Lock()
+
+    @property
+    def registry_lock(self) -> threading.Lock:
+        """The registry mutation lock shared with the converge queue."""
+        return self._lock
 
     @property
     def control_channel(self) -> IControlChannel | None:
@@ -714,6 +727,10 @@ class HubService(IEventPublisher, IEventSubscriber):
             # and reports ValueError; job_id likewise reaches the domain,
             # where a non-str id is UnknownJob (never InvalidArgs).
             ttl = _u32(args[1], "ttl")
+            if self._job_submitter is not None:
+                submitted = self._job_submitter(args[0], float(ttl))
+                if submitted is not None:
+                    return "s", (submitted,)
             return "s", (self._registry.begin(args[0], ttl),)
         if member == "RenewJob":
             self._registry.renew(args[0])

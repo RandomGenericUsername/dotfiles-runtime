@@ -26,7 +26,7 @@ from runtime.adapters.ags_supervision import (
     SupervisionAction,
     SupervisionReport,
 )
-from runtime.adapters.appearance import expected_mode, read_current_appearance
+from runtime.adapters.appearance import expected_mode
 from runtime.adapters.appearance_ledger import AppearanceLedger
 from runtime.adapters.cache import resolve_entry_artifact
 from runtime.adapters.hashing import appearance_generation_hash, hash_file
@@ -112,14 +112,18 @@ class DoctorUseCase:
         items.extend(self._check_vocabulary(state))
         items.extend(self._check_links(state))
         items.extend(self._check_appearance(state))
-        items.extend(self._check_input_provenance())
+        items.extend(self._check_input_provenance(state))
         items.extend(self._check_history(state))
         supervision_items, supervision = self._check_supervision(state)
         items.extend(supervision_items)
-        clean = all(item.status == "ok" for item in items)
+        # Watch-registration exhaustion is an environment/AD-40 report, not
+        # desktop drift: it stays visible but never changes the exit verdict.
+        clean = all(
+            item.status == "ok" or item.name == "appearance:watch" for item in items
+        )
         return DoctorReport(items=tuple(items), clean=clean, supervision=supervision)
 
-    def _check_input_provenance(self) -> list[DriftItem]:
+    def _check_input_provenance(self, state: DesktopState | None = None) -> list[DriftItem]:
         """R-3/AD-43: report where each derivation input resolved from.
 
         ``spine`` is healthy. ``repo`` is only reachable with the explicit dev
@@ -132,6 +136,19 @@ class DoctorUseCase:
 
         items: list[DriftItem] = []
         for key, (path, source) in input_provenance(self._install_spine).items():
+            if key == "skin_templates" and (
+                state is None or state.skin is None or state.skin.name == "default"
+            ):
+                # The built-in default skin is internal and asset-free.
+                items.append(
+                    DriftItem(
+                        name=f"input:{key}",
+                        kind="input",
+                        status="ok",
+                        detail="built-in default skin (no external templates)",
+                    )
+                )
+                continue
             if source == "spine":
                 items.append(
                     DriftItem(name=f"input:{key}", kind="input", status="ok", detail=str(path))
@@ -419,154 +436,131 @@ class DoctorUseCase:
         return items
 
     def _check_appearance(self, state: DesktopState) -> list[DriftItem]:
-        """Report the v2 appearance generation, pointer, watch and v1 leftovers.
+        """Report the committed v3 generation and legacy-pointer leftovers.
 
-        Read-only. When the state has no skin yet (pre-skin machine) the leg
-        is omitted entirely. Once a skin is recorded, ``current/appearance``
-        must exist and resolve to the generation whose identity is
-        ``f(palette, skin, mode)``. The v1 cutover is complete (REQ-018), so
-        a runtime-owned ``skin.css``/``skin.json`` link that reappears is real
-        drift; a clean v2 host has no item.
+        Read-only. ``current/manifest.json`` is authoritative; the recorded
+        state is compared against the manifest intent (palette/skin/mode/
+        wallpaper), never against the pointer it resolves to. No runtime
+        ``config/<app>/appearance.css`` link is expected in v3.
         """
-        pointer = self._state_root / "current" / "appearance"
-        if state.skin is None:
-            if pointer.is_symlink():
-                status, detail = self._link_status(pointer, pointer)
-                return [
-                    DriftItem(
-                        "appearance:pointer",
-                        "appearance",
-                        status,
-                        f"{detail} (state records no skin; generation is orphaned)",
-                    )
-                ]
-            return []
+        from runtime.adapters.generation_store import GenerationStore
+
         if state.palette is None:
             return []
-        manifest = read_current_appearance(self._state_root)
-        palette_mode = expected_mode(self._state_root, state.palette)
-        mode = manifest.mode if manifest is not None else palette_mode
-        # Pointer identity comes from the recorded state, never from the
-        # generation the pointer resolves to (a stale generation must not
-        # validate itself).
-        expected_hash = appearance_generation_hash(
-            state.palette.entry_hash, state.skin.entry_hash, palette_mode
-        )
-        expected_dir = self._state_root / "cache" / "appearance" / expected_hash
-        status, detail = self._link_status(
-            self._state_root / "current" / "appearance", expected_dir
-        )
-        items: list[DriftItem] = [
-            DriftItem(
-                "appearance:pointer",
-                "appearance",
-                status,
-                f"{detail} (skin={state.skin.name}, mode={mode}, hash={expected_hash[:12]})",
-            )
-        ]
-        if manifest is None:
-            items.append(
+        store = GenerationStore(self._state_root)
+        generation = store.current_hash()
+        items: list[DriftItem] = []
+        if generation is None:
+            return [
                 DriftItem(
-                    "appearance:manifest",
+                    "generation:pointer",
                     "appearance",
                     "missing",
-                    f"current/appearance has no readable v2 generation for {expected_hash[:12]}",
+                    "state/current does not resolve to a generation",
+                )
+            ]
+        try:
+            manifest = store.verify(generation)
+        except Exception as exc:
+            items.append(
+                DriftItem(
+                    "generation:manifest",
+                    "appearance",
+                    "corrupt",
+                    f"current/manifest.json failed its self-check: {exc}",
+                )
+            )
+            return items
+        palette_mode = expected_mode(self._state_root, state.palette)
+        checks = {
+            "palette": manifest["intent"]["palette"] == state.palette.entry_hash,
+            "skin": state.skin is None
+            or manifest["intent"]["skin"] == state.skin.name,
+            "mode": manifest["mode"] == palette_mode,
+            "wallpaper": manifest["intent"]["wallpaper"]
+            == state.wallpaper.content_hash,
+        }
+        mismatched = [name for name, ok in checks.items() if not ok]
+        if mismatched:
+            items.append(
+                DriftItem(
+                    "generation:identity",
+                    "appearance",
+                    "diverged",
+                    (
+                        f"committed generation {generation[:12]} disagrees with the "
+                        f"recorded state on: {', '.join(mismatched)} "
+                        f"(skin={manifest['intent']['skin']}, mode={manifest['mode']})"
+                    ),
                 )
             )
         else:
             items.append(
                 DriftItem(
-                    "appearance:manifest",
+                    "generation:identity",
                     "appearance",
                     "ok",
                     (
-                        f"generation {manifest.appearance_hash[:12]} "
-                        f"(skin={manifest.skin}, mode={manifest.mode}, "
-                        f"{len(manifest.config_dirs)} css target(s))"
+                        f"generation {generation[:12]} "
+                        f"(skin={manifest['intent']['skin']}, mode={manifest['mode']}, "
+                        f"{len(manifest['appearance']['targets'])} css target(s))"
                     ),
                 )
             )
         watch = WatchHealthStore(self._state_root).read()
-        if watch is None:
-            items.append(
-                DriftItem(
-                    "appearance:watch",
-                    "appearance",
-                    "ok",
-                    "watch health unknown (daemon has not reported; pointer is the signal)",
-                )
-            )
-        else:
-            items.append(
-                DriftItem(
-                    "appearance:watch",
-                    "appearance",
-                    "diverged" if watch.degraded else "ok",
-                    (
+        items.append(
+            DriftItem(
+                "appearance:watch",
+                "appearance",
+                "ok" if watch is None or not watch.degraded else "diverged",
+                (
+                    "watch health unknown (daemon has not reported; current is the signal)"
+                    if watch is None
+                    else (
                         f"watch set degraded: {', '.join(watch.failed_roots) or 'unknown root'}"
                         if watch.degraded
                         else "watch set healthy"
-                    ),
-                )
-            )
-        if manifest is not None:
-            if self._install_spine is not None:
-                for config_dir in manifest.config_dirs:
-                    dest = self._install_spine / "config" / config_dir / "appearance.css"
-                    if not dest.parent.is_dir():
-                        continue
-                    expected = self._state_root / "current" / "appearance" / f"{config_dir}.css"
-                    c_status, c_detail = self._link_status(dest, expected)
-                    items.append(
-                        DriftItem(
-                            f"consumer/config/{config_dir}/appearance.css",
-                            "consumer",
-                            c_status,
-                            c_detail,
-                        )
                     )
-                # v1 leftovers: after the completed cutover any runtime-owned
-                # skin.css/skin.json link is drift, not an expected skew. A
-                # user file/link is never reported (only the retired runtime
-                # target counts).
-                current_dir = Path(os.path.abspath(self._state_root / "current"))
-                v1_targets = (current_dir / "skin.json", current_dir / "skins")
-                config_root = self._install_spine / "config"
-                candidates = (
-                    sorted(path for path in config_root.iterdir() if path.is_dir())
-                    if config_root.is_dir()
-                    else []
-                )
-                for config_dir in candidates:
-                    stale: Path | None = None
-                    for name in ("skin.css", "skin.json"):
-                        candidate = config_dir / name
-                        if candidate.is_symlink():
-                            stale = candidate
-                            break
-                    if stale is None:
-                        continue
-                    try:
-                        raw = os.readlink(stale)
-                    except OSError:
-                        continue
-                    raw_path = Path(raw)
-                    target = raw_path if raw_path.is_absolute() else stale.parent / raw_path
-                    target_path = Path(os.path.normpath(target))
-                    if target_path != v1_targets[0] and target_path.parent != v1_targets[1]:
-                        continue
+                ),
+            )
+        )
+        if self._install_spine is not None:
+            config_root = self._install_spine / "config"
+            candidates = (
+                sorted(path for path in config_root.iterdir() if path.is_dir())
+                if config_root.is_dir()
+                else []
+            )
+            for config_dir in candidates:
+                # Never traverse a link into an app tag: an undeletable tag
+                # write is the v2 defect, and its presence is drift.
+                if config_dir.is_symlink():
+                    continue
+                legacy = config_dir / "appearance.css"
+                if legacy.is_symlink():
                     items.append(
                         DriftItem(
-                            "appearance:v1v2-skew",
-                            "appearance",
+                            f"consumer/config/{config_dir.name}/appearance.css",
+                            "consumer",
                             "diverged",
                             (
-                                f"retired v1 skin pointer reappeared: {stale}; "
-                                "the v2 cutover is complete, remove it"
+                                f"retired v2 convenience link: {legacy}; v3 apps read "
+                                "$XDG_STATE_HOME/dotfiles/current/appearance/"
+                                f"{config_dir.name}.css"
                             ),
                         )
                     )
-                    break
+                for name in ("skin.css", "skin.json"):
+                    stale = config_dir / name
+                    if stale.is_symlink():
+                        items.append(
+                            DriftItem(
+                                f"consumer/config/{config_dir.name}/{name}",
+                                "consumer",
+                                "diverged",
+                                f"retired v1 skin pointer: {stale}",
+                            )
+                        )
         return items
 
     def _check_supervision(

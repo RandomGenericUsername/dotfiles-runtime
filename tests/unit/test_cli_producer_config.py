@@ -189,8 +189,16 @@ def test_daemon_reconcile_composition_uses_config_tpr(
         def __init__(self, **kwargs: Any) -> None:
             captured.update(kwargs)
 
-        def run(self) -> object:
-            return "reconciled"
+        def run(self, *args: Any, **kwargs: Any) -> object:
+            from runtime.application.reconcile import ReconcileResult
+
+            return ReconcileResult(
+                repointed=[],
+                skipped=[],
+                state=_state(),
+                cache_regenerated=[],
+                generation_hash="a" * 64,
+            )
 
     monkeypatch.setattr(
         "runtime.application.reconcile.ReconcileDesktopStateUseCase", _FakeReconcile
@@ -199,7 +207,7 @@ def test_daemon_reconcile_composition_uses_config_tpr(
     monkeypatch.setattr(cli_main, "_build_wallpaper_applier", lambda *a, **k: object())
     monkeypatch.setattr(cli_main, "_build_app_refresher", lambda *a, **k: None)
 
-    assert cli_main._run_reconcile() == "reconciled"
+    assert cli_main._run_reconcile().generation_hash == "a" * 64
     producer = captured["palette_producer"]
     assert isinstance(producer, TprAdapter)
     assert producer.runtime == "container"
@@ -233,8 +241,16 @@ def test_reconcile_composition_uses_desired_mode(
         def __init__(self, **kwargs: Any) -> None:
             captured.update(kwargs)
 
-        def run(self) -> object:
-            return "reconciled"
+        def run(self, *args: Any, **kwargs: Any) -> object:
+            from runtime.application.reconcile import ReconcileResult
+
+            return ReconcileResult(
+                repointed=[],
+                skipped=[],
+                state=_state(),
+                cache_regenerated=[],
+                generation_hash="a" * 64,
+            )
 
     monkeypatch.setattr(
         "runtime.application.reconcile.ReconcileDesktopStateUseCase", _FakeReconcile
@@ -243,7 +259,7 @@ def test_reconcile_composition_uses_desired_mode(
     monkeypatch.setattr(cli_main, "_build_wallpaper_applier", lambda *a, **k: object())
     monkeypatch.setattr(cli_main, "_build_app_refresher", lambda *a, **k: None)
 
-    assert cli_main._run_reconcile() == "reconciled"
+    assert cli_main._run_reconcile().generation_hash == "a" * 64
     producer = captured["palette_producer"]
     assert isinstance(producer, TprAdapter)
     assert producer.mode == "light"
@@ -300,13 +316,14 @@ def test_wallpaper_set_json_includes_resolved_producer(
         def __init__(self, **kwargs: Any) -> None:
             pass
 
-        def run(self, **kwargs: Any) -> ReconcileResult:
+        def run(self, *args: Any, **kwargs: Any) -> ReconcileResult:
             return ReconcileResult(
                 repointed=[],
                 skipped=[],
                 state=_state(),
                 cache_regenerated=[],
                 reload_failures=[],
+                generation_hash="a" * 64,
             )
 
     monkeypatch.setattr("runtime.application.apply_wallpaper.ApplyWallpaperUseCase", _FakeApply)

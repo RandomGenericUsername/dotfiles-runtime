@@ -522,7 +522,7 @@ class TestAgsReloaderLaunchLock:
                 assert reloader.reload() is False
             mock_run.assert_not_called()
             mock_popen.assert_not_called()
-            assert "timed out waiting for the shared AGS launch lock" in caplog.text
+            assert "AGS launch lock is held by another process" in caplog.text
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)

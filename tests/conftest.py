@@ -21,6 +21,16 @@ def _repo_root_cwd(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolated_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never submit a test converge to a developer's live session daemon.
+
+    Tests exercise the CLI fallback under ``converge.lock``; the daemon queue
+    has its own in-process suite with a fake registry.
+    """
+    monkeypatch.setenv("DOTFILES_RUNTIME_DISABLE_DAEMON", "1")
+
+
+@pytest.fixture(autouse=True)
 def _isolated_xdg_config_home(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

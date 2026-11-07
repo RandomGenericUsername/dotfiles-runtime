@@ -24,7 +24,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from runtime.adapters.cache import cache_entry_path
 from runtime.adapters.seeder import CacheSeeder
 from runtime.application.derive import DerivationPipeline
 from runtime.domain.ags_apps import AppRefreshRecord, ReloadFailure
@@ -132,12 +131,10 @@ class RegenerateIconsUseCase:
                 )
             now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
             saved = dataclasses.replace(current, icons=icons, applied_at=now)
-            icons_dir = cache_entry_path(self._state_root, "icons", icons.entry_hash)
-            repointed = [self._seeder.repoint_current_symlink("icons", icons_dir)]
-            consumer_symlinks = self._seeder.repoint_consumer_symlinks(
-                self._install_spine,
-                state.palette.entry_hash,
-            )
+            # v3: state is an input to the next converge. Never repoint a
+            # per-family current/ link or write into the install spine.
+            repointed: list[Path] = []
+            consumer_symlinks: list[Path] = []
             self._state_repo.save(saved)
 
         self._seeder.append_history(
@@ -154,8 +151,15 @@ class RegenerateIconsUseCase:
         reload_failures: list[ReloadFailure] = []
         app_results: list[AppRefreshRecord] = []
         if self._app_refresher is not None:
+            from runtime.adapters.generation_store import GenerationStore
+
+            generation_hash = GenerationStore(self._state_root).current_hash()
             try:
-                outcome = self._app_refresher.refresh(saved, trigger="regenerate")
+                if generation_hash is None:
+                    raise RuntimeError("no committed generation")
+                outcome = self._app_refresher.refresh(
+                    saved, generation_hash=generation_hash, trigger="regenerate"
+                )
             except Exception as exc:
                 logger.warning("AGS app refresh failed unexpectedly: %s", exc)
                 reload_failures.append(

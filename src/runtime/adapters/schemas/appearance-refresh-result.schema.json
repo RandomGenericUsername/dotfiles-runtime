@@ -1,0 +1,82 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://dotfiles.local/schemas/appearance-refresh-result.schema.json",
+  "title": "Appearance refresh result (version 3)",
+  "description": "The JSON-encoded string an AGS app returns for [\"appearance-refresh\", \"<genHash>\"]. Exactly three shapes are valid: applied, deferred or failed. Every response names a generation hash, and the caller MUST reject a response whose applied/genHash value differs from the requested genHash. The old v2 boolean ack {\"ok\":true} is invalid because it cannot name the generation that was applied.",
+  "status": "frozen",
+  "oneOf": [
+    {
+      "$ref": "#/definitions/applied"
+    },
+    {
+      "$ref": "#/definitions/deferred"
+    },
+    {
+      "$ref": "#/definitions/failed"
+    }
+  ],
+  "definitions": {
+    "genHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "A lowercase 64-character SHA-256 generation hash. It must equal the genHash in the originating request."
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A non-empty, non-colour reason."
+    },
+    "applied": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "applied"
+      ],
+      "properties": {
+        "applied": {
+          "$ref": "#/definitions/genHash",
+          "description": "The exact generation the app resolved, validated and installed."
+        }
+      }
+    },
+    "deferred": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deferred",
+        "genHash"
+      ],
+      "properties": {
+        "deferred": {
+          "$ref": "#/definitions/reason"
+        },
+        "genHash": {
+          "$ref": "#/definitions/genHash",
+          "description": "The requested generation that was not applied yet."
+        }
+      }
+    },
+    "failed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "failed",
+        "retryable",
+        "genHash"
+      ],
+      "properties": {
+        "failed": {
+          "$ref": "#/definitions/reason"
+        },
+        "retryable": {
+          "type": "boolean",
+          "description": "true means the next trigger retries this generation; false is terminal for this generation."
+        },
+        "genHash": {
+          "$ref": "#/definitions/genHash",
+          "description": "The requested generation whose apply failed."
+        }
+      }
+    }
+  }
+}

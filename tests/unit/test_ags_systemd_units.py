@@ -171,7 +171,7 @@ class TestAgsReloaderUnitRestart:
         unit = AgsSystemdUnit(_unit_name("bar"), "ags", config)
         runner = _Runner(
             {
-                ("systemctl", "--user", "restart", unit.unit): SystemdCommandResult(0),
+                ("systemctl", "--user", "restart", "--wait", unit.unit): SystemdCommandResult(0),
             }
         )
         reloader = AgsReloader(
@@ -192,9 +192,9 @@ class TestAgsReloaderUnitRestart:
 
         assert result == AgsRestartResult(
             ok=True,
-            argv=("systemctl", "--user", "restart", unit.unit),
+            argv=("systemctl", "--user", "restart", "--wait", unit.unit),
         )
-        assert runner.calls == [("systemctl", "--user", "restart", unit.unit)]
+        assert runner.calls == [("systemctl", "--user", "restart", "--wait", unit.unit)]
         mock_run.assert_not_called()
         mock_popen.assert_not_called()
 
@@ -207,7 +207,7 @@ class TestAgsReloaderUnitRestart:
         unit = AgsSystemdUnit(_unit_name("bar"), "ags", config)
         runner = _Runner(
             {
-                ("systemctl", "--user", "restart", unit.unit): SystemdCommandResult(
+                ("systemctl", "--user", "restart", "--wait", unit.unit): SystemdCommandResult(
                     1, "", "unit failed"
                 ),
             }
@@ -229,7 +229,7 @@ class TestAgsReloaderUnitRestart:
             )
 
         assert result.ok is False
-        assert result.argv == ("systemctl", "--user", "restart", unit.unit)
+        assert result.argv == ("systemctl", "--user", "restart", "--wait", unit.unit)
         assert "unit failed" in result.error
         mock_run.assert_not_called()
         mock_popen.assert_not_called()
@@ -243,7 +243,7 @@ class TestAgsReloaderUnitRestart:
         unit = AgsSystemdUnit(_unit_name("bar"), "ags", config)
         runner = _Runner(
             {
-                ("systemctl", "--user", "restart", unit.unit): SystemdCommandResult(0),
+                ("systemctl", "--user", "restart", "--wait", unit.unit): SystemdCommandResult(0),
             }
         )
         reloader = AgsReloader(
@@ -268,7 +268,7 @@ class TestAgsReloaderUnitRestart:
         unit = AgsSystemdUnit(_unit_name("bar"), "ags", config)
         runner = _Runner(
             {
-                ("systemctl", "--user", "restart", unit.unit): SystemdCommandResult(0),
+                ("systemctl", "--user", "restart", "--wait", unit.unit): SystemdCommandResult(0),
             }
         )
         reloader = AgsReloader(
@@ -285,7 +285,7 @@ class TestAgsReloaderUnitRestart:
             patch("runtime.adapters.ags_reloader.subprocess.Popen") as mock_popen,
         ):
             assert reloader.reload() is True
-        assert runner.calls == [("systemctl", "--user", "restart", unit.unit)]
+        assert runner.calls == [("systemctl", "--user", "restart", "--wait", unit.unit)]
         mock_run.assert_not_called()
         mock_popen.assert_not_called()
 

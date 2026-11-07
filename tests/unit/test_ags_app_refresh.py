@@ -36,6 +36,7 @@ from runtime.domain.models import (
 
 WH = "f" * 64
 PEH = "a" * 64
+GEN = "a" * 64
 
 
 def _now_z() -> str:
@@ -155,7 +156,7 @@ class _LiveRunner:
         try:
             if self._delay:
                 time.sleep(self._delay)
-            scripted = self._script.get(instance, ['{"ok":true}\n'])
+            scripted = self._script.get(instance, ['{"applied": "' + GEN + '"}\n'])
             action = scripted.pop(0) if len(scripted) > 1 else scripted[0]
             if isinstance(action, Exception):
                 raise action
@@ -206,6 +207,11 @@ def _coordinator(
     ags.write_text("#!/bin/sh\nexit 0\n")
     ags.chmod(0o755)
     spine = tmp_path / "install"
+    state_root = tmp_path / "state"
+    (state_root / "generations" / GEN).mkdir(parents=True, exist_ok=True)
+    current = state_root / "current"
+    if not current.exists() and not current.is_symlink():
+        current.symlink_to(Path("generations") / GEN)
     return AgsAppRefreshCoordinator(
         state_root=tmp_path / "state",
         install_spine=spine,
@@ -232,22 +238,22 @@ class TestLiveLane:
     def test_applied_ack_writes_result_and_ledger(self, tmp_path: Path) -> None:
         spine = tmp_path / "install"
         link = _deploy_live(spine)
-        runner = _LiveRunner({"clipboard": [('{"ok":true}\n',)]})
+        runner = _LiveRunner({"clipboard": [('{"applied": "' + GEN + '"}\n',)]})
         coordinator = _coordinator(
             tmp_path,
             live_runner=runner,
             live_names=("clipboard",),
             processes=(_process(42, link, "clipboard"),),
         )
-        outcome = coordinator.refresh(_state())
+        outcome = coordinator.refresh(_state(), generation_hash=GEN)
         assert outcome.failures == ()
         assert [record.status for record in outcome.records] == ["applied"]
         assert runner.calls == [
             (
                 str(tmp_path / "fake-ags"),
                 "request",
-                "palette-refresh",
-                appearance_hash_for_state(_state()),
+                "appearance-refresh",
+                GEN,
                 "-i",
                 "clipboard",
             )
@@ -277,7 +283,7 @@ class TestLiveLane:
             ),
         )
         started = time.monotonic()
-        outcome = coordinator.refresh(_state())
+        outcome = coordinator.refresh(_state(), generation_hash=GEN)
         elapsed = time.monotonic() - started
         assert runner.max_active == 2
         assert elapsed < 0.35
@@ -289,8 +295,8 @@ class TestLiveLane:
         runner = _LiveRunner(
             {
                 "clipboard": [
-                    ('{"ok":true,"deferred":"busy"}\n',),
-                    ('{"ok":true}\n',),
+                    ('{"deferred":"busy","genHash":"' + GEN + '"}\n',),
+                    ('{"applied": "' + GEN + '"}\n',),
                 ]
             }
         )
@@ -300,11 +306,11 @@ class TestLiveLane:
             live_names=("clipboard",),
             processes=(_process(42, link, "clipboard"),),
         )
-        first = coordinator.refresh(_state())
+        first = coordinator.refresh(_state(), generation_hash=GEN)
         assert first.records[0].status == "deferred"
         assert [failure.status for failure in first.failures] == ["deferred"]
         assert len(runner.calls) == 1
-        second = coordinator.refresh(_state())
+        second = coordinator.refresh(_state(), generation_hash=GEN)
         assert second.records[0].status == "applied"
         assert len(runner.calls) == 2
 
@@ -314,8 +320,8 @@ class TestLiveLane:
         runner = _LiveRunner(
             {
                 "clipboard": [
-                    ('{"ok":false,"error":"busy","retryable":true}\n',),
-                    ('{"ok":true}\n',),
+                    ('{"failed":"busy","retryable":true,"genHash":"' + GEN + '"}\n',),
+                    ('{"applied": "' + GEN + '"}\n',),
                 ]
             }
         )
@@ -325,7 +331,7 @@ class TestLiveLane:
             live_names=("clipboard",),
             processes=(_process(42, link, "clipboard"),),
         )
-        outcome = coordinator.refresh(_state())
+        outcome = coordinator.refresh(_state(), generation_hash=GEN)
         assert len(runner.calls) == 1
         record = outcome.records[0]
         assert record.status == "failed"
@@ -336,7 +342,7 @@ class TestLiveLane:
         assert ledger is not None
         assert ledger.apps["clipboard"].status == "failed"
         assert ledger.apps["clipboard"].retryable is True
-        coordinator.refresh(_state())
+        coordinator.refresh(_state(), generation_hash=GEN)
         assert len(runner.calls) == 2
 
     def test_5s_timeout_is_a_failure(self, tmp_path: Path) -> None:
@@ -346,7 +352,7 @@ class TestLiveLane:
             {
                 "clipboard": [
                     subprocess.TimeoutExpired(cmd="ags", timeout=5.0),
-                    ('{"ok":true}\n',),
+                    ('{"applied": "' + GEN + '"}\n',),
                 ]
             }
         )
@@ -356,7 +362,7 @@ class TestLiveLane:
             live_names=("clipboard",),
             processes=(_process(42, link, "clipboard"),),
         )
-        outcome = coordinator.refresh(_state())
+        outcome = coordinator.refresh(_state(), generation_hash=GEN)
         record = outcome.records[0]
         assert record.status == "failed"
         assert record.timeout is True
@@ -367,10 +373,10 @@ class TestLiveLane:
         "stdout",
         [
             "",
-            '{"ok":true}\n{"ok":true}\n',
+            '{"applied":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}\n{"applied":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}\n',
             "not-json\n",
             '{"ok":"yes"}\n',
-            '{"ok":true,"extra":1}\n',
+            '{"applied":"' + GEN + '","extra":1}\n',
             '{"ok":false,"error":"x"}\n',
         ],
     )
@@ -384,7 +390,7 @@ class TestLiveLane:
             live_names=("clipboard",),
             processes=(_process(42, link, "clipboard"),),
         )
-        outcome = coordinator.refresh(_state())
+        outcome = coordinator.refresh(_state(), generation_hash=GEN)
         assert outcome.records[0].status == "failed"
         assert outcome.failures
 
@@ -392,7 +398,7 @@ class TestLiveLane:
         spine = tmp_path / "install"
         link = _deploy_live(spine)
         runner = _LiveRunner(
-            {"clipboard": [('{"ok":false,"error":"boom","retryable":true}\n',)]}
+            {"clipboard": [('{"failed":"boom","retryable":true,"genHash":"' + GEN + '"}\n',)]}
         )
         restart = _RestartFake(result=True)
         coordinator = _coordinator(
@@ -402,7 +408,7 @@ class TestLiveLane:
             processes=(_process(42, link, "clipboard"),),
             restart=restart,
         )
-        outcome = coordinator.refresh(_state())
+        outcome = coordinator.refresh(_state(), generation_hash=GEN)
         assert outcome.records[0].status == "failed"
         assert restart.calls == []
 
@@ -411,7 +417,7 @@ class TestLiveLane:
         _deploy_live(spine)
         runner = _LiveRunner()
         coordinator = _coordinator(tmp_path, live_runner=runner, live_names=())
-        outcome = coordinator.refresh(_state())
+        outcome = coordinator.refresh(_state(), generation_hash=GEN)
         assert outcome.records[0].status == "skipped"
         assert "not running" in outcome.records[0].reason
         assert runner.calls == []
@@ -441,7 +447,7 @@ class TestLiveLane:
             restart_reloader=_RestartFake(),  # type: ignore[arg-type]
             run_id_factory=lambda: "run-1",
         )
-        outcome = coordinator.refresh(_state())
+        outcome = coordinator.refresh(_state(), generation_hash=GEN)
         assert outcome.records[0].status == "failed"
         assert "cannot determine running state" in outcome.records[0].reason
         assert runner.calls == []
@@ -459,10 +465,10 @@ class TestLiveLane:
             processes=(_process(42, link, "clipboard"),),
             restart=restart,
         )
-        first = coordinator.refresh(_state())
+        first = coordinator.refresh(_state(), generation_hash=GEN)
         assert first.no_op is False
         calls = len(runner.calls)
-        second = coordinator.refresh(_state())
+        second = coordinator.refresh(_state(), generation_hash=GEN)
         assert second.no_op is True
         assert second.failures == ()
         assert len(runner.calls) == calls
@@ -478,7 +484,7 @@ class TestLiveLane:
             live_names=("clipboard",),
             processes=(_process(42, link, "clipboard"),),
         )
-        coordinator.refresh(_state())
+        coordinator.refresh(_state(), generation_hash=GEN)
         changed = _state()
         from dataclasses import replace
 
@@ -505,7 +511,13 @@ class TestLiveLane:
             state=changed,
             run_id="run-2",
         )
-        second = changed_coordinator.refresh(changed)
+        gen2 = "b" * 64
+        state_root = tmp_path / "state"
+        (state_root / "generations" / gen2).mkdir(parents=True, exist_ok=True)
+        current = state_root / "current"
+        current.unlink()
+        current.symlink_to(Path("generations") / gen2)
+        second = changed_coordinator.refresh(changed, generation_hash=gen2)
         assert second.no_op is False
         assert len(runner.calls) == 2
 
@@ -525,7 +537,7 @@ class TestRestartLane:
             live_names=(),
             restart=restart,
         )
-        outcome = coordinator.refresh(_state())
+        outcome = coordinator.refresh(_state(), generation_hash=GEN)
         assert [record.status for record in outcome.records] == ["applied"]
         assert restart.calls == [
             {
@@ -550,10 +562,10 @@ class TestRestartLane:
             live_names=(),
             restart=restart,
         )
-        first = coordinator.refresh(_state())
+        first = coordinator.refresh(_state(), generation_hash=GEN)
         assert first.records[0].status == "failed"
         assert first.failures
-        second = coordinator.refresh(_state())
+        second = coordinator.refresh(_state(), generation_hash=GEN)
         assert second.records[0].status == "failed"
         assert len(restart.calls) == 2
 
@@ -587,7 +599,7 @@ class TestRestartLane:
             live_names=(),
             restart=restart,  # type: ignore[arg-type]
         )
-        outcome = coordinator.refresh(_state())
+        outcome = coordinator.refresh(_state(), generation_hash=GEN)
 
         [record] = outcome.records
         assert record.status == "failed"
@@ -639,7 +651,7 @@ class TestRestartLane:
             live_names=(),
             restart=restart,  # type: ignore[arg-type]
         )
-        outcome = coordinator.refresh(_state())
+        outcome = coordinator.refresh(_state(), generation_hash=GEN)
         assert restart.max_active == 1
         assert {record.status for record in outcome.records} == {"applied"}
         assert len(outcome.records) == 2
@@ -653,7 +665,7 @@ class TestRestartLane:
         )
         (link / "app.manifest.json").write_text("{broken")
         coordinator = _coordinator(tmp_path, live_runner=_LiveRunner(), live_names=())
-        outcome = coordinator.refresh(_state())
+        outcome = coordinator.refresh(_state(), generation_hash=GEN)
         assert outcome.records == ()
         assert outcome.failures
         failure = outcome.failures[0]
@@ -703,79 +715,31 @@ class TestLedgerAndLock:
         assert ledger.path.read_bytes() == original
         assert not list(tmp_path.glob(".appearance-ledger-*.tmp"))
 
-    def test_operation_lock_serializes_two_refreshes(self, tmp_path: Path) -> None:
+    def test_converge_lock_serializes_two_refreshes(self, tmp_path: Path) -> None:
+        from runtime.adapters.converge_lock import ConvergeLock
+
         spine = tmp_path / "install"
         link = _deploy_live(spine)
-        runner = _LiveRunner(delay=0.1)
-        _coordinator(
+        runner = _LiveRunner(delay=0.05)
+        coordinator = _coordinator(
             tmp_path,
             live_runner=runner,
             live_names=("clipboard",),
             processes=(_process(42, link, "clipboard"),),
         )
-        retry = _LiveRunner(delay=0.1)
-        wait_coordinator = _coordinator(
-            tmp_path,
-            live_runner=retry,
-            live_names=("clipboard",),
-            processes=(_process(42, link, "clipboard"),),
-        )
+        state_root = tmp_path / "state"
         done = threading.Event()
+        lock = ConvergeLock(state_root)
 
         def _refresh() -> None:
-            wait_coordinator.refresh(_state())
-            done.set()
+            with lock.hold():
+                coordinator.refresh(_state(), generation_hash=GEN)
+                done.set()
 
-        with hold_operation_lock(tmp_path / "state"):
+        with ConvergeLock(state_root).hold():
             thread = threading.Thread(target=_refresh)
             thread.start()
             time.sleep(0.15)
             assert not done.is_set()
-            assert retry.calls == []
         thread.join(timeout=5)
         assert done.is_set()
-        assert len(retry.calls) == 1
-
-    def test_ledger_retries_skipped_app_on_next_trigger(self, tmp_path: Path) -> None:
-        ledger = AppearanceLedger(tmp_path)
-        from runtime.domain.ags_apps import AppAppearanceState, AppliedAppearance
-
-        ledger.save(
-            AppliedAppearance(
-                version=1,
-                appearance_hash="a" * 64,
-                operation_id="run-1",
-                completed_at=_now_z(),
-                apps={
-                    "clipboard": AppAppearanceState(
-                        app="clipboard",
-                        instance="clipboard",
-                        mode="live",
-                        status="skipped",
-                        appearance_hash="a" * 64,
-                        reason="live app is not running",
-                    )
-                },
-            )
-        )
-        assert ledger.needs_refresh("clipboard", "a" * 64) is True
-
-
-def test_reload_failure_is_structured_and_string_compatible() -> None:
-    failure = ReloadFailure(
-        "clipboard",
-        instance="clipboard",
-        mode="live",
-        status="failed",
-        reason="timeout",
-        detail="5 s",
-    )
-    assert failure.app == "clipboard"
-    assert failure.instance == "clipboard"
-    assert failure.mode == "live"
-    assert failure.status == "failed"
-    assert failure.reason == "timeout"
-    assert failure.detail == "5 s"
-    assert "clipboard (clipboard, live)" in str(failure)
-    assert "clipboard" in f"{failure}"
-    assert failure.to_dict()["app"] == "clipboard"

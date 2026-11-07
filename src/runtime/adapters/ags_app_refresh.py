@@ -41,10 +41,9 @@ from runtime.adapters.ags_reloader import (
 )
 from runtime.adapters.appearance_ledger import (
     AppearanceLedger,
-    appearance_hash_for_state,
-    hold_operation_lock,
 )
 from runtime.adapters.contract_schemas import ags_app_refresh_result_validator
+from runtime.adapters.generation_store import GenerationStore
 from runtime.domain.ags_apps import (
     AppAppearanceState,
     AppliedAppearance,
@@ -65,7 +64,7 @@ __all__ = ["AgsAppRefresh", "AgsAppRefreshCoordinator", "LIVE_REFRESH_TIMEOUT"]
 #: Per-app wall-clock timeout for the live lane (AD-27/AD-28).
 LIVE_REFRESH_TIMEOUT = 5.0
 
-_LIVE_PHASE = "palette-refresh"
+_LIVE_PHASE = "appearance-refresh"
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,8 +87,8 @@ def _run_id() -> str:
     return f"{stamp}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
 
-def _parse_live_reply(completed: object) -> _LiveReply:
-    """Validate the one-string ack from one live app (contract §Transport)."""
+def _parse_live_reply(completed: object, requested: str) -> _LiveReply:
+    """Validate one generation-bound ``appearance-refresh`` ack (v3)."""
     returncode = getattr(completed, "returncode", None)
     stdout = getattr(completed, "stdout", "") or ""
     stderr = getattr(completed, "stderr", "") or ""
@@ -145,76 +144,141 @@ def _parse_live_reply(completed: object) -> _LiveReply:
             exit_code=returncode,
             error=f"decoded {type(decoded).__name__}",
         )
-    return _decode_response(decoded, exit_code=returncode)
+    return _decode_response(decoded, exit_code=returncode, requested=requested)
 
 
-def _decode_response(decoded: dict[str, object], *, exit_code: int) -> _LiveReply:
+def _decode_response(
+    decoded: dict[str, object], *, exit_code: int, requested: str
+) -> _LiveReply:
+    """Decode the frozen v3 response union and enforce hash equality.
+
+    ``{"ok":true}`` is the superseded v2 ack and is invalid. A response whose
+    generation differs from the request is a stale ack: it is reported as
+    deferred/retryable and never becomes ``applied``.
+    """
     keys = set(decoded)
-    ok = decoded.get("ok")
-    if not isinstance(ok, bool):
-        return _LiveReply(
-            status="failed",
-            reason="response has no boolean ok",
-            retryable=True,
-            exit_code=exit_code,
-            response=decoded,
-            error="invalid ok field",
-        )
-    if ok:
-        if keys - {"ok", "deferred"}:
+    if "applied" in decoded:
+        if keys != {"applied"}:
             return _LiveReply(
                 status="failed",
                 reason="applied response has unknown keys",
                 retryable=True,
                 exit_code=exit_code,
                 response=decoded,
-                error=f"unexpected keys: {sorted(keys - {'ok', 'deferred'})}",
+                error=f"unexpected keys: {sorted(keys - {'applied'})}",
             )
-        if "deferred" in decoded:
-            deferred = decoded["deferred"]
-            if not isinstance(deferred, str) or not deferred.strip():
-                return _LiveReply(
-                    status="failed",
-                    reason="deferred reason is empty",
-                    retryable=True,
-                    exit_code=exit_code,
-                    response=decoded,
-                    error="deferred must be a non-empty string",
-                )
+        applied = decoded.get("applied")
+        if not isinstance(applied, str):
             return _LiveReply(
-                status="deferred",
-                reason=deferred,
+                status="failed",
+                reason="applied generation is not a string",
+                retryable=True,
                 exit_code=exit_code,
                 response=decoded,
+                error="malformed applied field",
+            )
+        if applied != requested:
+            return _LiveReply(
+                status="deferred",
+                reason=(
+                    f"stale ack: app applied generation {applied[:12]} "
+                    f"but {requested[:12]} was requested"
+                ),
+                retryable=True,
+                exit_code=exit_code,
+                response=decoded,
+                error="generation mismatch",
             )
         return _LiveReply(status="applied", exit_code=exit_code, response=decoded)
-
-    if keys - {"ok", "error", "retryable"}:
+    if "deferred" in decoded:
+        if keys != {"deferred", "genHash"}:
+            return _LiveReply(
+                status="failed",
+                reason="deferred response has unknown keys",
+                retryable=True,
+                exit_code=exit_code,
+                response=decoded,
+                error=f"unexpected keys: {sorted(keys - {'deferred', 'genHash'})}",
+            )
+        reason = decoded.get("deferred")
+        generation = decoded.get("genHash")
+        if not isinstance(reason, str) or not reason.strip() or not isinstance(generation, str):
+            return _LiveReply(
+                status="failed",
+                reason="deferred response is malformed",
+                retryable=True,
+                exit_code=exit_code,
+                response=decoded,
+                error="deferred must be non-empty and genHash a string",
+            )
+        if generation != requested:
+            return _LiveReply(
+                status="deferred",
+                reason=(
+                    f"stale deferred ack: app named generation {generation[:12]} "
+                    f"but {requested[:12]} was requested"
+                ),
+                retryable=True,
+                exit_code=exit_code,
+                response=decoded,
+                error="generation mismatch",
+            )
         return _LiveReply(
-            status="failed",
-            reason="failed response has unknown keys",
-            retryable=True,
-            exit_code=exit_code,
-            response=decoded,
-            error=f"unexpected keys: {sorted(keys - {'ok', 'error', 'retryable'})}",
+            status="deferred", reason=reason, exit_code=exit_code, response=decoded
         )
-    error = decoded.get("error")
-    retryable = decoded.get("retryable")
-    if not isinstance(error, str) or not error.strip() or not isinstance(retryable, bool):
+    if "failed" in decoded:
+        if keys != {"failed", "retryable", "genHash"}:
+            return _LiveReply(
+                status="failed",
+                reason="failed response has unknown keys",
+                retryable=True,
+                exit_code=exit_code,
+                response=decoded,
+                error=f"unexpected keys: {sorted(keys - {'failed', 'retryable', 'genHash'})}",
+            )
+        reason = decoded.get("failed")
+        retryable = decoded.get("retryable")
+        generation = decoded.get("genHash")
+        if (
+            not isinstance(reason, str)
+            or not reason.strip()
+            or not isinstance(retryable, bool)
+            or not isinstance(generation, str)
+        ):
+            return _LiveReply(
+                status="failed",
+                reason="failed response is malformed",
+                retryable=True,
+                exit_code=exit_code,
+                response=decoded,
+                error="failed/reason/retryable/genHash required",
+            )
+        if generation != requested:
+            return _LiveReply(
+                status="deferred",
+                reason=(
+                    f"stale failed ack: app named generation {generation[:12]} "
+                    f"but {requested[:12]} was requested"
+                ),
+                retryable=True,
+                exit_code=exit_code,
+                response=decoded,
+                error="generation mismatch",
+            )
         return _LiveReply(
             status="failed",
-            reason="failed response is malformed",
-            retryable=True,
+            reason=reason,
+            retryable=retryable,
             exit_code=exit_code,
             response=decoded,
-            error="error must be non-empty and retryable boolean",
         )
     return _LiveReply(
         status="failed",
-        reason=error,
-        retryable=retryable,
+        reason="response is not a v3 appearance-refresh union",
+        retryable=True,
         exit_code=exit_code,
         response=decoded,
+        error="missing applied/deferred/failed",
     )
 
 
@@ -277,25 +341,24 @@ class AgsAppRefreshCoordinator(IAgsAppRefresher):
         except _AgsQueryError as exc:
             return [], str(exc)
 
-    def refresh(self, state: DesktopState, *, trigger: str = "reconcile") -> AppRefreshOutcome:
-        """Gate on the ledger, run both lanes, persist results atomically."""
-        appearance = appearance_hash_for_state(state, state_root=self._state_root)
+    def refresh(
+        self,
+        state: DesktopState,
+        *,
+        generation_hash: str,
+        trigger: str = "reconcile",
+    ) -> AppRefreshOutcome:
+        """Gate on the generation-keyed ledger and run both lanes.
+
+        The caller already holds ``converge.lock``; there is no nested
+        appearance-operation lock and no lock retry loop.
+        """
+        if not isinstance(generation_hash, str) or len(generation_hash) != 64:
+            raise ValueError(
+                f"generation_hash must be a 64-char hex generation, got {generation_hash!r}"
+            )
         run_id = self._run_id_factory()
-        try:
-            with hold_operation_lock(self._state_root):
-                return self._refresh_locked(state, appearance, run_id, trigger)
-        except TimeoutError as exc:
-            failure = ReloadFailure(
-                "AgsAppRefresh",
-                status="deferred",
-                reason=str(exc),
-            )
-            logger.warning("ags app refresh serialized behind another operation: %s", exc)
-            return AppRefreshOutcome(
-                appearance_hash=appearance,
-                run_id=run_id,
-                failures=(failure,),
-            )
+        return self._refresh_locked(state, generation_hash, run_id, trigger)
 
     # ------------------------------------------------------------------
 
@@ -471,33 +534,31 @@ class AgsAppRefreshCoordinator(IAgsAppRefresher):
                     )
                 )
 
-        # If the palette pointer moved while the lanes ran, no result may be
-        # recorded as applied for the old hash (AD-29). Downgrade to deferred so
-        # the next trigger refreshes against the authoritative appearance.
-        latest = self._state_repo.load_current()
-        if latest is not None:
-            latest_hash = appearance_hash_for_state(latest, state_root=self._state_root)
-            if latest_hash != appearance:
-                results = [
-                    self._downgrade_to_deferred(record) if record.status == "applied" else record
-                    for record in results
-                ]
-                ledger_apps = {
-                    key: self._deferred_state(value) if value.status == "applied" else value
-                    for key, value in ledger_apps.items()
-                }
-                failures.extend(
-                    ReloadFailure(
-                        record.app,
-                        instance=record.instance,
-                        mode=record.mode,
-                        status="deferred",
-                        reason="appearance changed during refresh",
-                    )
-                    for record in results
-                    if record.status == "deferred"
-                    and record.reason == "appearance changed during refresh"
+        # If the committed generation moved while the lanes ran, no result may
+        # be recorded as applied for the old generation. Downgrade to deferred
+        # so the next trigger refreshes against the authoritative generation.
+        latest_hash = GenerationStore(self._state_root).current_hash()
+        if latest_hash != appearance:
+            results = [
+                self._downgrade_to_deferred(record) if record.status == "applied" else record
+                for record in results
+            ]
+            ledger_apps = {
+                key: self._deferred_state(value) if value.status == "applied" else value
+                for key, value in ledger_apps.items()
+            }
+            failures.extend(
+                ReloadFailure(
+                    record.app,
+                    instance=record.instance,
+                    mode=record.mode,
+                    status="deferred",
+                    reason="generation changed during refresh",
                 )
+                for record in results
+                if record.status == "deferred"
+                and record.reason == "generation changed during refresh"
+            )
 
         results.sort(key=lambda record: record.discovery_index)
         failures.sort(key=lambda failure: (failure.app, failure.instance))
@@ -592,7 +653,7 @@ class AgsAppRefreshCoordinator(IAgsAppRefresher):
         argv = [
             str(ags),
             "request",
-            "palette-refresh",
+            "appearance-refresh",
             appearance,
             "-i",
             identity.instance,
@@ -625,7 +686,7 @@ class AgsAppRefreshCoordinator(IAgsAppRefresher):
                 error=str(exc),
             )
         else:
-            reply = _parse_live_reply(completed)
+            reply = _parse_live_reply(completed, appearance)
         duration_ms = max(0, int((self._clock() - started) * 1000))
         return (
             app,
@@ -777,7 +838,7 @@ class AgsAppRefreshCoordinator(IAgsAppRefresher):
             duration_ms=record.duration_ms,
             discovery_index=record.discovery_index,
             phase=record.phase,
-            reason="appearance changed during refresh",
+            reason="generation changed during refresh",
             retryable=True,
             argv=record.argv,
             exit_code=record.exit_code,
@@ -794,7 +855,7 @@ class AgsAppRefreshCoordinator(IAgsAppRefresher):
             mode=state.mode,
             status="deferred",
             appearance_hash=state.appearance_hash,
-            reason="appearance changed during refresh",
+            reason="generation changed during refresh",
             retryable=True,
         )
 

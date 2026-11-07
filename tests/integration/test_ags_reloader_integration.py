@@ -188,6 +188,9 @@ def test_ags_reloader_integration_restart_with_shim(
     reloader = AgsReloader(
         ags_path=shim,
         app_lister=lambda: [],
+        instance_lister=lambda: (
+            state.read_text().split() if state.is_file() else []
+        ),
         bar_pid_lister=lambda: (),
         systemd_unit_lister=lambda: (),
         launch_lock_path=tmp_path / "ags-launch.lock",

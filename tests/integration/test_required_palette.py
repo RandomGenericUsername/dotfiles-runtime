@@ -326,8 +326,8 @@ class TestPaletteFailureAbortsBeforeSwap:
         assert [payload["state"] for _, payload in client.published] == ["applying", "error"]
         first = client.published[0][1]
         last = client.published[-1][1]
-        assert first["stage"] == "generating_palette"
-        assert last["stage"] == "generating_palette"
+        assert first["stage"] == "converging"
+        assert last["stage"] == "palette"
         assert last["wallpaper_hash"] == expected_hash
         assert "tpr exploded" in str(last["error"])
         assert "exit 7" in str(last["error"])

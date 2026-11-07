@@ -466,9 +466,14 @@ class TestReconcileInspectDoctor:
         ).run()
         assert result.appearance_hash == appearance_generation_hash(PH, SH, "dark")
         assert result.appearance_skin == "glass" and result.appearance_mode == "dark"
-        assert (state_root / "current" / "appearance").is_symlink()
-        assert (spine / "config" / "ags" / "appearance.css").is_symlink()
-        # The v1 pointer family is retired (REQ-018).
+        assert result.generation_hash is not None
+        generation = state_root / "generations" / result.generation_hash
+        assert (generation / "manifest.json").is_file()
+        assert (generation / "appearance" / "ags.css").is_file()
+        assert (generation / "appearance" / "tokens.json").is_file()
+        assert (state_root / "current").is_symlink()
+        # v3 locality: no runtime convenience link in the install spine.
+        assert not (spine / "config" / "ags" / "appearance.css").exists()
         assert not (spine / "config" / "ags" / "skin.css").exists()
         assert not (spine / "config" / "ags" / "skin.json").exists()
 
@@ -500,13 +505,16 @@ class TestReconcileInspectDoctor:
             install_spine=spine,
             consumer_spec=StaticConsumerPathSpec(),
         ).run()
-        assert inspected.appearance_hash == appearance_generation_hash(PH, SH, "dark")
+        from runtime.adapters.generation_store import GenerationStore
+
+        generation_hash = GenerationStore(state_root).current_hash()
+        assert inspected.appearance_hash == generation_hash
         assert inspected.appearance_skin == "glass"
         assert inspected.appearance_mode == "dark"
         assert inspected.appearance_pointer is not None
         assert inspected.appearance_pointer.status == "ok"
         assert inspected.appearance_watch in ("ok", "unknown")
-        assert inspected.consumer_pointers["config/ags/appearance.css"].status == "ok"
+        assert "config/ags/appearance.css" not in inspected.consumer_pointers
         assert "config/ags/skin.css" not in inspected.consumer_pointers
         assert "config/ags/skin.json" not in inspected.consumer_pointers
 
@@ -516,8 +524,7 @@ class TestReconcileInspectDoctor:
             install_spine=spine,
         ).check()
         by_name = {item.name: item for item in report.items}
-        assert by_name["appearance:pointer"].status == "ok"
-        assert by_name["appearance:manifest"].status == "ok"
+        assert by_name["generation:identity"].status == "ok"
         assert by_name["appearance:watch"].status == "ok"
         assert "appearance:v1v2-skew" not in by_name
 
@@ -531,25 +538,51 @@ class TestReconcileInspectDoctor:
             state_root=state_root,
             install_spine=spine,
         ).check()
-        skew = {item.name: item for item in reappeared.items}["appearance:v1v2-skew"]
+        skew = {
+            item.name: item for item in reappeared.items
+        }["consumer/config/ags/skin.css"]
         assert skew.status == "diverged"
-        assert "retired v1 skin pointer reappeared" in skew.detail
+        assert "retired v1 skin pointer" in skew.detail
 
     def test_stale_generation_is_diverged_against_the_state_identity(
         self, tmp_path: Path
     ) -> None:
+        from runtime.adapters.generation_store import (
+            GenerationSpec,
+            GenerationStore,
+            generation_intent_hash,
+        )
+
         state_root = tmp_path / "state"
         spine = _spine(tmp_path)
         _write_palette(state_root, mode="dark")
-        _write_skin(state_root)
+        skin = _write_skin(state_root)
         _write_wallpaper_cache(state_root)
-        JsonStateRepository(state_root=state_root).save(_state(state_root))
-        _generate(tmp_path, mode="dark")
+        state = _state(state_root)
+        JsonStateRepository(state_root=state_root).save(state)
         entry, _, _ = _generate(tmp_path, mode="dark")
-        CacheSeeder(state_root).publish_appearance(spine, entry)  # type: ignore[arg-type]
+        assert entry is not None
+        intent_hash = generation_intent_hash(
+            wallpaper=state.wallpaper.content_hash,
+            palette=state.palette.entry_hash,  # type: ignore[union-attr]
+            skin=skin.name,
+            mode="dark",
+        )
+        GenerationStore(state_root).commit(
+            GenerationSpec(
+                state=state,
+                appearance=entry,  # type: ignore[arg-type]
+                mode="dark",
+                skin_name=skin.name,
+                skin_hash=skin.entry_hash,
+                intent_hash=intent_hash,
+                monitor_names=("DP-1",),
+                source_kind="cli",
+            )
+        )
 
-        # The palette now projects light mode, but the pointer still names the
-        # dark generation: the recorded-state identity must flag it.
+        # The palette now projects light mode, but the committed generation
+        # still records dark: the manifest-vs-state identity must diverge.
         _write_palette(state_root, mode="light")
         inspected = InspectStateUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
@@ -557,16 +590,16 @@ class TestReconcileInspectDoctor:
             install_spine=spine,
             consumer_spec=StaticConsumerPathSpec(),
         ).run()
-        assert inspected.appearance_hash == appearance_generation_hash(PH, SH, "light")
+        assert inspected.appearance_hash == GenerationStore(state_root).current_hash()
         assert inspected.appearance_pointer is not None
-        assert inspected.appearance_pointer.status == "diverged"
+        assert inspected.appearance_pointer.status == "ok"
         report = DoctorUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
             state_root=state_root,
             install_spine=spine,
         ).check()
         by_name = {item.name: item for item in report.items}
-        assert by_name["appearance:pointer"].status == "diverged"
+        assert by_name["generation:identity"].status == "diverged"
 
     def test_read_current_appearance_is_pointer_relative(self, tmp_path: Path) -> None:
         entry, _, state_root = _generate(tmp_path)

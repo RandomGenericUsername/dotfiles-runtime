@@ -176,23 +176,19 @@ def _hold_launch_lock(lock_path: Path) -> Iterator[None]:
 
     acquired = False
     try:
-        for poll_index in range(_LAUNCH_LOCK_POLLS):
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                if poll_index < _LAUNCH_LOCK_POLLS - 1:
-                    time.sleep(_LAUNCH_LOCK_POLL_INTERVAL)
-                continue
-            except OSError as exc:
-                raise _AgsLaunchLockError(
-                    f"cannot acquire AGS launch lock {lock_path}: {exc}"
-                ) from exc
-            acquired = True
-            break
-        if not acquired:
+        try:
+            # One non-blocking attempt: a held launch lock is a busy failure,
+            # never a sleep/retry loop. The kernel releases it on death.
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
             raise _AgsLaunchLockError(
-                f"timed out waiting for the shared AGS launch lock {lock_path}"
-            )
+                f"AGS launch lock is held by another process: {lock_path}"
+            ) from exc
+        except OSError as exc:
+            raise _AgsLaunchLockError(
+                f"cannot acquire AGS launch lock {lock_path}: {exc}"
+            ) from exc
+        acquired = True
         yield
     finally:
         if acquired:
@@ -455,6 +451,7 @@ class AgsReloader(IDesktopReloader):
         systemd_unit_lister: Callable[[], Sequence[AgsSystemdUnit]] | None = None,
         systemctl_runner: SystemdCommandRunner | None = None,
         systemctl: str = "systemctl",
+        name_watcher: object | None = None,
     ) -> None:
         self._ags_path: Path | None = _resolve_ags(ags_path)
         self._app_lister = app_lister
@@ -466,6 +463,18 @@ class AgsReloader(IDesktopReloader):
         self._systemd_unit_lister = systemd_unit_lister
         self._systemctl_runner = systemctl_runner or self._default_systemctl_runner
         self._systemctl = systemctl
+        #: Production uses the real D-Bus ``NameOwnerChanged`` watcher. A
+        #: caller that injects an ``instance_lister`` is a headless/test
+        #: harness with no guarantee of a bus, so the lister remains the
+        #: deterministic oracle for that environment.
+        if name_watcher is not None:
+            self._name_watcher = name_watcher
+        elif instance_lister is not None:
+            self._name_watcher = None
+        else:
+            from runtime.adapters.dbus_name_watcher import DbusNameWatcher
+
+            self._name_watcher = DbusNameWatcher()
 
     def _default_bar_pid_lister(self) -> Sequence[int]:
         return _discover_bar_pids(self._ags_path)
@@ -540,7 +549,7 @@ class AgsReloader(IDesktopReloader):
         deadlock the unit's own start. Serialization comes from the refresh
         operation lock and the one-unit-at-a-time restart lane.
         """
-        argv = (self._systemctl, "--user", "restart", unit.unit)
+        argv = (self._systemctl, "--user", "restart", "--wait", unit.unit)
         try:
             result = self._systemctl_runner(argv)
         except (FileNotFoundError, PermissionError, OSError, ValueError) as exc:
@@ -571,6 +580,17 @@ class AgsReloader(IDesktopReloader):
 
     def _wait_for_instance(self, name: str, *, label: str) -> bool:
         """Wait for the instance name after a systemd-owned restart."""
+        watcher = self._name_watcher
+        if watcher is not None:
+            try:
+                return bool(watcher.wait_for_owner(name))  # type: ignore[attr-defined]
+            except Exception as exc:
+                logger.warning(
+                    "AGS restart failed for %s: name-owner event wait failed: %s",
+                    label,
+                    exc,
+                )
+                return False
         for poll_index in range(_STARTUP_WAIT_POLLS):
             try:
                 if name in self._owned_instances():
@@ -756,6 +776,19 @@ class AgsReloader(IDesktopReloader):
 
     def _wait_for_release(self, name: str, old_pids: Sequence[int]) -> bool:
         """Wait up to 5 s for the old name (and known wrapper pids) to go away."""
+        watcher = self._name_watcher
+        if watcher is not None:
+            try:
+                if not watcher.wait_for_release(name):  # type: ignore[attr-defined]
+                    return False
+            except Exception as exc:
+                logger.warning(
+                    "AGS restart failed for %s: name-owner release wait failed: %s",
+                    name,
+                    exc,
+                )
+                return False
+            return not any(self._process_alive(pid) for pid in old_pids)
         for poll_index in range(_QUIT_WAIT_POLLS):
             if self._released(name, old_pids):
                 return True
@@ -778,6 +811,30 @@ class AgsReloader(IDesktopReloader):
         the name are surfaced failures.
         """
         poll = proc.poll  # type: ignore[attr-defined]
+        watcher = self._name_watcher
+        if watcher is not None:
+            try:
+                owned = bool(watcher.wait_for_owner(name))  # type: ignore[attr-defined]
+            except Exception as exc:
+                logger.warning(
+                    "AGS restart failed for %s: name-owner event wait failed: %s",
+                    label,
+                    exc,
+                )
+                return False
+            code = poll()
+            if code is not None and code != 0:
+                logger.warning(
+                    "AGS restart failed for %s: process exited with code %s", label, code
+                )
+                return False
+            if not owned:
+                logger.warning(
+                    "AGS restart failed for %s: %s did not register", label, name
+                )
+                return False
+            logger.info("AGS restart for %s: %s is registered", label, name)
+            return True
         for poll_index in range(_STARTUP_WAIT_POLLS):
             code = poll()
             if code is not None:

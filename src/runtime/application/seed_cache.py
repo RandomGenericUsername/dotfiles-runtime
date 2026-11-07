@@ -30,11 +30,18 @@ Architecture:
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
-from runtime.adapters.appearance import AppearanceGenerator
+from runtime.adapters.appearance import AppearanceGenerator, detect_palette_mode
+from runtime.adapters.cache import cache_entry_path
+from runtime.adapters.generation_store import (
+    GenerationSpec,
+    GenerationStore,
+    generation_intent_hash,
+)
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder
 from runtime.application.bar_backdrop import with_bar_backdrops
@@ -105,6 +112,7 @@ class SeedCacheUseCase:
         skin_expander: ISkinExpander | None = None,
         appearance_generator: IAppearanceGenerator | None = None,
         appearance_keep: int = 5,
+        generation_store: GenerationStore | None = None,
     ) -> None:
         self._state_repo = state_repo
         self._factory = factory
@@ -118,6 +126,7 @@ class SeedCacheUseCase:
         #: publication is part of the normal seed flow, not an opt-in.
         self._appearance = appearance_generator or AppearanceGenerator(state_root)
         self._appearance_keep = appearance_keep
+        self._generation_store = generation_store or GenerationStore(state_root)
         # Shared derivation plumbing (Story 1.13): spine discovery + per-layer
         # ensure-entry pattern live in application/derive.py; seed and apply
         # compose the same pipeline so behavior stays identical.
@@ -196,7 +205,7 @@ class SeedCacheUseCase:
 
         # Populate cache entries
         # 5a. Wallpaper: hardlink into cache (idempotent after a crashed run)
-        cached_wallpaper = self._seeder.hardlink_wallpaper(default_png, wallpaper_hash)
+        self._seeder.hardlink_wallpaper(default_png, wallpaper_hash)
         self._seeder.write_wallpaper_meta(
             wallpaper_hash=wallpaper_hash,
             source_path=str(default_png),
@@ -251,29 +260,40 @@ class SeedCacheUseCase:
             skin=skin_entry,
         )
 
-        # 7. Swap sequence (AD-6, AD-17)
-        # 7a. Repoint current/ symlinks (last step before save)
-        self._seeder.repoint_current_symlinks(
-            wallpaper_target=cached_wallpaper,
-            monitor_names=monitor_names,
-            palette_entry_hash=palette_entry.entry_hash,
-            effects_entry_hash=effects_entry.entry_hash if effects_entry else None,
-            icons_entry_hash=icons_entry.entry_hash if icons_entry else None,
+        # 7. Commit exactly one v3 generation, then the derived compat view.
+        if skin_entry is None:
+            from runtime.application.reconcile import default_skin_entry
+
+            skin_entry = default_skin_entry(self._state_root, self._seeder)
+            state = dataclasses.replace(state, skin=skin_entry)
+        if appearance_entry is None:
+            appearance_entry = self._populate_appearance(palette_entry, skin_entry)
+        if appearance_entry is None:
+            raise RuntimeError("seeding refused: the appearance layer is unavailable")
+        colors_path = (
+            cache_entry_path(self._state_root, "palettes", palette_entry.entry_hash)
+            / "colors.yaml"
         )
-
-        # 7a1. The one appearance pointer + convenience links. The v2
-        # publication also prunes the retired v1 skin links.
-        if appearance_entry is not None:
-            self._seeder.publish_appearance(self._install_spine, appearance_entry)
-
-        # 7a2. R2 consumer-path symlinks (Epic 4): point the spine consumer
-        # path at current/ so desktop consumers read the active palette.
-        # Runs after the current/ repoint (the target must exist first).
-        self._seeder.repoint_consumer_symlinks(
-            self._install_spine,
-            palette_entry.entry_hash,
+        mode = detect_palette_mode(colors_path.read_text(encoding="utf-8"))
+        self._generation_store.commit(
+            GenerationSpec(
+                state=state,
+                appearance=appearance_entry,
+                mode=mode,
+                skin_name=skin_entry.name,
+                skin_hash=skin_entry.entry_hash,
+                intent_hash=generation_intent_hash(
+                    wallpaper=wallpaper_hash,
+                    palette=palette_entry.entry_hash,
+                    skin=skin_entry.name,
+                    mode=mode,
+                    effects=effects_entry.entry_hash if effects_entry else None,
+                    icons=icons_entry.entry_hash if icons_entry else None,
+                ),
+                monitor_names=tuple(monitor_names),
+                source_kind="cli",
+            )
         )
-
         # 7b. Write current.json via state_repo (atomic tmp + os.replace)
         self._state_repo.save(state)
 

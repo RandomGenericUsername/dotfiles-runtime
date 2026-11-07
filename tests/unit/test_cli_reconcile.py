@@ -86,6 +86,7 @@ def _reconcile_result() -> Any:
         skipped=[],
         state=state,
         cache_regenerated=[],
+        generation_hash="a" * 64,
     )
 
 
@@ -160,7 +161,7 @@ class TestReconcileCompositionRootWiring:
                 captured["wallpaper_applier"] = kwargs.get("wallpaper_applier")
                 captured["app_refresher"] = kwargs.get("app_refresher")
 
-            def run(self) -> Any:
+            def run(self, *args: Any, **kwargs: Any) -> Any:
                 return _reconcile_result()
 
         monkeypatch.setattr(
@@ -200,7 +201,7 @@ class TestReconcileCompositionRootWiring:
             def __init__(self, **kwargs: Any) -> None:
                 captured["reloaders"] = kwargs.get("reloaders")
 
-            def run(self) -> Any:
+            def run(self, *args: Any, **kwargs: Any) -> Any:
                 return _reconcile_result()
 
         monkeypatch.setattr(
@@ -235,7 +236,7 @@ class TestReconcileCompositionRootWiring:
             def __init__(self, **kwargs: Any) -> None:
                 captured["palette_producer"] = kwargs.get("palette_producer")
 
-            def run(self) -> Any:
+            def run(self, *args: Any, **kwargs: Any) -> Any:
                 return _reconcile_result()
 
         monkeypatch.setattr(

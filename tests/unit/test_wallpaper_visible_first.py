@@ -509,97 +509,91 @@ class TestPassThroughSeedMutex:
 class TestConvergeCompositionRegression:
     """Task 1.2: Phase-5 converge composition is behavior-preserving."""
 
-    def test_suppress_history_reaches_all_three_seeders(
+    def test_suppress_history_reaches_the_one_converge(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         import runtime.cli.main as cli_main
         from runtime.cli.main import _WallpaperSetResult
-
-        seeders: list[Any] = []
-
-        class _FakeSwapUseCase:
-            def __init__(self, **kwargs: Any) -> None:
-                seeders.append(kwargs["seeder"])
-
-            def run(
-                self,
-                image_path: Path,
-                *,
-                palette: Any = None,
-                wallpaper_hash: str | None = None,
-            ) -> Any:
-                return SimpleNamespace(wallpaper_hash=wallpaper_hash or "f" * 64)
-
-        class _FakeApplyUseCase:
-            def __init__(self, **kwargs: Any) -> None:
-                seeders.append(kwargs["seeder"])
-
-            def prepare_palette(
-                self, image_path: Path, *, on_progress: Any | None = None
-            ) -> Any:
-                if on_progress is not None:
-                    on_progress("palette_generated")
-                return SimpleNamespace(
-                    wallpaper_hash="f" * 64,
-                    palette=SimpleNamespace(entry_hash="e" * 64),
-                    cache_hit=True,
-                )
-
-            def run(
-                self,
-                image_path: Path,
-                *,
-                wallpaper_hash: str | None = None,
-                prepared_palette: Any | None = None,
-                on_progress: Any | None = None,
-            ) -> Any:
-                return SimpleNamespace(
-                    palette=prepared_palette.palette,
-                    wallpaper_hash="f" * 64,
-                    cache_hit_palette=True,
-                    cache_hit_effects=True,
-                    cache_hit_icons=True,
-                )
-
-        class _FakeReconcileUseCase:
-            def __init__(self, **kwargs: Any) -> None:
-                seeders.append(kwargs["seeder"])
-
-            def run(
-                self,
-                trigger: str = "reconcile",
-                *,
-                wallpaper_already_applied: bool = False,
-            ) -> Any:
-                return SimpleNamespace(
-                    state=SimpleNamespace(wallpaper=SimpleNamespace(content_hash="f" * 64)),
-                    reload_failures=[],
-                )
-
-        monkeypatch.setattr("runtime.application.swap_visible.SwapVisibleUseCase", _FakeSwapUseCase)
-        monkeypatch.setattr(
-            "runtime.application.apply_wallpaper.ApplyWallpaperUseCase", _FakeApplyUseCase
-        )
-        monkeypatch.setattr(
-            "runtime.application.reconcile.ReconcileDesktopStateUseCase",
-            _FakeReconcileUseCase,
+        from runtime.application.reconcile import ReconcileResult
+        from runtime.domain.models import (
+            BackendType,
+            DesktopState,
+            FitMode,
+            MonitorWallpaperConfig,
+            PaletteArtifacts,
+            PaletteEntry,
+            WallpaperEntry,
         )
 
+        captured: dict[str, Any] = {}
+        wh = "f" * 64
+        state = DesktopState(
+            schema_version=2,
+            wallpaper=WallpaperEntry(
+                hash_algorithm="sha256",
+                kind="wallpaper",
+                content_hash=wh,
+                source_path=str(tmp_path / "wall.png"),
+                imported_at="2026-11-06T00:00:00Z",
+            ),
+            monitors={
+                "DP-1": MonitorWallpaperConfig(
+                    backend=BackendType.hyprpaper,
+                    source_hash=wh,
+                    fit_mode=FitMode.cover,
+                    mpv_options=None,
+                    ipc_socket=None,
+                )
+            },
+            palette=PaletteEntry(
+                hash_algorithm="sha256",
+                kind="palette",
+                entry_hash="e" * 64,
+                source_wallpaper_hash=wh,
+                input_template_hash="c" * 64,
+                artifact_hashes=PaletteArtifacts(
+                    colors_yaml="a" * 64,
+                    colors_conf="b" * 64,
+                    colors_gtk_css="d" * 64,
+                    colors_adw_css="e" * 64,
+                    colors_sequences="f" * 64,
+                    colors_rasi="a" * 64,
+                    colors_kitty="a" * 64,
+                    colors_btop="a" * 64,
+                ),
+                generated_at="2026-11-06T00:00:00Z",
+            ),
+            effects=None,
+            icons=None,
+            applied_at="2026-11-06T00:00:00Z",
+        )
+
+        def _fake_converge(**kwargs: Any) -> Any:
+            captured.update(kwargs)
+            return ReconcileResult(
+                repointed=[],
+                skipped=[],
+                state=state,
+                cache_regenerated=[],
+                generation_hash="a" * 64,
+            )
+
+        monkeypatch.setattr(cli_main, "_converge_cli", _fake_converge)
+        monkeypatch.setattr(cli_main, "_resolve_state_root", lambda: tmp_path / "state")
+        monkeypatch.setattr(cli_main, "_resolve_install_spine", lambda: tmp_path / "install")
         img = tmp_path / "wall.png"
         img.write_bytes(b"converge composition bytes")
 
         class _Client:
-            def __init__(self) -> None:
-                self.published: list[Any] = []
-
             def publish(self, topic: str, payload: Any) -> None:
-                self.published.append((topic, dict(payload)))
+                return None
 
         result = cli_main._run_wallpaper_set(img, suppress_history=True, client=_Client())
 
         assert isinstance(result, _WallpaperSetResult)
-        assert len(seeders) == 3
-        assert [s._suppress_history for s in seeders] == [True, True, True]
+        assert captured["suppress_history"] is True
+        assert captured["trigger"] == "set"
+        assert captured["wallpaper_path"] == img.resolve()
 
     def test_run_converge_still_composes_wallpaper_set(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -691,5 +685,5 @@ class TestVisibleConsumerAudit:
         refresh = (repo_root / "src" / "runtime" / "adapters" / "ags_app_refresh.py").read_text(
             encoding="utf-8"
         )
-        assert '"palette-refresh"' in refresh
+        assert '"appearance-refresh"' in refresh
         assert "wallpaper.state" not in refresh

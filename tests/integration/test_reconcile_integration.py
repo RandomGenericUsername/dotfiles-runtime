@@ -220,23 +220,28 @@ class TestReconcileIntegration:
 
         # All symlinks point at the apply-produced cache entries
         current = state_root / "current"
-        links = {p.name: Path(p.readlink()) for p in current.iterdir() if p.is_symlink()}
-        assert links["wallpaper-DP-1.png"] == state_root / "cache" / "wallpapers" / wh / "wallpaper.png"
-        assert links["colors.conf"] == state_root / "cache" / "palettes" / peh / "colors.conf"
-        assert links["colors.gtk.css"] == state_root / "cache" / "palettes" / peh / "colors.gtk.css"
-        assert links["colors.yaml"] == state_root / "cache" / "palettes" / peh / "colors.yaml"
-        assert links["colors.adw.css"] == state_root / "cache" / "palettes" / peh / "colors.adw.css"
+        assert (current / "wallpaper-DP-1.png").resolve() == (
+            state_root / "cache" / "wallpapers" / wh / "wallpaper.png"
+        ).resolve()
         pal = state_root / "cache" / "palettes" / peh
-        assert links["colors.sequences"] == pal / "colors.sequences"
-        assert links["effects"] == state_root / "cache" / "effects" / eeh
-        assert links["icons"] == state_root / "cache" / "icons" / ieh
+        for name in ("colors.conf", "colors.gtk.css", "colors.yaml", "colors.adw.css", "colors.sequences"):
+            assert (current / name).resolve() == (pal / name).resolve()
+        assert (current / "effects").resolve() == (
+            state_root / "cache" / "effects" / eeh
+        ).resolve()
+        assert (current / "icons").resolve() == (
+            state_root / "cache" / "icons" / ieh
+        ).resolve()
 
-        # All symlink targets resolve into cache/
-        for target in links.values():
-            assert str(target).startswith(str(state_root / "cache"))
-
-        # No copied files — every entry is a symlink
+        # Generation-local aliases all resolve into cache/.
         for p in current.iterdir():
+            if p.is_symlink():
+                assert str(p.resolve()).startswith(str(state_root / "cache"))
+
+        # Only the generation's real files are allowed to be non-symlinks.
+        for p in current.iterdir():
+            if p.name in ("manifest.json", "appearance", "wallpaper"):
+                continue
             assert p.is_symlink()
         assert result.repointed
         assert result.skipped == []

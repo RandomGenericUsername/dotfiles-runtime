@@ -10,5 +10,11 @@ class IAgsAppRefresher(ABC):
     """Refresh the configured AGS apps for one applied appearance (AD-27…30)."""
 
     @abstractmethod
-    def refresh(self, state: DesktopState, *, trigger: str = "reconcile") -> AppRefreshOutcome:
-        """Apply the appearance to every app that is not already current."""
+    def refresh(
+        self,
+        state: DesktopState,
+        *,
+        generation_hash: str,
+        trigger: str = "reconcile",
+    ) -> AppRefreshOutcome:
+        """Apply the named generation to every app that is not already current."""

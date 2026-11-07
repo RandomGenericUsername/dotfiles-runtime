@@ -9,12 +9,10 @@ app whose last result was not applied. Writes are atomic (temp file + replace
 
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import os
 import tempfile
-import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -56,42 +54,18 @@ def operation_lock_path(state_root: Path) -> Path:
 
 
 @contextmanager
-def hold_operation_lock(state_root: Path, *, timeout: float = 10.0) -> Iterator[None]:
-    """Hold the single appearance-operation lock (bounded flock).
+def hold_operation_lock(state_root: Path, *, timeout: float | None = None) -> Iterator[None]:
+    """Compatibility alias for the one blocking convergence lock.
 
-    Raises:
-        TimeoutError: another operation held the lock for the whole timeout.
-        OSError: the lock file could not be opened/created.
+    v3 has a single ``converge.lock``; the old bounded retry loop is gone.
+    ``timeout`` is accepted only for call-site compatibility and is never a
+    success condition (the flock blocks, and process death releases it).
     """
-    path = operation_lock_path(state_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600)
-    acquired = False
-    deadline = time.monotonic() + timeout
-    try:
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(
-                        f"timed out waiting for the appearance operation lock {path}"
-                    ) from None
-                time.sleep(0.05)
-                continue
-            acquired = True
-            break
+    from runtime.adapters.converge_lock import ConvergeLock
+
+    del timeout
+    with ConvergeLock(state_root).hold():
         yield
-    finally:
-        if acquired:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            except OSError:
-                pass
-        try:
-            os.close(fd)
-        except OSError:
-            pass
 
 
 def appearance_hash_for_state(state: object, *, state_root: Path | None = None) -> str:

@@ -256,17 +256,10 @@ class TestSeedCacheIntegration:
         before = set(install_spine.rglob("*"))
         use_case.run()
 
-        # Only the ags pointer symlink may appear — no created parent dirs,
-        # no gtk pointer files (their parents are absent pre-gt-3-1).
+        # v3: the install spine is provisioning-owned; seeding writes only
+        # under the runtime state root.
         after = set(install_spine.rglob("*"))
-        new_files = after - before
-        allowed = {
-            install_spine / "config" / "ags" / "colors.css",
-        }
-        assert new_files == allowed, (
-            f"only the spec'd consumer pointer symlink may be written under "
-            f"install_spine; got {new_files}"
-        )
+        assert after == before
 
     def test_seed_creates_all_consumer_pointers_when_gtk_dirs_provisioned(
         self, tmp_path: Path
@@ -280,15 +273,12 @@ class TestSeedCacheIntegration:
         use_case.run()
 
         current = state_root / "current"
-        assert os.readlink(install_spine / "config" / "ags" / "colors.css") == str(
-            current / "colors.gtk.css"
-        )
-        assert os.readlink(install_spine / "config" / "gtk-3.0" / "colors.css") == str(
-            current / "colors.gtk.css"
-        )
-        assert os.readlink(install_spine / "config" / "gtk-4.0" / "colors.css") == str(
-            current / "colors.adw.css"
-        )
+        assert current.is_symlink()
+        assert (current / "palette" / "colors.gtk.css").is_file()
+        assert (current / "palette" / "colors.adw.css").is_file()
+        assert not (install_spine / "config" / "ags" / "colors.css").exists()
+        assert not (install_spine / "config" / "gtk-3.0" / "colors.css").exists()
+        assert not (install_spine / "config" / "gtk-4.0" / "colors.css").exists()
 
     def test_corrupt_current_json_fails_loudly(self, tmp_path: Path) -> None:
         """Corrupt state must surface as a loud error, not a silent reseed."""

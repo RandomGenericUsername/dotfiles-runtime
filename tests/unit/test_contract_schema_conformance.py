@@ -24,6 +24,8 @@ _SCHEMAS = (
     "appearance-manifest",
     "appearance-json",
     "appearance-artifact",
+    "generation-manifest",
+    "appearance-refresh-result",
 )
 
 

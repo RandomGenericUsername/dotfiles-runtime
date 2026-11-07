@@ -218,9 +218,13 @@ class TestCrashRecoveryIntegration:
         ).run()
 
         # Symlinks match current.json
-        assert wh in os.readlink(state_root / "current" / "wallpaper-DP-1.png")
+        assert (state_root / "current" / "wallpaper-DP-1.png").resolve() == (
+            state_root / "cache" / "wallpapers" / wh / "wallpaper.png"
+        ).resolve()
         if peh:
-            assert peh in os.readlink(state_root / "current" / "colors.conf")
+            assert (state_root / "current" / "colors.conf").resolve() == (
+                state_root / "cache" / "palettes" / peh / "colors.conf"
+            ).resolve()
         # Cache-hit verification
         assert csg.calls == 0 and weg.calls == 0 and itr.calls == 0
         assert result.cache_regenerated == []
@@ -453,5 +457,5 @@ class TestCrashRecoveryIntegration:
         t2.join()
         assert not errors
         # symlinks still correct
-        assert loaded.wallpaper.content_hash in os.readlink(state_root / "current" / "wallpaper-DP-1.png")
+        assert (state_root / "current" / "wallpaper-DP-1.png").resolve() == (state_root / "cache" / "wallpapers" / loaded.wallpaper.content_hash / "wallpaper.png").resolve()
 

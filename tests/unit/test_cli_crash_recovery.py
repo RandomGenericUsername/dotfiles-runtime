@@ -276,7 +276,12 @@ class TestCliCrashRecoveryLogging:
             result = runner.invoke(app, ["reconcile"])
 
         assert result.exit_code == 0
-        assert any("recovery: reverted" in r.message for r in caplog.records)
+        assert any("committed generation" in r.message for r in caplog.records)
+        from runtime.adapters.generation_store import GenerationStore
+
+        manifest = GenerationStore(state_root).current_manifest()
+        assert manifest is not None
+        assert manifest["intent"]["wallpaper"] == loaded.wallpaper.content_hash
 
     def test_reconcile_no_stray_logs_debug(self, tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch) -> None:
         state_root = tmp_path / "dotfiles"
@@ -310,7 +315,10 @@ class TestCliCrashRecoveryLogging:
             result = runner.invoke(app, ["reconcile"])
 
         assert result.exit_code == 0
-        assert any("no stray symlinks detected" in r.message for r in caplog.records)
+        assert any(
+            "generation commit pointer is authoritative" in r.message
+            for r in caplog.records
+        )
 
     @pytest.mark.skip(reason="reload adapters not yet implemented")
     def test_reconcile_reload_failure_exits_nonzero(self) -> None:

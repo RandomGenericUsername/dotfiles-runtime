@@ -472,9 +472,10 @@ def test_inspect_prints_resolved_skin_and_tokens(tmp_path: Path) -> None:
             "chip-min": 0,
         },
     }
-    assert inspected.consumer_pointers["config/ags/colors.css"].status == "ok"
     assert "config/ags/skin.css" not in inspected.consumer_pointers
     assert "config/ags/skin.json" not in inspected.consumer_pointers
+    assert inspected.appearance_skin == "glass"
+    assert inspected.appearance_mode == "dark"
 
 
 def test_v1_skin_pointers_are_retired_and_appearance_links_are_derived() -> None:
@@ -494,7 +495,7 @@ def test_v1_skin_pointers_are_retired_and_appearance_links_are_derived() -> None
     assert spec.appearance_pointers(["../escape"]) == ()
 
 
-def test_every_appearance_target_gets_a_link_and_no_v1_pointer(tmp_path: Path) -> None:
+def test_every_appearance_target_gets_a_sheet_and_no_v1_pointer(tmp_path: Path) -> None:
     config_dirs = ("ags", "ags-clipboard", "ags-notifications")
     spine, state_root, expander = _make_reconcile_world(
         tmp_path,
@@ -505,19 +506,20 @@ def test_every_appearance_target_gets_a_link_and_no_v1_pointer(tmp_path: Path) -
     result = _reconcile(tmp_path, spine, expander).run()
 
     assert result.state.skin is not None
+    assert result.generation_hash is not None
+    generation = state_root / "generations" / result.generation_hash
+    assert (generation / "manifest.json").is_file()
     for config_dir in config_dirs:
-        appearance = spine / "config" / config_dir / "appearance.css"
-        assert appearance.is_symlink()
-        assert appearance.resolve() == (
-            state_root / "current" / "appearance" / f"{config_dir}.css"
-        ).resolve()
+        assert (generation / "appearance" / f"{config_dir}.css").is_file()
+        # v3 locality: the runtime writes no install-spine convenience link.
+        assert not (spine / "config" / config_dir / "appearance.css").exists()
         assert not (spine / "config" / config_dir / "skin.css").exists()
         assert not (spine / "config" / config_dir / "skin.json").exists()
     assert not (state_root / "current" / "skins").exists()
     assert not (state_root / "current" / "skin.json").exists()
 
 
-def test_absent_app_config_dir_is_skipped_not_created(
+def test_absent_app_config_dir_does_not_change_the_generation(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     spine, state_root, expander = _make_reconcile_world(
@@ -526,17 +528,16 @@ def test_absent_app_config_dir_is_skipped_not_created(
         installed_config_dirs=("ags",),
     )
 
-    with caplog.at_level(logging.DEBUG, logger="runtime.adapters.seeder"):
-        _reconcile(tmp_path, spine, expander).run()
+    result = _reconcile(tmp_path, spine, expander).run()
 
-    assert (spine / "config" / "ags" / "appearance.css").is_symlink()
-    assert not (spine / "config" / "ags" / "skin.css").exists()
+    assert result.generation_hash is not None
+    generation = state_root / "generations" / result.generation_hash
+    # The generation is complete for every skin target; installing an app is
+    # not a condition for the committed appearance.
+    assert (generation / "appearance" / "ags.css").is_file()
+    assert (generation / "appearance" / "ags-capture.css").is_file()
+    assert not (spine / "config" / "ags" / "appearance.css").exists()
     assert not (spine / "config" / "ags-capture").exists()
-    assert any(
-        "config dir absent" in record.getMessage()
-        and "ags-capture" in record.getMessage()
-        for record in caplog.records
-    )
 
 
 def test_inspect_and_doctor_report_appearance_not_v1_pointers(tmp_path: Path) -> None:
@@ -555,10 +556,12 @@ def test_inspect_and_doctor_report_appearance_not_v1_pointers(tmp_path: Path) ->
         consumer_spec=StaticConsumerPathSpec(),
     ).run()
     for config_dir in config_dirs:
-        assert inspected.consumer_pointers[f"config/{config_dir}/appearance.css"].status == "ok"
+        assert f"config/{config_dir}/appearance.css" not in inspected.consumer_pointers
         assert f"config/{config_dir}/skin.css" not in inspected.consumer_pointers
         assert f"config/{config_dir}/skin.json" not in inspected.consumer_pointers
-    assert "config/ags-icme/skin.css" not in inspected.consumer_pointers
+    assert inspected.appearance_skin == "glass"
+    assert inspected.appearance_pointer is not None
+    assert inspected.appearance_pointer.status == "ok"
 
     report = DoctorUseCase(
         state_repo=JsonStateRepository(state_root=state_root),
@@ -568,11 +571,10 @@ def test_inspect_and_doctor_report_appearance_not_v1_pointers(tmp_path: Path) ->
     consumer = {
         item.name: item.status for item in report.items if item.kind == "consumer"
     }
-    for config_dir in config_dirs:
-        assert consumer[f"consumer/config/{config_dir}/appearance.css"] == "ok"
-        assert f"consumer/config/{config_dir}/skin.css" not in consumer
-    assert "consumer/config/ags-icme/skin.css" not in consumer
-    assert "appearance:v1v2-skew" not in {item.name for item in report.items}
+    assert not any("appearance.css" in name for name in consumer)
+    assert not any("skin.css" in name or "skin.json" in name for name in consumer)
+    by_name = {item.name: item for item in report.items}
+    assert by_name["generation:identity"].status == "ok"
 
 
 def test_retired_v1_skin_links_are_pruned_on_repoint(tmp_path: Path) -> None:
@@ -601,12 +603,13 @@ def test_retired_v1_skin_links_are_pruned_on_repoint(tmp_path: Path) -> None:
     for config_dir in ("ags", "ags-clipboard"):
         assert not (spine / "config" / config_dir / "skin.css").is_symlink()
         assert not (spine / "config" / config_dir / "skin.json").is_symlink()
-    assert appearance.is_symlink()
+    assert not appearance.is_symlink()
     assert user_file.read_text(encoding="utf-8") == "user-owned\n"
     assert user_link.is_symlink()
     assert set(removed) == {
         spine / "config" / "ags" / "skin.css",
         spine / "config" / "ags" / "skin.json",
+        spine / "config" / "ags" / "appearance.css",
         spine / "config" / "ags-clipboard" / "skin.css",
         spine / "config" / "ags-clipboard" / "skin.json",
     }
@@ -626,7 +629,6 @@ def test_stale_v1_links_pruned_but_palette_and_user_files_kept(
     seeder = CacheSeeder(state_root)
 
     seeder.repoint_consumer_symlinks(spine, PH)
-    ags_colors_before = (spine / "config" / "ags" / "colors.css").readlink()
     for config_dir in ("ags", "ags-clipboard"):
         (spine / "config" / config_dir / "skin.css").symlink_to(
             current / "skins" / f"{config_dir}.css"
@@ -642,7 +644,7 @@ def test_stale_v1_links_pruned_but_palette_and_user_files_kept(
     for config_dir in ("ags", "ags-clipboard"):
         assert not (spine / "config" / config_dir / "skin.css").is_symlink()
         assert not (spine / "config" / config_dir / "skin.json").is_symlink()
-    assert (spine / "config" / "ags" / "colors.css").readlink() == ags_colors_before
+    assert not (spine / "config" / "ags" / "colors.css").exists()
     assert user_file.read_text(encoding="utf-8") == "user-owned\n"
     assert user_link.is_symlink()
 
@@ -670,9 +672,11 @@ def test_retired_v1_links_are_pruned_through_a_symlinked_config_dir(
 
     removed = CacheSeeder(state_root).prune_v1_skin_pointers(spine)
 
-    assert set(removed) == {link / "skin.css", link / "skin.json"}
-    assert not (app / "skin.css").is_symlink()
-    assert not (app / "skin.json").is_symlink()
+    # v3 immutability: a config dir that is a symlink into an app tag is
+    # never followed, so no runtime write lands inside the tag.
+    assert removed == []
+    assert (app / "skin.css").is_symlink()
+    assert (app / "skin.json").is_symlink()
     assert appearance.is_symlink()
     assert user_file.read_text(encoding="utf-8") == "user-owned\n"
 

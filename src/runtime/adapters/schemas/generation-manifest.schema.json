@@ -1,0 +1,333 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://dotfiles.local/schemas/generation-manifest.schema.json",
+  "title": "Generation manifest (version 3)",
+  "description": "The manifest written last inside state/generations/<generationHash>/manifest.json. The directory name and the state/current target basename are the generationHash. Layers are immutable content-addressed entries referenced by relative generation-local paths; appearance is the one composed token document plus one CSS sheet per target config dir. A consumer rejects a manifest whose generationHash, layer hashes, relative paths, mode or appearance targets do not validate. Manifest values are opaque hashes and identities only: no literal colours, no structure and no variants.",
+  "status": "frozen",
+  "type": "object",
+  "additionalProperties": false,
+  "propertyNames": {
+    "$ref": "#/definitions/forbiddenName"
+  },
+  "required": [
+    "version",
+    "generationHash",
+    "created",
+    "committed",
+    "layers",
+    "skin",
+    "appearance",
+    "mode",
+    "intent",
+    "source"
+  ],
+  "properties": {
+    "version": {
+      "const": 3,
+      "description": "Generation manifest version; exactly 3."
+    },
+    "generationHash": {
+      "$ref": "#/definitions/hash",
+      "description": "Canonical generation identity; must equal the generation directory basename and the state/current target basename."
+    },
+    "created": {
+      "$ref": "#/definitions/created"
+    },
+    "committed": {
+      "$ref": "#/definitions/committed"
+    },
+    "layers": {
+      "$ref": "#/definitions/layers"
+    },
+    "skin": {
+      "$ref": "#/definitions/skin"
+    },
+    "appearance": {
+      "$ref": "#/definitions/appearance"
+    },
+    "mode": {
+      "$ref": "#/definitions/mode"
+    },
+    "intent": {
+      "$ref": "#/definitions/intent"
+    },
+    "source": {
+      "$ref": "#/definitions/source"
+    }
+  },
+  "definitions": {
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "A lowercase 64-character SHA-256 hex digest."
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "dark",
+        "light"
+      ],
+      "description": "The palette mode selected at generation. Mode is a generation input and part of generation identity."
+    },
+    "skinName": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "description": "Selected skin name."
+    },
+    "configDir": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$",
+      "description": "Exactly one lowercase app config-directory segment."
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._:/@+-]*$",
+      "description": "A non-colour provenance token. '#' is deliberately not accepted: the manifest carries no literal hex."
+    },
+    "created": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "required": [
+        "at"
+      ],
+      "properties": {
+        "at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the complete generation directory was written in staging."
+        },
+        "by": {
+          "$ref": "#/definitions/identifier",
+          "description": "Optional producer identity, for example the runtime release."
+        }
+      }
+    },
+    "committed": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "required": [
+        "at"
+      ],
+      "properties": {
+        "at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When state/current was atomically swapped to this generation."
+        },
+        "jobId": {
+          "$ref": "#/definitions/identifier",
+          "description": "Optional daemon converge job id that committed the generation."
+        }
+      }
+    },
+    "layer": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "required": [
+        "entryHash",
+        "path"
+      ],
+      "properties": {
+        "entryHash": {
+          "$ref": "#/definitions/hash",
+          "description": "Content hash of the immutable cache entry this generation reuses."
+        },
+        "path": {
+          "$ref": "#/definitions/relativePath",
+          "description": "Generation-local relative path to the layer link/entry."
+        }
+      }
+    },
+    "layers": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "required": [
+        "wallpaper",
+        "palette"
+      ],
+      "properties": {
+        "wallpaper": {
+          "$ref": "#/definitions/layer"
+        },
+        "palette": {
+          "$ref": "#/definitions/layer"
+        },
+        "effects": {
+          "$ref": "#/definitions/layer"
+        },
+        "icons": {
+          "$ref": "#/definitions/layer"
+        }
+      }
+    },
+    "skin": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "required": [
+        "name",
+        "entryHash",
+        "mode"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/definitions/skinName"
+        },
+        "entryHash": {
+          "$ref": "#/definitions/hash"
+        },
+        "mode": {
+          "$ref": "#/definitions/mode",
+          "description": "The skin resolution mode; it must equal the manifest's top-level mode."
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "required": [
+        "configDir",
+        "path"
+      ],
+      "properties": {
+        "configDir": {
+          "$ref": "#/definitions/configDir",
+          "description": "The app config-directory name; the platform carries no app list beyond this manifest."
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^appearance/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.css$",
+          "description": "The composed generation-local sheet for this config dir."
+        }
+      }
+    },
+    "appearance": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "required": [
+        "tokensPath",
+        "targets"
+      ],
+      "properties": {
+        "tokensPath": {
+          "const": "appearance/tokens.json",
+          "description": "The mode-resolved v2 token document inside this generation."
+        },
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/target"
+          },
+          "description": "One composed sheet per app config dir. Config dirs are unique; the generation is the only app-list input."
+        }
+      }
+    },
+    "intent": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "required": [
+        "wallpaper",
+        "palette",
+        "skin",
+        "mode"
+      ],
+      "properties": {
+        "wallpaper": {
+          "$ref": "#/definitions/hash"
+        },
+        "palette": {
+          "$ref": "#/definitions/hash"
+        },
+        "skin": {
+          "$ref": "#/definitions/skinName"
+        },
+        "mode": {
+          "$ref": "#/definitions/mode"
+        },
+        "effects": {
+          "$ref": "#/definitions/hash"
+        },
+        "icons": {
+          "$ref": "#/definitions/hash"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "required": [
+        "kind",
+        "intentHash"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "daemon",
+            "cli"
+          ],
+          "description": "Which executor ran the one converge pipeline: the daemon job queue or the CLI flock fallback."
+        },
+        "intentHash": {
+          "$ref": "#/definitions/hash",
+          "description": "Hash of the desired.json intent snapshot used for this convergence."
+        },
+        "jobId": {
+          "$ref": "#/definitions/identifier",
+          "description": "Daemon job id; absent for the CLI fallback."
+        }
+      }
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$",
+      "not": {
+        "pattern": "(?:^|/)\\.\\.?(?:/|$)"
+      },
+      "description": "A generation-local relative path: no leading slash, no empty segment, no '.' or '..' segment and no '#'."
+    },
+    "forbiddenName": {
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "(?:^|_)(?:structure|order|presence)(?:_|$)"
+          },
+          {
+            "pattern": "variant"
+          }
+        ]
+      }
+    }
+  }
+}

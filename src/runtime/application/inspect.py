@@ -53,13 +53,10 @@ from typing import Literal, cast
 import fastjsonschema
 
 from runtime.adapters.appearance import (
-    appearance_pointer_status,
     expected_mode,
-    read_current_appearance,
 )
 from runtime.adapters.cache import CACHE_LAYERS, cache_entry_path
 from runtime.adapters.contract_schemas import history_validator
-from runtime.adapters.hashing import appearance_generation_hash
 from runtime.adapters.watch_health import WatchHealthStore
 from runtime.application.palette_conformance import PaletteConformance, check_palette_entry
 from runtime.domain.history import HistoryTrigger
@@ -160,6 +157,11 @@ class InspectStatusResult:
     appearance_mode: str | None = None
     appearance_pointer: LinkStatus | None = None
     appearance_watch: str | None = None
+    desired_wallpaper: str | None = None
+    desired_skin: str | None = None
+    desired_mode: str | None = None
+    committed_generation: str | None = None
+    applied_generation: str | None = None
 
 
 class InspectStateUseCase:
@@ -185,11 +187,13 @@ class InspectStateUseCase:
         state_root: Path,
         install_spine: Path | None = None,
         consumer_spec: IConsumerPathSpec | None = None,
+        desired: object | None = None,
     ) -> None:
         self._state_repo = state_repo
         self._state_root = state_root
         self._install_spine = install_spine
         self._consumer_spec = consumer_spec
+        self._desired = desired
 
     def run(self) -> InspectStatusResult:
         """Project current.json + live current/ symlinks (read-only).
@@ -228,38 +232,38 @@ class InspectStateUseCase:
                 self._consumer_spec,
             )
 
-        appearance = read_current_appearance(self._state_root)
+        from runtime.adapters.generation_store import GenerationStore
+
+        store = GenerationStore(self._state_root)
+        generation_hash = store.current_hash()
+        manifest = store.current_manifest()
         palette_mode = expected_mode(self._state_root, state.palette)
-        mode = appearance.mode if appearance is not None else palette_mode
-        # The pointer must resolve to the identity derived from the recorded
-        # state (not from whatever the pointer happens to contain), otherwise
-        # a stale generation would validate itself.
-        expected_hash = (
-            appearance_generation_hash(
-                state.palette.entry_hash, state.skin.entry_hash, palette_mode
-            )
-            if state.palette is not None and state.skin is not None
-            else None
-        )
-        pointer_status, pointer_target = appearance_pointer_status(
-            self._state_root, expected_hash
-        )
+        mode = manifest["mode"] if manifest is not None else palette_mode
+        expected_hash = generation_hash
+        pointer_status: str
+        pointer_target: str | None
+        if generation_hash is None:
+            pointer_status, pointer_target = "missing", None
+        elif manifest is None:
+            pointer_status, pointer_target = "dangling", str(store.current_link)
+        else:
+            pointer_status, pointer_target = "ok", str(store.generation_path(generation_hash))
         appearance_pointer = LinkStatus(
             status=cast("LinkStatusKind", pointer_status), target=pointer_target
         )
+        from runtime.adapters.appearance_ledger import AppearanceLedger
+
+        ledger = AppearanceLedger(self._state_root).load()
+        applied_generation = ledger.appearance_hash if ledger is not None else None
+        desired = self._desired
         watch_record = WatchHealthStore(self._state_root).read()
         appearance_watch = (
             "unknown"
             if watch_record is None
             else ("degraded" if watch_record.degraded else "ok")
         )
-        if appearance is not None and self._install_spine is not None and self._consumer_spec:
-            for pointer in self._consumer_spec.appearance_pointers(appearance.config_dirs):
-                dest = self._install_spine / pointer.path
-                if not dest.parent.is_dir():
-                    continue
-                expected = self._state_root / "current" / pointer.target
-                consumer_pointers[pointer.path] = self._link_status(dest, expected)
+        # v3: apps read $XDG_STATE_HOME/dotfiles/current/appearance/<configDir>.css
+        # directly. There is no runtime-owned consumer link to classify.
 
         return InspectStatusResult(
             wallpaper=state.wallpaper.content_hash,
@@ -275,10 +279,15 @@ class InspectStateUseCase:
             skin_name=state.skin.name if state.skin else None,
             skin_tokens=self._read_skin_tokens(state),
             appearance_hash=expected_hash,
-            appearance_skin=appearance.skin if appearance is not None else None,
+            appearance_skin=manifest["intent"]["skin"] if manifest is not None else None,
             appearance_mode=mode if expected_hash is not None else None,
             appearance_pointer=appearance_pointer if expected_hash is not None else None,
             appearance_watch=appearance_watch if expected_hash is not None else None,
+            desired_wallpaper=getattr(desired, "wallpaper", None),
+            desired_skin=getattr(desired, "skin", None),
+            desired_mode=getattr(desired, "mode", None),
+            committed_generation=generation_hash,
+            applied_generation=applied_generation,
         )
 
     def _read_skin_tokens(self, state: DesktopState) -> dict[str, object] | None:

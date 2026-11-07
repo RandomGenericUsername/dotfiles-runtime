@@ -179,9 +179,12 @@ def _apply_state(tmp_path: Path, *, img_bytes: bytes = b"user wallpaper bytes") 
     return repo, state_root, install_spine, palette_producer, weg, itr
 
 
-def _make_reconcile(repo: JsonStateRepository, state_root: Path, install_spine: Path, palette_producer: _FakeCsg, weg: _FakeWeg, itr: _FakeItr, tmp_path: Path | None = None) -> object:
+def _make_reconcile(repo: JsonStateRepository, state_root: Path, install_spine: Path, palette_producer: _FakeCsg, weg: _FakeWeg, itr: _FakeItr, tmp_path: Path | None = None, *, generation_store: object | None = None) -> object:
     from runtime.application.reconcile import ReconcileDesktopStateUseCase
 
+    kwargs: dict[str, object] = {}
+    if generation_store is not None:
+        kwargs["generation_store"] = generation_store
     return ReconcileDesktopStateUseCase(
         state_repo=repo,
         palette_producer=palette_producer,
@@ -191,6 +194,7 @@ def _make_reconcile(repo: JsonStateRepository, state_root: Path, install_spine: 
         state_root=state_root,
         seeder=CacheSeeder(state_root),
         mutex=_FakeMutex(),
+        **kwargs,  # type: ignore[arg-type]
     )
 
 
@@ -236,141 +240,123 @@ def _make_stale_palette_entry(state_root: Path, stale_hash: str) -> Path:
     return entry
 
 
-class TestCrashPartialSwap:
-    def test_partial_swap_wallpaper_only_reverted(self, tmp_path: Path) -> None:
-        repo, state_root, install_spine, palette_producer, weg, itr = _reconcile_and_repoint(tmp_path)
-        loaded = repo.load_current()
-        assert loaded is not None
-        wh = loaded.wallpaper.content_hash
-        stale = _stale_hash(wh)
-        _make_stale_wallpaper_entry(state_root, stale)
-        stale_target = state_root / "cache" / "wallpapers" / stale / "wallpaper.png"
-        link = state_root / "current" / "wallpaper-DP-1.png"
-        _repoint_symlink(link, stale_target)
-        assert "wallpapers" in _symlink_target(link) and stale in _symlink_target(link)
+class TestCrashGenerationCommit:
+    """v3 crash injection: the old or new complete generation is always visible."""
 
-        _make_reconcile(repo, state_root, install_spine, palette_producer, weg, itr).run()  # type: ignore[attr-defined]
+    def _run_with_fault(
+        self,
+        tmp_path: Path,
+        point: str,
+    ) -> tuple[object, str, Path, str | None]:
+        from runtime.adapters.generation_store import GenerationStore
 
-        assert Path(_symlink_target(link)).resolve() == (state_root / "cache" / "wallpapers" / wh / "wallpaper.png").resolve()
-        # other symlinks unchanged
-        assert (state_root / "current" / "colors.conf").is_symlink()
+        repo, state_root, install_spine, producer, weg, itr = _reconcile_and_repoint(tmp_path)
+        old_hash = GenerationStore(state_root).current_hash()
+        assert old_hash is not None
+        img = tmp_path / "new-wall.png"
+        img.write_bytes(b"new generation bytes")
 
-    def test_partial_swap_palette_only_reverted(self, tmp_path: Path) -> None:
-        repo, state_root, install_spine, palette_producer, weg, itr = _reconcile_and_repoint(tmp_path)
-        loaded = repo.load_current()
-        assert loaded is not None
-        assert loaded.palette is not None
-        peh = loaded.palette.entry_hash
-        stale = _stale_hash(peh)
-        stale_entry = _make_stale_palette_entry(state_root, stale)
-        link = state_root / "current" / "colors.conf"
-        _repoint_symlink(link, stale_entry / "colors.conf")
+        def _fault(at: str) -> None:
+            if at == point:
+                raise RuntimeError(f"injected crash at {at}")
 
-        _make_reconcile(repo, state_root, install_spine, palette_producer, weg, itr).run()  # type: ignore[attr-defined]
+        use_case = _make_reconcile(
+            repo,
+            state_root,
+            install_spine,
+            producer,
+            weg,
+            itr,
+            generation_store=GenerationStore(state_root, fault=_fault),
+        )
+        with pytest.raises(RuntimeError, match=f"injected crash at {point}"):
+            use_case.run(wallpaper_path=img)  # type: ignore[attr-defined]
+        return use_case, old_hash, state_root, None
 
-        expected = state_root / "cache" / "palettes" / peh / "colors.conf"
-        assert Path(_symlink_target(link)).resolve() == expected.resolve()
+    def test_crash_before_generation_rename(self, tmp_path: Path) -> None:
+        from runtime.adapters.generation_store import GenerationStore
 
-    def test_partial_swap_effects_dir_reverted(self, tmp_path: Path) -> None:
-        repo, state_root, install_spine, palette_producer, weg, itr = _reconcile_and_repoint(tmp_path)
-        loaded = repo.load_current()
-        assert loaded is not None
-        assert loaded.effects is not None
-        eeh = loaded.effects.entry_hash
-        stale = _stale_hash(eeh)
-        stale_dir = state_root / "cache" / "effects" / stale
-        stale_dir.mkdir(parents=True, exist_ok=True)
-        (stale_dir / "effect.png").write_bytes(b"stale")
-        link = state_root / "current" / "effects"
-        _repoint_symlink(link, stale_dir)
+        _use_case, old_hash, state_root, _ = self._run_with_fault(tmp_path, "staged")
+        store = GenerationStore(state_root)
+        assert store.current_hash() == old_hash
+        # the torn staging directory is never a generation
+        assert not list(store.generations_root.glob(".staging-*"))
 
-        _make_reconcile(repo, state_root, install_spine, palette_producer, weg, itr).run()  # type: ignore[attr-defined]
+    def test_crash_after_generation_rename_before_pointer(self, tmp_path: Path) -> None:
+        from runtime.adapters.generation_store import GenerationStore
 
-        expected = state_root / "cache" / "effects" / eeh
-        assert Path(_symlink_target(link)).resolve() == expected.resolve()
+        _use_case, old_hash, state_root, _ = self._run_with_fault(tmp_path, "published")
+        store = GenerationStore(state_root)
+        assert store.current_hash() == old_hash
+        dirs = [p for p in store.generations_root.iterdir() if p.is_dir() and not p.name.startswith(".")]
+        assert dirs
+        # every published directory has a complete manifest
+        assert all(store.load_manifest(p.name) is not None for p in dirs)
 
-    def test_crash_between_symlink_and_current_json(self, tmp_path: Path) -> None:
-        """Old current.json, 2 of 4 symlinks already new — recovery reverts to old."""
-        repo, state_root, install_spine, palette_producer, weg, itr = _reconcile_and_repoint(tmp_path)
-        old_loaded = repo.load_current()
-        assert old_loaded is not None
-        old_wh = old_loaded.wallpaper.content_hash
-        old_peh = old_loaded.palette.entry_hash if old_loaded.palette else None
-        # Simulate a new apply that crashed after repointing 2 symlinks but before saving current.json
-        # We manually create new hashes and repoint 2 symlinks to them, but keep old current.json
-        new_wh = "a" * 64
-        new_peh = "b" * 64
-        _make_stale_wallpaper_entry(state_root, new_wh)
-        _make_stale_palette_entry(state_root, new_peh)
-        _repoint_symlink(state_root / "current" / "wallpaper-DP-1.png", state_root / "cache" / "wallpapers" / new_wh / "wallpaper.png")
-        _repoint_symlink(state_root / "current" / "colors.conf", state_root / "cache" / "palettes" / new_peh / "colors.conf")
+    def test_crash_after_pointer_rename(self, tmp_path: Path) -> None:
+        from runtime.adapters.generation_store import GenerationStore
 
-        _make_reconcile(repo, state_root, install_spine, palette_producer, weg, itr).run()  # type: ignore[attr-defined]
+        _use_case, old_hash, state_root, _ = self._run_with_fault(tmp_path, "committed")
+        _spine = tmp_path / "install"
+        _producer = _FakeCsg()
+        _weg = _FakeWeg()
+        _itr = _FakeItr()
+        store = GenerationStore(state_root)
+        new_hash = store.current_hash()
+        assert new_hash is not None and new_hash != old_hash
+        assert store.load_manifest(new_hash) is not None
+        # current.json is a derived compatibility view and may lag; the next
+        # converge repairs it after the authoritative manifest.
+        repo = JsonStateRepository(state_root=state_root)
+        state = repo.load_current()
+        assert state is not None
+        # The pointer is authoritative; current.json may lag one commit
+        # behind after a crash between the pointer rename and its write.
+        assert state.wallpaper.content_hash != store.load_manifest(new_hash)["intent"]["wallpaper"]
+        # The next converge repairs the derived view, never rolls back.
+        _make_reconcile(
+            repo, state_root, _spine, _producer, _weg, _itr
+        ).run(wallpaper_path=tmp_path / "new-wall.png")  # type: ignore[attr-defined]
+        repaired = repo.load_current()
+        assert repaired is not None
+        assert repaired.wallpaper.content_hash == store.load_manifest(new_hash)["intent"]["wallpaper"]
 
-        # Both should be reverted to old
-        assert old_wh in _symlink_target(state_root / "current" / "wallpaper-DP-1.png")
-        assert old_peh in _symlink_target(state_root / "current" / "colors.conf")  # type: ignore[operator]
+    def test_ledger_from_old_generation_triggers_refresh_never_rollback(
+        self, tmp_path: Path
+    ) -> None:
+        from runtime.adapters.generation_store import GenerationStore
 
-    def test_full_swap_interrupted_all_symlinks_reverted(self, tmp_path: Path) -> None:
-        repo, state_root, install_spine, palette_producer, weg, itr = _reconcile_and_repoint(tmp_path)
-        loaded = repo.load_current()
-        assert loaded is not None
-        wh = loaded.wallpaper.content_hash
-        peh = loaded.palette.entry_hash if loaded.palette else None
-        eeh = loaded.effects.entry_hash if loaded.effects else None
-        ieh = loaded.icons.entry_hash if loaded.icons else None
-        stale_wh = _stale_hash(wh)
-        _make_stale_wallpaper_entry(state_root, stale_wh)
-        # repoint every symlink to stale
-        for name in [
-            "wallpaper-DP-1.png",
-            "colors.conf",
-            "colors.gtk.css",
-            "colors.yaml",
-            "colors.adw.css",
-            "colors.sequences",
-            "colors.rasi",
-        ]:
-            if (state_root / "current" / name).is_symlink():
-                stale_hash_val = stale_wh if "wallpaper" in name else _stale_hash(peh) if peh else stale_wh  # type: ignore[arg-type]
-                # for palette files use palette stale
-                if name.startswith("colors"):
-                    stale_dir = state_root / "cache" / "palettes" / _stale_hash(peh)  # type: ignore[arg-type]
-                    stale_dir.mkdir(parents=True, exist_ok=True)
-                    (stale_dir / name).write_text("stale")
-                    _repoint_symlink(state_root / "current" / name, stale_dir / name)
-                else:
-                    _repoint_symlink(state_root / "current" / name, state_root / "cache" / "wallpapers" / stale_wh / "wallpaper.png")
-        if eeh:
-            stale_eeh = _stale_hash(eeh)
-            sd = state_root / "cache" / "effects" / stale_eeh
-            sd.mkdir(parents=True, exist_ok=True)
-            (sd / "effect.png").write_bytes(b"x")
-            _repoint_symlink(state_root / "current" / "effects", sd)
-        if ieh:
-            stale_ieh = _stale_hash(ieh)
-            sd = state_root / "cache" / "icons" / stale_ieh
-            sd.mkdir(parents=True, exist_ok=True)
-            (sd / "icon.svg").write_text("<svg/>")
-            _repoint_symlink(state_root / "current" / "icons", sd)
+        _use_case, old_hash, state_root, _ = self._run_with_fault(tmp_path, "committed")
+        _spine = tmp_path / "install"
+        _producer = _FakeCsg()
+        _weg = _FakeWeg()
+        _itr = _FakeItr()
+        store = GenerationStore(state_root)
+        new_hash = store.current_hash()
+        assert new_hash is not None
+        from runtime.adapters.appearance_ledger import AppearanceLedger
 
-        _make_reconcile(repo, state_root, install_spine, palette_producer, weg, itr).run()  # type: ignore[attr-defined]
+        ledger = AppearanceLedger(state_root)
+        assert ledger.needs_refresh("ags", new_hash) is True
+        assert ledger.needs_refresh("ags", old_hash) is True
 
-        assert wh in _symlink_target(state_root / "current" / "wallpaper-DP-1.png")
-        if peh:
-            assert peh in _symlink_target(state_root / "current" / "colors.conf")
-            for name in (
-                "colors.gtk.css",
-                "colors.yaml",
-                "colors.adw.css",
-                "colors.sequences",
-                "colors.rasi",
-            ):
-                assert peh in _symlink_target(state_root / "current" / name)
-        if eeh:
-            assert eeh in _symlink_target(state_root / "current" / "effects")
-        if ieh:
-            assert ieh in _symlink_target(state_root / "current" / "icons")
+    def test_gc_retains_active_and_pinned_never_acknowledged(self, tmp_path: Path) -> None:
+        from runtime.adapters.generation_store import GenerationStore
+
+        _repo, state_root, _spine, _producer, _weg, _itr = _reconcile_and_repoint(tmp_path)
+        store = GenerationStore(state_root)
+        active = store.current_hash()
+        assert active is not None
+        store.add_pin(active, "operator rollback target")
+        swept = store.gc(
+            keep=0,
+            grace_seconds=0,
+            ledger_generations=[],
+            acknowledged_generations=[active],
+        )
+        assert active not in swept["generations"]
+        assert store.load_manifest(active) is not None
+        assert active in store.pinned_hashes()
 
 
 class TestCrashIdempotency:

@@ -277,148 +277,34 @@ class TestWallpaperSetReloadFailureExit:
 
 
 class TestWallpaperSetCompositionRootWiring:
-    def test_composition_root_wires_swap_then_apply_then_reconcile(
+    def test_composition_root_uses_one_converge(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The ``wallpaper set`` composition root constructs
-        ``SwapVisibleUseCase`` + ``ApplyWallpaperUseCase`` +
-        ``ReconcileDesktopStateUseCase`` with the pinned adapter family,
-        holds ONE non-blocking flock across both phases, and runs
-        reconcile with trigger ``"set"`` (mirrors
-        TestReconcileCompositionRootWiring in test_cli_reconcile.py)."""
-        captured: dict[str, Any] = {}
-        holds: list[bool] = []
-
-        class _FakeSwapUseCase:
-            def __init__(self, **kwargs: Any) -> None:
-                captured["swap_kwargs"] = kwargs
-
-            def run(
-                self,
-                image_path: Path,
-                *,
-                palette: Any = None,
-                wallpaper_hash: str | None = None,
-            ) -> Any:
-                captured["swap_image"] = image_path
-                captured["swap_hash"] = wallpaper_hash
-                return _swap_result()
-
-        class _FakeApplyUseCase:
-            def __init__(self, **kwargs: Any) -> None:
-                captured["apply_kwargs"] = kwargs
-
-            def prepare_palette(self, image_path: Path, *, on_progress: Any = None) -> Any:
-                captured["prepare_image"] = image_path
-                return _prepared()
-
-            def run(
-                self,
-                image_path: Path,
-                *,
-                wallpaper_hash: str | None = None,
-                prepared_palette: Any = None,
-                on_progress: Any = None,
-            ) -> Any:
-                captured["apply_hash"] = wallpaper_hash
-                captured["prepared_palette"] = prepared_palette
-                return _result()
-
-        class _FakeReconcileUseCase:
-            def __init__(self, **kwargs: Any) -> None:
-                captured["reconcile_kwargs"] = kwargs
-
-            def run(
-                self,
-                trigger: str = "reconcile",
-                *,
-                wallpaper_already_applied: bool = False,
-            ) -> Any:
-                captured["trigger"] = trigger
-                return _reconcile_result()
-
-        monkeypatch.setattr("runtime.application.swap_visible.SwapVisibleUseCase", _FakeSwapUseCase)
-        monkeypatch.setattr(
-            "runtime.application.apply_wallpaper.ApplyWallpaperUseCase", _FakeApplyUseCase
-        )
-        monkeypatch.setattr(
-            "runtime.application.reconcile.ReconcileDesktopStateUseCase",
-            _FakeReconcileUseCase,
-        )
-        from runtime.adapters.flock_seed_mutex import FlockSeedMutex as _RealMutex
-
-        class _RecordingMutex(_RealMutex):
-            def hold(self, blocking: bool = False) -> Any:
-                holds.append(blocking)
-                return super().hold(blocking=blocking)
-
-        monkeypatch.setattr("runtime.adapters.flock_seed_mutex.FlockSeedMutex", _RecordingMutex)
+        """v3: ``wallpaper set`` is one ``converge(intent)`` call, not a
+        swap → apply → reconcile chain."""
         import runtime.cli.main as cli_main
 
-        cli_main._run_wallpaper_set(Path("/img/wall.png"))
+        captured: dict[str, Any] = {}
 
-        from runtime.adapters.ags_app_refresh import AgsAppRefreshCoordinator
-        from runtime.adapters.tpr_adapter import TprAdapter
-        from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
-        from runtime.adapters.gtk4_app_reloader import Gtk4AppReloader
-        from runtime.adapters.hyprland_monitor_source import HyprlandMonitorSource
-        from runtime.adapters.hyprland_reloader import HyprlandReloader
-        from runtime.adapters.hyprpaper_reloader import (
-            HyprpaperWallpaperApplier,
-        )
-        from runtime.adapters.itr_adapter import ItrAdapter
-        from runtime.adapters.json_state_repository import JsonStateRepository
-        from runtime.adapters.btop_reloader import BtopReloader
-        from runtime.adapters.kitty_reloader import KittyReloader
-        from runtime.adapters.seeder import CacheSeeder
-        from runtime.adapters.terminal_color_applier import TerminalColorApplier
-        from runtime.adapters.weg_adapter import WegAdapter
+        def _fake_converge(**kwargs: Any) -> Any:
+            captured.update(kwargs)
+            return _reconcile_result()
 
-        # ONE outer acquire, non-blocking (fail-busy), across both phases.
-        assert holds == [False]
+        monkeypatch.setattr(cli_main, "_converge_cli", _fake_converge)
+        monkeypatch.setattr(cli_main, "_resolve_state_root", lambda: Path("/state"))
+        monkeypatch.setattr(cli_main, "_resolve_install_spine", lambda: Path("/install"))
+        monkeypatch.setattr(cli_main, "_build_wallpaper_client", lambda: _NullClient())
+        result = cli_main._run_wallpaper_set(Path("/img/wall.png"))
+
         assert captured["trigger"] == "set"
-        # The prepared hash threads into the derivation-only apply (no re-import)
-        # and into the swap that persists the real palette.
-        assert captured["apply_hash"] == "f" * 64
-        assert captured["swap_hash"] == "f" * 64
-        assert captured["prepared_palette"] is not None
-        assert captured["prepare_image"] == Path("/img/wall.png")
-        assert captured["swap_image"] == Path("/img/wall.png")
-        # The SAME real adapter family is wired into ALL THREE use cases — a
-        # swapped/missing/forgotten adapter (e.g. weg=TprAdapter()) fails here.
-        for side in ("swap_kwargs", "apply_kwargs", "reconcile_kwargs"):
-            kwargs = captured[side]
-            assert isinstance(kwargs["state_repo"], JsonStateRepository)
-            assert isinstance(kwargs["seeder"], CacheSeeder)
-            # Inner use cases take the pass-through: the outer hold is the
-            # single serialization point (re-acquiring would fail/deadlock).
-            assert isinstance(kwargs["mutex"], PassThroughSeedMutex)
-        assert (
-            captured["swap_kwargs"]["state_root"]
-            == captured["apply_kwargs"]["state_root"]
-            == captured["reconcile_kwargs"]["state_root"]
-        )
-        for side in ("apply_kwargs", "reconcile_kwargs"):
-            kwargs = captured[side]
-            assert isinstance(kwargs["palette_producer"], TprAdapter)
-            assert isinstance(kwargs["weg"], WegAdapter)
-            assert isinstance(kwargs["itr"], ItrAdapter)
-        assert isinstance(captured["swap_kwargs"]["hyprpaper"], HyprpaperWallpaperApplier)
-        assert isinstance(captured["swap_kwargs"]["monitor_source"], HyprlandMonitorSource)
-        assert isinstance(captured["apply_kwargs"]["monitor_source"], HyprlandMonitorSource)
-        reloaders = captured["reconcile_kwargs"]["reloaders"]
-        assert reloaders is not None
-        assert [type(r) for r in reloaders] == [
-            HyprlandReloader,
-            TerminalColorApplier,
-            KittyReloader,
-            BtopReloader,
-        ]
-        assert not any(type(r) is Gtk4AppReloader for r in reloaders)
-        assert reloaders[1]._state_root == captured["reconcile_kwargs"]["state_root"]  # type: ignore[attr-defined]
-        assert (
-            type(captured["reconcile_kwargs"]["app_refresher"]) is AgsAppRefreshCoordinator
-        )
+        assert captured["wallpaper_path"] == Path("/img/wall.png")
+        assert result.reconcile.state.palette is not None
+        assert result.apply.wallpaper_hash == result.reconcile.state.wallpaper.content_hash
+
+
+class _NullClient:
+    def publish(self, topic: str, payload: dict[str, object]) -> None:
+        return None
 
 
 class TestWallpaperSetCliErrorMapping:
@@ -587,85 +473,29 @@ def _prepared() -> Any:
 def _fake_set_use_cases(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    prepare_error: Exception | None = None,
-    apply_result: Any = None,
-    apply_error: Exception | None = None,
-    swap_result: Any = None,
-    swap_error: Exception | None = None,
-    reconcile_error: Exception | None = None,
+    converge_error: Exception | None = None,
     reconcile_failures: list[str] | None = None,
+    state_root: Path | None = None,
 ) -> None:
-    """Route the real ``_run_wallpaper_set`` through canned use cases."""
+    """Route the real ``_run_wallpaper_set`` through the one converge call."""
+    import runtime.cli.main as cli_main
 
-    class _FakeSwapUseCase:
-        def __init__(self, **kwargs: Any) -> None:
-            pass
+    root = state_root or Path("/state")
 
-        def run(
-            self,
-            image_path: Path,
-            *,
-            palette: Any = None,
-            wallpaper_hash: str | None = None,
-        ) -> Any:
-            if swap_error is not None:
-                raise swap_error
-            return swap_result if swap_result is not None else _swap_result()
+    def _fake_converge(**kwargs: Any) -> Any:
+        if converge_error is not None:
+            raise converge_error
+        return _reconcile_result(reload_failures=reconcile_failures)
 
-    class _FakeApplyUseCase:
-        def __init__(self, **kwargs: Any) -> None:
-            pass
-
-        def prepare_palette(self, image_path: Path, *, on_progress: Any = None) -> Any:
-            if prepare_error is not None:
-                raise prepare_error
-            if on_progress is not None:
-                on_progress("palette_generated")
-            return _prepared()
-
-        def run(
-            self,
-            image_path: Path,
-            *,
-            wallpaper_hash: str | None = None,
-            prepared_palette: Any = None,
-            on_progress: Any = None,
-        ) -> Any:
-            if apply_error is not None:
-                raise apply_error
-            if on_progress is not None:
-                on_progress("preparing_appearance_assets")
-                on_progress("appearance_assets_ready")
-            return apply_result
-
-    class _FakeReconcileUseCase:
-        def __init__(self, **kwargs: Any) -> None:
-            pass
-
-        def run(
-            self,
-            trigger: str = "reconcile",
-            *,
-            wallpaper_already_applied: bool = False,
-        ) -> Any:
-            if reconcile_error is not None:
-                raise reconcile_error
-            return _reconcile_result(reload_failures=reconcile_failures)
-
-    monkeypatch.setattr("runtime.application.swap_visible.SwapVisibleUseCase", _FakeSwapUseCase)
-    monkeypatch.setattr(
-        "runtime.application.apply_wallpaper.ApplyWallpaperUseCase", _FakeApplyUseCase
-    )
-    monkeypatch.setattr(
-        "runtime.application.reconcile.ReconcileDesktopStateUseCase",
-        _FakeReconcileUseCase,
-    )
+    monkeypatch.setattr(cli_main, "_converge_cli", _fake_converge)
+    monkeypatch.setattr(cli_main, "_resolve_state_root", lambda: root)
+    monkeypatch.setattr(cli_main, "_resolve_install_spine", lambda: Path("/install"))
 
 
 class TestWallpaperStateEmission:
     """``wallpaper.state`` transitions around the real composition root."""
 
-    def test_success_publishes_applying_visible_then_done(
+    def test_success_publishes_applying_then_done(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         import runtime.cli.main as cli_main
@@ -673,7 +503,7 @@ class TestWallpaperStateEmission:
 
         img = tmp_path / "wall.png"
         img.write_bytes(b"state emit bytes")
-        _fake_set_use_cases(monkeypatch, apply_result=_result())
+        _fake_set_use_cases(monkeypatch, state_root=tmp_path / "state")
         client = _RecordingClient()
 
         result = cli_main._run_wallpaper_set(img, client=client)
@@ -685,52 +515,7 @@ class TestWallpaperStateEmission:
                     "state": "applying",
                     "wallpaper_hash": hash_file(img),
                     "trigger": "set",
-                    "stage": "generating_palette",
-                },
-            ),
-            (
-                "wallpaper.state",
-                {
-                    "state": "applying",
-                    "wallpaper_hash": "f" * 64,
-                    "trigger": "set",
-                    "stage": "palette_generated",
-                },
-            ),
-            (
-                "wallpaper.state",
-                {
-                    "state": "applying",
-                    "wallpaper_hash": "f" * 64,
-                    "trigger": "set",
-                    "stage": "setting_wallpaper",
-                },
-            ),
-            (
-                "wallpaper.state",
-                {
-                    "state": "visible",
-                    "wallpaper_hash": "f" * 64,
-                    "trigger": "set",
-                    "stage": "preparing_appearance_assets",
-                },
-            ),
-            (
-                "wallpaper.state",
-                {
-                    "state": "visible",
-                    "wallpaper_hash": "f" * 64,
-                    "trigger": "set",
-                    "stage": "appearance_assets_ready",
-                },
-            ),
-            (
-                "wallpaper.state",
-                {
-                    "state": "visible",
-                    "wallpaper_hash": "f" * 64,
-                    "trigger": "set",
-                    "stage": "reconciling_consumers",
+                    "stage": "converging",
                 },
             ),
             (
@@ -743,9 +528,7 @@ class TestWallpaperStateEmission:
                 },
             ),
         ]
-        # Phase timestamps are additive on the result (CLI --format json).
         assert result.visible_at.endswith("Z") and result.themed_at.endswith("Z")
-        assert result.swap_elapsed_s >= 0.0 and result.theme_elapsed_s >= 0.0
 
     def test_done_event_reports_consumer_reload_failures(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -756,8 +539,8 @@ class TestWallpaperStateEmission:
         img.write_bytes(b"reload failure bytes")
         _fake_set_use_cases(
             monkeypatch,
-            apply_result=_result(),
             reconcile_failures=["AgsReloader"],
+            state_root=tmp_path / "state",
         )
         client = _RecordingClient()
 
@@ -768,11 +551,9 @@ class TestWallpaperStateEmission:
         assert payload["state"] == "done"
         assert payload["reload_failures"] == ["AgsReloader"]
 
-    def test_pre_swap_palette_failure_publishes_error_with_pending_hash(
+    def test_palette_failure_publishes_error_with_pending_hash(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """BUG-001: palette fails BEFORE the swap — ``error`` carries the
-        pending hash, the reason, and no ``visible`` is ever published."""
         import runtime.cli.main as cli_main
         from runtime.adapters.hashing import hash_file
 
@@ -780,13 +561,14 @@ class TestWallpaperStateEmission:
         img.write_bytes(b"doomed emit bytes")
         _fake_set_use_cases(
             monkeypatch,
-            prepare_error=PaletteUnavailableError(
+            converge_error=PaletteUnavailableError(
                 "tpr generate failed (exit 7): boom",
                 wallpaper_path=str(img),
                 wallpaper_hash=hash_file(img),
                 returncode=7,
                 stderr="boom",
             ),
+            state_root=tmp_path / "state",
         )
         client = _RecordingClient()
 
@@ -800,7 +582,7 @@ class TestWallpaperStateEmission:
                     "state": "applying",
                     "wallpaper_hash": hash_file(img),
                     "trigger": "set",
-                    "stage": "generating_palette",
+                    "stage": "converging",
                 },
             ),
             (
@@ -809,17 +591,15 @@ class TestWallpaperStateEmission:
                     "state": "error",
                     "wallpaper_hash": hash_file(img),
                     "trigger": "set",
-                    "stage": "generating_palette",
+                    "stage": "palette",
                     "error": "tpr generate failed (exit 7): boom",
                 },
             ),
         ]
 
-    def test_swap_failure_publishes_error_with_pending_hash_and_no_visible(
+    def test_generic_failure_publishes_error(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """D5: the swap itself fails — nothing changed on screen, ``error``
-        carries the pending hash and no ``visible`` is emitted."""
         import runtime.cli.main as cli_main
         from runtime.adapters.hashing import hash_file
 
@@ -827,52 +607,24 @@ class TestWallpaperStateEmission:
         img.write_bytes(b"swap doomed bytes")
         _fake_set_use_cases(
             monkeypatch,
-            apply_result=_result(),
-            swap_error=RuntimeError("visible swap failed: hyprpaper reload reported failure"),
+            converge_error=RuntimeError("visible swap failed"),
+            state_root=tmp_path / "state",
         )
         client = _RecordingClient()
 
         with pytest.raises(RuntimeError, match="visible swap failed"):
             cli_main._run_wallpaper_set(img, client=client)
 
-        assert client.published == [
-            (
-                "wallpaper.state",
-                {
-                    "state": "applying",
-                    "wallpaper_hash": hash_file(img),
-                    "trigger": "set",
-                    "stage": "generating_palette",
-                },
-            ),
-            (
-                "wallpaper.state",
-                {
-                    "state": "applying",
-                    "wallpaper_hash": "f" * 64,
-                    "trigger": "set",
-                    "stage": "palette_generated",
-                },
-            ),
-            (
-                "wallpaper.state",
-                {
-                    "state": "applying",
-                    "wallpaper_hash": "f" * 64,
-                    "trigger": "set",
-                    "stage": "setting_wallpaper",
-                },
-            ),
-            (
-                "wallpaper.state",
-                {
-                    "state": "error",
-                    "wallpaper_hash": hash_file(img),
-                    "trigger": "set",
-                    "stage": "setting_wallpaper",
-                },
-            ),
-        ]
+        assert client.published[-1] == (
+            "wallpaper.state",
+            {
+                "state": "error",
+                "wallpaper_hash": hash_file(img),
+                "trigger": "set",
+                "stage": "converging",
+                "error": "visible swap failed",
+            },
+        )
 
     def test_missing_input_publishes_error_with_empty_hash(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -881,8 +633,8 @@ class TestWallpaperStateEmission:
 
         _fake_set_use_cases(
             monkeypatch,
-            apply_result=_result(),
-            prepare_error=ValueError("wallpaper image not found"),
+            converge_error=ValueError("wallpaper image not found"),
+            state_root=tmp_path / "state",
         )
         client = _RecordingClient()
 
@@ -896,7 +648,7 @@ class TestWallpaperStateEmission:
                     "state": "applying",
                     "wallpaper_hash": "",
                     "trigger": "set",
-                    "stage": "generating_palette",
+                    "stage": "converging",
                 },
             ),
             (
@@ -905,57 +657,11 @@ class TestWallpaperStateEmission:
                     "state": "error",
                     "wallpaper_hash": "",
                     "trigger": "set",
-                    "stage": "generating_palette",
+                    "stage": "converging",
+                    "error": "wallpaper image not found",
                 },
             ),
         ]
-
-    def test_busy_second_set_fails_without_mutation(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """D1: a set arriving while another holds the mutex fails busy —
-        non-zero (``SeedLockedError`` is a ``RuntimeError``), no mutation,
-        ``error`` with an empty hash, no ``visible``/``done``."""
-        import runtime.cli.main as cli_main
-        from runtime.adapters.flock_seed_mutex import FlockSeedMutex
-        from runtime.adapters.hashing import hash_file
-        from runtime.domain.models import SeedLockedError
-
-        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
-        monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(tmp_path / "install"))
-        state_root = tmp_path / "state-home" / "dotfiles"
-        state_root.mkdir(parents=True)
-        img = tmp_path / "wall.png"
-        img.write_bytes(b"busy bytes")
-        _fake_set_use_cases(monkeypatch, apply_result=_result())
-        client = _RecordingClient()
-
-        with FlockSeedMutex(state_root / ".seed.lock").hold(blocking=False):
-            with pytest.raises(SeedLockedError, match="already in progress"):
-                cli_main._run_wallpaper_set(img, client=client)
-
-        assert client.published == [
-            (
-                "wallpaper.state",
-                {
-                    "state": "applying",
-                    "wallpaper_hash": hash_file(img),
-                    "trigger": "set",
-                    "stage": "generating_palette",
-                },
-            ),
-            (
-                "wallpaper.state",
-                {
-                    "state": "error",
-                    "wallpaper_hash": "",
-                    "trigger": "set",
-                    "stage": "generating_palette",
-                },
-            ),
-        ]
-        assert not (state_root / "current.json").exists()
-        assert not (state_root / "history.jsonl").exists()
 
     def test_publish_failure_never_fails_the_set(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -964,7 +670,7 @@ class TestWallpaperStateEmission:
 
         img = tmp_path / "wall.png"
         img.write_bytes(b"bus down bytes")
-        _fake_set_use_cases(monkeypatch, apply_result=_result())
+        _fake_set_use_cases(monkeypatch, state_root=tmp_path / "state")
         client = _RecordingClient(fail_publish=True)
 
         result = cli_main._run_wallpaper_set(img, client=client)

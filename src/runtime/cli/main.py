@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from runtime.adapters.dbus_event_bus import HubService, SignalSink
     from runtime.adapters.gtk4_app_subscriber import Gtk4AppSubscriber
     from runtime.adapters.systemd_notify import SystemdNotifier
-    from runtime.application.apply_wallpaper import ApplyWallpaperResult, PreparedPalette
+    from runtime.application.apply_wallpaper import ApplyWallpaperResult
     from runtime.application.capture_host import CaptureHost
     from runtime.application.check_inputs import CheckInputsResult
     from runtime.application.clipboard_host import ClipboardHost
@@ -48,7 +48,6 @@ if TYPE_CHECKING:
     from runtime.application.reconcile import ReconcileResult
     from runtime.application.regenerate import RegenerateResult
     from runtime.application.regenerate_icons import RegenerateIconsResult
-    from runtime.application.swap_visible import SwapVisibleResult
     from runtime.application.verify_cache import VerifyCacheResult
     from runtime.application.watch import WatchTrigger
     from runtime.domain.hub import HubEvent
@@ -575,180 +574,48 @@ def _run_wallpaper_set(
     client: IJobClient | None = None,
     producer: str | None = None,
 ) -> _WallpaperSetResult:
-    """Compose the required-palette ``wallpaper set`` pipeline (D1/BUG-001).
+    """Run ``wallpaper set`` through the one ``converge(intent)`` function.
 
-    Phase functions (composition-root-only orchestration per AD-12 — no
-    application-layer orchestrator merges the use cases):
-
-    - ``_phase_prepare``: ``ApplyWallpaperUseCase.prepare_palette`` —
-      validate → hash → import wallpaper → ensure palette (HARD). A
-      failure aborts here: no swap, no ``current.json`` write, no
-      consumer link change.
-    - ``_phase_visible``: ``SwapVisibleUseCase.run`` — persist
-      ``current.json`` with the prepared palette → repoint ONLY
-      wallpaper symlinks → apply wallpaper. Emits ``visible``.
-    - ``_phase_themed``: ``ApplyWallpaperUseCase.run`` (prepared palette,
-      no palette re-derivation, no re-import) then
-      ``ReconcileDesktopStateUseCase.run(trigger="set")`` — full repoint
-      → ``current.json`` → ``history.jsonl`` → palette/UI reloads. The
-      wallpaper stage is marked already applied. Emits ``done``.
-
-    ONE state mutex (``FlockSeedMutex`` on ``.seed.lock``) is acquired
-    non-blocking up front and held across all phases: a second set
-    arriving mid-flight fails busy (``SeedLockedError`` → non-zero exit,
-    no mutation, ``error`` event with an empty hash) instead of racing a
-    half-themed state. The composed use cases are wired with a
-    pass-through mutex — the outer hold is the single serialization
-    point. All passes are wired with the SAME adapters as
-    ``_run_seed_if_needed`` / ``_run_reconcile``.
-
-    Event order (BUG-001; hand-off for the v3 stage-order doc):
-    ``applying/generating_palette`` → ``applying/palette_generated`` →
-    ``applying/setting_wallpaper`` → ``visible/preparing_appearance_assets``
-    → ``visible/appearance_assets_ready`` →
-    ``visible/reconciling_consumers`` → ``done/finished``. A palette
-    failure publishes only the first event and then
-    ``error/generating_palette`` (pending hash + reason) — never
-    ``visible``.
-
-    ``suppress_history`` (Phase 5): the reactive converge composes this
-    pipeline with a history-suppressing seeder so it writes no
-    ``trigger="set"`` line; the reactive composite owns the single audit
-    line instead. A failed set always writes ``failures.jsonl``.
-
-    ``client`` (tests): an injected :class:`IJobClient` recording the
-    ``wallpaper.state`` transitions; the CLI passes none and the
-    production client is built (D-Bus when the daemon owns the hub
-    name, no-op otherwise).
+    There is no visible-first/two-pipeline chain in v3: the explicit wallpaper
+    path is a generation input, the same derive → stage → commit → apply scope
+    as ``reconcile`` and the daemon. A palette failure aborts before the commit
+    pointer moves; the previous generation stays current.
     """
-    from runtime.adapters.dbus_job_client import DbusJobClient
+    from runtime.adapters.hashing import hash_file
+    from runtime.application.apply_wallpaper import ApplyWallpaperResult
+    from runtime.application.palette_producer import resolve_palette_producer
+    from runtime.domain.models import PaletteUnavailableError
 
     state_root = _resolve_state_root()
     install_spine = _resolve_install_spine()
     if client is None:
         client = _build_wallpaper_client()
-
-    from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
-    from runtime.adapters.flock_seed_mutex import FlockSeedMutex, PassThroughSeedMutex
-    from runtime.adapters.hashing import hash_file
-    from runtime.adapters.hyprland_monitor_source import HyprlandMonitorSource
-    from runtime.adapters.itr_adapter import ItrAdapter
-    from runtime.adapters.json_state_repository import JsonStateRepository
-    from runtime.adapters.seeder import CacheSeeder
-    from runtime.adapters.skin_expander import SkinExpander
-    from runtime.adapters.weg_adapter import WegAdapter
-    from runtime.application.apply_wallpaper import ApplyWallpaperUseCase
-    from runtime.application.palette_producer import (
-        create_palette_producer,
-        resolve_palette_producer,
-    )
-    from runtime.application.reconcile import ReconcileDesktopStateUseCase
-    from runtime.application.swap_visible import SwapVisibleUseCase
-    from runtime.domain.models import PaletteUnavailableError, SeedLockedError
-
     try:
         resolved = image_path.expanduser().resolve()
         pending_hash = hash_file(resolved) if resolved.is_file() else ""
     except OSError:
+        resolved = image_path
         pending_hash = ""
-    _publish_wallpaper_state(client, "applying", pending_hash, "set", stage="generating_palette")
-
-    inner_mutex = PassThroughSeedMutex()
+    _publish_wallpaper_state(
+        client, "applying", pending_hash, "set", stage="converging"
+    )
+    started = time.monotonic()
     producer_resolution = resolve_palette_producer(install_spine, producer=producer)
-    palette_producer = create_palette_producer(
-        install_spine,
-        resolution=producer_resolution,
-        mode=_resolve_desired_mode(),
-    )
-    skin_name = _resolve_skin_name()
-    current_stage = "generating_palette"
-
-    def _seeder() -> CacheSeeder:
-        return CacheSeeder(
-            state_root,
-            consumer_spec=StaticConsumerPathSpec(),
+    try:
+        reconcile_result = _converge_cli(
+            trigger="set",
+            wallpaper_path=resolved,
+            producer=producer,
             suppress_history=suppress_history,
+            include_terminal=include_terminal,
         )
-
-    apply_use_case = ApplyWallpaperUseCase(
-        state_repo=JsonStateRepository(state_root=state_root),
-        palette_producer=palette_producer,
-        weg=WegAdapter(),
-        itr=ItrAdapter(),
-        install_spine=install_spine,
-        state_root=state_root,
-        seeder=_seeder(),
-        mutex=inner_mutex,
-        monitor_source=HyprlandMonitorSource(),
-    )
-
-    def _phase_prepare() -> PreparedPalette:
-        """Palette (hard) BEFORE any visible change (BUG-001)."""
-        return apply_use_case.prepare_palette(image_path)
-
-    def _phase_visible(prepared: PreparedPalette) -> SwapVisibleResult:
-        """Visible phase: persist the prepared palette → repoint → apply."""
-        return SwapVisibleUseCase(
-            state_repo=JsonStateRepository(state_root=state_root),
-            state_root=state_root,
-            seeder=_seeder(),
-            mutex=inner_mutex,
-            hyprpaper=_build_wallpaper_applier(state_root),
-            monitor_source=HyprlandMonitorSource(),
-        ).run(
-            image_path,
-            palette=prepared.palette,
-            wallpaper_hash=prepared.wallpaper_hash,
-        )
-
-    def _phase_themed(
-        prepared: PreparedPalette,
-    ) -> tuple[ApplyWallpaperResult, ReconcileResult]:
-        """Themed phase: effects/icons → converge → history → reload."""
-        nonlocal current_stage
-
-        def publish_stage(stage: str) -> None:
-            nonlocal current_stage
-            current_stage = stage
-            _publish_wallpaper_state(client, "visible", prepared.wallpaper_hash, "set", stage=stage)
-
-        apply_result = apply_use_case.run(
-            image_path,
-            wallpaper_hash=prepared.wallpaper_hash,
-            prepared_palette=prepared,
-            on_progress=publish_stage,
-        )
-
-        publish_stage("reconciling_consumers")
-        reconcile_result = ReconcileDesktopStateUseCase(
-            state_repo=JsonStateRepository(state_root=state_root),
-            palette_producer=palette_producer,
-            weg=WegAdapter(),
-            itr=ItrAdapter(),
-            install_spine=install_spine,
-            state_root=state_root,
-            seeder=_seeder(),
-            mutex=inner_mutex,
-            reloaders=_build_reloaders(state_root, include_terminal=include_terminal),
-            app_refresher=_build_app_refresher(state_root, install_spine),
-            skin_name=skin_name,
-            skin_expander=SkinExpander(),
-        ).run(trigger="set", wallpaper_already_applied=True)
-        return apply_result, reconcile_result
-
-    def _record_palette_failure(exc: PaletteUnavailableError) -> None:
-        """Append the traceable failure record; never mask the original error."""
-        logger.error(
-            "wallpaper set: palette unavailable: path=%s hash=%s stage=%s tool=%s "
-            "returncode=%s stderr=%s",
-            exc.wallpaper_path,
-            exc.wallpaper_hash,
-            exc.stage,
-            exc.tool,
-            exc.returncode,
-            exc.stderr,
+    except PaletteUnavailableError as exc:
+        _publish_wallpaper_state(
+            client, "error", pending_hash, "set", stage="palette", error=str(exc)
         )
         try:
+            from runtime.adapters.seeder import CacheSeeder
+
             CacheSeeder(state_root).append_failure(
                 wallpaper_path=exc.wallpaper_path,
                 wallpaper_hash=exc.wallpaper_hash,
@@ -766,71 +633,63 @@ def _run_wallpaper_set(
             )
         except Exception:
             logger.exception("wallpaper set: failed to append failures.jsonl record")
-
-    live_hash: str | None = None
-    try:
-        with FlockSeedMutex(state_root / ".seed.lock").hold(blocking=False):
-            prepared = _phase_prepare()
-            current_stage = "palette_generated"
-            _publish_wallpaper_state(
-                client, "applying", prepared.wallpaper_hash, "set", stage=current_stage
-            )
-            current_stage = "setting_wallpaper"
-            _publish_wallpaper_state(
-                client, "applying", prepared.wallpaper_hash, "set", stage=current_stage
-            )
-            swap_started = time.monotonic()
-            swap = _phase_visible(prepared)
-            live_hash = swap.wallpaper_hash
-            swap_elapsed = time.monotonic() - swap_started
-            visible_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-            themed_started = time.monotonic()
-            apply_result, reconcile_result = _phase_themed(prepared)
-            theme_elapsed = time.monotonic() - themed_started
-            themed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    except SeedLockedError as exc:
-        _publish_wallpaper_state(client, "error", "", "set", stage=current_stage)
-        raise SeedLockedError(
-            f"wallpaper set already in progress (lock held): {state_root / '.seed.lock'}"
-        ) from exc
-    except PaletteUnavailableError as exc:
-        _publish_wallpaper_state(
-            client,
-            "error",
-            live_hash if live_hash is not None else pending_hash,
-            "set",
-            stage=current_stage,
-            error=str(exc),
-        )
-        _record_palette_failure(exc)
         raise
-    except Exception:
+    except RuntimeError as exc:
+        if "palette reconcile failed" in str(exc):
+            failure = PaletteUnavailableError(
+                str(exc),
+                wallpaper_path=str(resolved),
+                wallpaper_hash=pending_hash,
+                tool=producer_resolution.producer,
+                stderr="",
+                hint=f"re-set the wallpaper / check {producer_resolution.producer}",
+            )
+            _publish_wallpaper_state(
+                client, "error", pending_hash, "set", stage="palette", error=str(failure)
+            )
+            raise failure from exc
         _publish_wallpaper_state(
-            client,
-            "error",
-            live_hash if live_hash is not None else pending_hash,
-            "set",
-            stage=current_stage,
+            client, "error", pending_hash, "set", stage="converging", error=str(exc)
         )
         raise
+    except Exception as exc:
+        _publish_wallpaper_state(
+            client, "error", pending_hash, "set", stage="converging", error=str(exc)
+        )
+        raise
+    elapsed = time.monotonic() - started
+    state = reconcile_result.state
+    assert state.palette is not None
+    now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    apply_result = ApplyWallpaperResult(
+        wallpaper_hash=state.wallpaper.content_hash,
+        palette=state.palette,
+        effects=state.effects,
+        icons=state.icons,
+        cache_hit_palette="palette" not in reconcile_result.cache_regenerated,
+        cache_hit_effects="effects" not in reconcile_result.cache_regenerated,
+        cache_hit_icons="icons" not in reconcile_result.cache_regenerated,
+        state=state,
+    )
     _publish_wallpaper_state(
         client,
         "done",
-        reconcile_result.state.wallpaper.content_hash,
+        state.wallpaper.content_hash,
         "set",
         stage="finished",
         reload_failures=reconcile_result.reload_failures,
     )
+    from runtime.adapters.dbus_job_client import DbusJobClient
+
     if isinstance(client, DbusJobClient):
         client.close()
-
     return _WallpaperSetResult(
         apply=apply_result,
         reconcile=reconcile_result,
-        visible_at=visible_at,
-        themed_at=themed_at,
-        swap_elapsed_s=swap_elapsed,
-        theme_elapsed_s=theme_elapsed,
+        visible_at=now,
+        themed_at=now,
+        swap_elapsed_s=elapsed,
+        theme_elapsed_s=0.0,
         producer=producer_resolution.producer,
         producer_source=producer_resolution.source,
         producer_engine=producer_resolution.engine,
@@ -1309,6 +1168,104 @@ def _append_inputs_check(summary: str, obj: dict[str, object]) -> str:
     return summary + "\ninputs: all layers fresh"
 
 
+def _committed_reconcile_result(state_root: Path, generation_hash: str) -> ReconcileResult:
+    """Project a daemon-committed generation into the CLI result shape."""
+    from runtime.adapters.generation_store import GenerationStore
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.application.reconcile import ReconcileResult
+
+    state = JsonStateRepository(state_root=state_root).load_current()
+    if state is None:
+        raise RuntimeError(
+            f"generation {generation_hash[:12]} committed but current.json is unavailable"
+        )
+    store = GenerationStore(state_root)
+    return ReconcileResult(
+        repointed=[],
+        skipped=[],
+        state=state,
+        cache_regenerated=[],
+        generation_hash=generation_hash,
+        generation_path=store.generation_path(generation_hash),
+    )
+
+
+def _converge_cli(
+    *,
+    trigger: str,
+    wallpaper_path: Path | None = None,
+    producer: str | None = None,
+    suppress_history: bool = False,
+    include_terminal: bool = True,
+) -> ReconcileResult:
+    """CLI entry: subscribe/submit to the daemon queue or run the fallback.
+
+    The preflight is one ``NameHasOwner``; if the daemon owns the bus name the
+    CLI submits and waits on ``JobFinished`` (no state polling). With no
+    daemon it runs the exact same convergence function under ``converge.lock``.
+    """
+    from runtime.adapters.dbus_converge_client import DbusConvergeClient
+    from runtime.adapters.desired_state_reader import read_desired_state
+    from runtime.application.generation_converge import ConvergeIntent, intent_hash_for
+
+    state_root = _resolve_state_root()
+    install_spine = _resolve_install_spine()
+    desired = read_desired_state(_resolve_desired_path())
+    wallpaper = wallpaper_path.expanduser().resolve() if wallpaper_path is not None else None
+    if wallpaper is None and desired is not None:
+        candidate = Path(desired.wallpaper).expanduser()
+        wallpaper = candidate if candidate.is_file() else None
+    if wallpaper is not None:
+        from runtime.adapters.hashing import hash_file
+
+        wallpaper_hash = hash_file(wallpaper)
+    else:
+        from runtime.adapters.json_state_repository import JsonStateRepository
+
+        current = JsonStateRepository(state_root=state_root).load_current()
+        wallpaper_hash = current.wallpaper.content_hash if current is not None else "0" * 64
+    resolved_skin = desired.skin if desired is not None else _resolve_skin_name()
+    resolved_mode = desired.mode if desired is not None else _resolve_desired_mode()
+    request = {
+        "trigger": trigger,
+        "wallpaperPath": str(wallpaper) if wallpaper is not None else None,
+        "skin": resolved_skin,
+        "mode": resolved_mode,
+    }
+    intent_hash = intent_hash_for(
+        wallpaper=wallpaper_hash,
+        skin=resolved_skin,
+        mode=resolved_mode,
+    )
+    client = DbusConvergeClient(state_root=state_root)
+    try:
+        job = (
+            None
+            if os.environ.get("DOTFILES_RUNTIME_DISABLE_DAEMON") == "1"
+            else client.submit(intent_hash, request)
+        )
+    except (RuntimeError, TimeoutError) as exc:
+        logger.error("converge: daemon job failed: %s", exc)
+        raise
+    if job is not None and job.generation_hash is not None:
+        return _committed_reconcile_result(state_root, job.generation_hash)
+    engine = _build_converge_engine(
+        state_root,
+        install_spine,
+        producer=producer,
+        suppress_history=suppress_history,
+        include_terminal=include_terminal,
+    )
+    return engine.converge(
+        ConvergeIntent(
+            trigger=trigger,
+            source="cli",
+            wallpaper_path=wallpaper,
+            intent_hash=intent_hash,
+        )
+    ).reconcile
+
+
 def _run_reconcile(
     *,
     suppress_history: bool = False,
@@ -1328,39 +1285,69 @@ def _run_reconcile(
     ``suppress_history`` (Phase 5) builds the history-suppressing seeder the
     reactive composite uses so its inner reconcile writes no line.
     """
-    state_root = _resolve_state_root()
-    install_spine = _resolve_install_spine()
+    return _converge_cli(
+        trigger="reconcile",
+        producer=producer,
+        suppress_history=suppress_history,
+        include_terminal=include_terminal,
+    )
 
+
+def _build_converge_engine(
+    state_root: Path,
+    install_spine: Path,
+    *,
+    producer: str | None = None,
+    suppress_history: bool = False,
+    include_terminal: bool = True,
+):
+    """Build the one execution implementation for daemon and CLI.
+
+    The factory receives ``(source, job_id)`` so the committed manifest records
+    who ran the single pipeline. The mutex is a pass-through: ``converge.lock``
+    is the only lock and it covers the whole scope.
+    """
     from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
-    from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+    from runtime.adapters.converge_lock import ConvergeLock
+    from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
+    from runtime.adapters.generation_store import GenerationStore
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
     from runtime.adapters.skin_expander import SkinExpander
     from runtime.adapters.weg_adapter import WegAdapter
+    from runtime.application.generation_converge import ConvergenceEngine
     from runtime.application.palette_producer import create_palette_producer
     from runtime.application.reconcile import ReconcileDesktopStateUseCase
 
-    use_case = ReconcileDesktopStateUseCase(
-        state_repo=JsonStateRepository(state_root=state_root),
-        palette_producer=create_palette_producer(
-            install_spine, producer=producer, mode=_resolve_desired_mode()
-        ),
-        weg=WegAdapter(),
-        itr=ItrAdapter(),
-        install_spine=install_spine,
-        state_root=state_root,
-        seeder=CacheSeeder(
-            state_root, consumer_spec=StaticConsumerPathSpec(), suppress_history=suppress_history
-        ),
-        mutex=FlockSeedMutex(state_root / ".seed.lock"),
-        reloaders=_build_reloaders(state_root, include_terminal=include_terminal),
-        wallpaper_applier=_build_wallpaper_applier(state_root),
-        app_refresher=_build_app_refresher(state_root, install_spine),
-        skin_name=_resolve_skin_name(),
-        skin_expander=SkinExpander(),
-    )
-    return use_case.run()
+    def _factory(source: str, job_id: str | None) -> ReconcileDesktopStateUseCase:
+        return ReconcileDesktopStateUseCase(
+            state_repo=JsonStateRepository(state_root=state_root),
+            palette_producer=create_palette_producer(
+                install_spine, producer=producer, mode=_resolve_desired_mode()
+            ),
+            weg=WegAdapter(),
+            itr=ItrAdapter(),
+            install_spine=install_spine,
+            state_root=state_root,
+            seeder=CacheSeeder(
+                state_root,
+                consumer_spec=StaticConsumerPathSpec(),
+                suppress_history=suppress_history,
+            ),
+            mutex=PassThroughSeedMutex(),
+            converge_lock=ConvergeLock(state_root),
+            generation_store=GenerationStore(state_root),
+            source_kind=source,
+            job_id=job_id,
+            reloaders=_build_reloaders(state_root, include_terminal=include_terminal),
+            wallpaper_applier=_build_wallpaper_applier(state_root),
+            app_refresher=_build_app_refresher(state_root, install_spine),
+            skin_name=_resolve_skin_name(),
+            skin_expander=SkinExpander(),
+        )
+
+    return ConvergenceEngine(_factory)
 
 
 def _run_check_inputs(*, producer: str | None = None) -> CheckInputsResult:
@@ -2039,6 +2026,8 @@ def _build_hub_service(
     sink: SignalSink | None = None,
     registry_factory: Callable[[], IJobRegistry] | None = None,
     control_channel: IControlChannel | None = None,
+    registry_lock: object | None = None,
+    job_submitter: Callable[[str, float], str | None] | None = None,
 ) -> HubService:
     """Wrap a registry in the wire-dispatch + signal service (2b-ii-b).
 
@@ -2054,6 +2043,8 @@ def _build_hub_service(
         sink=sink,
         registry_factory=registry_factory,
         control_channel=control_channel,
+        registry_lock=registry_lock,  # type: ignore[arg-type]
+        job_submitter=job_submitter,
     )
 
 
@@ -2247,6 +2238,55 @@ def _run_reactive_converge(
     return result
 
 
+def _daemon_converge_worker(intent_hash: str, job_id: str):
+    """Run one queued daemon converge through the same CLI/daemon function."""
+    import json
+
+    from runtime.adapters.converge_types import ConvergeQueueResult
+    from runtime.adapters.desired_state_reader import read_desired_state
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.application.generation_converge import ConvergeIntent
+
+    state_root = _resolve_state_root()
+    install_spine = _resolve_install_spine()
+    desired = read_desired_state(_resolve_desired_path())
+    wallpaper_path: Path | None = None
+    request_path = state_root / "converge-requests" / f"{intent_hash}.json"
+    try:
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        request = None
+    if isinstance(request, dict) and isinstance(request.get("wallpaperPath"), str):
+        wallpaper_path = Path(request["wallpaperPath"])
+    current = JsonStateRepository(state_root=state_root).load_current()
+    current_hash = current.wallpaper.content_hash if current is not None else None
+    if wallpaper_path is None and desired is not None:
+        candidate = Path(desired.wallpaper).expanduser()
+        if candidate.is_file():
+            from runtime.adapters.hashing import hash_file
+
+            if hash_file(candidate) != current_hash:
+                wallpaper_path = candidate
+    engine = _build_converge_engine(state_root, install_spine)
+    outcome = engine.converge(
+        ConvergeIntent(
+            trigger="daemon",
+            source="daemon",
+            job_id=job_id,
+            wallpaper_path=wallpaper_path,
+            intent_hash=intent_hash,
+        )
+    )
+    return ConvergeQueueResult(
+        generation_hash=outcome.generation_hash,
+        exit_code=0,
+        degraded=outcome.degraded,
+        app_results=tuple(
+            record.to_dict() for record in outcome.reconcile.app_refresh_results
+        ),
+    )
+
+
 def _build_watch_source() -> IWatchSource | None:
     """Build the real inotify source over the AD-39 roots (None if unavailable).
 
@@ -2297,6 +2337,7 @@ def _run_daemon_run(
     watch_source: IWatchSource | None = None,
     notifier: SystemdNotifier | None = None,
     subscriber_factory: Callable[[], Gtk4AppSubscriber] | None = None,
+    converge_worker: Callable[[str, str], object] | None = None,
 ) -> None:
     """Name-first daemon loop (P5-1-3: watch + reactive converge).
 
@@ -2362,6 +2403,8 @@ def _run_daemon_run(
     bus_owner = owner
     hub_registry = registry
     sink = SignalSink()
+    registry_lock = threading.Lock()
+    converge_queue = None
     registry_factory: Callable[[], IJobRegistry] | None = None
     if hub_registry is None:
         hub_registry = _build_hub(sink)
@@ -2374,11 +2417,22 @@ def _run_daemon_run(
         # over this channel; the owner binds its owned connection on acquire.
         from runtime.adapters.dbus_event_bus import DbusControlChannel
 
+        if converge_worker is not None:
+            from runtime.adapters.converge_queue import ConvergeJobQueue
+
+            converge_queue = ConvergeJobQueue(
+                registry=hub_registry,
+                state_root=state_root,
+                converge=converge_worker,  # type: ignore[arg-type]
+                registry_lock=registry_lock,
+            )
         service = _build_hub_service(
             hub_registry,
             sink=sink,
             registry_factory=registry_factory,
             control_channel=DbusControlChannel(),
+            registry_lock=registry_lock,
+            job_submitter=converge_queue.submit if converge_queue is not None else None,
         )
         bus_owner = _build_bus_name_owner(service=service)
     restore_handlers = _install_release_handlers(bus_owner)
@@ -2394,6 +2448,8 @@ def _run_daemon_run(
             bus_owner.acquire()
         except BusNameError as exc:
             raise RuntimeError(f"daemon: cannot own {BUS_NAME}: {exc}") from exc
+        if converge_queue is not None:
+            converge_queue.start()
         # Readiness: the name is owned (Type=dbus). sd_notify is best-effort;
         # no NOTIFY_SOCKET ⇒ no-op (never gates or crashes startup).
         notifier.ready()
@@ -2461,6 +2517,8 @@ def _run_daemon_run(
         stop_watch.set()
         stop_subscriber.set()
         watchdog_stop.set()
+        if converge_queue is not None:
+            converge_queue.stop()
         # Close first: this wakes the real source's blocking select (stop
         # pipe + fd close) and the fake's blocking read, so the join returns
         # promptly instead of waiting out the debounce window.
@@ -2549,6 +2607,7 @@ def daemon_run(
             converge=_converge,
             watch_source=watch_source,
             subscriber_factory=_build_gtk4_subscriber,
+            converge_worker=_daemon_converge_worker,
         )
     except (ValueError, RuntimeError, OSError) as exc:
         logger.error("daemon run failed: %s", exc)
@@ -3565,6 +3624,7 @@ def _run_inspect_status() -> InspectStatusResult:
     state_root = _resolve_state_root()
 
     from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
+    from runtime.adapters.desired_state_reader import read_desired_state
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.application.inspect import InspectStateUseCase
 
@@ -3573,6 +3633,7 @@ def _run_inspect_status() -> InspectStatusResult:
         state_root=state_root,
         install_spine=_resolve_install_spine(),
         consumer_spec=StaticConsumerPathSpec(),
+        desired=read_desired_state(_resolve_desired_path()),
     )
     return use_case.run()
 
@@ -3688,6 +3749,11 @@ def inspect_status(
                 "appearance_hash": result.appearance_hash,
                 "appearance_skin": result.appearance_skin,
                 "appearance_mode": result.appearance_mode,
+                "desired_wallpaper": result.desired_wallpaper,
+                "desired_skin": result.desired_skin,
+                "desired_mode": result.desired_mode,
+                "committed_generation": result.committed_generation,
+                "applied_generation": result.applied_generation,
                 "appearance_pointer": (
                     {
                         "status": result.appearance_pointer.status,

@@ -45,8 +45,18 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from runtime.adapters.appearance import AppearanceGenerator, palette_declares_mode
+from runtime.adapters.appearance import (
+    AppearanceGenerator,
+    detect_palette_mode,
+    palette_declares_mode,
+)
 from runtime.adapters.cache import cache_entry_path
+from runtime.adapters.converge_lock import ConvergeLock
+from runtime.adapters.generation_store import (
+    GenerationSpec,
+    GenerationStore,
+    generation_intent_hash,
+)
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder, _repoint_symlink
 from runtime.application.bar_backdrop import with_bar_backdrops
@@ -56,6 +66,7 @@ from runtime.application.derive import (
     find_skin_manifest,
     find_skin_templates,
 )
+from runtime.application.monitors import preserve_monitors
 from runtime.application.palette_conformance import require_palette_conformance
 from runtime.domain.ags_apps import AppRefreshRecord, ReloadFailure
 from runtime.domain.history import HISTORY_TRIGGERS
@@ -70,6 +81,7 @@ from runtime.domain.models import (
     PaletteUnavailableError,
     SkinEntry,
     SkinUnavailableError,
+    WallpaperEntry,
 )
 from runtime.ports.ags_app_refresher import IAgsAppRefresher
 from runtime.ports.appearance_generator import IAppearanceGenerator
@@ -83,6 +95,46 @@ from runtime.ports.state_repository import IStateRepository
 from runtime.ports.wallpaper_applier import IWallpaperApplier
 
 logger = logging.getLogger(__name__)
+
+
+def default_skin_entry(state_root: Path, seeder: CacheSeeder) -> SkinEntry:
+    """Create/reuse the minimal built-in skin entry (no external assets)."""
+    from runtime.adapters.hashing import hash_file_bytes, skin_entry_hash
+    from runtime.domain.models import SkinArtifacts
+
+    templates_hash = hash_file_bytes(b"dotfiles-runtime:default-skin:templates:v1")
+    manifest_hash = hash_file_bytes(b"dotfiles-runtime:default-skin:manifest:v1")
+    entry_hash = skin_entry_hash(templates_hash, manifest_hash)
+    entry_dir = cache_entry_path(state_root, "skins", entry_hash)
+    now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    css = "/* dotfiles-runtime built-in skin */\n"
+    config_dir = "ags"
+    artifacts: SkinArtifacts = {
+        f"{config_dir}.css": hash_file_bytes(css.encode("utf-8")),
+        "skin.json": hash_file_bytes(b"{}"),
+    }
+    if not entry_dir.is_dir():
+        entry_dir.mkdir(parents=True, exist_ok=True)
+        (entry_dir / f"{config_dir}.css").write_text(css, encoding="utf-8")
+        (entry_dir / "skin.json").write_text("{}", encoding="utf-8")
+        seeder.write_skin_meta(
+            entry_hash,
+            "default",
+            templates_hash,
+            manifest_hash,
+            dict(artifacts),
+            generated_at=now,
+        )
+    return SkinEntry(
+        hash_algorithm="sha256",
+        kind="skin",
+        entry_hash=entry_hash,
+        name="default",
+        input_templates_hash=templates_hash,
+        input_manifest_hash=manifest_hash,
+        artifact_hashes=artifacts,
+        generated_at=now,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +155,8 @@ class ReconcileResult:
     appearance_hash: str | None = None
     appearance_skin: str | None = None
     appearance_mode: str | None = None
+    generation_hash: str | None = None
+    generation_path: Path | None = None
 
 
 class ReconcileDesktopStateUseCase:
@@ -144,12 +198,23 @@ class ReconcileDesktopStateUseCase:
         skin_expander: ISkinExpander | None = None,
         appearance_generator: IAppearanceGenerator | None = None,
         appearance_keep: int = 5,
+        generation_store: GenerationStore | None = None,
+        converge_lock: ConvergeLock | None = None,
+        source_kind: str = "cli",
+        job_id: str | None = None,
     ) -> None:
         self._state_repo = state_repo
         self._state_root = state_root
         self._install_spine = install_spine
         self._seeder = seeder
         self._mutex = mutex
+        #: The v3 commit transaction and the one serialization lock. The
+        #: composition root injects both; the defaults keep direct use cases
+        #: on the same implementation with a state-root-local store/lock.
+        self._generation_store = generation_store or GenerationStore(state_root)
+        self._converge_lock = converge_lock or ConvergeLock(state_root)
+        self._source_kind = source_kind
+        self._job_id = job_id
         #: The composed v2 appearance plane is part of the normal reconcile
         #: flow; the default is the real generator (tests may inject a fake).
         self._appearance = appearance_generator or AppearanceGenerator(state_root)
@@ -183,17 +248,36 @@ class ReconcileDesktopStateUseCase:
         trigger: str = "reconcile",
         *,
         wallpaper_already_applied: bool = False,
+        wallpaper_path: Path | None = None,
+        intent_hash: str | None = None,
     ) -> ReconcileResult:
-        """Reconcile: entries → symlinks → current.json → history → reload.
+        """The one v3 mutation scope: intent → derive → stage → commit → apply.
 
-        Args:
-            trigger: history line trigger, validated against
-                ``runtime.domain.history.HISTORY_TRIGGERS`` (the standalone
-                ``reconcile`` command keeps the default; the
-                ``wallpaper set`` capstone passes ``"set"``).
-            wallpaper_already_applied: skip only the wallpaper stage when a
-                caller such as visible-first wallpaper set has already
-                applied the authoritative wallpaper.
+        The whole call is serialized by the blocking ``converge.lock``; there
+        is no derivation-outside-the-lock split and no second pipeline.
+        """
+        # Validate the enum before acquiring the lock: a bad caller argument
+        # must fail without touching the filesystem.
+        if not isinstance(trigger, str) or trigger not in HISTORY_TRIGGERS:
+            valid = ", ".join(sorted(HISTORY_TRIGGERS))
+            raise ValueError(f"invalid history trigger: {trigger!r} (expected one of {valid})")
+        with self._converge_lock.hold():
+            return self._run(
+                trigger,
+                wallpaper_already_applied=wallpaper_already_applied,
+                wallpaper_path=wallpaper_path,
+                intent_hash=intent_hash,
+            )
+
+    def _run(
+        self,
+        trigger: str,
+        *,
+        wallpaper_already_applied: bool,
+        wallpaper_path: Path | None,
+        intent_hash: str | None,
+    ) -> ReconcileResult:
+        """Reconcile: entries → generation commit → current.json → apply/ledger.
 
         Raises:
             ValueError: if ``trigger`` is not one of the pinned enum
@@ -210,20 +294,20 @@ class ReconcileDesktopStateUseCase:
             raise ValueError(f"invalid history trigger: {trigger!r} (expected one of {valid})")
         # Fail-fast corrupt/absent guard (mirrors apply):
         state = self._state_repo.load_current()
+        if wallpaper_path is not None:
+            state = self._with_intent_wallpaper(state, wallpaper_path)
         if state is None:
             raise RuntimeError("nothing to reconcile")
         # ValueError from a corrupt store propagates loudly here — never
-        # swallowed into a reseed or fallback.
-        self._require_palette(state)
+        # swallowed into a reseed or fallback. An explicit intent may create
+        # the first generation (no recorded palette yet).
+        if state.palette is None and wallpaper_path is None:
+            self._require_palette(state)
 
-        # Recovery: revert stray current/ symlinks to last-good current.json (AC 1, 2, 5).
-        # Runs OUTSIDE the lock — same as derivation; concurrent wallpaper set
-        # overwriting current.json is caught by the double-checked re-load inside the lock.
-        reverted = self._revert_stale_symlinks(state)
-        if reverted:
-            logger.info("recovery: reverted %d stray symlink(s): %s", len(reverted), reverted)
-        else:
-            logger.debug("recovery: no stray symlinks detected")
+        # v3: the generation directory is immutable and the commit pointer is
+        # the only current/ inode. Stray per-family links are a v2 artifact;
+        # nothing is "reverted" here.
+        logger.debug("recovery: generation commit pointer is authoritative")
 
         # Derivation (step 1) happens OUTSIDE the lock (staging is race-
         # safe; tool invocations stay parallel — same split as apply).
@@ -236,13 +320,16 @@ class ReconcileDesktopStateUseCase:
         # hash changed, re-derive inside the lock so palette/effects/icons
         # match the authoritative state.
         with self._mutex.hold(blocking=True):
-            state = self._state_repo.load_current()
+            if wallpaper_path is None:
+                state = self._state_repo.load_current()
             if state is None:
                 raise RuntimeError("nothing to reconcile")
             # Re-check the REQUIRED palette inside the critical section: a
             # concurrent legacy writer must not be converged into removed
-            # consumer pointers (BUG-001).
-            self._require_palette(state)
+            # consumer pointers (BUG-001). An explicit intent may create the
+            # first generation, so the recorded palette can still be absent.
+            if state.palette is None and wallpaper_path is None:
+                self._require_palette(state)
 
             # Decision D1: re-derive if state changed while we were outside.
             if state.wallpaper.content_hash != pre_lock_wallpaper_hash:
@@ -292,46 +379,75 @@ class ReconcileDesktopStateUseCase:
                 if "/" in m or "\\" in m or m.strip() != m or ".." in m:
                     raise ValueError(f"monitor name must not contain path separators, got {m!r}")
 
-            # Step 2 — repoint ONLY the current/ symlinks
+            # Step 2 — one committed generation. The wallpaper layer must be
+            # present; the palette is required by _require_palette.
             monitor_names = list(state.monitors) or [DEFAULT_MONITOR]
-            # Use cache_entry_path helper for validation (P7)
             wallpaper_target = (
                 cache_entry_path(self._state_root, "wallpapers", state.wallpaper.content_hash)
                 / "wallpaper.png"
             )
-            # P2 — guard against dangling wallpaper symlink
             if not wallpaper_target.exists() or not wallpaper_target.is_file():
                 raise RuntimeError(
                     f"wallpaper cache entry {state.wallpaper.content_hash} "
                     f"missing: {wallpaper_target}"
                 )
-            repointed = self._seeder.repoint_current_symlinks(
-                wallpaper_target=wallpaper_target,
-                monitor_names=monitor_names,
-                palette_entry_hash=state.palette.entry_hash if state.palette else None,
-                effects_entry_hash=state.effects.entry_hash if state.effects else None,
-                icons_entry_hash=state.icons.entry_hash if state.icons else None,
+            appearance_entry = self._compose_appearance(palette, skin, regenerated)
+            if appearance_entry is None or skin is None:
+                raise RuntimeError(
+                    "generation refused: the skin/appearance layer is unavailable; "
+                    "the previous generation remains current"
+                )
+            colors_path = (
+                cache_entry_path(self._state_root, "palettes", palette.entry_hash)
+                / "colors.yaml"
             )
-            # The one composed appearance generation + its single pointer.
-            appearance_entry = self._publish_appearance(palette, skin, regenerated)
-            # R2 consumer-path symlinks (Epic 4): point the spine consumer
-            # path at current/ so desktop consumers read the active palette.
-            # Runs after the current/ repoint (the target must exist first);
-            # a null palette removes the consumer symlink (never stale).
-            # Kept out of `repointed` (current/-only contract) — reported
-            # separately as `consumer_symlinks`.
-            consumer_repointed = self._seeder.repoint_consumer_symlinks(
-                self._install_spine,
-                palette.entry_hash,
+            mode = (
+                self._palette_mode
+                if self._palette_mode in ("dark", "light")
+                else detect_palette_mode(colors_path.read_text(encoding="utf-8"))
             )
-            # D2 — cleanup stale symlinks
-            stale_removed = self._cleanup_stale_symlinks(state, monitor_names, repointed)
-            # P8 — derive skipped outside logging inside lock: collect without logging
-            skipped_raw = self._derive_skipped(state, monitor_names, repointed, log=False)
-            # Account for stale removals as skipped context (they were stale)
-            skipped = skipped_raw
+            skin_name = skin.name
+            resolved_intent_hash = intent_hash or generation_intent_hash(
+                wallpaper=state.wallpaper.content_hash,
+                palette=palette.entry_hash,
+                skin=skin_name,
+                mode=mode,
+                effects=effects.entry_hash if effects is not None else None,
+                icons=icons.entry_hash if icons is not None else None,
+            )
+            generation = self._generation_store.commit(
+                GenerationSpec(
+                    state=DesktopState(
+                        schema_version=2,
+                        wallpaper=state.wallpaper,
+                        monitors=state.monitors,
+                        palette=palette,
+                        effects=effects,
+                        icons=icons,
+                        applied_at=state.applied_at,
+                        skin=skin,
+                    ),
+                    appearance=appearance_entry,
+                    mode=mode,
+                    skin_name=skin_name,
+                    skin_hash=skin.entry_hash,
+                    intent_hash=resolved_intent_hash,
+                    monitor_names=tuple(monitor_names),
+                    source_kind=self._source_kind,
+                    job_id=self._job_id,
+                )
+            )
+            repointed = self._generation_paths(
+                generation.path, monitor_names, palette, effects, icons
+            )
+            # The runtime never repoints install-spine links (provisioning
+            # owns them); it only prunes runtime-owned legacy v2 pointers.
+            consumer_repointed = self._seeder.prune_runtime_spine_pointers(
+                self._install_spine
+            )
+            skipped = self._derive_skipped(state, monitor_names, repointed, log=False)
 
-            # Step 3 — current.json follows (refreshed applied_at)
+            # Step 3 — the derived compatibility view follows the commit.
             now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
             saved = DesktopState(
                 schema_version=2,
@@ -350,10 +466,9 @@ class ReconcileDesktopStateUseCase:
             entry = getattr(saved, layer)
             if entry is None and f"{layer} (layer is null" in " ".join(skipped):
                 logger.warning("reconcile: %s layer is null; consumer symlink skipped", layer)
-        if stale_removed:
-            logger.info(
-                "reconcile: removed %d stale symlink(s): %s", len(stale_removed), stale_removed
-            )
+        logger.info(
+            "reconcile: committed generation %s", generation.generation_hash[:12]
+        )
 
         # Step 4 — history (outside the lock — O_APPEND + fsync is atomic)
         self._seeder.append_history(
@@ -389,7 +504,11 @@ class ReconcileDesktopStateUseCase:
         app_results: list[AppRefreshRecord] = []
         if self._app_refresher is not None:
             try:
-                outcome = self._app_refresher.refresh(saved, trigger=trigger)
+                outcome = self._app_refresher.refresh(
+                    saved,
+                    generation_hash=generation.generation_hash,
+                    trigger=trigger,
+                )
             except Exception as exc:
                 logger.warning("AGS app refresh failed unexpectedly: %s", exc)
                 reload_failures.append(
@@ -415,6 +534,27 @@ class ReconcileDesktopStateUseCase:
             if not ok:
                 reload_failures.append(ReloadFailure(type(reloader).__name__))
 
+        # GC is part of convergence, not a background timer. It never removes
+        # the active, newest, pinned, ledger-referenced or acknowledged
+        # generation, and only sweeps unreferenced entries older than grace.
+        try:
+            ledger_generations: list[str] = []
+            ledger = getattr(self._app_refresher, "ledger", None)
+            if ledger is not None:
+                recorded = ledger.load()
+                if recorded is not None and recorded.appearance_hash:
+                    ledger_generations.append(recorded.appearance_hash)
+            swept = self._generation_store.gc(
+                keep=5,
+                grace_seconds=24 * 60 * 60,
+                ledger_generations=ledger_generations,
+                acknowledged_generations=[generation.generation_hash],
+            )
+            if any(swept.values()):
+                logger.info("reconcile: gc swept %s", swept)
+        except Exception:
+            logger.exception("reconcile: generation GC failed; generation is authoritative")
+
         return ReconcileResult(
             repointed=repointed,
             skipped=skipped,
@@ -428,6 +568,8 @@ class ReconcileDesktopStateUseCase:
             else None,
             appearance_skin=appearance_entry.skin if appearance_entry is not None else None,
             appearance_mode=appearance_entry.mode if appearance_entry is not None else None,
+            generation_hash=generation.generation_hash,
+            generation_path=generation.path,
         )
 
     # ------------------------------------------------------------------
@@ -487,35 +629,54 @@ class ReconcileDesktopStateUseCase:
             / "wallpaper.png"
         )
 
-        palette = self._require_palette(state)
-        palette_dir = cache_entry_path(self._state_root, "palettes", palette.entry_hash)
-        if palette_dir.is_dir():
-            # REQ-006: a pre-existing entry must conform BEFORE the visible
-            # swap. A missing/nonconforming entry is fail-closed here; a
-            # missing entry dir is regenerated below (the pipeline validates
-            # the fresh build).
-            require_palette_conformance(palette_dir)
-        expected_palette = (
-            self._pipeline.expected_palette_hash(state.wallpaper.content_hash)
-            if self._mode_key_applies(palette)
-            else None
-        )
-        mode_changed = (
-            expected_palette is not None and expected_palette != palette.entry_hash
-        )
-        if mode_changed or not ensure_palette_entry_complete(palette_dir, self._seeder):
+        palette = state.palette
+        if palette is None:
             try:
                 entry, _cache_hit = self._pipeline.ensure_palette(
                     cached_wallpaper_img, state.wallpaper.content_hash
                 )
+            except PaletteUnavailableError as exc:
+                if state.wallpaper.source_path:
+                    exc.wallpaper_path = state.wallpaper.source_path
+                raise
             except Exception as exc:
                 raise RuntimeError(f"palette reconcile failed: {exc}") from exc
-            if not mode_changed:
-                # Same recorded identity: a divergent rebuild means the spine
-                # inputs moved under us and the state must not silently change.
-                self._assert_hash_matches(palette.entry_hash, entry.entry_hash)
             palette = entry
             regenerated.append("palette")
+        else:
+            palette_dir = cache_entry_path(self._state_root, "palettes", palette.entry_hash)
+            if palette_dir.is_dir():
+                # REQ-006: a pre-existing entry must conform BEFORE the visible
+                # swap. A missing/nonconforming entry is fail-closed here; a
+                # missing entry dir is regenerated below (the pipeline validates
+                # the fresh build).
+                require_palette_conformance(palette_dir)
+            expected_palette = (
+                self._pipeline.expected_palette_hash(state.wallpaper.content_hash)
+                if self._mode_key_applies(palette)
+                else None
+            )
+            mode_changed = (
+                expected_palette is not None and expected_palette != palette.entry_hash
+            )
+            if mode_changed or not ensure_palette_entry_complete(palette_dir, self._seeder):
+                try:
+                    entry, _cache_hit = self._pipeline.ensure_palette(
+                        cached_wallpaper_img, state.wallpaper.content_hash
+                    )
+                except PaletteUnavailableError as exc:
+                    if state.wallpaper.source_path:
+                        exc.wallpaper_path = state.wallpaper.source_path
+                    raise
+                except Exception as exc:
+                    raise RuntimeError(f"palette reconcile failed: {exc}") from exc
+                if not mode_changed:
+                    # Same recorded identity: a divergent rebuild means the
+                    # spine inputs moved under us and the state must not
+                    # silently change.
+                    self._assert_hash_matches(palette.entry_hash, entry.entry_hash)
+                palette = entry
+                regenerated.append("palette")
 
         effects = state.effects
         if (
@@ -562,37 +723,54 @@ class ReconcileDesktopStateUseCase:
                     exc.manifest_path,
                     exc.templates_dir,
                 )
-                skin = self._previous_skin_if_cached(state.skin)
+                skin = self._previous_skin_if_cached(state.skin) or self._default_skin()
             except Exception as exc:
                 logger.error(
                     "reconcile: skin derivation failed unexpectedly; keeping previous skin: %s",
                     exc,
                 )
-                skin = self._previous_skin_if_cached(state.skin)
+                skin = self._previous_skin_if_cached(state.skin) or self._default_skin()
             else:
                 skin = entry_s
                 if not cache_hit:
                     regenerated.append("skin")
+        elif skin is None or not cache_entry_path(
+            self._state_root, "skins", skin.entry_hash
+        ).is_dir():
+            # Legacy/direct callers that do not inject an expander still get a
+            # complete, content-addressed built-in skin layer. Production
+            # composition roots always inject the real expander; a missing
+            # recorded skin entry fails closed to the built-in layer instead
+            # of publishing an incomplete generation.
+            skin = self._default_skin()
+            regenerated.append("skin")
 
         return palette, effects, icons, skin
 
-    def _publish_appearance(
+    def _default_skin(self) -> SkinEntry:
+        return default_skin_entry(self._state_root, self._seeder)
+
+    def _compose_appearance(
         self,
         palette: PaletteEntry,
         skin: SkinEntry | None,
         regenerated: list[str],
     ) -> AppearanceEntry | None:
-        """Compose and publish the appearance generation in the same flow.
+        """Compose the generation-local appearance sheets (no publication).
 
-        Fail closed: any composition error is logged and the previous
-        ``current/appearance`` pointer is left untouched. The v1 skin pointers
-        are repointed by the caller regardless, so v1 apps keep working.
+        The v2 appearance cache entry is a content-addressed composition input;
+        the v3 commit copies its sheets into the immutable generation. Nothing
+        is written into the install spine or an app tag.
         """
         if skin is None:
             return None
         try:
-            manifest_path, _source = find_skin_manifest(skin.name, self._install_spine)
-            templates_dir = find_skin_templates(self._install_spine)
+            if skin.name == "default":
+                manifest_path = None
+                templates_dir = None
+            else:
+                manifest_path, _source = find_skin_manifest(skin.name, self._install_spine)
+                templates_dir = find_skin_templates(self._install_spine)
             entry, cache_hit = self._appearance.ensure(
                 palette_entry=palette,
                 skin_entry=skin,
@@ -601,15 +779,84 @@ class ReconcileDesktopStateUseCase:
                 templates_dir=templates_dir,
                 keep=self._appearance_keep,
             )
-            self._seeder.publish_appearance(self._install_spine, entry)
         except Exception as exc:
             logger.error(
-                "reconcile: appearance generation failed; previous appearance kept: %s", exc
+                "reconcile: appearance composition failed; generation refused: %s", exc
             )
             return None
         if not cache_hit:
             regenerated.append("appearance")
         return entry
+
+    def _with_intent_wallpaper(
+        self, state: DesktopState | None, wallpaper_path: Path
+    ) -> DesktopState:
+        """Import an explicit converge-intent wallpaper and return the state.
+
+        The wallpaper is a generation input: import (content-verified),
+        hash it, and preserve monitor configs from the previous state. This is
+        the same path ``reconcile`` uses, so ``wallpaper set`` is no longer a
+        second pipeline.
+        """
+        path = wallpaper_path.expanduser().resolve()
+        if not path.is_file():
+            raise ValueError(f"wallpaper image not found: {path}")
+        wallpaper_hash = hash_file(path)
+        self._seeder.import_wallpaper(path, wallpaper_hash, source_mutable=True)
+        now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        wallpaper = WallpaperEntry(
+            hash_algorithm="sha256",
+            kind="wallpaper",
+            content_hash=wallpaper_hash,
+            source_path=str(path),
+            imported_at=now,
+        )
+        monitors = with_bar_backdrops(
+            preserve_monitors(state, wallpaper_hash, []),
+            self._state_root,
+            source_paths={wallpaper_hash: path},
+        )
+        return DesktopState(
+            schema_version=2,
+            wallpaper=wallpaper,
+            monitors=monitors,
+            palette=state.palette if state is not None else None,
+            effects=state.effects if state is not None else None,
+            icons=state.icons if state is not None else None,
+            applied_at=state.applied_at if state is not None else now,
+            skin=state.skin if state is not None else None,
+        )
+
+    @staticmethod
+    def _generation_paths(
+        generation_path: Path,
+        monitor_names: list[str],
+        palette: PaletteEntry | None,
+        effects: EffectsEntry | None,
+        icons: IconsEntry | None,
+    ) -> list[Path]:
+        """The generation-local artifacts a reconcile result reports."""
+        created = [generation_path / "wallpaper.png"]
+        created.extend(
+            generation_path / f"wallpaper-{monitor}.png" for monitor in monitor_names
+        )
+        if palette is not None:
+            created.append(generation_path / "palette")
+            created.extend(generation_path / alias for alias in (
+                "colors.conf",
+                "colors.gtk.css",
+                "colors.yaml",
+                "colors.adw.css",
+                "colors.sequences",
+                "colors.rasi",
+                "colors.kitty",
+                "colors.btop.theme",
+            ))
+        if effects is not None:
+            created.append(generation_path / "effects")
+        if icons is not None:
+            created.append(generation_path / "icons")
+        return created
 
     def _previous_skin_if_cached(self, previous: SkinEntry | None) -> SkinEntry | None:
         """Keep a previous skin only while its cache entry still exists."""
@@ -715,9 +962,8 @@ class ReconcileDesktopStateUseCase:
             expected["effects"] = "effects cache entry missing"
         if state.icons is not None:
             expected["icons"] = "icons cache entry missing"
-        if state.skin is not None:
-            for artifact in sorted(state.skin.artifact_hashes):
-                expected[artifact] = "skin artifact missing from cache entry"
+        # v3 skin/appearance sheets are real files inside the generation
+        # (appearance/<configDir>.css), not current/ family links.
 
         created = {p.name for p in repointed}
         skipped: list[str] = []

@@ -345,7 +345,13 @@ def _make_reconcile(
 
 
 def _symlink_map(current_dir: Path) -> dict[str, str]:
-    return {p.name: os_readlink(p) for p in sorted(current_dir.iterdir())}
+    # v3 generations contain real directories (appearance/, wallpaper/) next
+    # to the compatibility aliases; the map is the symlink projection only.
+    return {
+        p.name: os_readlink(p)
+        for p in sorted(current_dir.iterdir())
+        if p.is_symlink()
+    }
 
 
 def os_readlink(p: Path) -> str:
@@ -372,6 +378,7 @@ class TestReconcileHappyPath:
         current = applied.state_root / "current"
         links = _symlink_map(current)
         assert set(links) == {
+            "palette",
             "wallpaper-DP-1.png",
             "wallpaper.png",
             "colors.conf",
@@ -387,66 +394,60 @@ class TestReconcileHappyPath:
         }
         wallpaper_target = applied.state_root / "cache" / "wallpapers" / wh / "wallpaper.png"
         palette_dir = applied.state_root / "cache" / "palettes" / loaded.palette.entry_hash
-        assert links["wallpaper-DP-1.png"] == str(wallpaper_target)
-        assert links["colors.conf"] == str(palette_dir / "colors.conf")
-        assert links["colors.gtk.css"] == str(palette_dir / "colors.gtk.css")
-        assert links["colors.yaml"] == str(palette_dir / "colors.yaml")
-        assert links["colors.adw.css"] == str(palette_dir / "colors.adw.css")
-        assert links["colors.sequences"] == str(palette_dir / "colors.sequences")
-        assert links["colors.rasi"] == str(palette_dir / "colors.rasi")
-        assert links["colors.kitty"] == str(palette_dir / "colors.kitty")
-        assert links["effects"] == str(applied.state_root / "cache" / "effects" / loaded.effects.entry_hash)
-        assert links["icons"] == str(applied.state_root / "cache" / "icons" / loaded.icons.entry_hash)
+        assert (current / "wallpaper-DP-1.png").resolve() == wallpaper_target.resolve()
+        assert (current / "colors.conf").resolve() == (palette_dir / "colors.conf").resolve()
+        assert (current / "colors.gtk.css").resolve() == (palette_dir / "colors.gtk.css").resolve()
+        assert (current / "colors.yaml").resolve() == (palette_dir / "colors.yaml").resolve()
+        assert (current / "colors.adw.css").resolve() == (palette_dir / "colors.adw.css").resolve()
+        assert (current / "colors.sequences").resolve() == (palette_dir / "colors.sequences").resolve()
+        assert (current / "colors.rasi").resolve() == (palette_dir / "colors.rasi").resolve()
+        assert (current / "colors.kitty").resolve() == (palette_dir / "colors.kitty").resolve()
+        assert (current / "effects").resolve() == (
+            applied.state_root / "cache" / "effects" / loaded.effects.entry_hash
+        ).resolve()
+        assert (current / "icons").resolve() == (
+            applied.state_root / "cache" / "icons" / loaded.icons.entry_hash
+        ).resolve()
         assert sorted(p.name for p in result.repointed) == sorted(links)
         assert result.skipped == []
-        assert result.cache_regenerated == []
-        # every target resolves into cache/
-        for target in links.values():
-            assert target.startswith(str(applied.state_root / "cache"))
-        # R2 consumer symlink (Epic 4): spine path points at current/
-        r2_link = applied.install_spine / "config" / "ags" / "colors.css"
-        assert r2_link.is_symlink(), "R2 consumer symlink must be created by reconcile"
-        assert os_readlink(r2_link) == str(applied.state_root / "current" / "colors.gtk.css")
-        rofi_link = applied.install_spine / "config" / "rofi" / "colors.rasi"
-        assert rofi_link.is_symlink(), "rofi consumer symlink must be created by reconcile"
-        assert os_readlink(rofi_link) == str(applied.state_root / "current" / "colors.rasi")
-        assert result.consumer_symlinks == [r2_link, rofi_link]
-        # gt-2-2: gtk pointer parents are NOT provisioned here — skipped
-        # with a warning (never mkdir into the spine), ags+rofi coverage.
-        assert not (applied.install_spine / "config" / "gtk-3.0").exists()
-        assert not (applied.install_spine / "config" / "gtk-4.0").exists()
+        # First v3 converge composes the skin + appearance; later runs are
+        # cache hits.
+        assert result.cache_regenerated == ["skin", "appearance"]
+        assert result.consumer_symlinks == []
+        assert not (applied.install_spine / "config" / "ags" / "colors.css").exists()
+        assert not (applied.install_spine / "config" / "rofi" / "colors.rasi").exists()
+        assert result.generation_hash is not None
+        assert current.is_symlink()
+        assert os_readlink(current) == f"generations/{result.generation_hash}"
 
     def test_repoints_all_four_consumer_pointers_when_parents_exist(
         self, tmp_path: Path
     ) -> None:
-        """gt-2-2 spec loop: with provisioned spine dirs all four pointers
-        are created (ags + gtk-3.0 → colors.gtk.css; gtk-4.0 →
-        colors.adw.css; rofi → colors.rasi), in table order."""
+        """A provisioning-owned legacy link is left untouched and resolves
+        through the committed generation."""
         applied = _apply_state(tmp_path)
         gtk3 = applied.install_spine / "config" / "gtk-3.0"
         gtk4 = applied.install_spine / "config" / "gtk-4.0"
         gtk3.mkdir(parents=True)
         gtk4.mkdir(parents=True)
+        legacy = applied.install_spine / "config" / "ags" / "colors.css"
+        legacy.symlink_to(applied.state_root / "current" / "colors.gtk.css")
         use_case = _make_reconcile(applied)
-        loaded = applied.repo.load_current()
-        assert loaded is not None
-        assert loaded.palette is not None
 
         result = use_case.run()
 
         current = applied.state_root / "current"
-        ags = applied.install_spine / "config" / "ags" / "colors.css"
-        rofi = applied.install_spine / "config" / "rofi" / "colors.rasi"
-        assert result.consumer_symlinks == [
-            ags,
-            gtk3 / "colors.css",
-            gtk4 / "colors.css",
-            rofi,
-        ]
-        assert os_readlink(ags) == str(current / "colors.gtk.css")
-        assert os_readlink(gtk3 / "colors.css") == str(current / "colors.gtk.css")
-        assert os_readlink(gtk4 / "colors.css") == str(current / "colors.adw.css")
-        assert os_readlink(rofi) == str(current / "colors.rasi")
+        assert result.consumer_symlinks == []
+        assert os_readlink(legacy) == str(current / "colors.gtk.css")
+        loaded = applied.repo.load_current()
+        assert loaded is not None and loaded.palette is not None
+        assert legacy.resolve() == (
+            applied.state_root
+            / "cache"
+            / "palettes"
+            / loaded.palette.entry_hash
+            / "colors.gtk.css"
+        ).resolve()
 
     def test_no_copy_every_current_entry_is_a_symlink(self, tmp_path: Path) -> None:
         applied = _apply_state(tmp_path)
@@ -456,11 +457,12 @@ class TestReconcileHappyPath:
         current = applied.state_root / "current"
         entries = list(current.iterdir())
         assert entries, "current/ must not be empty"
+        allowed_real = {"manifest.json", "appearance", "wallpaper"}
         for entry in entries:
+            if entry.name in allowed_real:
+                continue
             assert entry.is_symlink(), f"copied file found in current/: {entry}"
-            # symlink target resolves into cache/ — the only legitimate byte
-            # placement is step 1's cache-miss regeneration via staging-dir
-            target = Path(os_readlink(entry))
+            target = entry.resolve()
             assert str(target).startswith(
                 str(applied.state_root / "cache")
             ), f"symlink target outside cache/: {target}"
@@ -471,29 +473,13 @@ class TestReconcileHappyPath:
         applied = _apply_state(tmp_path)
         seeder = _SpySeeder(applied.state_root)
         use_case = _make_reconcile(applied, seeder=seeder)
-        loaded = applied.repo.load_current()
-        assert loaded is not None
-        wh = loaded.wallpaper.content_hash
 
-        use_case.run()
+        result = use_case.run()
 
-        assert len(seeder.repoint_calls) == 1
-        call = seeder.repoint_calls[0]
-        assert call["wallpaper_target"] == (
-            applied.state_root / "cache" / "wallpapers" / wh / "wallpaper.png"
-        )
-        assert call["monitor_names"] == ["DP-1"]
-        assert call["palette_entry_hash"] == (
-            loaded.palette.entry_hash if loaded.palette else None
-        )
-        assert call["effects_entry_hash"] == (
-            loaded.effects.entry_hash if loaded.effects else None
-        )
-        assert call["icons_entry_hash"] == (loaded.icons.entry_hash if loaded.icons else None)
-
-
-class TestReconcileIdempotence:
-    """AC 5: re-run is a no-op-with-verification, one history line per run."""
+        assert seeder.repoint_calls == []
+        assert result.generation_hash is not None
+        manifest = applied.state_root / "generations" / result.generation_hash / "manifest.json"
+        assert manifest.is_file()
 
     def test_second_run_is_zero_invocation_and_appends_one_history_line(
         self, tmp_path: Path
@@ -574,30 +560,18 @@ class TestReconcileFailurePolicy:
         assert any("icons" in s for s in result.skipped)
 
     def test_null_palette_is_refused_not_unlinked(self, tmp_path: Path) -> None:
-        """BUG-001: a legacy null-palette state is refused loudly; reconcile
-        must never remove consumer pointers to "degrade" a missing palette."""
+        import os
+
         applied = _apply_state(tmp_path)
+        _make_reconcile(applied).run()
         loaded = applied.repo.load_current()
         assert loaded is not None and loaded.palette is not None
-        old_palette_hash = loaded.palette.entry_hash
-
-        seeder = CacheSeeder(applied.state_root)
-        seeder.repoint_current_symlinks(
-            wallpaper_target=(
-                applied.state_root / "cache" / "wallpapers" / loaded.wallpaper.content_hash
-            )
-            / "wallpaper.png",
-            monitor_names=["DP-1"],
-            palette_entry_hash=old_palette_hash,
-        )
-        seeder.repoint_consumer_symlinks(applied.install_spine, old_palette_hash)
-        pointers = [
-            applied.install_spine / "config" / "ags" / "colors.css",
-            applied.install_spine / "config" / "rofi" / "colors.rasi",
-        ]
-        before_links = {p: p.readlink() for p in pointers}
+        current = applied.state_root / "current"
+        before_ptr = os.readlink(current)
+        before_manifest = (current / "manifest.json").read_bytes()
+        history = applied.state_root / "history.jsonl"
+        before_history = len(history.read_text(encoding="utf-8").splitlines())
         state_path = applied.state_root / "current.json"
-        before_state = state_path.read_bytes()
 
         applied.repo.save(
             type(loaded)(
@@ -611,17 +585,15 @@ class TestReconcileFailurePolicy:
             )
         )
         after_null_state = state_path.read_bytes()
-        use_case = _make_reconcile(applied)
 
         with pytest.raises(PaletteUnavailableError, match="palette"):
-            use_case.run()
+            _make_reconcile(applied).run()
 
-        for pointer, target in before_links.items():
-            assert pointer.is_symlink(), "null palette must never unlink a consumer pointer"
-            assert pointer.readlink() == target
+        # The committed generation is untouched by a refused converge.
+        assert os.readlink(current) == before_ptr
+        assert (current / "manifest.json").read_bytes() == before_manifest
         assert state_path.read_bytes() == after_null_state
-        assert state_path.read_bytes() != before_state  # the seeded null state is readable
-        assert not (applied.state_root / "history.jsonl").exists()
+        assert len(history.read_text(encoding="utf-8").splitlines()) == before_history
 
     def test_missing_palette_artifact_fails_closed_before_swap(
         self, tmp_path: Path
@@ -773,7 +745,9 @@ class TestReconcileCacheMissRegeneration:
         saved_raw = json.loads((applied.state_root / "current.json").read_text())
         assert saved_raw["palette"]["hash"] == recorded_peh
         links = _symlink_map(applied.state_root / "current")
-        assert links["colors.conf"] == str(entry_dir / "colors.conf")
+        assert (applied.state_root / "current" / "colors.conf").resolve() == (
+            entry_dir / "colors.conf"
+        ).resolve()
 
     def test_mode_change_regenerates_the_palette_entry(self, tmp_path: Path) -> None:
         """desired.json mode changes the palette key, so reconcile regenerates."""
@@ -796,6 +770,12 @@ class TestReconcileCacheMissRegeneration:
             / "palettes"
             / result.state.palette.entry_hash
         ).is_dir()
+        from runtime.adapters.generation_store import GenerationStore
+
+        manifest = GenerationStore(applied.state_root).current_manifest()
+        assert manifest is not None
+        assert manifest["mode"] == "light"
+        assert manifest["intent"]["palette"] == result.state.palette.entry_hash
 
     def test_hash_mismatch_fails_loud_and_never_repoints(self, tmp_path: Path) -> None:
         """Spine inputs changed since wallpaper set: regeneration produces a
@@ -950,6 +930,10 @@ class TestReconcileStructuralScopeLock:
             "skin_expander",
             "appearance_generator",
             "appearance_keep",
+            "generation_store",
+            "converge_lock",
+            "source_kind",
+            "job_id",
         }
         assert not any("backend" in p or "factory" in p for p in params)
 

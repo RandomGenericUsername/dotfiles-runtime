@@ -140,3 +140,23 @@ def load_appearance_json_schema() -> dict[str, Any]:
 def load_appearance_artifact_schema() -> dict[str, Any]:
     """Embedded appearance metadata schema (draft-07)."""
     return _load("appearance-artifact.schema.json")
+
+
+def generation_manifest_validator() -> Validator:
+    """Validator for the v3 ``state/generations/<genHash>/manifest.json``."""
+    return _validator("generation-manifest.schema.json")
+
+
+def appearance_refresh_result_validator() -> Validator:
+    """Validator for the v3 generation-bound ``appearance-refresh`` ack."""
+    return _validator("appearance-refresh-result.schema.json")
+
+
+def load_generation_manifest_schema() -> dict[str, Any]:
+    """Embedded v3 generation manifest schema (draft-07)."""
+    return _load("generation-manifest.schema.json")
+
+
+def load_appearance_refresh_result_schema() -> dict[str, Any]:
+    """Embedded v3 appearance-refresh response schema (draft-07)."""
+    return _load("appearance-refresh-result.schema.json")

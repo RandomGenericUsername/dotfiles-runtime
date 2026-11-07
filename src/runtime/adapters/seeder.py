@@ -899,32 +899,57 @@ class CacheSeeder:
         """
         if palette_entry_hash is None:
             raise ValueError(
-                "palette layer is required: refusing to repoint/remove consumer "
+                "palette layer is required: refusing to prune consumer "
                 "pointers for a null palette (re-set the wallpaper)"
             )
-        pointers = self._consumer_spec.consumer_pointers()
-        rules = self._consumer_spec.rules()
-        dests = [install_spine / pointer.path for pointer in pointers]
-        created: list[Path] = []
-        for pointer, dest in zip(pointers, dests, strict=True):
-            target = self._state_root / "current" / pointer.target
-            if rules.skip_on_missing_target and not target.exists() and not target.is_symlink():
-                logger.warning(
-                    "seeding: current/%s missing, consumer symlink skipped",
-                    pointer.target,
-                )
-                continue
-            if rules.skip_on_missing_parent and not dest.parent.is_dir():
-                logger.warning(
-                    "seeding: consumer symlink skipped, destination parent missing: %s",
-                    dest,
-                )
-                continue
-            _repoint_symlink(dest, target)
-            created.append(dest)
+        # v3: installation-spine links are provisioning-owned and point at
+        # `current/palette/...`. The runtime never creates or repoints one; it
+        # only removes runtime-owned v1/v2 leftovers. Kept as a compatibility
+        # entry point for callers that used the v2 name.
+        return self.prune_runtime_spine_pointers(install_spine)
 
-        created.extend(self.prune_v1_skin_pointers(install_spine))
-        return created
+    def prune_runtime_spine_pointers(self, install_spine: Path) -> list[Path]:
+        """Remove runtime-owned legacy links, writing nothing into app tags.
+
+        v3 has no ``config/<configDir>/appearance.css`` convenience link and no
+        v1 skin pointer. Existing runtime-owned links from those families are
+        pruned. A deployed config dir that is itself a symlink into an app tag
+        is never followed: deleting through it would mutate an immutable tag.
+        """
+        config_root = install_spine / "config"
+        if not config_root.is_dir() or config_root.is_symlink():
+            return []
+        removed: list[Path] = []
+        for config_dir in sorted(config_root.iterdir()):
+            if config_dir.is_symlink() or not config_dir.is_dir():
+                continue
+            for name in ("appearance.css", "skin.css", "skin.json"):
+                link = config_dir / name
+                if not link.is_symlink():
+                    continue
+                try:
+                    raw = os.readlink(link)
+                except OSError:
+                    continue
+                normalized = raw.replace("\\", "/")
+                if not any(
+                    marker in normalized
+                    for marker in (
+                        "current/appearance",
+                        "cache/appearance",
+                        "current/skin.json",
+                        "current/skins/",
+                    )
+                ):
+                    continue
+                try:
+                    link.unlink()
+                except OSError:
+                    continue
+                logger.info("seeding: pruned runtime-owned legacy pointer %s", link)
+                removed.append(link)
+        removed.extend(self.prune_v1_skin_pointers(install_spine))
+        return removed
 
     def prune_v1_skin_pointers(self, install_spine: Path) -> list[Path]:
         """Remove retired runtime-owned v1 skin consumer links.
@@ -946,9 +971,9 @@ class CacheSeeder:
         removed: list[Path] = []
         for config_dir in sorted(config_root.iterdir()):
             # A deployed config dir is normally a symlink to the app install
-            # (the live spine shape); the runtime-owned pointer links live
-            # inside it, so follow the dir but never the skin link itself.
-            if not config_dir.is_dir():
+            # (an immutable tag). Never follow it: unlinking through the link
+            # would mutate the tag, exactly the v3 locality rule.
+            if config_dir.is_symlink() or not config_dir.is_dir():
                 continue
             for name in ("skin.css", "skin.json"):
                 link = config_dir / name
