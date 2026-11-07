@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.0.1 — 2026-11-07
+
+Fix the daemon converge job trigger and the `wallpaper.state` contract rejection
+(BUG-010).
+
+- The daemon queue no longer hardcodes `trigger="daemon"`. `daemon` is a
+  generation-manifest source kind, not a history trigger; the worker preserves
+  the request's canonical trigger (`set` for `wallpaper set`, `reconcile` for a
+  standalone reconcile) and falls back to `reactive` when the request is
+  absent or unknown. `suppressHistory` and `includeTerminal` now travel in the
+  converge request, so a reactive composite's inner reconcile stays silent and
+  the composite appends exactly one `reactive` history line.
+- `wallpaper.state` is a bounded, contract-valid summary: only contract stages
+  (`setting_wallpaper`, `generating_palette`, `reconciling_consumers`,
+  `finished`), error and reload-failure text collapsed and clamped, and optional
+  fields dropped if a future value would push canonical JSON over the hub's
+  64 KiB cap.
+- A `wallpaper.state` publish failure is a visible warning. It no longer prints
+  a traceback or changes an otherwise successful apply/reconcile result.
+- Regression tests cover allowed/fallback triggers, daemon `set` and
+  `reactive`, the no-daemon CLI fallback, payload size/schema, and non-fatal
+  publishing.
+
 ## v1.0.0 — 2026-11-06
 
 Generations v3: one committed generation and one `converge(intent)` (REQ-020).

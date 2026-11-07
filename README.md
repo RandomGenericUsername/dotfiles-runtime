@@ -28,6 +28,17 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**1.0.1** — valid daemon converge triggers and a contract-safe `wallpaper.state`.
+
+- Daemon queue jobs preserve the originating intent trigger (`set` for
+  `wallpaper set`, `reconcile` for a standalone reconcile) and fall back to
+  `reactive`; the queue no longer writes the invalid `daemon` trigger. A
+  reactive composite's inner reconcile stays history-suppressed through the
+  daemon boundary, so it appends exactly one `reactive` line.
+- `wallpaper.state` uses only contract stages, clamps optional error and
+  reload-failure text, and stays below the hub's 64 KiB payload cap. A publish
+  failure is a warning and never masks the apply/reconcile result.
+
 **1.0.0** — generations v3: one committed generation and one `converge(intent)`.
 
 - The state plane is `state/generations/<genHash>/` plus one atomic

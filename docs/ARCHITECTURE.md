@@ -188,6 +188,16 @@ requests a second hub name.
 The clipboard watcher is a separate service (`dotfiles-runtime-clipboard.service`) that owns no bus
 name and starts after the daemon.
 
+A `converge:<intentHash>` job carries the trigger of the intent that submitted it (`set` for
+`wallpaper set`, `reconcile` for a standalone reconcile). The daemon worker validates it against
+`runtime.domain.history.HISTORY_TRIGGERS` and falls back to `reactive` for a missing/unknown
+request; `daemon` is only the generation-manifest source kind, never a history trigger. The
+request also carries the caller's `suppressHistory`/`includeTerminal` flags so a reactive
+composite's inner steps stay silent and the composite appends the single `reactive` line.
+`wallpaper.state` is a compact, contract-valid payload: only the contract's stage enum, bounded
+error/reload-failure summaries, and a hard fit below the hub's 64 KiB cap. A publish failure is a
+warning and never changes the convergence result.
+
 ## 6a. Manifest-driven AGS app refresh
 
 After the palette repoint, `reconcile`/`wallpaper set`/`icons regenerate` run the manifest-driven

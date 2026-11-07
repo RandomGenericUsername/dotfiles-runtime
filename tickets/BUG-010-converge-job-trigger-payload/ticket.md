@@ -2,7 +2,7 @@
 id: BUG-010
 title: "Converge jobs write an invalid history trigger and wallpaper.state can be rejected"
 kind: bug
-status: in-progress
+status: done
 lane: direct
 severity: high
 links:
@@ -68,15 +68,15 @@ Two defects are visible:
 
 ## Acceptance
 
-- [ ] A daemon converge job carries a trigger in `HISTORY_TRIGGERS`; `set`
+- [x] A daemon converge job carries a trigger in `HISTORY_TRIGGERS`; `set`
       jobs record `set`, daemon reactions record `reactive`.
-- [ ] `wallpaper.state` payloads use only contract stages and stay under
+- [x] `wallpaper.state` payloads use only contract stages and stay under
       `MAX_PAYLOAD_BYTES`; oversized optional fields are trimmed.
-- [ ] Publish failure is non-fatal, warning-visible, and does not print a
+- [x] Publish failure is non-fatal, warning-visible, and does not print a
       traceback that masks the result.
-- [ ] Tests cover trigger validation, daemon `set`, reactive, direct fallback,
+- [x] Tests cover trigger validation, daemon `set`, reactive, direct fallback,
       payload bound, and non-fatal publish.
-- [ ] `make gates` and `make gates-ci` pass; tag `v1.0.1`; fast-forward merge
+- [x] `make gates` and `make gates-ci` pass; tag `v1.0.1`; fast-forward merge
       to `main`; push `main` + tag. Do **not** run `apply`.
 
 ## Evidence
@@ -94,3 +94,55 @@ daemon-owned bus). Code evidence:
   from `contracts/event-contract.json` `topics['wallpaper.state'].enum.stage`.
 - `src/runtime/adapters/emit_validation.py` caps payloads at 64 KiB and raises
   `PayloadTooLarge` for schema and size violations.
+
+## Outcome
+
+Implementation `5e7717c` (fix + regression tests), release commit tagged
+`v1.0.1`.
+
+### Chosen trigger mapping
+
+| Job origin | Request trigger | History trigger |
+| --- | --- | --- |
+| `wallpaper set` (daemon queue) | `set` | `set` |
+| standalone `reconcile` (daemon queue) | `reconcile` | `reconcile` |
+| reactive composite inner step | `reconcile` + `suppressHistory` | none (composite appends one `reactive`) |
+| missing/unknown daemon-queue request | absent / `daemon` | `reactive` |
+
+`daemon` stays a generation-manifest `source.kind`, never a `HISTORY_TRIGGERS`
+member. `suppressHistory`/`includeTerminal` now travel in the converge request
+so the daemon job honors the caller's history and tty intent.
+
+### Payload evidence
+
+Reproduction (1 MiB error + 500 × 5 KiB reload-failure strings):
+
+```text
+raw bytes: 3507580
+compact bytes: 7185 limit: 65536
+error chars: 512
+reload failures: 32 max item chars: 200
+validator: accepted
+```
+
+`tests/unit/test_converge_job_trigger_payload.py` asserts the same bound with
+`payload_size_bytes` and `EmitValidator` from the hub.
+
+### Gates
+
+```sh
+make gates
+# test: 2398 passed, 3 skipped, 10 deselected
+# lint: All checks passed
+# contracts-check: 58 passed, 1 skipped
+# hermetic: 2398 passed, 3 skipped, 10 deselected
+# lock-check: Resolved 25 packages
+
+make gates-ci
+# same six gates; exit 0
+
+uv run pytest -q tests/unit/test_converge_job_trigger_payload.py -v
+# 26 passed
+```
+
+No `apply` command was run.
