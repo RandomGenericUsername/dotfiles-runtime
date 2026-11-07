@@ -10,8 +10,8 @@ tool: it consumes those by pin and drives `tpr` / `weg` / `itr` as subprocesses.
 ## Public surface
 
 ```console
-dotfiles-runtime wallpaper set IMAGE      # visible-first apply → derive → reconcile → persist
-dotfiles-runtime reconcile                # repoint current/ to current.json
+dotfiles-runtime wallpaper set IMAGE      # converge(intent): derive → commit generation → apply
+dotfiles-runtime reconcile                # converge(intent) from desired.json / current state
 dotfiles-runtime doctor [--repair]        # state/cache and AGS supervision drift
 dotfiles-runtime capture                  # resident capture job (hub Control)
 dotfiles-runtime clipboard                # resident clipboard watcher
@@ -27,6 +27,32 @@ dotfiles-runtime version
 Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
+
+**1.0.0** — generations v3: one committed generation and one `converge(intent)`.
+
+- The state plane is `state/generations/<genHash>/` plus one atomic
+  `state/current -> generations/<genHash>` symlink. A generation contains
+  `manifest.json`, `palette/`, `effects/`, `icons/`, `wallpaper/`,
+  `appearance/<configDir>.css` and `appearance/tokens.json`. Layer entries are
+  content-addressed and referenced; `manifest.json` is written last.
+- Every mutation (daemon watch, `reconcile`, `wallpaper set`, skin/mode change)
+  calls the same `converge(intent)` under one blocking `converge.lock`. A mode
+  change regenerates the palette in every path.
+- The daemon queue coalesces identical intents and supersedes queued ones; the
+  CLI subscribes to `JobFinished` before submitting and never polls state
+  files. Without a daemon the same function runs under the same flock.
+- Live refresh is generation-bound: `ags request appearance-refresh <genHash>
+  -i <instance>`. A stale/boolean ack is never `applied`; the declared
+  `live|restart` lane is enforced and a failed live refresh never restarts.
+- Runtime writes are state-only. It no longer creates
+  `config/<app>/appearance.css` or v1/v2 skin pointers and never writes into
+  an app tag; provisioning-owned links resolve through `current/palette/...`.
+- `current.json` is a derived compatibility view. `current/manifest.json` is
+  authoritative; crash recovery, GC (`gc-pins.json`) and `doctor`/`inspect`
+  report desired vs committed vs applied.
+- AGS readiness uses D-Bus `NameOwnerChanged`; systemd restarts use
+  `systemctl --user restart --wait`; the converge and launch locks have no
+  retry sleep loops.
 
 **0.9.5** — palette mode intent from `desired.json` through to `tpr`.
 

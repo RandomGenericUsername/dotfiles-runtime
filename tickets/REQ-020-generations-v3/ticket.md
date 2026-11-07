@@ -2,7 +2,7 @@
 id: REQ-020
 title: "Generations v3: one committed generation and one converge(intent)"
 kind: requirement
-status: in-progress
+status: done
 lane: 2
 links:
   openspec: none
@@ -66,32 +66,32 @@ Implement the frozen v3 generation interface in `dotfiles-runtime` only:
 
 ## Acceptance
 
-- [ ] `state/generations/<genHash>/` matches the frozen layout, `manifest.json`
+- [x] `state/generations/<genHash>/` matches the frozen layout, `manifest.json`
       validates against the v0.8.0 schema, and `current` is one symlink committed
       by a single `rename`.
-- [ ] Layer entries are content-addressed and referenced, not copied; the
+- [x] Layer entries are content-addressed and referenced, not copied; the
       manifest records layer hashes, skin and mode.
-- [ ] `converge(intent)` is the only mutation path for daemon, reconcile,
+- [x] `converge(intent)` is the only mutation path for daemon, reconcile,
       wallpaper set and skin/mode changes.
-- [ ] A `mode`-only change through reconcile regenerates the palette and the
+- [x] A `mode`-only change through reconcile regenerates the palette and the
       committed generation reports the new mode.
-- [ ] Daemon queue coalesces identical intents, supersedes queued ones, and never
+- [x] Daemon queue coalesces identical intents, supersedes queued ones, and never
       cancels a running job; CLI subscribes before submitting and waits on
       `JobFinished`, not polling.
-- [ ] No daemon: the same function runs under the one blocking `converge.lock`;
+- [x] No daemon: the same function runs under the one blocking `converge.lock`;
       the old seed/appearance locks and sleep loops are gone.
-- [ ] Live refresh is generation-bound; stale/boolean acks are refused and
+- [x] Live refresh is generation-bound; stale/boolean acks are refused and
       retried; the declared lane is enforced and a live failure never restarts.
-- [ ] AGS registration uses `NameOwnerChanged`; systemd waits use
+- [x] AGS registration uses `NameOwnerChanged`; systemd waits use
       `JobRemoved`/`systemctl --wait`; timeouts only abort/report.
-- [ ] Runtime writes only under `state/`; no `config/<app>/appearance.css`,
+- [x] Runtime writes only under `state/`; no `config/<app>/appearance.css`,
       v1/v2 skin pointer, or app-tag write remains; legacy consumer links point
       through `current/palette/...`.
-- [ ] `current.json` is a derived compatibility view; crash recovery covers
+- [x] `current.json` is a derived compatibility view; crash recovery covers
       before/after the commit rename; GC retains active/newest/pinned/ledger and
       never deletes an acknowledged generation.
-- [ ] Tests cover the nine listed scenarios.
-- [ ] README/CHANGELOG/ARCHITECTURE describe v3; version is `1.0.0`; `make
+- [x] Tests cover the nine listed scenarios.
+- [x] README/CHANGELOG/ARCHITECTURE describe v3; version is `1.0.0`; `make
       gates` and `make gates-ci` pass; tag `v1.0.0` is created after the green
       commit and merged fast-forward to `main`; main and tag are pushed.
 
@@ -157,3 +157,53 @@ rg -n "def repoint_current_symlinks|def publish_appearance|hold_operation_lock|p
   nine required scenarios.
 - `README.md`, `CHANGELOG.md`, `docs/ARCHITECTURE.md`, `pyproject.toml` —
   v3 documentation and `1.0.0` release metadata.
+
+## Final evidence
+
+Commands run on `ticket/REQ-020-generations-v3`:
+
+```sh
+make gates
+# test 2372 passed, 3 skipped, 10 deselected
+# lint All checks passed
+# contracts-check 58 passed, 1 skipped
+# hermetic 2372 passed, 3 skipped, 10 deselected
+# lock-check Resolved 25 packages
+
+make gates-ci
+# same six gates; exit 0
+
+CONTRACTS_REPO=/home/inumaki/Development/dotfiles/contracts python3 scripts/contract-pin-check.py
+# PASS — vendored bindings match contracts/generated at pin d86c19c…
+
+uv run pytest -q tests/unit/test_generations_v3.py
+# 10 passed
+```
+
+Focused v3 proofs:
+
+- `tests/unit/test_generations_v3.py` — layout + one pointer, queue coalescing
+  and supersede, exclusive converge lock, generation-bound stale/boolean ack
+  refusal, no app-tag writes, no sleep polling in the converge core,
+  desired/committed/applied inspection, GC acknowledged retention.
+- `tests/unit/test_crash_recovery.py` — injected crash before the generation
+  rename, after it, after the pointer rename, ledger mismatch, GC pins.
+- `tests/unit/test_reconcile.py::test_mode_change_regenerates_the_palette_entry`
+  — mode-only reconcile commits a light generation.
+- `tests/unit/test_ags_app_refresh.py` — v3 `appearance-refresh` transport and
+  lane policy.
+- `tests/unit/test_skins.py`, `test_seed_cache.py`, `test_doctor_repair.py`,
+  `test_doctor_check.py`, `test_appearance.py` — v3 locality, generation
+  identity and current.json compatibility behaviour.
+
+## Deviations
+
+- The installed AGS restart adapter keeps its injected `instance_lister`
+  oracle for headless tests; production (`instance_lister=None`) uses the
+  D-Bus `NameOwnerChanged` watcher. The launch lock is now a single
+  non-blocking flock attempt (fail-fast) instead of a bounded retry loop.
+- `current.json` remains the v2 schema as the derived compatibility view;
+  `current/manifest.json` is authoritative and every runtime decision reads it.
+- The legacy `AppearanceGenerator` v2 cache entry is still composed as an
+  input to the generation (its sheets are copied into the immutable
+  generation); no v2 pointer is published.

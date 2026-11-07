@@ -272,3 +272,25 @@ The CLI invocation contract is the `cli-invocation-contract` distribution from t
 `integration` marker; `make test-integration` runs it for a developer machine. `make hermetic`
 re-runs the fast suite with empty `HOME`/`XDG_*` from a throwaway cwd. `make ci-gates-parity` keeps
 the workflow job set equal to `GATES`.
+
+
+## Generations v3 (v1.0.0)
+
+`state/generations/<genHash>/` is the unit. `manifest.json` follows the
+contracts v0.8.0 generation schema and is written last in a sibling
+`generations/.staging-*`; the immutable directory is published with one
+`rename` and `state/current` is committed with one symlink `rename`. Layer
+directories are symlinks into the content-addressed cache; only the composed
+appearance sheets and the manifest are generation-specific files.
+
+Every mutation goes through `ConvergeEngine.converge(intent)`, which holds one
+blocking `converge.lock` across intent → derive → stage → commit →
+apply/ledger. The daemon queue and CLI fallback run that same function. The
+daemon allocates `converge:<intentHash>` jobs on the existing event surface;
+the CLI subscribes before submitting and waits on `JobFinished`.
+
+Live apps receive the exact generation in `appearance-refresh <genHash>` and
+must ack that generation. Runtime writes are state-only: no install-spine or
+app-tag artifact is created. `current.json` remains a derived compatibility
+view; `current/manifest.json` is authoritative. GC is part of convergence and
+retains active/newest/pinned/ledger/acknowledged generations.

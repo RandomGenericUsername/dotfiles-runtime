@@ -1,5 +1,54 @@
 # Changelog
 
+## v1.0.0 — 2026-11-06
+
+Generations v3: one committed generation and one `converge(intent)` (REQ-020).
+
+- **Generation model.** `state/generations/<genHash>/` now holds
+  `manifest.json` (contracts v0.8.0 generation schema), `palette/`, `effects/`,
+  `icons/`, `wallpaper/`, `appearance/<configDir>.css` and
+  `appearance/tokens.json`. Layers stay content-addressed and are referenced,
+  not copied. Staging is a sibling `generations/.staging-*`; files and
+  directories are fsynced and the immutable generation is published with one
+  `rename`. `state/current` is one symlink committed with one `rename`; every
+  consumer reads through `current/`. Compatibility aliases (`colors.*`,
+  `wallpaper*.png`) live *inside* the generation and cannot skew.
+- **One convergence function.** Daemon reactions, `reconcile`, `wallpaper set`
+  and skin/mode changes all call `ConvergeEngine.converge(intent)`. The scope is
+  intent → derive → stage → commit → apply/ledger under one blocking kernel
+  `converge.lock`; there is no nested seed/appearance lock and no
+  derivation-outside-the-lock split. A mode-only change regenerates the palette
+  in every path and records the mode in the generation identity.
+- **Daemon queue + CLI fallback.** The daemon owns a converge queue over the
+  existing `BeginJob`/`JobStarted`/`JobFinished` surface. Identical intents
+  coalesce; the newest queued intent supersedes older queued (not running)
+  intents; a running job is never cancelled. The CLI preflights
+  `NameHasOwner` once, subscribes to `JobFinished` before submitting, and waits
+  on its job id (no state-file polling). With no daemon the same function runs
+  under the same flock.
+- **Generation-bound refresh.** Live apps receive
+  `ags request appearance-refresh <genHash> -i <instance>`. Only an ack whose
+  generation equals the request and whose `current` is unchanged is recorded
+  `applied`; a stale/boolean ack is deferred/failed and retried next trigger.
+  The declared `live|restart` lane is enforced; a failed live refresh never
+  becomes a restart. Unit restarts use `systemctl --user restart --wait`.
+- **Locality.** Runtime writes are state-only. It stops creating/repairing
+  `config/<app>/appearance.css`, v1/v2 skin pointers and any file inside an app
+  tag; existing runtime-owned leftovers are pruned. Provisioning-owned legacy
+  links keep working through `current/palette/...`.
+- **Compatibility/recovery.** `current.json` is a derived compatibility view;
+  `current/manifest.json` is authoritative. Crash recovery covers before/after
+  each rename; a mutated generation is rebuilt; GC retains
+  active/newest/pinned/ledger/acknowledged generations and only sweeps
+  unreferenced entries older than grace. `state/gc-pins.json` is retention
+  metadata only.
+- **Events.** AGS name waits use D-Bus `NameOwnerChanged`; systemd waits use
+  `--wait`; launch-lock contention is fail-fast, not a sleep/retry loop.
+- **Tests.** New generation/queue/ack/locality/GC/inspection tests plus crash
+  injection, concurrent lock serialization, queue coalescing/supersede and a
+  source check that the converge core has no sleep polling.
+
+
 ## v0.9.5 — 2026-11-06
 
 Carry the desired palette mode into every palette generation and make it part
