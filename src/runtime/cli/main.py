@@ -504,6 +504,69 @@ def _build_wallpaper_applier(state_root: Path) -> IWallpaperApplier:
 #: hub's ``Emit`` needs no job.
 _WALLPAPER_STATE_TOPIC = "wallpaper.state"
 
+#: ``contracts/event-contract.json`` ``topics['wallpaper.state']`` enums. The
+#: payload helper only publishes a member when it is in these sets, so a
+#: future caller cannot make the hub reject the whole transition (the hub
+#: reports schema violations as ``PayloadTooLarge``).
+_WALLPAPER_STATE_TRIGGERS = frozenset({"set", "regenerate", "reconcile", "reactive"})
+_WALLPAPER_STATE_STAGES = frozenset(
+    {
+        "setting_wallpaper",
+        "generating_palette",
+        "palette_generated",
+        "preparing_appearance_assets",
+        "appearance_assets_ready",
+        "reconciling_consumers",
+        "finished",
+    }
+)
+
+#: Optional payload fields are summaries, never full manifests/stderr dumps.
+#: These bounds keep ``wallpaper.state`` far below ``MAX_PAYLOAD_BYTES`` (64
+#: KiB) even in the worst case and keep the single-line consumer text useful.
+_MAX_WALLPAPER_HASH_CHARS = 128
+_MAX_WALLPAPER_ERROR_CHARS = 512
+_MAX_RELOAD_FAILURES = 32
+_MAX_RELOAD_FAILURE_CHARS = 200
+
+
+def _compact_text(value: object, limit: int) -> str:
+    """Collapse whitespace and clamp one optional string field."""
+    text = " ".join(str(value).split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _compact_wallpaper_state_payload(
+    *,
+    state: str,
+    wallpaper_hash: str,
+    trigger: str,
+    stage: str | None,
+    reload_failures: list[str] | None,
+    error: str | None,
+) -> dict[str, object]:
+    """Build the bounded ``wallpaper.state`` payload (contract-valid members)."""
+    payload: dict[str, object] = {
+        "state": state,
+        "wallpaper_hash": _compact_text(wallpaper_hash, _MAX_WALLPAPER_HASH_CHARS),
+    }
+    if trigger in _WALLPAPER_STATE_TRIGGERS:
+        payload["trigger"] = trigger
+    if stage in _WALLPAPER_STATE_STAGES:
+        payload["stage"] = stage
+    if reload_failures:
+        payload["reload_failures"] = [
+            _compact_text(item, _MAX_RELOAD_FAILURE_CHARS)
+            for item in reload_failures[:_MAX_RELOAD_FAILURES]
+        ]
+    if error is not None:
+        compact_error = _compact_text(error, _MAX_WALLPAPER_ERROR_CHARS)
+        if compact_error:
+            payload["error"] = compact_error
+    return payload
+
 
 def _build_wallpaper_client() -> IJobClient:
     """Build the production wallpaper-state publisher, degrading with no hub.
@@ -544,26 +607,54 @@ def _publish_wallpaper_state(
     failure must not turn a successful apply into a failed command, and a
     publish failure on the error path must not mask the original
     exception. ``trigger`` names the palette-affecting operation
-    (``set``/``regenerate``/``reconcile``/``reactive``).
+    (``set``/``regenerate``/``reconcile``/``reactive``); an unknown value is
+    omitted rather than sent into a schema rejection.
+
+    The payload is deliberately a compact summary: optional error and
+    reload-failure text is collapsed and clamped, stages/triggers are filtered
+    through the contract enums, and optional members are dropped if a future
+    field ever pushes the canonical JSON over the hub's 64 KiB cap.
     """
     try:
-        payload: dict[str, object] = {
-            "state": state,
-            "wallpaper_hash": wallpaper_hash,
-            "trigger": trigger,
-        }
-        if stage is not None:
-            payload["stage"] = stage
-        if reload_failures:
-            payload["reload_failures"] = reload_failures
-        if error is not None:
-            payload["error"] = error
+        from runtime.adapters.emit_validation import MAX_PAYLOAD_BYTES, payload_size_bytes
+
+        payload = _compact_wallpaper_state_payload(
+            state=state,
+            wallpaper_hash=wallpaper_hash,
+            trigger=trigger,
+            stage=stage,
+            reload_failures=reload_failures,
+            error=error,
+        )
+        # Defensive fit: the bounded fields above already guarantee this, but
+        # a publish must never fail because a caller smuggled in a huge value.
+        for optional in ("error", "reload_failures", "stage"):
+            if payload_size_bytes(payload) <= MAX_PAYLOAD_BYTES:
+                break
+            payload.pop(optional, None)
+        size = payload_size_bytes(payload)
+        if size > MAX_PAYLOAD_BYTES:  # pragma: no cover - only state/hash remain
+            logger.warning(
+                "wallpaper: wallpaper.state payload is %d bytes (limit %d); not publishing",
+                size,
+                MAX_PAYLOAD_BYTES,
+            )
+            return
         client.publish(
             _WALLPAPER_STATE_TOPIC,
             payload,
         )
-    except Exception:
-        logger.exception("wallpaper: wallpaper.state publish failed; continuing")
+    except Exception as exc:
+        # A warning, never a traceback: the apply/reconcile outcome is the
+        # real result and a bus/validation failure must not mask it.
+        logger.warning(
+            "wallpaper: wallpaper.state publish failed (state=%s stage=%s trigger=%s): "
+            "%s; continuing",
+            state,
+            stage,
+            trigger,
+            exc,
+        )
 
 
 def _run_wallpaper_set(
@@ -597,7 +688,7 @@ def _run_wallpaper_set(
         resolved = image_path
         pending_hash = ""
     _publish_wallpaper_state(
-        client, "applying", pending_hash, "set", stage="converging"
+        client, "applying", pending_hash, "set", stage="setting_wallpaper"
     )
     started = time.monotonic()
     producer_resolution = resolve_palette_producer(install_spine, producer=producer)
@@ -611,7 +702,7 @@ def _run_wallpaper_set(
         )
     except PaletteUnavailableError as exc:
         _publish_wallpaper_state(
-            client, "error", pending_hash, "set", stage="palette", error=str(exc)
+            client, "error", pending_hash, "set", stage="generating_palette", error=str(exc)
         )
         try:
             from runtime.adapters.seeder import CacheSeeder
@@ -645,16 +736,16 @@ def _run_wallpaper_set(
                 hint=f"re-set the wallpaper / check {producer_resolution.producer}",
             )
             _publish_wallpaper_state(
-                client, "error", pending_hash, "set", stage="palette", error=str(failure)
+                client, "error", pending_hash, "set", stage="generating_palette", error=str(failure)
             )
             raise failure from exc
         _publish_wallpaper_state(
-            client, "error", pending_hash, "set", stage="converging", error=str(exc)
+            client, "error", pending_hash, "set", stage="reconciling_consumers", error=str(exc)
         )
         raise
     except Exception as exc:
         _publish_wallpaper_state(
-            client, "error", pending_hash, "set", stage="converging", error=str(exc)
+            client, "error", pending_hash, "set", stage="reconciling_consumers", error=str(exc)
         )
         raise
     elapsed = time.monotonic() - started
@@ -1231,6 +1322,11 @@ def _converge_cli(
         "wallpaperPath": str(wallpaper) if wallpaper is not None else None,
         "skin": resolved_skin,
         "mode": resolved_mode,
+        # Queue jobs execute in the daemon, so the caller's history and tty
+        # intent must travel with the request: a reactive composite's inner
+        # reconcile stays history-suppressed and terminal reloaders stay off.
+        "suppressHistory": bool(suppress_history),
+        "includeTerminal": bool(include_terminal),
     }
     intent_hash = intent_hash_for(
         wallpaper=wallpaper_hash,
@@ -2246,6 +2342,7 @@ def _daemon_converge_worker(intent_hash: str, job_id: str):
     from runtime.adapters.desired_state_reader import read_desired_state
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.application.generation_converge import ConvergeIntent
+    from runtime.domain.history import normalize_history_trigger
 
     state_root = _resolve_state_root()
     install_spine = _resolve_install_spine()
@@ -2258,6 +2355,19 @@ def _daemon_converge_worker(intent_hash: str, job_id: str):
         request = None
     if isinstance(request, dict) and isinstance(request.get("wallpaperPath"), str):
         wallpaper_path = Path(request["wallpaperPath"])
+    # ``daemon`` is a generation-manifest source kind, not a history trigger.
+    # Preserve the originating intent (``set`` for wallpaper set, ``reconcile``
+    # for a standalone reconcile) and fall back to ``reactive`` for a
+    # daemon-originated/malformed request. No invalid value ever reaches the
+    # reconcile use case (which would reject it before any mutation).
+    trigger = normalize_history_trigger(
+        request.get("trigger") if isinstance(request, dict) else None,
+        fallback="reactive",
+    )
+    suppress_history = bool(request.get("suppressHistory")) if isinstance(request, dict) else False
+    include_terminal = (
+        bool(request.get("includeTerminal")) if isinstance(request, dict) else True
+    )
     current = JsonStateRepository(state_root=state_root).load_current()
     current_hash = current.wallpaper.content_hash if current is not None else None
     if wallpaper_path is None and desired is not None:
@@ -2267,10 +2377,15 @@ def _daemon_converge_worker(intent_hash: str, job_id: str):
 
             if hash_file(candidate) != current_hash:
                 wallpaper_path = candidate
-    engine = _build_converge_engine(state_root, install_spine)
+    engine = _build_converge_engine(
+        state_root,
+        install_spine,
+        suppress_history=suppress_history,
+        include_terminal=include_terminal,
+    )
     outcome = engine.converge(
         ConvergeIntent(
-            trigger="daemon",
+            trigger=trigger,
             source="daemon",
             job_id=job_id,
             wallpaper_path=wallpaper_path,

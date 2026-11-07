@@ -515,7 +515,7 @@ class TestWallpaperStateEmission:
                     "state": "applying",
                     "wallpaper_hash": hash_file(img),
                     "trigger": "set",
-                    "stage": "converging",
+                    "stage": "setting_wallpaper",
                 },
             ),
             (
@@ -582,7 +582,7 @@ class TestWallpaperStateEmission:
                     "state": "applying",
                     "wallpaper_hash": hash_file(img),
                     "trigger": "set",
-                    "stage": "converging",
+                    "stage": "setting_wallpaper",
                 },
             ),
             (
@@ -591,7 +591,7 @@ class TestWallpaperStateEmission:
                     "state": "error",
                     "wallpaper_hash": hash_file(img),
                     "trigger": "set",
-                    "stage": "palette",
+                    "stage": "generating_palette",
                     "error": "tpr generate failed (exit 7): boom",
                 },
             ),
@@ -621,7 +621,7 @@ class TestWallpaperStateEmission:
                 "state": "error",
                 "wallpaper_hash": hash_file(img),
                 "trigger": "set",
-                "stage": "converging",
+                "stage": "reconciling_consumers",
                 "error": "visible swap failed",
             },
         )
@@ -648,7 +648,7 @@ class TestWallpaperStateEmission:
                     "state": "applying",
                     "wallpaper_hash": "",
                     "trigger": "set",
-                    "stage": "converging",
+                    "stage": "setting_wallpaper",
                 },
             ),
             (
@@ -657,7 +657,7 @@ class TestWallpaperStateEmission:
                     "state": "error",
                     "wallpaper_hash": "",
                     "trigger": "set",
-                    "stage": "converging",
+                    "stage": "reconciling_consumers",
                     "error": "wallpaper image not found",
                 },
             ),
