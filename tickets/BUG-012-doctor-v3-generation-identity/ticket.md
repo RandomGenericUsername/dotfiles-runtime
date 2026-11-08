@@ -2,7 +2,7 @@
 id: BUG-012
 title: "Doctor supervision leg compares v2 appearance hashes against the v3 ledger and reports false drift"
 kind: bug
-status: in-progress
+status: done
 lane: 2
 severity: high
 links:
@@ -113,3 +113,63 @@ Regression tests:
   `supervision:appearance/*` drift, and a missing ledger is unknown/non-drift;
 - no v3 manifest still yields the v2 fallback;
 - a malformed v3 manifest yields `None`, never a wrong v2 hash.
+## Outcome
+
+Implementation `124f456` (fix + regression tests); release tag `v1.0.3`.
+
+### Exact expected-hash source
+
+`DoctorUseCase._expected_appearance_hash` now reads
+`GenerationStore.current_hash()` and validates the generation with
+`GenerationStore.load_manifest()` (the same validation `inspect` uses), then
+returns its `generationHash`. On the live host:
+
+```text
+current pointer:        43d62e17e2da58da2ea43da41bde41fb30e9d0077611a8c34fe30e8d50ef7fc8
+manifest generationHash: 43d62e17e2da58da2ea43da41bde41fb30e9d0077611a8c34fe30e8d50ef7fc8
+doctor expected hash:    43d62e17e2da58da2ea43da41bde41fb30e9d0077611a8c34fe30e8d50ef7fc8
+v2 recompute (not used): 09ea6912eae6be3469d972fe1519c1835688e2f495c7318767bd017c3acc69b3
+```
+
+A v3 pointer with a missing/invalid manifest returns `None`; only a host with
+no committed v3 generation keeps the v2 fallback. `appearance_hash_for_state`
+has no production caller and remains the v2 compatibility helper; `inspect`
+and the refresh path already used the committed generation hash, and the
+supervision probe only compares the values it is handed.
+
+### Live proof (read-only, no apply)
+
+`uv run dotfiles-runtime doctor --format json` from the worktree with the fixed
+code exits `0`:
+
+```json
+{"clean": true,
+ "units": [
+   {"unit": "dotfiles-ags-bar.service", "stale_appearance": false, "healthy": true},
+   {"unit": "dotfiles-ags-notifications.service", "stale_appearance": false, "healthy": true}
+ ]}
+```
+
+Both records in `appearance-ledger.json` remain `applied` at
+`43d62e17e2da58da2ea43da41bde41fb30e9d0077611a8c34fe30e8d50ef7fc8`.
+
+### Tests
+
+`uv run pytest -q tests/unit/test_doctor_check.py
+tests/unit/test_ags_supervision.py tests/unit/test_doctor_repair.py
+tests/unit/test_appearance.py tests/unit/test_skins.py` → `129 passed`.
+
+### Gates
+
+```sh
+make gates
+# test: 2415 passed, 3 skipped, 11 deselected
+# lint: All checks passed
+# contracts-check: 58 passed, 1 skipped
+# hermetic: 2415 passed, 3 skipped, 11 deselected
+# lock-check: Resolved 25 packages
+# docs-check: rc 0
+
+make gates-ci
+# same six gates; exit 0
+```

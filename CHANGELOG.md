@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.0.3 — 2026-11-07
+
+Stop the doctor supervision leg from reporting false stale-appearance drift on
+v3 hosts (BUG-012).
+
+- The expected supervision identity now comes from the committed v3 generation:
+  `GenerationStore.current_hash()` plus the validated `current/manifest.json`
+  `generationHash`, the same authority `inspect` and the generation-bound
+  refresh lane already use. On the live host that is
+  `43d62e17e2da58da2ea43da41bde41fb30e9d0077611a8c34fe30e8d50ef7fc8`.
+- The previous unconditional v2 recompute
+  `appearance_generation_hash(palette, skin, mode)` produced
+  `09ea6912eae6be3469d972fe1519c1835688e2f495c7318767bd017c3acc69b3`
+  on the same state, so both applied AGS units were permanently marked stale.
+- Ledger semantics are unchanged: an `applied` record at the current
+  generation is fresh, an older hash or non-`applied` status is stale, and an
+  absent ledger record stays unknown (never drift). No process-start-time
+  heuristic is used.
+- A missing or malformed v3 manifest yields an unknown expected identity; it
+  never silently falls back to the v2 recompute. The v2 fallback remains only
+  for pre-v3 hosts with no committed generation.
+- Regression tests cover the live `43d62e17…`/`09ea6912…` pair, current/old/
+  missing ledger behavior, the pre-v3 fallback, and malformed/missing v3
+  manifests. A read-only live `doctor` run against the fixed code exits 0 with
+  both units healthy and `stale_appearance: false`.
+
 ## v1.0.2 — 2026-11-07
 
 Stop reporting a healthy but slower bar restart as a failure (BUG-011).

@@ -236,7 +236,10 @@ Provisioning v0.1.37 owns the static unit contract for the two always-on apps
   always-on target but whose cgroup is not the unit, plus their `gjs`
   descendants;
 - the appearance ledger supplies a freshness note when an app was last applied
-  at an older hash than the recorded generation.
+  at an older hash than the committed v3 `generationHash` read from the
+  validated `current/manifest.json`. A missing ledger record is unknown, not
+  drift; only a pre-v3 host with no committed generation falls back to the v2
+  `appearance_generation_hash(palette, skin, mode)` identity.
 
 `MainPID` is the foreground `ags run` wrapper. Its `gjs` child owns the bus
 name, so the owner is accepted when it is inside the unit cgroup (not

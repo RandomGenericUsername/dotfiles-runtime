@@ -29,7 +29,7 @@
 
 ## Bugs
 
-- [BUG-012-doctor-v3-generation-identity](./BUG-012-doctor-v3-generation-identity/ticket.md) — Doctor supervision leg compares v2 appearance hashes against the v3 ledger and reports false drift | `in-progress` | severity: high | worktree: .worktrees/BUG-012/ | branch: ticket/BUG-012-doctor-v3-generation-identity
+- [BUG-012-doctor-v3-generation-identity](./BUG-012-doctor-v3-generation-identity/ticket.md) — Doctor supervision leg compares v2 appearance hashes against the v3 ledger and reports false drift | `done` | severity: high | worktree: .worktrees/BUG-012/ | branch: ticket/BUG-012-doctor-v3-generation-identity | tag: v1.0.3
 - [BUG-011-ags-restart-systemd-wait](./BUG-011-ags-restart-systemd-wait/ticket.md) — Bar restart uses `systemctl restart --wait`, which blocks until the service stops again | `done` | severity: high | worktree: .worktrees/BUG-011/ | branch: ticket/BUG-011-ags-restart-systemd-wait | tag: v1.0.2
 - [BUG-010-converge-job-trigger-payload](./BUG-010-converge-job-trigger-payload/ticket.md) — Daemon converge jobs write an invalid history trigger (`daemon`) and `wallpaper.state` can exceed/stage-violate the event contract | `done` | severity: high | worktree: .worktrees/BUG-010/ | branch: ticket/BUG-010-converge-job-trigger-payload | tag: v1.0.1
 - [BUG-009-release-version-metadata](./BUG-009-release-version-metadata/ticket.md) — v0.6.0 release metadata still reports 0.5.2; provisioning verify fails | `done` | severity: high | worktree: .worktrees/BUG-009/ | branch: ticket/BUG-009-release-version-metadata | fix: v0.6.1
