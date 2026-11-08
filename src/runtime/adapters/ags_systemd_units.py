@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "AgsSystemdUnit",
+    "DEFAULT_RESTART_TIMEOUT",
     "DEFAULT_UNIT_GLOB",
     "SystemdCommandResult",
     "SystemdCommandRunner",
@@ -39,7 +40,19 @@ __all__ = [
 #: Provisioning's unit-name namespace (REQ-023). Only always-on apps get one.
 DEFAULT_UNIT_GLOB = "dotfiles-ags-*.service"
 
+#: Bound for one systemctl discovery command (list/show).
 _COMMAND_TIMEOUT = 10.0
+
+#: Bound for the blocking restart job. The unit runs
+#: ``ags-run-locked --lock-timeout 10 --register-timeout 10`` and a large AGS
+#: bundle load adds to that; the live journal's worst stop-to-start gap was
+#: 9.142 s (2026-11-07 18:06:36 → 18:06:45), so 90 s is ~10× the observed
+#: startup and leaves room for a slow bundling pass. This is the whole
+#: restart deadline (systemctl job + D-Bus readiness), not a per-command
+#: timeout. ``systemctl restart`` without ``--wait`` blocks until the start
+#: job completes; ``--wait`` is deliberately not used because for a
+#: long-running service it waits until the unit stops again.
+DEFAULT_RESTART_TIMEOUT = 90.0
 _ARGV_FIELD_RE = re.compile(r"argv\[\]\s*=\s*(.*)")
 
 
@@ -64,13 +77,23 @@ class AgsSystemdUnit:
     config_path: Path
 
 
-def run_systemctl(argv: Sequence[str]) -> SystemdCommandResult:
+def run_systemctl(
+    argv: Sequence[str],
+    *,
+    timeout: float = _COMMAND_TIMEOUT,
+) -> SystemdCommandResult:
+    """Run one systemctl command with an explicit bound.
+
+    Discovery uses the short default; a restart passes
+    :data:`DEFAULT_RESTART_TIMEOUT` because the start job includes the AGS
+    bundle load and the unit wrapper's lock/registration windows.
+    """
     try:
         result = subprocess.run(
             list(argv),
             capture_output=True,
             text=True,
-            timeout=_COMMAND_TIMEOUT,
+            timeout=timeout,
             check=False,
         )
     except subprocess.TimeoutExpired as exc:

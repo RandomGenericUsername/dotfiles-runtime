@@ -61,9 +61,11 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 - `current.json` is a derived compatibility view. `current/manifest.json` is
   authoritative; crash recovery, GC (`gc-pins.json`) and `doctor`/`inspect`
   report desired vs committed vs applied.
-- AGS readiness uses D-Bus `NameOwnerChanged`; systemd restarts use
-  `systemctl --user restart --wait`; the converge and launch locks have no
-  retry sleep loops.
+- AGS readiness uses D-Bus `NameOwnerChanged`; a systemd restart uses the
+  blocking `systemctl --user restart <unit>` job (never `--wait`, which waits
+  for the started unit to stop again) with a configurable 90 s restart bound
+  and a 30 s D-Bus readiness wait; the converge and launch locks have no retry
+  sleep loops.
 
 **0.9.5** — palette mode intent from `desired.json` through to `tpr`.
 

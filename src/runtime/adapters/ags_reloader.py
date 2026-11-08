@@ -39,6 +39,14 @@ instance. A restart therefore has to be serialized and confirmed:
    the intended name is owned afterwards; exit 0 without the name is a real
    failure, not a success. A non-zero exit is always a failure.
 
+Unit-managed apps (REQ-018) skip this sequence: the blocking
+``systemctl --user restart <unit>`` job owns stop/start, and a fresh
+``NameOwnerChanged`` for ``io.Astal.<instance>`` confirms the new owner. The
+restart argv never carries ``--wait``: for a long-running unit systemd defines
+that as "wait until the started unit stops again", which can never complete
+for a healthy bar. The whole restart (job + owner event) is bounded by one
+configurable deadline.
+
 Missing ``ags`` in PATH is a surfaced failure, not a skip (spec-literal R5;
 same decision as the Hyprland adapter).
 
@@ -52,6 +60,7 @@ from __future__ import annotations
 
 import fcntl
 import logging
+import math
 import os
 import re
 import subprocess
@@ -63,6 +72,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from runtime.adapters.ags_systemd_units import (
+    DEFAULT_RESTART_TIMEOUT,
     AgsSystemdUnit,
     SystemdCommandResult,
     SystemdCommandRunner,
@@ -90,6 +100,12 @@ _QUIT_WAIT_POLL_INTERVAL = 0.25
 #: Bounded post-launch name-registration wait: 20 × 0.25 s = 5 s.
 _STARTUP_WAIT_POLLS = 20
 _STARTUP_WAIT_POLL_INTERVAL = 0.25
+
+#: D-Bus readiness bound after a unit start job. The unit wrapper registers
+#: with ``--register-timeout 10``; 30 s is 3× that window, so a slow
+#: registration is not misreported as a dead start. The unit restart path
+#: caps this by whatever remains of its own :data:`DEFAULT_RESTART_TIMEOUT`.
+DEFAULT_INSTANCE_READY_TIMEOUT = 30.0
 
 #: Bounded shared launch-lock wait: 100 × 0.1 s = 10 s.
 _LAUNCH_LOCK_POLLS = 100
@@ -435,7 +451,17 @@ class AgsReloader(IDesktopReloader):
             ``ExecStart`` read per unit) — tests inject a fake.
         systemctl_runner: injectable systemctl command seam (defaults to a
             bounded ``subprocess.run``) used for unit discovery and restart.
+            An injected runner owns its own bound; the default runner applies
+            ``systemd_restart_timeout`` to the restart command.
         systemctl: systemctl executable name/path.
+        systemd_restart_timeout: whole-unit-restart deadline in seconds
+            (default :data:`DEFAULT_RESTART_TIMEOUT`, 90 s). It bounds the
+            blocking ``systemctl restart`` job and the remaining time is what
+            the D-Bus readiness wait may use.
+        instance_ready_timeout: D-Bus owner-event bound in seconds (default
+            :data:`DEFAULT_INSTANCE_READY_TIMEOUT`, 30 s = 3× the unit's
+            ``--register-timeout 10``).
+        clock: monotonic clock seam used to enforce the restart deadline.
     """
 
     def __init__(
@@ -451,8 +477,15 @@ class AgsReloader(IDesktopReloader):
         systemd_unit_lister: Callable[[], Sequence[AgsSystemdUnit]] | None = None,
         systemctl_runner: SystemdCommandRunner | None = None,
         systemctl: str = "systemctl",
+        systemd_restart_timeout: float = DEFAULT_RESTART_TIMEOUT,
+        instance_ready_timeout: float = DEFAULT_INSTANCE_READY_TIMEOUT,
+        clock: Callable[[], float] = time.monotonic,
         name_watcher: object | None = None,
     ) -> None:
+        if systemd_restart_timeout <= 0:
+            raise ValueError("systemd_restart_timeout must be positive")
+        if instance_ready_timeout <= 0:
+            raise ValueError("instance_ready_timeout must be positive")
         self._ags_path: Path | None = _resolve_ags(ags_path)
         self._app_lister = app_lister
         self._instance_lister = instance_lister
@@ -463,6 +496,10 @@ class AgsReloader(IDesktopReloader):
         self._systemd_unit_lister = systemd_unit_lister
         self._systemctl_runner = systemctl_runner or self._default_systemctl_runner
         self._systemctl = systemctl
+        self._systemd_restart_timeout = float(systemd_restart_timeout)
+        self._instance_ready_timeout = float(instance_ready_timeout)
+        self._restart_runner = systemctl_runner or self._default_restart_runner
+        self._clock = clock
         #: Production uses the real D-Bus ``NameOwnerChanged`` watcher. A
         #: caller that injects an ``instance_lister`` is a headless/test
         #: harness with no guarantee of a bus, so the lister remains the
@@ -474,7 +511,7 @@ class AgsReloader(IDesktopReloader):
         else:
             from runtime.adapters.dbus_name_watcher import DbusNameWatcher
 
-            self._name_watcher = DbusNameWatcher()
+            self._name_watcher = DbusNameWatcher(timeout=self._instance_ready_timeout)
 
     def _default_bar_pid_lister(self) -> Sequence[int]:
         return _discover_bar_pids(self._ags_path)
@@ -484,6 +521,11 @@ class AgsReloader(IDesktopReloader):
         from runtime.adapters.ags_systemd_units import run_systemctl
 
         return run_systemctl(argv)
+
+    def _default_restart_runner(self, argv: Sequence[str]) -> SystemdCommandResult:
+        from runtime.adapters.ags_systemd_units import run_systemctl
+
+        return run_systemctl(argv, timeout=self._systemd_restart_timeout)
 
     def _systemd_units(self) -> tuple[AgsSystemdUnit, ...]:
         """Discover the provisioned AGS units (never fails the restart lane)."""
@@ -544,14 +586,23 @@ class AgsReloader(IDesktopReloader):
     def _restart_unit(self, unit: AgsSystemdUnit, *, instance: str) -> AgsRestartResult:
         """Restart one unit through systemd and verify the instance returns.
 
+        ``systemctl --user restart`` blocks until its restart job finishes
+        (the default; ``--no-block`` is what skips it). ``--wait`` must NOT be
+        used here: for a long-running unit it means "wait until the started
+        unit terminates again", so a healthy bar can never satisfy it
+        (systemd 262 ``man systemctl``). After the job returns, readiness is
+        the D-Bus owner event for ``io.Astal.<instance>``, capped by whatever
+        remains of the single restart deadline.
+
         Deliberately does not take the AGS launch lock: the unit's
         ``ags-run-locked`` ExecStart owns that lock, and holding it here would
         deadlock the unit's own start. Serialization comes from the refresh
         operation lock and the one-unit-at-a-time restart lane.
         """
-        argv = (self._systemctl, "--user", "restart", "--wait", unit.unit)
+        argv = (self._systemctl, "--user", "restart", unit.unit)
+        started = self._clock()
         try:
-            result = self._systemctl_runner(argv)
+            result = self._restart_runner(argv)
         except (FileNotFoundError, PermissionError, OSError, ValueError) as exc:
             error = f"systemctl --user restart {unit.unit} failed: {exc}"
             logger.warning("AGS restart failed for %s: %s", instance, error)
@@ -564,10 +615,17 @@ class AgsReloader(IDesktopReloader):
             )
             logger.warning("AGS restart failed for %s: %s", instance, error)
             return AgsRestartResult(ok=False, argv=argv, error=error)
-        if not self._wait_for_instance(instance, label=instance):
+        elapsed = self._clock() - started
+        remaining = self._systemd_restart_timeout - elapsed
+        if not self._wait_for_instance(
+            instance,
+            label=instance,
+            timeout=max(0.0, remaining),
+        ):
             error = (
                 f"systemctl --user restart {unit.unit} returned 0 but instance "
-                f"{instance!r} did not return"
+                f"{instance!r} did not return within "
+                f"{self._systemd_restart_timeout:g} s"
             )
             logger.warning("AGS restart failed for %s: %s", instance, error)
             return AgsRestartResult(ok=False, argv=argv, error=error)
@@ -578,12 +636,31 @@ class AgsReloader(IDesktopReloader):
         )
         return AgsRestartResult(ok=True, argv=argv)
 
-    def _wait_for_instance(self, name: str, *, label: str) -> bool:
-        """Wait for the instance name after a systemd-owned restart."""
+    def _wait_for_instance(
+        self,
+        name: str,
+        *,
+        label: str,
+        timeout: float | None = None,
+    ) -> bool:
+        """Wait for the instance name after a systemd-owned restart.
+
+        The production path blocks on ``NameOwnerChanged``; the ``ags list``
+        polling branch is only the headless/test fallback when no bus watcher
+        was injected.
+        """
         watcher = self._name_watcher
         if watcher is not None:
             try:
-                return bool(watcher.wait_for_owner(name))  # type: ignore[attr-defined]
+                if timeout is None:
+                    return bool(watcher.wait_for_owner(name))  # type: ignore[attr-defined]
+                try:
+                    return bool(
+                        watcher.wait_for_owner(name, timeout=timeout)  # type: ignore[attr-defined]
+                    )
+                except TypeError:
+                    # An injected watcher with the older one-argument shape.
+                    return bool(watcher.wait_for_owner(name))  # type: ignore[attr-defined]
             except Exception as exc:
                 logger.warning(
                     "AGS restart failed for %s: name-owner event wait failed: %s",
@@ -591,7 +668,13 @@ class AgsReloader(IDesktopReloader):
                     exc,
                 )
                 return False
-        for poll_index in range(_STARTUP_WAIT_POLLS):
+        wait = (
+            timeout
+            if timeout is not None
+            else _STARTUP_WAIT_POLLS * _STARTUP_WAIT_POLL_INTERVAL
+        )
+        poll_count = max(1, math.ceil(wait / _STARTUP_WAIT_POLL_INTERVAL))
+        for poll_index in range(poll_count):
             try:
                 if name in self._owned_instances():
                     return True
@@ -603,7 +686,7 @@ class AgsReloader(IDesktopReloader):
                     exc,
                 )
                 return False
-            if poll_index < _STARTUP_WAIT_POLLS - 1:
+            if poll_index < poll_count - 1:
                 time.sleep(_STARTUP_WAIT_POLL_INTERVAL)
         return False
 

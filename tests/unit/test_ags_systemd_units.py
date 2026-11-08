@@ -15,10 +15,12 @@ from runtime.adapters.ags_reloader import (
     AgsRestartResult,
 )
 from runtime.adapters.ags_systemd_units import (
+    DEFAULT_RESTART_TIMEOUT,
     AgsSystemdUnit,
     SystemdCommandResult,
     discover_ags_systemd_units,
     parse_exec_start_config_dir,
+    run_systemctl,
     unit_for_config_dir,
 )
 
@@ -43,6 +45,18 @@ class _FakeProcess:
 
     def poll(self) -> int | None:
         return self._code
+
+
+class _FakeWatcher:
+    """Scripted D-Bus owner seam; records the timeout each wait receives."""
+
+    def __init__(self, *, owned: bool) -> None:
+        self._owned = owned
+        self.calls: list[tuple[str, float | None]] = []
+
+    def wait_for_owner(self, name: str, *, timeout: float | None = None) -> bool:
+        self.calls.append((name, timeout))
+        return self._owned
 
 
 def _ags_bin(tmp_path: Path) -> Path:
@@ -171,7 +185,7 @@ class TestAgsReloaderUnitRestart:
         unit = AgsSystemdUnit(_unit_name("bar"), "ags", config)
         runner = _Runner(
             {
-                ("systemctl", "--user", "restart", "--wait", unit.unit): SystemdCommandResult(0),
+                ("systemctl", "--user", "restart", unit.unit): SystemdCommandResult(0),
             }
         )
         reloader = AgsReloader(
@@ -192,9 +206,9 @@ class TestAgsReloaderUnitRestart:
 
         assert result == AgsRestartResult(
             ok=True,
-            argv=("systemctl", "--user", "restart", "--wait", unit.unit),
+            argv=("systemctl", "--user", "restart", unit.unit),
         )
-        assert runner.calls == [("systemctl", "--user", "restart", "--wait", unit.unit)]
+        assert runner.calls == [("systemctl", "--user", "restart", unit.unit)]
         mock_run.assert_not_called()
         mock_popen.assert_not_called()
 
@@ -207,7 +221,7 @@ class TestAgsReloaderUnitRestart:
         unit = AgsSystemdUnit(_unit_name("bar"), "ags", config)
         runner = _Runner(
             {
-                ("systemctl", "--user", "restart", "--wait", unit.unit): SystemdCommandResult(
+                ("systemctl", "--user", "restart", unit.unit): SystemdCommandResult(
                     1, "", "unit failed"
                 ),
             }
@@ -229,7 +243,7 @@ class TestAgsReloaderUnitRestart:
             )
 
         assert result.ok is False
-        assert result.argv == ("systemctl", "--user", "restart", "--wait", unit.unit)
+        assert result.argv == ("systemctl", "--user", "restart", unit.unit)
         assert "unit failed" in result.error
         mock_run.assert_not_called()
         mock_popen.assert_not_called()
@@ -243,7 +257,7 @@ class TestAgsReloaderUnitRestart:
         unit = AgsSystemdUnit(_unit_name("bar"), "ags", config)
         runner = _Runner(
             {
-                ("systemctl", "--user", "restart", "--wait", unit.unit): SystemdCommandResult(0),
+                ("systemctl", "--user", "restart", unit.unit): SystemdCommandResult(0),
             }
         )
         reloader = AgsReloader(
@@ -268,7 +282,7 @@ class TestAgsReloaderUnitRestart:
         unit = AgsSystemdUnit(_unit_name("bar"), "ags", config)
         runner = _Runner(
             {
-                ("systemctl", "--user", "restart", "--wait", unit.unit): SystemdCommandResult(0),
+                ("systemctl", "--user", "restart", unit.unit): SystemdCommandResult(0),
             }
         )
         reloader = AgsReloader(
@@ -285,7 +299,7 @@ class TestAgsReloaderUnitRestart:
             patch("runtime.adapters.ags_reloader.subprocess.Popen") as mock_popen,
         ):
             assert reloader.reload() is True
-        assert runner.calls == [("systemctl", "--user", "restart", "--wait", unit.unit)]
+        assert runner.calls == [("systemctl", "--user", "restart", unit.unit)]
         mock_run.assert_not_called()
         mock_popen.assert_not_called()
 
@@ -323,3 +337,198 @@ class TestAgsReloaderUnitRestart:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+
+
+class TestSystemctlRestartBound:
+    def test_restart_bound_is_at_least_60s(self) -> None:
+        assert DEFAULT_RESTART_TIMEOUT >= 60.0
+
+    def test_restart_argv_has_no_wait_operand(self, tmp_path: Path) -> None:
+        ags = _ags_bin(tmp_path)
+        config = tmp_path / "install" / "config" / "ags"
+        config.mkdir(parents=True)
+        unit = AgsSystemdUnit(_unit_name("bar"), "ags", config)
+        watcher = _FakeWatcher(owned=True)
+        runner = _Runner(
+            {
+                ("systemctl", "--user", "restart", unit.unit): SystemdCommandResult(0),
+            }
+        )
+        reloader = AgsReloader(
+            ags_path=ags,
+            systemd_unit_lister=lambda: (unit,),
+            systemctl_runner=runner,
+            name_watcher=watcher,
+            launch_lock_path=tmp_path / "ags-launch.lock",
+        )
+        result = reloader.restart_deployed_app(instance=BAR_INSTANCE_NAME, config_dir=config)
+
+        assert result.ok is True
+        assert "--wait" not in result.argv
+        assert result.argv == ("systemctl", "--user", "restart", unit.unit)
+
+    @pytest.mark.parametrize("elapsed", [15.0, 25.0])
+    def test_slow_healthy_restart_within_bound_succeeds(
+        self, tmp_path: Path, elapsed: float
+    ) -> None:
+        ags = _ags_bin(tmp_path)
+        config = tmp_path / "install" / "config" / "ags"
+        config.mkdir(parents=True)
+        unit = AgsSystemdUnit(_unit_name("bar"), "ags", config)
+        watcher = _FakeWatcher(owned=True)
+        runner = _Runner(
+            {
+                ("systemctl", "--user", "restart", unit.unit): SystemdCommandResult(0),
+            }
+        )
+        ticks = iter([100.0, 100.0 + elapsed])
+        reloader = AgsReloader(
+            ags_path=ags,
+            systemd_unit_lister=lambda: (unit,),
+            systemctl_runner=runner,
+            name_watcher=watcher,
+            clock=lambda: next(ticks),
+            launch_lock_path=tmp_path / "ags-launch.lock",
+        )
+
+        result = reloader.restart_deployed_app(instance=BAR_INSTANCE_NAME, config_dir=config)
+
+        assert result.ok is True
+        [call] = watcher.calls
+        assert call[0] == BAR_INSTANCE_NAME
+        assert call[1] == pytest.approx(DEFAULT_RESTART_TIMEOUT - elapsed)
+
+    def test_never_ready_start_fails_within_configured_bound(self, tmp_path: Path) -> None:
+        ags = _ags_bin(tmp_path)
+        config = tmp_path / "install" / "config" / "ags"
+        config.mkdir(parents=True)
+        unit = AgsSystemdUnit(_unit_name("bar"), "ags", config)
+        watcher = _FakeWatcher(owned=False)
+        runner = _Runner(
+            {
+                ("systemctl", "--user", "restart", unit.unit): SystemdCommandResult(0),
+            }
+        )
+        ticks = iter([0.0, 0.0])
+        reloader = AgsReloader(
+            ags_path=ags,
+            systemd_unit_lister=lambda: (unit,),
+            systemctl_runner=runner,
+            name_watcher=watcher,
+            systemd_restart_timeout=5.0,
+            clock=lambda: next(ticks),
+            launch_lock_path=tmp_path / "ags-launch.lock",
+        )
+
+        result = reloader.restart_deployed_app(instance=BAR_INSTANCE_NAME, config_dir=config)
+
+        assert result.ok is False
+        assert "did not return within 5 s" in result.error
+        [call] = watcher.calls
+        assert call[1] == pytest.approx(5.0)
+
+    def test_old_owner_is_gone_before_new_owner_is_confirmed(self, tmp_path: Path) -> None:
+        ags = _ags_bin(tmp_path)
+        config = tmp_path / "install" / "config" / "ags"
+        config.mkdir(parents=True)
+        unit = AgsSystemdUnit(_unit_name("bar"), "ags", config)
+        state = {"old_alive": True, "owner": "old"}
+
+        def _runner(argv: object) -> SystemdCommandResult:
+            state["old_alive"] = False
+            state["owner"] = "new"
+            return SystemdCommandResult(0)
+
+        class _OwnerWatcher:
+            def wait_for_owner(
+                self, name: str, *, timeout: float | None = None
+            ) -> bool:
+                assert state["old_alive"] is False
+                return state["owner"] == "new"
+
+        reloader = AgsReloader(
+            ags_path=ags,
+            systemd_unit_lister=lambda: (unit,),
+            systemctl_runner=_runner,
+            name_watcher=_OwnerWatcher(),
+            launch_lock_path=tmp_path / "ags-launch.lock",
+        )
+        result = reloader.restart_deployed_app(instance=BAR_INSTANCE_NAME, config_dir=config)
+
+        assert result.ok is True
+        assert state == {"old_alive": False, "owner": "new"}
+
+    def test_adapter_restart_uses_the_long_bound_not_discovery_10s(
+        self, tmp_path: Path
+    ) -> None:
+        ags = _ags_bin(tmp_path)
+        config = tmp_path / "install" / "config" / "ags"
+        config.mkdir(parents=True)
+        unit = AgsSystemdUnit(_unit_name("bar"), "ags", config)
+        watcher = _FakeWatcher(owned=True)
+        seen: list[float] = []
+
+        def _run(argv: object, *, timeout: float) -> SystemdCommandResult:
+            seen.append(timeout)
+            return SystemdCommandResult(0)
+
+        with patch("runtime.adapters.ags_systemd_units.run_systemctl", side_effect=_run):
+            reloader = AgsReloader(
+                ags_path=ags,
+                systemd_unit_lister=lambda: (unit,),
+                name_watcher=watcher,
+                launch_lock_path=tmp_path / "ags-launch.lock",
+            )
+            result = reloader.restart_deployed_app(
+                instance=BAR_INSTANCE_NAME, config_dir=config
+            )
+
+        assert result.ok is True
+        assert seen == [DEFAULT_RESTART_TIMEOUT]
+
+
+class TestRunSystemctlTimeout:
+    def test_explicit_timeout_is_passed_to_subprocess(self) -> None:
+        seen: list[float] = []
+
+        def _run(argv: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            seen.append(kwargs["timeout"])  # type: ignore[arg-type]
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        with patch("runtime.adapters.ags_systemd_units.subprocess.run", side_effect=_run):
+            result = run_systemctl(
+                ["systemctl", "--user", "restart", "dotfiles-ags-bar.service"],
+                timeout=DEFAULT_RESTART_TIMEOUT,
+            )
+
+        assert result.returncode == 0
+        assert seen == [DEFAULT_RESTART_TIMEOUT]
+
+    def test_discovery_timeout_default_stays_10s(self) -> None:
+        seen: list[float] = []
+
+        def _run(argv: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            seen.append(kwargs["timeout"])  # type: ignore[arg-type]
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        with patch("runtime.adapters.ags_systemd_units.subprocess.run", side_effect=_run):
+            result = run_systemctl(
+                ["systemctl", "--user", "list-unit-files", "dotfiles-ags-*.service"]
+            )
+
+        assert result.returncode == 0
+        assert seen == [10.0]
+
+    def test_a_command_exceeding_its_bound_returns_124(self) -> None:
+        def _run(argv: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])  # type: ignore[arg-type]
+
+        with patch("runtime.adapters.ags_systemd_units.subprocess.run", side_effect=_run):
+            result = run_systemctl(
+                ["systemctl", "--user", "restart", "dotfiles-ags-bar.service"],
+                timeout=DEFAULT_RESTART_TIMEOUT,
+            )
+
+        assert result.returncode == 124
+        assert "timed out" in result.stderr
+        assert f"{DEFAULT_RESTART_TIMEOUT:g}" in result.stderr

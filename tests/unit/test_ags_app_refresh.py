@@ -611,11 +611,13 @@ class TestRestartLane:
         )
         assert record.reason == failure
         assert record.error == failure
+        assert record.retryable is True
         assert outcome.failures and outcome.failures[0].reason == failure
         ledger = AppearanceLedger(tmp_path / "state").load()
         assert ledger is not None
         assert ledger.apps["ags"].status == "failed"
         assert ledger.apps["ags"].reason == failure
+        assert ledger.apps["ags"].retryable is True
 
     def test_restart_lane_is_serialized(self, tmp_path: Path) -> None:
         spine = tmp_path / "install"
