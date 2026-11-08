@@ -250,17 +250,28 @@ class ReconcileDesktopStateUseCase:
         wallpaper_already_applied: bool = False,
         wallpaper_path: Path | None = None,
         intent_hash: str | None = None,
+        acquire_lock: bool = True,
     ) -> ReconcileResult:
         """The one v3 mutation scope: intent → derive → stage → commit → apply.
 
         The whole call is serialized by the blocking ``converge.lock``; there
         is no derivation-outside-the-lock split and no second pipeline.
+        ``acquire_lock=False`` is only for :class:`ConvergenceEngine`, which
+        holds the same lock across an optional regenerate pre-step so the
+        commit, current.json save, and history append stay one atomic scope.
         """
         # Validate the enum before acquiring the lock: a bad caller argument
         # must fail without touching the filesystem.
         if not isinstance(trigger, str) or trigger not in HISTORY_TRIGGERS:
             valid = ", ".join(sorted(HISTORY_TRIGGERS))
             raise ValueError(f"invalid history trigger: {trigger!r} (expected one of {valid})")
+        if not acquire_lock:
+            return self._run(
+                trigger,
+                wallpaper_already_applied=wallpaper_already_applied,
+                wallpaper_path=wallpaper_path,
+                intent_hash=intent_hash,
+            )
         with self._converge_lock.hold():
             return self._run(
                 trigger,
@@ -461,6 +472,22 @@ class ReconcileDesktopStateUseCase:
             )
             self._state_repo.save(saved)
 
+            # Step 4 — history, inside the one commit scope and from the
+            # committed snapshot. Appending outside ``converge.lock`` let a
+            # newer commit advance ``current.json`` after an older reconcile
+            # read it, leaving a stale tail (BUG-013). The committed state is
+            # exactly what the generation manifest records, so the tail can
+            # never disagree with ``current.json``/``current/manifest.json``.
+            self._seeder.append_history(
+                trigger=trigger,
+                wallpaper_hash=saved.wallpaper.content_hash,
+                palette_hash=saved.palette.entry_hash if saved.palette else None,
+                effects_hash=saved.effects.entry_hash if saved.effects else None,
+                icons_hash=saved.icons.entry_hash if saved.icons else None,
+                skin_hash=saved.skin.entry_hash if saved.skin else None,
+                source_path=saved.wallpaper.source_path,
+            )
+
         # Logging for skipped null layers outside lock (P8)
         for layer in ("effects", "icons"):
             entry = getattr(saved, layer)
@@ -468,17 +495,6 @@ class ReconcileDesktopStateUseCase:
                 logger.warning("reconcile: %s layer is null; consumer symlink skipped", layer)
         logger.info(
             "reconcile: committed generation %s", generation.generation_hash[:12]
-        )
-
-        # Step 4 — history (outside the lock — O_APPEND + fsync is atomic)
-        self._seeder.append_history(
-            trigger=trigger,
-            wallpaper_hash=saved.wallpaper.content_hash,
-            palette_hash=saved.palette.entry_hash if saved.palette else None,
-            effects_hash=saved.effects.entry_hash if saved.effects else None,
-            icons_hash=saved.icons.entry_hash if saved.icons else None,
-            skin_hash=saved.skin.entry_hash if saved.skin else None,
-            source_path=saved.wallpaper.source_path,
         )
 
         # Step 5 — apply the persisted wallpaper before reloading palette/UI

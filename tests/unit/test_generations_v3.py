@@ -277,6 +277,64 @@ def test_gc_never_removes_an_acknowledged_generation(tmp_path: Path) -> None:
     assert store.load_manifest(active) is not None
 
 
+def test_converge_engine_holds_one_lock_across_regenerate_and_commit() -> None:
+    """BUG-013: regenerate + reconcile commit + history is one locked scope."""
+    from types import SimpleNamespace
+
+    from runtime.application.generation_converge import (
+        ConvergeIntent,
+        ConvergenceEngine,
+    )
+
+    events: list[str] = []
+
+    class _Lock:
+        def hold(self):
+            from contextlib import contextmanager
+
+            @contextmanager
+            def _scope():
+                events.append("lock-enter")
+                try:
+                    yield
+                finally:
+                    events.append("lock-exit")
+
+            return _scope()
+
+    class _Reconcile:
+        def run(self, trigger: str, **kwargs: object) -> object:
+            assert trigger == "reactive"
+            assert kwargs["acquire_lock"] is False
+            events.append("reconcile")
+            return SimpleNamespace(
+                generation_hash=GEN,
+                reload_failures=[],
+                app_refresh_results=[],
+                state=object(),
+            )
+
+    class _Regenerate:
+        def __init__(self) -> None:
+            self.regenerated = frozenset({"palettes"})
+
+        def __call__(self) -> object:
+            events.append("regenerate")
+            return self
+
+    engine = ConvergenceEngine(
+        lambda _source, _job_id: _Reconcile(),  # type: ignore[arg-type]
+        lock=_Lock(),
+        regenerate=_Regenerate(),
+    )
+
+    outcome = engine.converge(ConvergeIntent(trigger="reactive", source="daemon"))
+
+    assert events == ["lock-enter", "regenerate", "reconcile", "lock-exit"]
+    assert outcome.generation_hash == GEN
+    assert outcome.regenerated == ("palettes",)
+
+
 def test_generation_spec_requires_a_palette(tmp_path: Path) -> None:
     from tests.unit.test_doctor_check import _seed_state
     from runtime.adapters.json_state_repository import JsonStateRepository

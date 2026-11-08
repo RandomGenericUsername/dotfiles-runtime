@@ -67,6 +67,7 @@ def _fake_engine_factory(
                 return SimpleNamespace(
                     generation_hash=INTENT_HASH,
                     degraded=False,
+                    regenerated=("palettes",) if kwargs.get("regenerate") else (),
                     reconcile=SimpleNamespace(
                         app_refresh_results=(),
                         generation_hash=INTENT_HASH,
@@ -155,6 +156,28 @@ class TestDaemonConvergeWorker:
         cli_main._daemon_converge_worker(INTENT_HASH, "job-1")
 
         assert [line["trigger"] for line in _history(state_root)] == ["reactive"]
+
+    def test_regenerate_flag_reaches_the_engine_and_result(
+        self, monkeypatch: pytest.MonkeyPatch, state_root: Path
+    ) -> None:
+        """BUG-013: the regenerate pre-step runs inside the queued job/lock."""
+        calls: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            cli_main,
+            "_build_converge_engine",
+            _fake_engine_factory(state_root, calls),
+        )
+        _write_request(
+            state_root,
+            {"trigger": "regenerate", "regenerate": True, "includeTerminal": False},
+        )
+
+        outcome = cli_main._daemon_converge_worker(INTENT_HASH, "job-1")
+
+        assert calls[-1]["regenerate"] is True
+        assert calls[-1]["include_terminal"] is False
+        assert outcome.regenerated == ("palettes",)
+        assert [line["trigger"] for line in _history(state_root)] == ["regenerate"]
 
     def test_suppress_history_survives_the_daemon_boundary(
         self, monkeypatch: pytest.MonkeyPatch, state_root: Path

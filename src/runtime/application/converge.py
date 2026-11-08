@@ -5,10 +5,10 @@ use cases in the pinned order
 
     CheckInputs → RegenerateStale → Reconcile → declarative converge
 
-then a prune pass, and appends **exactly one** history line
-``trigger="reactive"``. Inner history writes are suppressed by the
-composition root (the injected use cases are wired with a history-suppressing
-``CacheSeeder``); this use case owns the single reactive audit line.
+then a prune pass. The inner reconcile appends **exactly one** history line
+``trigger="reactive"`` under the commit lock from the committed snapshot
+(BUG-013); the ``append_history`` hook is retained for composition/tests but
+production wires it as a no-op so no post-composite stale read can occur.
 
 Loop safety (AD-36): a persisted last-converged input-hash backstop short
 circuits an unchanged input set. An unseeded runtime (no ``current.json``)

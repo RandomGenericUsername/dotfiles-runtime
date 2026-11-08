@@ -17,3 +17,4 @@ class ConvergeQueueResult:
     degraded: bool = False
     superseded_by: str | None = None
     app_results: tuple[dict[str, object], ...] = field(default_factory=tuple)
+    regenerated: tuple[str, ...] = field(default_factory=tuple)

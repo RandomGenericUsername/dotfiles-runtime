@@ -6,8 +6,13 @@ coordinator, so no live inotify is needed (AD-40's transport contract).
 
 from __future__ import annotations
 
+import os
+import sys
 import threading
+import time
 from collections.abc import Callable
+
+import pytest
 
 from runtime.application.watch import WatchAccumulator, WatchCoordinator, WatchTrigger
 from runtime.domain.watch import WatchEvent, WatchEventKind, WatchStatus
@@ -228,3 +233,70 @@ def test_no_polling_static_guard() -> None:
     assert ".stat(" not in source
     assert "rglob" not in source
     assert "os.walk" not in source
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="inotify is Linux-only")
+def test_real_inotify_mode_change_fires_within_a_short_debounce(tmp_path) -> None:
+    """BUG-013: an atomic desired.json replacement triggers promptly, not 30-60s.
+
+    Real inotify + the real coordinator (no fakes). The write pattern is the
+    live one: write a sibling then ``os.replace`` it over ``desired.json``.
+    Three quick replacements coalesce into one additional trigger.
+    """
+    from runtime.adapters.inotify_watch_source import InotifyWatchSource
+    from runtime.adapters.watch_roots import WatchRoot
+
+    intent = tmp_path / "desired.json"
+    intent.write_text('{"version": 1, "mode": "smart"}\n', encoding="utf-8")
+    source = InotifyWatchSource(
+        (WatchRoot(intent, is_directory=False, optional=True),)
+    )
+    try:
+        source.start()
+    except OSError as exc:  # no inotify on this kernel/runner
+        pytest.skip(f"inotify unavailable: {exc}")
+
+    fired = threading.Condition()
+    stamps: list[float] = []
+
+    def _on_trigger(_trigger: WatchTrigger) -> None:
+        with fired:
+            stamps.append(time.monotonic())
+            fired.notify_all()
+
+    def _wait_for(count: int, timeout: float = 2.0) -> bool:
+        deadline = time.monotonic() + timeout
+        with fired:
+            while len(stamps) < count:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                fired.wait(remaining)
+        return True
+
+    coordinator = WatchCoordinator(source, _on_trigger, debounce=0.2)
+    stop = threading.Event()
+    thread = threading.Thread(target=coordinator.serve_events, args=(stop,), daemon=True)
+    thread.start()
+    try:
+        started = time.monotonic()
+        tmp = tmp_path / ".desired.tmp"
+        tmp.write_text('{"version": 1, "mode": "light"}\n', encoding="utf-8")
+        os.replace(tmp, intent)
+        assert _wait_for(1), "atomic desired.json replace never triggered"
+        assert stamps[0] - started < 2.0, f"mode change took {stamps[0] - started:.2f}s"
+
+        before = len(stamps)
+        for mode in ("smart", "dark", "light"):
+            tmp.write_text(f'{{"version": 1, "mode": "{mode}"}}\n', encoding="utf-8")
+            os.replace(tmp, intent)
+        assert _wait_for(before + 1), "burst never triggered"
+        # Burst delivery is bounded too; exact coalescing is pinned by the
+        # scripted-source tests above (kernel read batching may split a burst).
+        time.sleep(0.5)
+        assert len(stamps) > before
+        assert stamps[-1] - started < 2.0
+    finally:
+        stop.set()
+        source.close()
+        thread.join(timeout=5)

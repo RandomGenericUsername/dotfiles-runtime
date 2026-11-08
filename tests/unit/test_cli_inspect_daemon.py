@@ -401,9 +401,17 @@ class TestTriggerLoggedActions:
         from runtime.application.inspect import InspectHistoryUseCase
 
         state_root = _seed_prunable()
+
+        def _reconcile_with_history(**_kwargs: object) -> None:
+            from runtime.adapters.seeder import CacheSeeder
+
+            CacheSeeder(state_root).append_history(
+                trigger="reactive", wallpaper_hash="ab" * 32
+            )
+
         monkeypatch.setattr(cli_main, "_run_check_inputs", lambda: None)
         monkeypatch.setattr(cli_main, "_run_regenerate_stale", lambda **_: None)
-        monkeypatch.setattr(cli_main, "_run_reconcile", lambda **_: None)
+        monkeypatch.setattr(cli_main, "_run_reconcile", _reconcile_with_history)
         monkeypatch.setattr(cli_main, "_run_converge", lambda **_: None)
         with caplog.at_level("INFO", logger="runtime.cli.main"):
             result = cli_main._run_reactive_converge(

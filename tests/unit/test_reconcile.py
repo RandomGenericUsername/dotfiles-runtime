@@ -222,6 +222,18 @@ class _SpySeeder(CacheSeeder):
         )
 
 
+class _HistorySpySeeder(CacheSeeder):
+    """Real seeder that records when the history append happens."""
+
+    def __init__(self, state_root: Path, events: list[str]) -> None:
+        super().__init__(state_root)
+        self._events = events
+
+    def append_history(self, **kwargs: Any) -> None:
+        self._events.append("history")
+        super().append_history(**kwargs)
+
+
 class _EventRecorder:
     """Wraps a real JsonStateRepository, recording load/save events."""
 
@@ -827,7 +839,7 @@ class TestReconcileHistory:
         assert loaded is not None
         use_case = _make_reconcile(applied)
 
-        use_case.run()
+        result = use_case.run()
 
         lines = (applied.state_root / "history.jsonl").read_text().splitlines()
         assert len(lines) == 1
@@ -839,6 +851,63 @@ class TestReconcileHistory:
         assert line["icons"] == (loaded.icons.entry_hash if loaded.icons else None)
         assert line["source_path"] == str(applied.img)
         assert line["ts"].endswith("Z")
+        # BUG-013: the line is the committed snapshot, never an older read.
+        assert result.state is not None
+        assert line["palette"] == result.state.palette.entry_hash
+        assert line["skin"] == (result.state.skin.entry_hash if result.state.skin else None)
+
+    def test_history_tail_matches_current_and_committed_manifest(self, tmp_path: Path) -> None:
+        """The history tail, current.json, and generation manifest agree."""
+        from runtime.adapters.generation_store import GenerationStore
+
+        applied = _apply_state(tmp_path)
+        result = _make_reconcile(applied).run()
+        assert result.generation_hash is not None
+
+        current = applied.repo.load_current()
+        assert current is not None
+        manifest = GenerationStore(applied.state_root).load_manifest(result.generation_hash)
+        assert manifest is not None
+        line = json.loads(
+            (applied.state_root / "history.jsonl").read_text().splitlines()[-1]
+        )
+        assert line["palette"] == current.palette.entry_hash
+        assert manifest["layers"]["palette"]["entryHash"] == current.palette.entry_hash
+        assert manifest["layers"]["wallpaper"]["entryHash"] == line["wallpaper"]
+        assert manifest["skin"]["entryHash"] == line["skin"]
+
+    def test_mode_burst_tail_current_manifest_and_doctor_stay_agreed(
+        self, tmp_path: Path
+    ) -> None:
+        """BUG-013: a watcher-style dark->light->smart->dark burst never drifts."""
+        from runtime.adapters.generation_store import GenerationStore
+        from runtime.application.doctor import DoctorUseCase
+
+        applied = _apply_state(tmp_path, producer_mode="dark")
+        use_case = _make_reconcile(applied)
+        for mode in ("light", "smart", "dark"):
+            applied.palette_producer.mode = mode
+            result = use_case.run(trigger="reactive")
+            current = applied.repo.load_current()
+            assert current is not None and current.palette is not None
+            assert result.generation_hash is not None
+            manifest = GenerationStore(applied.state_root).load_manifest(
+                result.generation_hash
+            )
+            assert manifest is not None
+            tail = json.loads(
+                (applied.state_root / "history.jsonl").read_text().splitlines()[-1]
+            )
+            assert tail["trigger"] == "reactive"
+            assert tail["palette"] == current.palette.entry_hash
+            assert manifest["layers"]["palette"]["entryHash"] == current.palette.entry_hash
+            items = DoctorUseCase(
+                state_repo=applied.repo, state_root=applied.state_root
+            )._check_history(current)  # type: ignore[attr-defined]
+            assert items[0].status == "ok"
+        # Exactly one line per committed mode converge, no interleaved stale line.
+        lines = (applied.state_root / "history.jsonl").read_text().splitlines()
+        assert len(lines) == 3
 
 
 class TestReconcileHistoryTriggerParam:
@@ -972,6 +1041,21 @@ class TestReconcileMutex:
             "release",
         ]
         assert mutex.holds == 1
+
+    def test_history_append_is_inside_the_commit_scope(self, tmp_path: Path) -> None:
+        """BUG-013: append after save, before releasing the mutation lock."""
+        applied = _apply_state(tmp_path)
+        events: list[str] = []
+        mutex = _FakeMutex(events=events)
+        recorder = _EventRecorder(applied.repo, events)
+        seeder = _HistorySpySeeder(applied.state_root, events)
+        use_case = _make_reconcile(applied, mutex=mutex, seeder=seeder, repo=recorder)
+
+        use_case.run()
+
+        assert "history" in events
+        assert events.index("save") < events.index("history") < events.index("release")
+        assert events.count("history") == 1
 
     def test_real_flock_mutex_is_usable(self, tmp_path: Path) -> None:
         applied = _apply_state(tmp_path)

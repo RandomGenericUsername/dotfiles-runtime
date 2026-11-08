@@ -1281,19 +1281,23 @@ def _committed_reconcile_result(state_root: Path, generation_hash: str) -> Recon
     )
 
 
-def _converge_cli(
+def _converge_cli_result(
     *,
     trigger: str,
     wallpaper_path: Path | None = None,
     producer: str | None = None,
     suppress_history: bool = False,
     include_terminal: bool = True,
-) -> ReconcileResult:
-    """CLI entry: subscribe/submit to the daemon queue or run the fallback.
+    regenerate: bool = False,
+) -> tuple[ReconcileResult, dict[str, object] | None]:
+    """CLI entry returning the committed result plus the queue job payload.
 
     The preflight is one ``NameHasOwner``; if the daemon owns the bus name the
     CLI submits and waits on ``JobFinished`` (no state polling). With no
     daemon it runs the exact same convergence function under ``converge.lock``.
+    A submitted job's payload (including ``regenerated``) is returned so a
+    mutating command can report the committed work without reading a
+    pre-commit snapshot.
     """
     from runtime.adapters.dbus_converge_client import DbusConvergeClient
     from runtime.adapters.desired_state_reader import read_desired_state
@@ -1322,11 +1326,13 @@ def _converge_cli(
         "wallpaperPath": str(wallpaper) if wallpaper is not None else None,
         "skin": resolved_skin,
         "mode": resolved_mode,
-        # Queue jobs execute in the daemon, so the caller's history and tty
-        # intent must travel with the request: a reactive composite's inner
-        # reconcile stays history-suppressed and terminal reloaders stay off.
+        # Queue jobs execute in the daemon, so the caller's history, tty, and
+        # regenerate intent must travel with the request: a reactive
+        # composite's inner reconcile stays history-suppressed and terminal
+        # reloaders stay off.
         "suppressHistory": bool(suppress_history),
         "includeTerminal": bool(include_terminal),
+        "regenerate": bool(regenerate),
     }
     intent_hash = intent_hash_for(
         wallpaper=wallpaper_hash,
@@ -1340,30 +1346,66 @@ def _converge_cli(
             if os.environ.get("DOTFILES_RUNTIME_DISABLE_DAEMON") == "1"
             else client.submit(intent_hash, request)
         )
-    except (RuntimeError, TimeoutError) as exc:
+    except RuntimeError as exc:
+        if "cannot connect to the session bus" not in str(exc):
+            logger.error("converge: daemon job failed: %s", exc)
+            raise
+        # No session bus is the same reduced-functionality state as no daemon
+        # owning the name: run the one convergence under ``converge.lock``.
+        logger.warning("converge: session bus unavailable (%s); running fallback", exc)
+        job = None
+    except TimeoutError as exc:
         logger.error("converge: daemon job failed: %s", exc)
         raise
     if job is not None and job.generation_hash is not None:
-        return _committed_reconcile_result(state_root, job.generation_hash)
+        return _committed_reconcile_result(state_root, job.generation_hash), job.payload
     engine = _build_converge_engine(
         state_root,
         install_spine,
         producer=producer,
         suppress_history=suppress_history,
         include_terminal=include_terminal,
+        regenerate=regenerate,
     )
-    return engine.converge(
+    outcome = engine.converge(
         ConvergeIntent(
             trigger=trigger,
             source="cli",
             wallpaper_path=wallpaper,
             intent_hash=intent_hash,
         )
-    ).reconcile
+    )
+    return outcome.reconcile, {
+        "generationHash": outcome.generation_hash,
+        "regenerated": list(getattr(outcome, "regenerated", ()) or ()),
+    }
+
+
+def _converge_cli(
+    *,
+    trigger: str,
+    wallpaper_path: Path | None = None,
+    producer: str | None = None,
+    suppress_history: bool = False,
+    include_terminal: bool = True,
+    regenerate: bool = False,
+) -> ReconcileResult:
+    """Return only the committed reconcile state for the one convergence."""
+    result, _payload = _converge_cli_result(
+        trigger=trigger,
+        wallpaper_path=wallpaper_path,
+        producer=producer,
+        suppress_history=suppress_history,
+        include_terminal=include_terminal,
+        regenerate=regenerate,
+    )
+    return result
 
 
 def _run_reconcile(
     *,
+    trigger: str = "reconcile",
+    regenerate: bool = False,
     suppress_history: bool = False,
     include_terminal: bool = True,
     producer: str | None = None,
@@ -1378,11 +1420,14 @@ def _run_reconcile(
     serializes against concurrent ``wallpaper set`` (Story 1.13 review,
     D1 decision).
 
-    ``suppress_history`` (Phase 5) builds the history-suppressing seeder the
-    reactive composite uses so its inner reconcile writes no line.
+    ``suppress_history`` builds the history-suppressing seeder for callers
+    that own the audit line elsewhere; the reactive composite no longer sets
+    it because its inner reconcile appends the single ``reactive`` line under
+    the commit lock (BUG-013).
     """
     return _converge_cli(
-        trigger="reconcile",
+        trigger=trigger,
+        regenerate=regenerate,
         producer=producer,
         suppress_history=suppress_history,
         include_terminal=include_terminal,
@@ -1396,12 +1441,14 @@ def _build_converge_engine(
     producer: str | None = None,
     suppress_history: bool = False,
     include_terminal: bool = True,
+    regenerate: bool = False,
 ):
     """Build the one execution implementation for daemon and CLI.
 
     The factory receives ``(source, job_id)`` so the committed manifest records
     who ran the single pipeline. The mutex is a pass-through: ``converge.lock``
-    is the only lock and it covers the whole scope.
+    is the only lock and the engine holds it across an optional regenerate
+    pre-step plus the commit/history scope (BUG-013).
     """
     from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
     from runtime.adapters.converge_lock import ConvergeLock
@@ -1443,7 +1490,23 @@ def _build_converge_engine(
             skin_expander=SkinExpander(),
         )
 
-    return ConvergenceEngine(_factory)
+    pre_step = (
+        (
+            lambda: _run_regenerate_stale(
+                suppress_history=True,
+                reconcile=False,
+                include_terminal=include_terminal,
+                producer=producer,
+            )
+        )
+        if regenerate
+        else None
+    )
+    return ConvergenceEngine(
+        _factory,
+        lock=ConvergeLock(state_root),
+        regenerate=pre_step,
+    )
 
 
 def _run_check_inputs(*, producer: str | None = None) -> CheckInputsResult:
@@ -1640,9 +1703,37 @@ def _run_regenerate_stale(
     Shared instances (not duplicated per use case) so locking and staging
     behave as one pipeline.
 
-    ``suppress_history`` (Phase 5) shares ONE history-suppressing seeder with
-    the composite so the reactive converge writes a single audit line.
+    ``suppress_history`` shares ONE history-suppressing seeder with the
+    composite so the convergence writes a single audit line.
+
+    When ``reconcile`` is true (the CLI command), this runs the same daemon
+    converge job / fallback engine as every other mutation, so the returned
+    state is the committed generation and never a pre-commit snapshot
+    (BUG-013). ``reconcile=False`` is the engine's regenerate-only pre-step
+    (inside the same job and ``converge.lock``) and stays local.
     """
+    if reconcile:
+        from runtime.application.regenerate import RegenerateResult
+
+        committed, payload = _converge_cli_result(
+            trigger="regenerate",
+            producer=producer,
+            suppress_history=suppress_history,
+            include_terminal=include_terminal,
+            regenerate=True,
+        )
+        regenerated = frozenset(
+            str(layer)
+            for layer in (payload or {}).get("regenerated", ())
+            if isinstance(layer, str)
+        )
+        return RegenerateResult(
+            regenerated=regenerated,
+            state=committed.state,
+            repointed=tuple(committed.repointed),
+            reload_failures=tuple(committed.reload_failures),
+        )
+
     state_root = _resolve_state_root()
     install_spine = _resolve_install_spine()
 
@@ -2192,13 +2283,15 @@ def _run_reactive_converge(
 
     Runs the existing use cases in the pinned composite order
 
-        CheckInputs → RegenerateStale → Reconcile → declarative
+        CheckInputs → Reconcile(regenerate pre-step) → declarative
 
-    (all wired with a history-suppressing seeder), then — **only when opted
-    in** — a prune pass, then appends exactly one ``trigger="reactive"`` audit
-    line and persists the last-converged backstop. The backstop hash is
-    computed over exactly the AD-39 watched set, so a change always
-    corresponds to a fireable event.
+    The regenerate pre-step and the commit/save run inside one daemon job and
+    one ``converge.lock`` scope. The inner reconcile owns exactly one
+    ``trigger="reactive"`` history line, appended from the committed snapshot;
+    the composite then — **only when opted in** — runs a prune pass and
+    persists the last-converged backstop. The backstop hash is computed over
+    exactly the AD-39 watched set, so a change always corresponds to a
+    fireable event.
 
     ``observe_only`` (the shipped default, AD-35/AD-41) detects a changed
     input set and returns without running any use case and without appending
@@ -2223,7 +2316,6 @@ def _run_reactive_converge(
     from runtime.adapters.converge_inputs import compute_watch_input_hash
     from runtime.adapters.desired_state_reader import read_desired_state
     from runtime.adapters.json_state_repository import JsonStateRepository
-    from runtime.adapters.seeder import CacheSeeder
     from runtime.adapters.watch_roots import enumerate_watch_roots
     from runtime.application.converge import ReactiveConvergeUseCase
 
@@ -2255,41 +2347,28 @@ def _run_reactive_converge(
             return 5
         return desired.keep if desired is not None else 5
 
-    def _append_reactive() -> None:
-        state = state_repo.load_current()
-        if state is None:
-            return
-        CacheSeeder(state_root).append_history(
-            trigger="reactive",
-            wallpaper_hash=state.wallpaper.content_hash,
-            palette_hash=state.palette.entry_hash if state.palette else None,
-            effects_hash=state.effects.entry_hash if state.effects else None,
-            icons_hash=state.icons.entry_hash if state.icons else None,
-            skin_hash=state.skin.entry_hash if state.skin else None,
-            source_path=state.wallpaper.source_path,
-        )
-
     result = ReactiveConvergeUseCase(
         input_hash=lambda: compute_watch_input_hash(roots),
         read_backstop=backstop.read,
         write_backstop=backstop.write,
         has_state=lambda: state_repo.load_current() is not None,
         check_inputs=lambda: _call_with_producer(_run_check_inputs, producer=producer),
-        regenerate_stale=lambda: _call_with_producer(
-            _run_regenerate_stale,
-            suppress_history=True,
-            reconcile=False,
-            include_terminal=False,
-            producer=producer,
-        ),
+        # The regenerate pre-step runs inside the same daemon job and
+        # converge.lock as the reconcile commit (``regenerate=True``); doing it
+        # locally here let the daemon's watcher and a CLI job race (BUG-013).
+        regenerate_stale=lambda: None,
         reconcile=lambda: _call_with_producer(
             _run_reconcile,
-            suppress_history=True,
+            trigger="reactive",
+            regenerate=True,
             include_terminal=False,
             producer=producer,
         ),
         declarative=_declarative,
-        append_history=_append_reactive,
+        # The inner reconcile owns the single reactive audit line: it appends
+        # under converge.lock from the committed generation snapshot, so this
+        # post-composite callback is a true no-op (BUG-013).
+        append_history=lambda: None,
         prune=(
             (lambda: _run_prune(dry_run=False, keep=_keep(), prune_pinned=False))
             if prune_on_reactive
@@ -2368,6 +2447,7 @@ def _daemon_converge_worker(intent_hash: str, job_id: str):
     include_terminal = (
         bool(request.get("includeTerminal")) if isinstance(request, dict) else True
     )
+    regenerate = bool(request.get("regenerate")) if isinstance(request, dict) else False
     current = JsonStateRepository(state_root=state_root).load_current()
     current_hash = current.wallpaper.content_hash if current is not None else None
     if wallpaper_path is None and desired is not None:
@@ -2382,6 +2462,7 @@ def _daemon_converge_worker(intent_hash: str, job_id: str):
         install_spine,
         suppress_history=suppress_history,
         include_terminal=include_terminal,
+        regenerate=regenerate,
     )
     outcome = engine.converge(
         ConvergeIntent(
@@ -2399,6 +2480,7 @@ def _daemon_converge_worker(intent_hash: str, job_id: str):
         app_results=tuple(
             record.to_dict() for record in outcome.reconcile.app_refresh_results
         ),
+        regenerated=tuple(getattr(outcome, "regenerated", ()) or ()),
     )
 
 

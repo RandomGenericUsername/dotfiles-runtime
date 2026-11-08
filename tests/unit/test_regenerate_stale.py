@@ -792,6 +792,45 @@ class TestRegenerateEndToEnd:
 
 
 class TestCliShape:
+    def test_cli_regenerate_returns_the_committed_converge_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """BUG-013: the CLI command returns the queued/committed state, never
+        a pre-commit regeneration snapshot."""
+        from runtime.application.reconcile import ReconcileResult
+
+        committed_state = _desktop_state(palette_hash=NEW_PH, icons_hash=NEW_IH)
+        committed = ReconcileResult(
+            repointed=[],
+            skipped=[],
+            state=committed_state,
+            cache_regenerated=[],
+            reload_failures=[],
+            consumer_symlinks=[],
+            generation_hash="ab" * 32,
+        )
+        calls: list[dict[str, Any]] = []
+
+        def _fake(**kwargs: Any) -> tuple[ReconcileResult, dict[str, Any]]:
+            calls.append(kwargs)
+            return committed, {"generatedHash": "ab" * 32, "regenerated": ["palettes"]}
+
+        monkeypatch.setattr(cli_main, "_converge_cli_result", _fake)
+
+        result = cli_main._run_regenerate_stale()
+
+        assert calls == [
+            {
+                "trigger": "regenerate",
+                "producer": None,
+                "suppress_history": False,
+                "include_terminal": True,
+                "regenerate": True,
+            }
+        ]
+        assert result.state.palette.entry_hash == NEW_PH
+        assert result.regenerated == frozenset({"palettes"})
+
     def _result(
         self,
         regenerated: set[str] | frozenset[str] = frozenset(),

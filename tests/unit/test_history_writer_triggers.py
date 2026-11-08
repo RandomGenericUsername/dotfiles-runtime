@@ -52,10 +52,44 @@ def test_every_written_trigger_is_in_the_enum() -> None:
     assert not unknown, f"unknown history trigger(s) written: {unknown}"
 
 
+def _requested_trigger_literals() -> Iterator[tuple[Path, int, str]]:
+    """Literal triggers handed to the single reconcile mutation path."""
+    for path in sorted(_SRC_ROOT.rglob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (
+                func.attr
+                if isinstance(func, ast.Attribute)
+                else func.id
+                if isinstance(func, ast.Name)
+                else ""
+            )
+            if name not in (
+                "_run_reconcile",
+                "_converge_cli",
+                "_converge_cli_result",
+                "_call_with_producer",
+            ):
+                continue
+            for keyword in node.keywords:
+                if keyword.arg == "trigger" and isinstance(keyword.value, ast.Constant):
+                    value = keyword.value.value
+                    if isinstance(value, str):
+                        yield path, node.lineno, value
+
+
 def test_reactive_and_prune_writers_exist() -> None:
-    values = {value for _path, _lineno, value in _append_history_trigger_literals()}
-    assert "reactive" in values, "the daemon reactive writer must write trigger='reactive'"
-    assert "prune" in values, "the prune writer must write trigger='prune'"
+    appended = {value for _path, _lineno, value in _append_history_trigger_literals()}
+    assert appended <= set(HISTORY_TRIGGERS)
+    assert "prune" in appended, "the prune writer must write trigger='prune'"
+    requested = {value for _path, _lineno, value in _requested_trigger_literals()}
+    assert "reactive" in requested, "the daemon reactive path must request trigger='reactive'"
 
 
 def test_reconcile_use_case_rejects_unknown_trigger() -> None:

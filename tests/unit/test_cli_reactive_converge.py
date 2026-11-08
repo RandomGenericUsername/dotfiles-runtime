@@ -136,12 +136,28 @@ def _palette_entries(state_root: Path) -> set[str]:
     return {p.name for p in layer.iterdir() if p.is_dir()}
 
 
+def _reconcile_writer(calls: list[str], state_root: Path):
+    """Fake inner reconcile that owns the single reactive history line."""
+
+    def _inner(**kwargs: object) -> None:
+        from runtime.adapters.seeder import CacheSeeder
+
+        calls.append("reconcile")
+        CacheSeeder(state_root).append_history(
+            trigger=str(kwargs.get("trigger", "reactive")),
+            wallpaper_hash="ab" * 32,
+        )
+
+    return _inner
+
+
 def _fake_composite(monkeypatch: pytest.MonkeyPatch, calls: list[str]) -> None:
+    state_root = cli_main._resolve_state_root()
     monkeypatch.setattr(cli_main, "_run_check_inputs", lambda: calls.append("check"))
     monkeypatch.setattr(
         cli_main, "_run_regenerate_stale", lambda **_: calls.append("regenerate")
     )
-    monkeypatch.setattr(cli_main, "_run_reconcile", lambda **_: calls.append("reconcile"))
+    monkeypatch.setattr(cli_main, "_run_reconcile", _reconcile_writer(calls, state_root))
     monkeypatch.setattr(cli_main, "_run_converge", lambda **_: calls.append("declarative"))
     monkeypatch.setattr(cli_main, "_run_prune", lambda **_: calls.append("prune"))
 
@@ -159,7 +175,7 @@ def test_active_converge_writes_one_reactive_line_and_backstop(
 
     assert result.ran is True
     assert result.reason == "converged"
-    assert calls == ["check", "regenerate", "reconcile", "declarative", "prune"]
+    assert calls == ["check", "reconcile", "declarative", "prune"]
     lines = _history_lines(state_root)
     assert len(lines) == 1
     assert lines[0]["trigger"] == "reactive"
@@ -178,7 +194,7 @@ def test_second_converge_is_a_backstop_noop(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert result.ran is False
     assert result.reason == "unchanged"
-    assert calls == ["check", "regenerate", "reconcile", "declarative", "prune"]
+    assert calls == ["check", "reconcile", "declarative", "prune"]
     assert len(_history_lines(state_root)) == 1
 
 
@@ -214,7 +230,7 @@ def test_corrupt_intent_is_recoverable_skip(monkeypatch: pytest.MonkeyPatch) -> 
     )
 
     assert result.ran is True  # the other steps still converge
-    assert calls == ["check", "regenerate", "reconcile", "prune"]
+    assert calls == ["check", "reconcile", "prune"]
     assert len(_history_lines(state_root)) == 1
 
 
@@ -238,13 +254,15 @@ class TestReactivePrunePolicy:
         monkeypatch.setattr(
             cli_main, "_run_regenerate_stale", lambda **_: calls.append("regenerate")
         )
-        monkeypatch.setattr(cli_main, "_run_reconcile", lambda **_: calls.append("reconcile"))
+        monkeypatch.setattr(
+            cli_main, "_run_reconcile", _reconcile_writer(calls, state_root)
+        )
 
         with caplog.at_level("INFO", logger="runtime.cli.main"):
             result = cli_main._run_reactive_converge(observe_only=False)
 
         assert result.ran is True
-        assert calls == ["check", "regenerate", "reconcile"]
+        assert calls == ["check", "reconcile"]
         lines = _history_lines(state_root)
         assert len(lines) == 1
         assert lines[0]["trigger"] == "reactive"
@@ -267,12 +285,14 @@ class TestReactivePrunePolicy:
         monkeypatch.setattr(
             cli_main, "_run_regenerate_stale", lambda **_: calls.append("regenerate")
         )
-        monkeypatch.setattr(cli_main, "_run_reconcile", lambda **_: calls.append("reconcile"))
+        monkeypatch.setattr(
+            cli_main, "_run_reconcile", _reconcile_writer(calls, state_root)
+        )
 
         result = cli_main._run_reactive_converge(observe_only=False, prune_on_reactive=True)
 
         assert result.ran is True
-        assert calls == ["check", "regenerate", "reconcile"]
+        assert calls == ["check", "reconcile"]
         lines = _history_lines(state_root)
         reactive = [line for line in lines if line["trigger"] == "reactive"]
         prune = [line for line in lines if line["trigger"] == "prune"]
@@ -337,7 +357,8 @@ def test_daemon_converge_excludes_terminal_reloader(monkeypatch: pytest.MonkeyPa
 
     cli_main._run_reactive_converge(observe_only=False)
 
-    assert captured["regenerate"]["include_terminal"] is False
+    # The regenerate pre-step now travels inside the reconcile request.
+    assert captured["reconcile"]["regenerate"] is True
     assert captured["reconcile"]["include_terminal"] is False
     assert captured["declarative"]["include_terminal"] is False
 

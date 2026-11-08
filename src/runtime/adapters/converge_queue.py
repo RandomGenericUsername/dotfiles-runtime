@@ -165,6 +165,7 @@ class ConvergeJobQueue:
             "generationHash": result.generation_hash,
             "degraded": result.degraded,
             "appResults": list(result.app_results),
+            "regenerated": list(result.regenerated),
         }
         if result.error:
             payload["error"] = result.error

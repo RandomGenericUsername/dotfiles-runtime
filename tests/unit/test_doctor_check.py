@@ -36,6 +36,8 @@ TS = "2026-09-10T00:00:00Z"
 LIVE_GENERATION_HASH = "43d62e17e2da58da2ea43da41bde41fb30e9d0077611a8c34fe30e8d50ef7fc8"
 LIVE_V2_GENERATION_HASH = "09ea6912eae6be3469d972fe1519c1835688e2f495c7318767bd017c3acc69b3"
 LIVE_PALETTE_HASH = "0797efd74520459ec24c15a9f7abbbcb62f34a506f7fe371bda3bfb7cabc8363"
+#: The light palette observed in the BUG-013 live stale tail (2026-11-08T02:49:26Z).
+LIVE_LIGHT_PALETTE_HASH = "35f53fb9bc894bd0186ae4cd8f7969da1ae9aa74af2976f5fee37ee369958eb2"
 LIVE_SKIN_HASH = "ed96fe3a571e144a72872ec1067b00d144c57c61aaf6b9859e4fd4fc129ae98e"
 LIVE_SKIN_NAME = "terminal"
 LIVE_WALLPAPER_HASH = "fb1c5be63e002f6902f66be8b97744bd29d4224815291a4ad8d0115a23cde48c"
@@ -889,6 +891,49 @@ class TestStoreHistoryDivergence:
             source_path="/img/wall.png",
         )
         assert _check(state_root).clean is True
+
+    def test_live_light_tail_against_live_dark_current_is_diverged(self, tmp_path: Path) -> None:
+        """Reproduce the BUG-013 live pair: light tail vs dark store/manifest."""
+        import dataclasses
+
+        from runtime.adapters.json_state_repository import JsonStateRepository
+        from runtime.adapters.seeder import CacheSeeder
+
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        repo = JsonStateRepository(state_root=state_root)
+        state = repo.load_current()
+        assert state is not None and state.palette is not None
+        dark = dataclasses.replace(
+            state, palette=dataclasses.replace(state.palette, entry_hash=LIVE_PALETTE_HASH)
+        )
+        # The live stale tail: the reactive line carried the light palette.
+        CacheSeeder(state_root).append_history(
+            trigger="reactive",
+            wallpaper_hash=WH,
+            palette_hash=LIVE_LIGHT_PALETTE_HASH,
+            effects_hash=EH,
+            icons_hash=IH,
+            skin_hash=_skin_hash(state_root),
+            source_path="/img/wall.png",
+        )
+        use_case = DoctorUseCase(state_repo=repo, state_root=state_root)
+        items = use_case._check_history(dark)  # type: ignore[attr-defined]
+        assert items[0].name == "history:tail"
+        assert items[0].status == "diverged"
+        assert "palette" in items[0].detail
+
+        # The fixed path appends the committed dark snapshot; the tail matches.
+        CacheSeeder(state_root).append_history(
+            trigger="reactive",
+            wallpaper_hash=WH,
+            palette_hash=LIVE_PALETTE_HASH,
+            effects_hash=EH,
+            icons_hash=IH,
+            skin_hash=_skin_hash(state_root),
+            source_path="/img/wall.png",
+        )
+        assert use_case._check_history(dark)[0].status == "ok"  # type: ignore[attr-defined]
 
     def test_source_path_variance_stays_clean(self, tmp_path: Path) -> None:
         """Item 2(e): provenance churn is not identity."""

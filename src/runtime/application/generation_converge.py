@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,6 +45,7 @@ class ConvergeResult:
     committed: bool
     degraded: bool
     reconcile: ReconcileResult
+    regenerated: tuple[str, ...] = ()
 
     @property
     def state(self) -> object:
@@ -85,16 +87,33 @@ class ConvergenceEngine:
     def __init__(
         self,
         reconcile_factory: Callable[[str, str | None], ReconcileDesktopStateUseCase],
+        *,
+        lock: object | None = None,
+        regenerate: Callable[[], object] | None = None,
     ) -> None:
         self._reconcile_factory = reconcile_factory
+        # The one convergence lock covers an optional RegenerateStale pre-step
+        # and the commit/save/history scope, so no CLI or daemon path can
+        # interleave a pre-commit snapshot (BUG-013).
+        self._lock = lock
+        self._regenerate = regenerate
 
     def converge(self, intent: ConvergeIntent) -> ConvergeResult:
-        use_case = self._reconcile_factory(intent.source, intent.job_id)
-        result = use_case.run(
-            intent.trigger,
-            wallpaper_path=intent.wallpaper_path,
-            intent_hash=intent.intent_hash,
-        )
+        scope = self._lock.hold() if self._lock is not None else nullcontext()  # type: ignore[attr-defined]
+        with scope:
+            regenerated: tuple[str, ...] = ()
+            if self._regenerate is not None:
+                pre_step = self._regenerate()
+                regenerated = tuple(
+                    sorted(str(layer) for layer in getattr(pre_step, "regenerated", ()) or ())
+                )
+            use_case = self._reconcile_factory(intent.source, intent.job_id)
+            result = use_case.run(
+                intent.trigger,
+                wallpaper_path=intent.wallpaper_path,
+                intent_hash=intent.intent_hash,
+                acquire_lock=False,
+            )
         if result.generation_hash is None:
             raise RuntimeError("converge did not commit a generation")
         degraded = bool(result.reload_failures) or any(
@@ -103,15 +122,17 @@ class ConvergenceEngine:
             if record.status != "skipped"
         )
         logger.info(
-            "converge: trigger=%s source=%s generation=%s degraded=%s",
+            "converge: trigger=%s source=%s generation=%s degraded=%s regenerated=%s",
             intent.trigger,
             intent.source,
             result.generation_hash[:12],
             degraded,
+            ",".join(regenerated) or "none",
         )
         return ConvergeResult(
             generation_hash=result.generation_hash,
             committed=True,
             degraded=degraded,
+            regenerated=regenerated,
             reconcile=result,
         )
