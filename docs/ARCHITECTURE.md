@@ -209,10 +209,12 @@ go through the serialized BUG-006 quit/confirm/launch procedure and are included
 when down. The restart lane is systemd-aware: `adapters/ags_systemd_units.py` discovers
 `systemctl --user` units matching `dotfiles-ags-*.service`, parses each `ExecStart`'s
 `ags run -d <spine>/config/<configDir>` target, and matches it to the consumed configDir.
-A unit-managed app is restarted only with `systemctl --user restart <unit>` (serialized, with
-the instance-name oracle confirming the return); the lane never raw-`ags quit`/`ags run`s it
-and never falls back to a raw launch when systemd fails. A non-unit app keeps the
-quit/confirm/launch path. The appearance hash now includes the skin entry hash alongside
+A unit-managed app is restarted only with the blocking `systemctl --user restart <unit>` job
+(serialized, with the D-Bus `NameOwnerChanged` instance-name oracle confirming the new owner);
+the argv never uses `--wait`, which for a long-running unit means waiting until the started
+unit stops again. One configurable deadline (90 s by default) bounds the job plus the owner
+wait, and the lane never raw-`ags quit`/`ags run`s it and never falls back to a raw launch when
+systemd fails. A non-unit app keeps the quit/confirm/launch path. The appearance hash now includes the skin entry hash alongside
 palette/effects/icons and the icon-manifest inputs; the runtime owns the applied-appearance
 ledger (`$XDG_STATE_HOME/dotfiles/appearance-ledger.json`), one operation lock, and per-app
 JSONL records under `$XDG_STATE_HOME/dotfiles/logs/ags-app-refresh/<runId>/`.

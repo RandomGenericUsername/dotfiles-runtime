@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.0.2 — 2026-11-07
+
+Stop reporting a healthy but slower bar restart as a failure (BUG-011).
+
+- The systemd restart argv no longer carries `--wait`. For `start`/`restart`,
+  systemd 262 defines `--wait` as "wait until the started unit terminates
+  again", so a long-running bar could never satisfy it; the 10 s subprocess
+  bound ended every restart with code 124 even though the unit had started.
+  The default blocking `systemctl --user restart <unit>` job now owns
+  stop/start, and the existing D-Bus `NameOwnerChanged` seam confirms the new
+  `io.Astal.<instance>` owner.
+- One configurable restart deadline (`AgsReloader(systemd_restart_timeout=…)`,
+  default 90 s) bounds the systemctl job plus the owner wait. The D-Bus
+  readiness window defaults to 30 s, three times the unit wrapper's
+  `--register-timeout 10`. The live journal's worst stop-to-start gap before
+  this fix was 9.142 s, so 90 s is roughly 10× the observed startup.
+- A start that never registers still fails within the configured bound and
+  stays a retryable failure in the refresh record, ledger and result.
+- Regression tests cover 15 s and 25 s simulated healthy starts, a never-ready
+  start failing within a small configured bound, the old owner gone/new owner
+  confirmed, the absence of `--wait`, the 10 s discovery default, the 90 s
+  restart default, and retryable failure recording. A live restart of
+  `dotfiles-ags-bar.service` through the new code returned `ok` in 0.316 s with
+  a new `MainPID` and bus owner and the old PID gone.
+
 ## v1.0.1 — 2026-11-07
 
 Fix the daemon converge job trigger and the `wallpaper.state` contract rejection
