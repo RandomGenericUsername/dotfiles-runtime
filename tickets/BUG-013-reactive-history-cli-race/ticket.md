@@ -2,7 +2,7 @@
 id: BUG-013
 title: "Reactive mode changes leave a stale history tail, converge slowly, and reconcile --regenerate-stale returns a pre-commit snapshot"
 kind: bug
-status: in-progress
+status: done
 lane: 2
 severity: high
 links:
@@ -127,3 +127,102 @@ Regression tests:
   committed queue/fallback result, never a pre-commit palette.
 - `tests/unit/test_doctor_check.py` / integration reactive E2E — doctor clean
   after mode burst, including the live 35f53fb9/0797efd7 identities.
+
+## Outcome
+
+Implementation `662c18c` (fix + regression tests); release tag `v1.0.4`.
+
+### Exact history fix
+
+`ReconcileDesktopStateUseCase._run` now calls `CacheSeeder.append_history`
+inside the `converge.lock` scope, immediately after `GenerationStore.commit`
+and `state_repo.save(saved)`, and passes only `saved` (the committed
+generation snapshot). The reactive composite no longer reads `current.json`
+after the composite: its inner reconcile owns the single
+`trigger="reactive"` line. `ConvergenceEngine` holds `converge.lock` across
+the optional regenerate pre-step and the reconcile run
+(`acquire_lock=False`), so the queue worker, CLI fallback, and reactive
+watcher cannot interleave a stale history append.
+
+`reconcile --regenerate-stale` now calls `_converge_cli_result` with
+`trigger="regenerate", regenerate=True`: the daemon queue worker performs the
+RegenerateStale pre-step and the reconcile commit under one lock; the CLI
+returns `_committed_reconcile_result` from `current.json` plus the worker
+payload's `regenerated` list. The no-daemon fallback runs the same engine.
+
+### Measured latency
+
+- Before (live acceptance): smart→light converged in ~42 s; light→smart→dark
+  in ~56.5 s. The live journal showed `desired.json` written at
+  `02:48:29Z` and the reactive converge at `02:49:26Z`.
+- After: real inotify + real `WatchCoordinator`, atomic `desired.json`
+  replacement, 0.25 s debounce: event→trigger times over five trials
+  `0.251, 0.251, 0.250, 0.251, 0.251` s (median `0.251`, max `0.251`).
+  The trigger is event-driven; there is no sleep/poll. Burst coalescing is
+  still pinned by the scripted-source tests and the real-source burst test.
+- Verify: `uv run pytest -q tests/unit/test_watch_coordinator.py -k real_inotify`.
+
+### Tests
+
+```sh
+uv run pytest -q tests/unit/test_watch_coordinator.py \
+  tests/unit/test_reconcile.py tests/unit/test_doctor_check.py \
+  tests/unit/test_regenerate_stale.py tests/unit/test_generations_v3.py \
+  tests/unit/test_converge_job_trigger_payload.py \
+  tests/unit/test_history_writer_triggers.py \
+  tests/unit/test_history_tail_repair.py \
+  tests/unit/test_cli_reactive_converge.py \
+  tests/integration/test_phase5_reactive_runtime_e2e.py \
+  tests/integration/test_inotify_watch_source.py
+# 202 passed
+```
+
+Coverage added:
+
+- live light `35f53fb9…` tail vs dark `0797efd7…` store/manifest reproduces
+  the drift, then the committed dark line is clean;
+- mode burst dark→light→smart→dark keeps tail == current == manifest and
+  doctor `history:tail` ok on every commit;
+- history append is ordered `save < history < release` inside the mutation
+  scope;
+- `ConvergenceEngine` event order is `lock-enter → regenerate → reconcile →
+  lock-exit` with `acquire_lock=False`;
+- the daemon worker receives `regenerate=true`, emits trigger `regenerate`,
+  and returns `regenerated`;
+- `reconcile --regenerate-stale` returns the committed palette/state from
+  `_converge_cli_result`, not a local regeneration snapshot;
+- real inotify atomic-replace latency bound and burst trigger.
+
+### Gates
+
+```sh
+make gates
+# test: 2423 passed, 3 skipped, 11 deselected
+# lint: All checks passed
+# contracts-check: 58 passed, 1 skipped
+# hermetic: 2423 passed, 3 skipped, 11 deselected
+# lock-check: Resolved 25 packages
+# docs-check: rc 0
+
+make gates-ci
+# same six gates; exit 0
+
+make ci-gates-parity
+# PASS gates=[...] jobs=[...]; exit 0
+```
+
+### Live read-only evidence (no apply)
+
+`uv run dotfiles-runtime doctor --format json` from the fixed worktree (read
+only, no apply) exits 0 on the live state:
+
+```json
+{"clean": true,
+ "history": {"name": "history:tail", "status": "ok",
+             "detail": "history tail agrees with current.json (trigger='reactive')"},
+ "generation": {"name": "generation:identity", "status": "ok",
+                "detail": "generation 43d62e17e2da (skin=terminal, mode=dark, 7 css target(s))"}}
+```
+
+The live daemon still runs v1.0.3 until provisioning installs the v1.0.4 tag;
+no live mutation or apply was performed here.

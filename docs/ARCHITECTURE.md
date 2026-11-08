@@ -51,7 +51,9 @@ not import `os`, `pathlib`, `io`, `subprocess`, `socket` or `shutil`.
    wallpaper/palette changes never re-expand CSS.
 4. **Swap** `current/*` atomically (tmp link + `os.replace`).
 5. **Reload** Hyprland, AGS, kitty and the terminal palette.
-6. **Persist** `current.json` and append a `history.jsonl` record.
+6. **Persist** `current.json` and append a `history.jsonl` record inside the
+   same `converge.lock` scope, from the committed generation snapshot, so the
+   tail can never describe an older palette than `current.json`/`manifest.json`.
 
 A cache hit is detected before the subprocess spawn and must invoke **zero** `tpr`/`weg`/`itr`
 processes. Incomplete legacy entries are evicted and regenerated at the same key
@@ -192,8 +194,11 @@ A `converge:<intentHash>` job carries the trigger of the intent that submitted i
 `wallpaper set`, `reconcile` for a standalone reconcile). The daemon worker validates it against
 `runtime.domain.history.HISTORY_TRIGGERS` and falls back to `reactive` for a missing/unknown
 request; `daemon` is only the generation-manifest source kind, never a history trigger. The
-request also carries the caller's `suppressHistory`/`includeTerminal` flags so a reactive
-composite's inner steps stay silent and the composite appends the single `reactive` line.
+request also carries the caller's `suppressHistory`/`includeTerminal`/`regenerate` flags. The
+optional regenerate pre-step and the reconcile commit run under the same `converge.lock`; the
+reconcile append is the single `reactive` line, written from the committed snapshot. A CLI
+`reconcile --regenerate-stale` submits the same job and returns its committed result instead of a
+pre-commit cache snapshot.
 `wallpaper.state` is a compact, contract-valid payload: only the contract's stage enum, bounded
 error/reload-failure summaries, and a hard fit below the hub's 64 KiB cap. A publish failure is a
 warning and never changes the convergence result.
@@ -299,10 +304,12 @@ directories are symlinks into the content-addressed cache; only the composed
 appearance sheets and the manifest are generation-specific files.
 
 Every mutation goes through `ConvergeEngine.converge(intent)`, which holds one
-blocking `converge.lock` across intent → derive → stage → commit →
-apply/ledger. The daemon queue and CLI fallback run that same function. The
-daemon allocates `converge:<intentHash>` jobs on the existing event surface;
-the CLI subscribes before submitting and waits on `JobFinished`.
+blocking `converge.lock` across intent → (optional regenerate) → derive → stage
+→ commit → `current.json` save → history append → apply/ledger. The daemon
+queue and CLI fallback run that same function. The daemon allocates
+`converge:<intentHash>` jobs on the existing event surface; the CLI subscribes
+before submitting and waits on `JobFinished`. A mutating CLI therefore returns
+the committed state, never a pre-commit snapshot.
 
 Live apps receive the exact generation in `appearance-refresh <genHash>` and
 must ack that generation. Runtime writes are state-only: no install-spine or

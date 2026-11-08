@@ -1,5 +1,39 @@
 # Changelog
 
+## v1.0.4 — 2026-11-08
+
+Make the reactive/CLI mutation path atomic and return committed results
+(BUG-013).
+
+- The v3 reconcile append now happens **inside** the `converge.lock` scope,
+  immediately after the generation commit and `current.json` save, using that
+  committed snapshot. A history line can no longer be written from an older
+  palette read after a newer generation has advanced `current.json`. This
+  removes the live `history:tail` drift (light `35f53fb9…` tail against dark
+  `0797efd7…` current) and keeps the tail equal to `current.json` and
+  `current/manifest.json`.
+- `ConvergenceEngine` holds the same `converge.lock` across the optional
+  regenerate pre-step and the reconcile commit/save/append. The daemon queue
+  worker and the no-daemon CLI fallback run that exact scope, so a
+  daemon/CLI or CLI/CLI interleave cannot publish a pre-commit history line.
+- The reactive composite no longer regenerates locally or appends its own
+  post-composite line. Its single reconcile request carries
+  `regenerate=true`; the inner reconcile owns the one `trigger="reactive"`
+  line. The watcher remains event-driven with the existing 0.25 s quiet-window
+  debounce (no fixed 30–60 s wait, no polling). Replacing `desired.json`
+  atomically now fires one trigger in ~0.25 s (measured median 0.251 s over
+  five real-inotify trials) and bursts still coalesce.
+- `reconcile --regenerate-stale` submits the same `converge:<intentHash>` job
+  when the daemon owns the bus (fallback runs the same engine under
+  `converge.lock`), waits for `JobFinished`, and reports the committed palette,
+  state, and worker `regenerated` list. It can no longer return a stale
+  pre-commit snapshot while the daemon commits a newer generation.
+- Regression tests cover the live light/dark hashes, a real-inotify atomic
+  replace latency bound, history tail == current == manifest after a
+  dark→light→smart→dark burst, doctor `history:tail` clean, the engine's one
+  lock scope, the regenerate request reaching the daemon worker, and the CLI
+  returning the committed result.
+
 ## v1.0.3 — 2026-11-07
 
 Stop the doctor supervision leg from reporting false stale-appearance drift on
