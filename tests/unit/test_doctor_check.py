@@ -31,6 +31,142 @@ EH = "bb" * 32
 IH = "cc" * 32
 TS = "2026-09-10T00:00:00Z"
 
+# Live values from the BUG-012 host on 2026-11-07: the committed v3 generation
+# and the v2 recompute it must not be confused with.
+LIVE_GENERATION_HASH = "43d62e17e2da58da2ea43da41bde41fb30e9d0077611a8c34fe30e8d50ef7fc8"
+LIVE_V2_GENERATION_HASH = "09ea6912eae6be3469d972fe1519c1835688e2f495c7318767bd017c3acc69b3"
+LIVE_PALETTE_HASH = "0797efd74520459ec24c15a9f7abbbcb62f34a506f7fe371bda3bfb7cabc8363"
+LIVE_SKIN_HASH = "ed96fe3a571e144a72872ec1067b00d144c57c61aaf6b9859e4fd4fc129ae98e"
+LIVE_SKIN_NAME = "terminal"
+LIVE_WALLPAPER_HASH = "fb1c5be63e002f6902f66be8b97744bd29d4224815291a4ad8d0115a23cde48c"
+LIVE_EFFECTS_HASH = "1a3d8368a4a747e07bd3eb76a26ab891e8797abc91aa6e8f761ea7956a90f9f8"
+LIVE_ICONS_HASH = "e53912ea1f20835c08911d6ca3ade9d950a944c75852166df5f848b9a2dbfe6a"
+LIVE_INTENT_HASH = "7b12e030250c3bdb38cbb62dc3f43362bad38b3e8bad8435349995cc3c71849b"
+LIVE_MODE = "dark"
+LIVE_MANIFEST_AT = "2026-11-07T23:03:04.578570Z"
+
+
+def _live_manifest() -> dict[str, object]:
+    """A valid v3 manifest carrying the live BUG-012 identity values."""
+    return {
+        "version": 3,
+        "generationHash": LIVE_GENERATION_HASH,
+        "created": {"at": LIVE_MANIFEST_AT, "by": "dotfiles-runtime"},
+        "committed": {"at": LIVE_MANIFEST_AT, "jobId": "fa26ede06a7f4230acbeacea454d8cc7"},
+        "layers": {
+            "wallpaper": {"entryHash": LIVE_WALLPAPER_HASH, "path": "wallpaper"},
+            "palette": {"entryHash": LIVE_PALETTE_HASH, "path": "palette"},
+            "effects": {"entryHash": LIVE_EFFECTS_HASH, "path": "effects"},
+            "icons": {"entryHash": LIVE_ICONS_HASH, "path": "icons"},
+        },
+        "skin": {"name": LIVE_SKIN_NAME, "entryHash": LIVE_SKIN_HASH, "mode": LIVE_MODE},
+        "appearance": {
+            "tokensPath": "appearance/tokens.json",
+            "targets": [{"configDir": "ags", "path": "appearance/ags.css"}],
+        },
+        "mode": LIVE_MODE,
+        "intent": {
+            "wallpaper": LIVE_WALLPAPER_HASH,
+            "palette": LIVE_PALETTE_HASH,
+            "skin": LIVE_SKIN_NAME,
+            "mode": LIVE_MODE,
+            "effects": LIVE_EFFECTS_HASH,
+            "icons": LIVE_ICONS_HASH,
+        },
+        "source": {
+            "kind": "daemon",
+            "intentHash": LIVE_INTENT_HASH,
+            "jobId": "fa26ede06a7f4230acbeacea454d8cc7",
+        },
+    }
+
+
+def _write_live_current_manifest(state_root: Path) -> None:
+    """Point ``state/current`` at a generation with the live manifest."""
+    generation_dir = state_root / "generations" / LIVE_GENERATION_HASH
+    generation_dir.mkdir(parents=True)
+    (generation_dir / "manifest.json").write_text(
+        json.dumps(_live_manifest(), indent=2, sort_keys=True), encoding="utf-8"
+    )
+    current = state_root / "current"
+    if current.is_symlink():
+        current.unlink()
+    current.symlink_to(Path("generations") / LIVE_GENERATION_HASH)
+
+
+def _write_ledger(
+    state_root: Path,
+    appearance_hash: str,
+    *,
+    status: str = "applied",
+) -> None:
+    from runtime.adapters.appearance_ledger import AppearanceLedger
+    from runtime.domain.ags_apps import AppAppearanceState, AppliedAppearance
+
+    ledger = AppliedAppearance(
+        version=1,
+        appearance_hash=appearance_hash,
+        operation_id="op",
+        completed_at=TS,
+        apps={
+            "ags": AppAppearanceState(
+                app="bar",
+                instance="ags",
+                mode="restart",
+                status=status,  # type: ignore[arg-type]
+                appearance_hash=appearance_hash,
+            ),
+            "notifications": AppAppearanceState(
+                app="notifications",
+                instance="notifications",
+                mode="live",
+                status=status,  # type: ignore[arg-type]
+                appearance_hash=appearance_hash,
+            ),
+        },
+    )
+    AppearanceLedger(state_root).save(ledger)
+
+
+def _healthy_live_probe() -> object:
+    """A scripted real probe with both always-on units active and owned."""
+    from runtime.adapters.ags_supervision import (
+        ALWAYS_ON_APPS,
+        AgsSupervisionProbe,
+        CommandResult,
+    )
+
+    bar, notifications = ALWAYS_ON_APPS
+    responses = {
+        ("systemctl", "--user", "is-active", bar.unit): CommandResult(0, "active\n"),
+        ("systemctl", "--user", "is-active", notifications.unit): CommandResult(0, "active\n"),
+        ("systemctl", "--user", "show", "-p", "MainPID", "--value", bar.unit): CommandResult(
+            0, "100\n"
+        ),
+        ("systemctl", "--user", "show", "-p", "MainPID", "--value", notifications.unit): (
+            CommandResult(0, "200\n")
+        ),
+        ("ags", "list"): CommandResult(0, "ags\nnotifications\n"),
+        ("busctl", "--user", "status", bar.bus_name): CommandResult(
+            0, f"PID=101\nCGroup={bar.unit}\n"
+        ),
+        ("busctl", "--user", "status", notifications.bus_name): CommandResult(
+            0, f"PID=201\nCGroup={notifications.unit}\n"
+        ),
+    }
+    cgroups = {
+        100: f"0::/user.slice/user@1000.service/{bar.unit}",
+        101: f"0::/user.slice/user@1000.service/{bar.unit}",
+        200: f"0::/user.slice/user@1000.service/{notifications.unit}",
+        201: f"0::/user.slice/user@1000.service/{notifications.unit}",
+    }
+    return AgsSupervisionProbe(
+        command_runner=lambda argv: responses[tuple(argv)],
+        process_lister=lambda: [],
+        cgroup_reader=lambda pid: cgroups.get(pid),
+        pid_alive=lambda pid: pid in {100, 200},
+    )
+
 PALETTE_FILES = (
     "colors.conf",
     "colors.gtk.css",
@@ -1016,3 +1152,153 @@ class TestSupervisionLeg:
         payload = json.loads(result.output)
         assert payload["supervision"]["available"] is True
         assert payload["items"][0]["status"] == "diverged"
+
+
+class TestSupervisionGenerationIdentity:
+    """BUG-012: the supervision leg compares against the committed v3 identity."""
+
+    def test_v3_manifest_generation_hash_reaches_the_probe(self, tmp_path: Path) -> None:
+        """The live manifest hash wins; the v2 recompute is a different value."""
+        from runtime.adapters.ags_supervision import SupervisionReport
+        from runtime.adapters.hashing import appearance_generation_hash
+
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        _write_live_current_manifest(state_root)
+        probe = _FakeProbe(
+            SupervisionReport(
+                available=True,
+                units=(
+                    _unit(
+                        "bar",
+                        unit="dotfiles-ags-bar.service",
+                        instance="ags",
+                        healthy=True,
+                    ),
+                ),
+            )
+        )
+        _check_with_probe(state_root, probe)
+
+        assert probe.calls[0]["expected_appearance_hash"] == LIVE_GENERATION_HASH
+        assert (
+            appearance_generation_hash(LIVE_PALETTE_HASH, LIVE_SKIN_HASH, LIVE_MODE)
+            == LIVE_V2_GENERATION_HASH
+        )
+        assert LIVE_GENERATION_HASH != LIVE_V2_GENERATION_HASH
+
+    def test_current_ledger_at_current_generation_is_clean(self, tmp_path: Path) -> None:
+        from runtime.adapters.generation_store import GenerationStore
+
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        generation = GenerationStore(state_root).current_hash()
+        assert generation is not None
+        _write_ledger(state_root, generation)
+
+        report = _check_with_probe(state_root, _healthy_live_probe())
+
+        assert report.clean is True
+        assert report.supervision is not None
+        assert all(unit.stale_appearance is False for unit in report.supervision.units)
+        assert "supervision:appearance/bar" not in _by_name(report)
+
+    def test_ledger_at_an_older_hash_is_stale(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        _write_ledger(state_root, "0" * 64)
+
+        report = _check_with_probe(state_root, _healthy_live_probe())
+
+        assert report.clean is False
+        assert _by_name(report)["supervision:appearance/bar"] == "diverged"
+        assert _by_name(report)["supervision:appearance/notifications"] == "diverged"
+        assert report.supervision is not None
+        assert all(unit.stale_appearance is True for unit in report.supervision.units)
+
+    def test_missing_ledger_is_unknown_not_drift(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        assert not (state_root / "appearance-ledger.json").exists()
+
+        report = _check_with_probe(state_root, _healthy_live_probe())
+
+        assert report.clean is True
+        assert report.supervision is not None
+        assert all(unit.stale_appearance is None for unit in report.supervision.units)
+        assert "supervision:appearance/bar" not in _by_name(report)
+
+    def test_no_v3_manifest_keeps_the_v2_fallback(self, tmp_path: Path) -> None:
+        from runtime.adapters.appearance import expected_mode
+        from runtime.adapters.ags_supervision import SupervisionReport
+        from runtime.adapters.hashing import appearance_generation_hash
+        from runtime.adapters.json_state_repository import JsonStateRepository
+
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        current = state_root / "current"
+        current.unlink()
+        current.mkdir()
+
+        state = JsonStateRepository(state_root=state_root).load_current()
+        assert state is not None and state.palette is not None and state.skin is not None
+        expected = appearance_generation_hash(
+            state.palette.entry_hash,
+            state.skin.entry_hash,
+            expected_mode(state_root, state.palette),
+        )
+        probe = _FakeProbe(
+            SupervisionReport(
+                available=True,
+                units=(
+                    _unit(
+                        "bar",
+                        unit="dotfiles-ags-bar.service",
+                        instance="ags",
+                        healthy=True,
+                    ),
+                ),
+            )
+        )
+        _check_with_probe(state_root, probe)
+
+        assert probe.calls[0]["expected_appearance_hash"] == expected
+
+    @pytest.mark.parametrize("manifest_mutation", ["malformed", "missing"])
+    def test_invalid_v3_manifest_never_falls_back_to_v2(
+        self, tmp_path: Path, manifest_mutation: str
+    ) -> None:
+        from runtime.adapters.ags_supervision import SupervisionReport
+        from runtime.adapters.generation_store import GenerationStore
+
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        generation = GenerationStore(state_root).current_hash()
+        assert generation is not None
+        manifest_path = state_root / "generations" / generation / "manifest.json"
+        if manifest_mutation == "missing":
+            manifest_path.unlink()
+        else:
+            # Plausible generationHash, but the document is not a valid v3
+            # manifest: it must not be trusted or replaced by the v2 hash.
+            manifest_path.write_text(
+                json.dumps({"version": 3, "generationHash": LIVE_GENERATION_HASH}),
+                encoding="utf-8",
+            )
+        probe = _FakeProbe(
+            SupervisionReport(
+                available=True,
+                units=(
+                    _unit(
+                        "bar",
+                        unit="dotfiles-ags-bar.service",
+                        instance="ags",
+                        healthy=True,
+                    ),
+                ),
+            )
+        )
+        report = _check_with_probe(state_root, probe)
+
+        assert probe.calls[0]["expected_appearance_hash"] is None
+        assert _by_name(report)["generation:manifest"] == "corrupt"

@@ -20,6 +20,7 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from runtime.adapters.ags_supervision import (
     AgsSupervisionProbe,
@@ -639,7 +640,32 @@ class DoctorUseCase:
         return items, report
 
     def _expected_appearance_hash(self, state: DesktopState) -> str | None:
-        """The recorded-state appearance identity (None before palette+skin)."""
+        """The appearance identity the supervision leg compares against.
+
+        v3 makes ``current/manifest.json`` authoritative (REQ-020): the
+        committed ``generationHash`` is the ledger/refresh identity, exactly
+        as ``inspect`` and the refresh lane already use it. The v2
+        ``appearance_generation_hash(palette, skin, mode)`` recompute is only
+        the pre-v3 fallback; on a v3 host it would produce a different hash
+        and mark every applied app stale.
+
+        A v3 pointer whose manifest is missing or invalid returns ``None``
+        (unknown) rather than guessing a v2 identity; the appearance leg
+        already reports the corrupt/missing manifest.
+        """
+        from runtime.adapters.generation_store import GenerationStore
+
+        store = GenerationStore(self._state_root)
+        generation = store.current_hash()
+        if generation is not None:
+            manifest = store.load_manifest(generation)
+            if manifest is None:
+                return None
+            return cast("str", manifest["generationHash"])
+        if (self._state_root / "current" / "manifest.json").is_file():
+            # A manifest under current/ without a valid generation pointer is
+            # still a v3 artifact, never a pre-v3 host to guess for.
+            return None
         if state.palette is None or state.skin is None:
             return None
         palette_mode = expected_mode(self._state_root, state.palette)
