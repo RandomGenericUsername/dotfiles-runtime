@@ -167,10 +167,11 @@ class ReconcileDesktopStateUseCase:
     2. Hold the seed mutex (blocking), re-load inside critical section
     3. Ensure cache entries (derivation outside the lock — same split as
        ``ApplyWallpaperUseCase``)
-    4. Repoint symlinks via ``CacheSeeder.repoint_current_symlinks``
-    5. Re-save ``current.json`` with refreshed ``applied_at``
-    6. Append ``history.jsonl`` (trigger ``"reconcile"`` by default;
+    4. Commit one generation and re-save ``current.json`` with refreshed
+       ``applied_at``
+    5. Append ``history.jsonl`` (trigger ``"reconcile"`` by default;
        ``wallpaper set`` passes ``"set"`` via ``run(trigger=...)``)
+    6. Sweep old generations/cache from the post-commit current generation
     7. Apply persisted wallpaper (unless the caller already applied it)
     8. Reload palette/UI consumers (fire-and-report, per injected reloader)
 
@@ -488,6 +489,47 @@ class ReconcileDesktopStateUseCase:
                 source_path=saved.wallpaper.source_path,
             )
 
+            # Step 5 — GC under the same lock, immediately after the commit.
+            # The protection set is computed from the post-commit current
+            # generation (and its manifest), never a pre-commit snapshot. It
+            # never removes the current generation's palette/wallpaper/
+            # effects/icons or composed appearance cache layer, the newest
+            # entry per layer, a ledger-referenced layer or an explicit pin;
+            # only unreferenced entries older than grace are swept.
+            try:
+                # A v3 ledger keys on the generation hash; a legacy v2 ledger
+                # keyed on a composed appearance hash. Honour both: the value
+                # always protects the named generation, and if it also names a
+                # real appearance cache entry that layer is protected too.
+                ledger_generations: list[str] = []
+                ledger_layers: dict[str, list[str]] = {}
+                ledger = getattr(self._app_refresher, "ledger", None)
+                if ledger is not None:
+                    recorded = ledger.load()
+                    if recorded is not None and recorded.appearance_hash:
+                        ledger_generations.append(recorded.appearance_hash)
+                        if (
+                            self._state_root
+                            / "cache"
+                            / "appearance"
+                            / recorded.appearance_hash
+                        ).is_dir():
+                            ledger_layers["appearance"] = [recorded.appearance_hash]
+                swept = self._generation_store.gc(
+                    keep=5,
+                    grace_seconds=24 * 60 * 60,
+                    ledger_generations=ledger_generations,
+                    ledger_layers=ledger_layers,
+                    acknowledged_generations=[generation.generation_hash],
+                    current_generation=generation.generation_hash,
+                )
+                if any(swept.values()):
+                    logger.info("reconcile: gc swept %s", swept)
+            except Exception:
+                logger.exception(
+                    "reconcile: generation GC failed; generation is authoritative"
+                )
+
         # Logging for skipped null layers outside lock (P8)
         for layer in ("effects", "icons"):
             entry = getattr(saved, layer)
@@ -497,7 +539,7 @@ class ReconcileDesktopStateUseCase:
             "reconcile: committed generation %s", generation.generation_hash[:12]
         )
 
-        # Step 5 — apply the persisted wallpaper before reloading palette/UI
+        # Step 6 — apply the persisted wallpaper before reloading palette/UI
         # consumers. wallpaper set has already done this during its visible
         # phase and opts out of this one stage only.
         reload_failures: list[ReloadFailure] = []
@@ -514,7 +556,7 @@ class ReconcileDesktopStateUseCase:
             if not wallpaper_ok:
                 reload_failures.append(ReloadFailure(type(self._wallpaper_applier).__name__))
 
-        # Step 6 — the manifest-driven AGS app refresh (live + restart lanes).
+        # Step 7 — the manifest-driven AGS app refresh (live + restart lanes).
         # AD-27: the runtime, not the wallpaper.state event, is the palette
         # refresh trigger. The ledger gate makes an unchanged appearance a no-op.
         app_results: list[AppRefreshRecord] = []
@@ -538,7 +580,7 @@ class ReconcileDesktopStateUseCase:
                 app_results = list(outcome.records)
                 reload_failures.extend(outcome.failures)
 
-        # Step 7 — reload the remaining palette/UI consumers (outside lock,
+        # Step 8 — reload the remaining palette/UI consumers (outside lock,
         # fire-and-report). AGS is not in this list: its two lanes are owned by
         # the manifest-driven refresher above.
         for reloader in self._reloaders:
@@ -549,27 +591,6 @@ class ReconcileDesktopStateUseCase:
                 ok = False
             if not ok:
                 reload_failures.append(ReloadFailure(type(reloader).__name__))
-
-        # GC is part of convergence, not a background timer. It never removes
-        # the active, newest, pinned, ledger-referenced or acknowledged
-        # generation, and only sweeps unreferenced entries older than grace.
-        try:
-            ledger_generations: list[str] = []
-            ledger = getattr(self._app_refresher, "ledger", None)
-            if ledger is not None:
-                recorded = ledger.load()
-                if recorded is not None and recorded.appearance_hash:
-                    ledger_generations.append(recorded.appearance_hash)
-            swept = self._generation_store.gc(
-                keep=5,
-                grace_seconds=24 * 60 * 60,
-                ledger_generations=ledger_generations,
-                acknowledged_generations=[generation.generation_hash],
-            )
-            if any(swept.values()):
-                logger.info("reconcile: gc swept %s", swept)
-        except Exception:
-            logger.exception("reconcile: generation GC failed; generation is authoritative")
 
         return ReconcileResult(
             repointed=repointed,

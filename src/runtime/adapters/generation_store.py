@@ -49,6 +49,7 @@ from typing import Any
 import fastjsonschema
 
 from runtime.adapters.contract_schemas import generation_manifest_validator
+from runtime.adapters.hashing import appearance_generation_hash
 from runtime.domain.models import (
     AppearanceEntry,
     DesktopState,
@@ -77,6 +78,19 @@ MANIFEST_VERSION = 3
 GC_PINS_VERSION = 1
 DEFAULT_KEEP = 5
 DEFAULT_GRACE_SECONDS = 24 * 60 * 60
+
+#: Manifest layer keys are singular; cache directories are plural. GC must
+#: map them explicitly or it protects nothing for wallpaper/palette.
+_MANIFEST_LAYER_TO_CACHE_LAYER = {
+    "wallpaper": "wallpapers",
+    "palette": "palettes",
+    "effects": "effects",
+    "icons": "icons",
+}
+
+#: Cache layers swept by generation GC. ``appearance`` is composed (not a
+#: manifest layer); its hash is recomputed from the manifest identity.
+_SWEPT_CACHE_LAYERS = ("wallpapers", "palettes", "effects", "icons", "appearance")
 
 _PALETTE_ALIASES = (
     "colors.conf",
@@ -705,25 +719,44 @@ class GenerationStore:
         keep: int = DEFAULT_KEEP,
         grace_seconds: int = DEFAULT_GRACE_SECONDS,
         ledger_generations: Iterable[str] = (),
+        ledger_layers: Mapping[str, Iterable[str]] | None = None,
         acknowledged_generations: Iterable[str] = (),
+        current_generation: str | None = None,
     ) -> dict[str, list[str]]:
         """Mark-and-sweep under the caller's ``converge.lock``.
 
-        Retains the active generation, the newest ``keep``, every pin, every
-        ledger-referenced generation and every acknowledged generation. Only
-        unreferenced cache entries older than ``grace_seconds`` are removed.
+        Retains every generation named by the current pointer (and the
+        explicit post-commit ``current_generation``), the newest ``keep``,
+        every pin, every ledger/acknowledged generation and every
+        ledger-referenced cache layer. Cache protection is derived from each
+        retained generation's manifest: singular manifest layer keys are
+        mapped to their plural cache directories, and the composed appearance
+        cache entry is recomputed from ``palette/skin/mode``. The newest entry
+        per layer is also protected so a concurrent/pre-commit derive is never
+        swept. Only unreferenced entries older than ``grace_seconds`` are
+        removed.
+
+        The caller holds ``converge.lock`` and must pass the just-committed
+        generation as ``current_generation``. If a current generation is
+        named but its manifest cannot be read, the cache sweep is skipped
+        (fail closed) rather than risking a dangling ``current`` layer.
         """
         if keep < 0:
             raise ValueError(f"keep must be >= 0, got {keep}")
+        if current_generation is not None and not _is_hex64(current_generation):
+            raise GenerationManifestError(
+                "current_generation must be 64-char lowercase hex, "
+                f"got {current_generation!r}"
+            )
         root = self.generations_root
         if not root.is_dir() or root.is_symlink():
             return {"generations": [], "cache": [], "staging": []}
 
         active = self.current_hash()
+        current_hashes = {generation for generation in (active, current_generation) if generation}
         pinned = self.pinned_hashes()
         referenced = set(ledger_generations) | set(acknowledged_generations) | pinned
-        if active is not None:
-            referenced.add(active)
+        referenced.update(current_hashes)
 
         now = self._clock()
         entries: list[tuple[Path, float]] = []
@@ -758,32 +791,85 @@ class GenerationStore:
             removed_generations.append(path.name)
 
         retained_manifests: list[dict[str, Any]] = []
+        retained_hashes: set[str] = set()
         for child, _age in entries:
             if child.name in removed_generations:
                 continue
             manifest = self.load_manifest(child.name)
             if manifest is not None:
                 retained_manifests.append(manifest)
-        referenced_layers: dict[str, set[str]] = {}
-        for manifest in retained_manifests:
-            for name, layer in manifest.get("layers", {}).items():
-                referenced_layers.setdefault(name, set()).add(layer["entryHash"])
+                retained_hashes.add(child.name)
+        # A current generation is authoritative even when it was outside the
+        # sweep list above; its manifest must be part of the protection set.
+        for generation in sorted(current_hashes):
+            if generation in retained_hashes:
+                continue
+            manifest = self.load_manifest(generation)
+            if manifest is not None:
+                retained_manifests.append(manifest)
+                retained_hashes.add(generation)
 
-        removed_cache: list[str] = []
+        cache_sweep_allowed = True
+        for generation in sorted(current_hashes):
+            if self.load_manifest(generation) is None:
+                logger.warning(
+                    "gc: current generation %s has no readable manifest; "
+                    "refusing the cache sweep",
+                    generation,
+                )
+                cache_sweep_allowed = False
+        if not cache_sweep_allowed:
+            return {
+                "generations": removed_generations,
+                "cache": [],
+                "staging": staging_removed,
+            }
+
+        referenced_layers: dict[str, set[str]] = {
+            layer_name: set() for layer_name in _SWEPT_CACHE_LAYERS
+        }
+        for manifest in retained_manifests:
+            for cache_layer, entry_hashes in self._manifest_layer_refs(manifest).items():
+                referenced_layers[cache_layer].update(entry_hashes)
+        for cache_layer, entry_hashes in (ledger_layers or {}).items():
+            if cache_layer not in _SWEPT_CACHE_LAYERS:
+                raise ValueError(f"unknown ledger cache layer {cache_layer!r}")
+            for entry_hash in entry_hashes:
+                if not _is_hex64(entry_hash):
+                    raise ValueError(
+                        "ledger layer refs must be 64-char lowercase hex, "
+                        f"got {entry_hash!r} for {cache_layer}"
+                    )
+                referenced_layers[cache_layer].add(entry_hash)
+
         cache_root = self._state_root / "cache"
-        for layer_name in ("wallpapers", "palettes", "effects", "icons", "appearance"):
+        layer_entries: dict[str, list[tuple[Path, float]]] = {}
+        newest_per_layer: dict[str, str] = {}
+        for layer_name in _SWEPT_CACHE_LAYERS:
             layer_root = cache_root / layer_name
             if not layer_root.is_dir() or layer_root.is_symlink():
                 continue
-            keep_hashes = referenced_layers.get(layer_name, set())
+            entries_for_layer: list[tuple[Path, float]] = []
             for entry in sorted(layer_root.iterdir()):
                 if entry.is_symlink() or not entry.is_dir():
                     continue
-                if not _is_hex64(entry.name) or entry.name in keep_hashes:
+                if not _is_hex64(entry.name):
                     continue
                 try:
-                    age = now - entry.stat().st_mtime
+                    entries_for_layer.append((entry, now - entry.stat().st_mtime))
                 except OSError:
+                    continue
+            entries_for_layer.sort(key=lambda pair: (pair[1], pair[0].name))
+            if entries_for_layer:
+                newest_per_layer[layer_name] = entries_for_layer[0][0].name
+            layer_entries[layer_name] = entries_for_layer
+
+        removed_cache: list[str] = []
+        for layer_name, entries_for_layer in layer_entries.items():
+            keep_hashes = referenced_layers[layer_name]
+            newest_hash = newest_per_layer.get(layer_name)
+            for entry, age in entries_for_layer:
+                if entry.name in keep_hashes or entry.name == newest_hash:
                     continue
                 if age < grace_seconds:
                     continue
@@ -794,3 +880,27 @@ class GenerationStore:
             "cache": removed_cache,
             "staging": staging_removed,
         }
+
+    @staticmethod
+    def _manifest_layer_refs(manifest: Mapping[str, Any]) -> dict[str, set[str]]:
+        """Map one manifest's layer/input refs to cache directory names."""
+        refs: dict[str, set[str]] = {layer_name: set() for layer_name in _SWEPT_CACHE_LAYERS}
+        layers = manifest.get("layers", {})
+        intent = manifest.get("intent", {})
+        for manifest_layer, cache_layer in _MANIFEST_LAYER_TO_CACHE_LAYER.items():
+            layer = layers.get(manifest_layer) if isinstance(layers, Mapping) else None
+            if isinstance(layer, Mapping) and _is_hex64(layer.get("entryHash")):
+                refs[cache_layer].add(str(layer["entryHash"]))
+            intent_hash = intent.get(manifest_layer) if isinstance(intent, Mapping) else None
+            if _is_hex64(intent_hash):
+                refs[cache_layer].add(str(intent_hash))
+        skin = manifest.get("skin", {})
+        skin_hash = skin.get("entryHash") if isinstance(skin, Mapping) else None
+        palette = layers.get("palette") if isinstance(layers, Mapping) else None
+        palette_hash = palette.get("entryHash") if isinstance(palette, Mapping) else None
+        mode = manifest.get("mode")
+        if _is_hex64(palette_hash) and _is_hex64(skin_hash) and mode in ("dark", "light"):
+            refs["appearance"].add(
+                appearance_generation_hash(str(palette_hash), str(skin_hash), str(mode))
+            )
+        return refs
