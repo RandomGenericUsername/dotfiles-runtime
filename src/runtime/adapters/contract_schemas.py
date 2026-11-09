@@ -113,7 +113,7 @@ def load_ags_app_refresh_result_schema() -> dict[str, Any]:
 
 
 def appearance_manifest_validator() -> Validator:
-    """Validator for an authored v2 appearance manifest (contract v0.7.0)."""
+    """Validator for an authored v2 appearance manifest (contract v0.9.0)."""
     return _validator("appearance-manifest.schema.json")
 
 

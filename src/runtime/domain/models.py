@@ -222,10 +222,10 @@ DEFAULT_DESIRED_MODE: Final[DesiredMode] = "smart"
 
 @dataclass(frozen=True, slots=True)
 class AppearanceEntry:
-    """One immutable composed appearance generation (contracts v0.7.0).
+    """One immutable composed appearance generation (contracts v0.9.0).
 
-    ``appearance_hash`` is the cache directory name and the ledger/refresh
-    identity: ``sha256(palette_entry_hash ‖ skin_entry_hash ‖ mode)``. The
+    ``appearance_hash`` is the cache directory name and the appearance.v3
+    identity: ``f(palette_entry_hash, skin_entry_hash, mode, hostHash)``. The
     palette and skin caches stay independent inputs; this type never mutates
     either entry. ``config_dirs`` is derived from the skin's ``<configDir>.css``
     artifacts, never a fixed app list.
@@ -240,6 +240,10 @@ class AppearanceEntry:
     generation_hash: str
     token_ref: Literal["tokens.json"]
     config_dirs: tuple[str, ...]
+    #: Host participation is carried in memory for the generation manifest;
+    #: appearance.json remains the frozen v2 artifact (no host field).
+    host_hash: str | None = None
+    host_values: tuple[tuple[str, int | float], ...] = ()
 
 
 class SkinUnavailableError(RuntimeError):

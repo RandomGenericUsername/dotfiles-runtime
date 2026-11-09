@@ -1,11 +1,10 @@
 """Real v2 appearance assets: TOML manifests, nested groups, modes, units.
 
 The fixtures under ``tests/fixtures/skins-v2`` are byte-identical copies of
-``dotfiles-assets v0.12.0`` ``skins/manifests/{glass,flat,paper}.toml`` and the
-seven AGS ``skins/templates/*.gtk.css.j2`` targets, plus the released
-``dotfiles-assets v0.14.0`` ``skins/templates/wlogout.gtk.css.j2``. They are
-copied so the suite is hermetic; the same files are expanded directly from the
-sibling assets checkout in the ticket evidence.
+``dotfiles-assets v0.15.0`` ``skins/manifests/{glass,flat,paper,terminal}.toml``
+and all eight ``skins/templates/*.gtk.css.j2`` targets, including wlogout.
+They are copied so the suite is hermetic; the same files are expanded directly
+from the sibling assets checkout in the ticket evidence.
 """
 
 from __future__ import annotations
@@ -44,7 +43,7 @@ from tests.support.palette_fakes import v1_colors_yaml, v1_gtk_css
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "skins-v2"
 _MANIFESTS = _FIXTURES / "manifests"
 _TEMPLATES = _FIXTURES / "templates"
-_NAMES = ("glass", "flat", "paper")
+_NAMES = ("glass", "flat", "paper", "terminal")
 _MODES = ("dark", "light")
 _CONFIG_DIRS = tuple(
     sorted(path.name[: -len(".gtk.css.j2")] for path in _TEMPLATES.glob("*.gtk.css.j2"))

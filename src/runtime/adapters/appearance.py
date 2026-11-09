@@ -1,4 +1,4 @@
-"""Compose the one v2 appearance generation (contracts v0.7.0).
+"""Compose the one v2 appearance generation (contracts v0.9.0).
 
 The runtime keeps two independent content-addressed caches — palettes and
 skins — and publishes their composition as one immutable generation::
@@ -30,6 +30,7 @@ import re
 import shutil
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -47,8 +48,10 @@ from runtime.adapters.skin_expander import (
     manifest_schema_version,
     render_v2_templates,
     resolve_v2_token_document,
+    resolve_v2_token_document_with_host,
     validate_v2_manifest,
 )
+from runtime.domain.host_defaults import HostSnapshot
 from runtime.domain.models import (
     AppearanceEntry,
     PaletteEntry,
@@ -323,9 +326,11 @@ def tokens_from_v1_skin(skin_json: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def tokens_from_v2_manifest(manifest: dict[str, Any], mode: str) -> dict[str, Any]:
-    """Resolve a v2 manifest for one mode (override replaces a whole group)."""
-    return resolve_v2_token_document(manifest, mode)
+def tokens_from_v2_manifest(
+    manifest: dict[str, Any], mode: str, host: HostSnapshot | None = None
+) -> dict[str, Any]:
+    """Resolve a v2 manifest for one mode plus the optional host policy."""
+    return resolve_v2_token_document(manifest, mode, host)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -602,6 +607,7 @@ class AppearanceGenerator:
         manifest_path: Path | None = None,
         templates_dir: Path | None = None,
         keep: int = APPEARANCE_KEEP,
+        host: HostSnapshot | None = None,
     ) -> tuple[AppearanceEntry, bool]:
         palette_dir = cache_entry_path(
             self._state_root, "palettes", palette_entry.entry_hash
@@ -614,8 +620,28 @@ class AppearanceGenerator:
             raise ValueError(f"appearance skin entry missing: {skin_dir}")
         colors_yaml = colors_path.read_text(encoding="utf-8")
         mode = detect_palette_mode(colors_yaml)
+        manifest = _load_v2_manifest(manifest_path)
+        host_hash: str | None = None
+        host_values: tuple[tuple[str, int | float], ...] = ()
+        tokens: dict[str, Any]
+        if manifest is not None:
+            assert manifest_path is not None
+            validate_v2_manifest(manifest, skin_entry.name, manifest_path)
+            tokens, host_resolution = resolve_v2_token_document_with_host(
+                manifest, mode, host
+            )
+            host_hash = host_resolution.host_hash
+            host_values = tuple(sorted(host_resolution.defaults.items()))
+        else:
+            tokens = resolve_tokens(
+                skin_entry, skin_dir, manifest_path=manifest_path, mode=mode
+            )
+
         appearance_hash = appearance_generation_hash(
-            palette_entry.entry_hash, skin_entry.entry_hash, mode
+            palette_entry.entry_hash,
+            skin_entry.entry_hash,
+            mode,
+            host_hash=host_hash,
         )
         target = self._cache_entry_dir(appearance_hash)
         if target.is_dir():
@@ -626,29 +652,21 @@ class AppearanceGenerator:
                 shutil.rmtree(target, ignore_errors=False)
             else:
                 prune_appearance_entries(self._state_root, keep=keep)
-                return entry, True
+                return replace(entry, host_hash=host_hash, host_values=host_values), True
 
         config_dirs = skin_config_dirs(skin_entry.artifact_hashes)
         if not config_dirs:
             raise ValueError(f"appearance skin {skin_entry.name!r} has no <configDir>.css targets")
-        manifest = _load_v2_manifest(manifest_path)
         rendered: dict[str, str] | None = None
         if manifest is not None:
-            # v2 templates must be expanded AFTER the mode override is applied.
-            # The skin cache's base render is migration-only and never composed.
-            assert manifest_path is not None
-            validate_v2_manifest(manifest, skin_entry.name, manifest_path)
-            tokens = tokens_from_v2_manifest(manifest, mode)
+            # v2 templates must be expanded AFTER the mode override and host
+            # policy are applied. The skin cache's base render is migration-only.
             if templates_dir is None or not templates_dir.is_dir():
                 raise ValueError(
                     "appearance v2 manifest requires a skin templates dir to "
                     f"expand mode={mode!r}: {templates_dir}"
                 )
             rendered = render_v2_templates(templates_dir, tokens)
-        else:
-            tokens = resolve_tokens(
-                skin_entry, skin_dir, manifest_path=manifest_path, mode=mode
-            )
 
         root = appearance_cache_root(self._state_root)
         root.mkdir(parents=True, exist_ok=True)
@@ -713,9 +731,23 @@ class AppearanceGenerator:
                 if not target.is_dir():
                     raise
                 # Lost a race: the winner's immutable entry is authoritative.
-                return load_appearance_entry(target), True
+                return (
+                    replace(
+                        load_appearance_entry(target),
+                        host_hash=host_hash,
+                        host_values=host_values,
+                    ),
+                    True,
+                )
             prune_appearance_entries(self._state_root, keep=keep)
-            return load_appearance_entry(target), False
+            return (
+                replace(
+                    load_appearance_entry(target),
+                    host_hash=host_hash,
+                    host_values=host_values,
+                ),
+                False,
+            )
         finally:
             try:
                 shutil.rmtree(staging, ignore_errors=True)

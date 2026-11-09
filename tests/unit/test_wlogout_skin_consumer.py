@@ -1,6 +1,6 @@
 """wlogout as a generic v2 skin consumer (W-2.3/W-2.4).
 
-The fixture is the released ``dotfiles-assets v0.14.0``
+The fixture is the released ``dotfiles-assets v0.15.0``
 ``skins/templates/wlogout.gtk.css.j2`` copied byte-for-byte (sha256
 ``e42a44e61deee2b00801252332abb9a5e4bc2b817db9b727b98ebef6313e32e3``).
 These tests prove the existing skin -> appearance -> generation pipeline
@@ -160,7 +160,7 @@ def test_generation_commit_writes_and_validates_the_wlogout_target(tmp_path: Pat
     assert config_dirs == sorted(config_dirs)
 
     # W-2.4: the committed manifest is a generation-manifest fixture for the
-    # embedded contracts v0.8.0 schema.
+    # embedded contracts v0.9.0 schema.
     generation_manifest_validator()(result.manifest)
     on_disk = json.loads((generation / "manifest.json").read_text(encoding="utf-8"))
     assert on_disk == result.manifest

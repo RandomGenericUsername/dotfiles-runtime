@@ -71,8 +71,9 @@ def hold_operation_lock(state_root: Path, *, timeout: float | None = None) -> It
 def appearance_hash_for_state(state: object, *, state_root: Path | None = None) -> str:
     """Compute the ledger/refresh appearance hash from a ``DesktopState``.
 
-    v2 identity is ``f(palette, skin, mode)`` (contracts v0.7.0). Effects and
-    icons are content layers, not appearance layers, so they no longer
+    v3 generation identity is the committed ``generationHash``; the v2
+    fallback is ``f(palette, skin, mode)``. Effects and icons are content
+    layers, not appearance layers, so they no longer
     participate (RFC R-5 keeps their separate refresh signal). When the state
     has no palette/skin yet, the historical content hash is retained so a
     pre-appearance machine still has a stable ledger key.

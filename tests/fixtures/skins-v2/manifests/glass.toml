@@ -7,6 +7,12 @@
 schemaVersion = 2
 name = "glass"
 
+# Host defaults: only the outer panel geometry follows the compositor. Every
+# other token stays explicit; a complete mode override still wins.
+[host]
+inherit = ["surface.panel.radius", "surface.panel.border-width"]
+fallback = "skin"
+
 [groups.surface.panel]
 bg = "alpha(@surface, 0.94)"
 border = "@primary"
@@ -89,11 +95,6 @@ ink-over = "auto"
 [groups.layout.ags]
 panel-width = 312
 bt-list-spacing = 4
-bar-row-height = 0
-chip-min = 0
-
-[groups.layout.ags-capture]
-panel-width = 560
 
 [groups.layout.ags-clipboard]
 card-width = 260
@@ -102,13 +103,9 @@ card-width = 260
 card-width = 380
 
 [groups.layout.ags-wallpaper-selector]
-root-width = 920
-root-height = 600
+root-width = 960
+root-height = 640
 
 [groups.layout.ags-icme]
-root-width = 960
-root-height = 600
-
-[groups.layout.ags-btop-studio]
-left-width = 280
-right-width = 320
+root-width = 1280
+root-height = 800

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://dotfiles.local/schemas/appearance-manifest.schema.json",
   "title": "Appearance manifest (schemaVersion 2)",
-  "description": "Canonical appearance manifest for the v2 appearance plane. The nested token groups describe surface roles, interaction states, type, ink and namespaced layout metrics; optional mode.dark/mode.light groups are same-shape overrides selected from the palette mode. All lengths are unitless JSON numbers rendered as CSS px (letter-spacing renders as em, font-weight stays unitless). Paint values are palette role expressions only: no literal hex, no transitions and no structure/variant tokens.",
+  "description": "Canonical appearance manifest for the v2 appearance plane. The nested token groups describe surface roles, interaction states, type, ink and namespaced layout metrics; optional mode.dark/mode.light groups are same-shape overrides selected from the palette mode. The optional root host policy delegates only an explicit allowlist of logical token paths to a live host and never changes a token type. All lengths are unitless JSON numbers rendered as CSS px (letter-spacing renders as em, font-weight stays unitless). Paint values are palette role expressions only: no literal hex, no transitions and no structure/variant tokens.",
   "status": "frozen",
   "type": "object",
   "additionalProperties": false,
@@ -57,9 +57,47 @@
     },
     "mode": {
       "$ref": "#/definitions/modeOverrides"
+    },
+    "host": {
+      "$ref": "#/definitions/hostPolicy"
     }
   },
   "definitions": {
+    "hostPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "required": [
+        "inherit"
+      ],
+      "properties": {
+        "inherit": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "surface.panel.radius",
+              "surface.panel.border-width"
+            ]
+          },
+          "description": "Allowlist of logical appearance token paths that may follow the live host. This is not a token group: it cannot name layout, padding, gap, type, paint or colour paths."
+        },
+        "fallback": {
+          "type": "string",
+          "enum": [
+            "skin",
+            "error"
+          ],
+          "default": "skin",
+          "description": "Headless or invalid-host policy: use the skin's concrete value, or fail the generation before publishing."
+        }
+      },
+      "description": "Optional per-skin host-default policy. Only the explicit allowlist may inherit a host value; every other token stays explicit. No host value is a colour and no host value may inject structure."
+    },
     "paletteRole": {
       "type": "string",
       "enum": [

@@ -50,6 +50,7 @@ from runtime.application.derive import (
     find_skin_manifest,
     find_skin_templates,
 )
+from runtime.domain.host_defaults import HostSnapshot
 from runtime.domain.models import (
     DEFAULT_MONITOR,
     DEFAULT_SKIN,
@@ -68,6 +69,7 @@ from runtime.domain.models import (
 from runtime.ports.appearance_generator import IAppearanceGenerator
 from runtime.ports.color_scheme_generator import IColorSchemeGenerator
 from runtime.ports.effects_generator import IEffectsGenerator
+from runtime.ports.host_defaults import IHostDefaults
 from runtime.ports.icon_renderer import IIconRenderer
 from runtime.ports.monitor_source import IMonitorSource
 from runtime.ports.seed_mutex import ISeedMutex
@@ -113,6 +115,7 @@ class SeedCacheUseCase:
         appearance_generator: IAppearanceGenerator | None = None,
         appearance_keep: int = 5,
         generation_store: GenerationStore | None = None,
+        host_defaults: IHostDefaults | None = None,
     ) -> None:
         self._state_repo = state_repo
         self._factory = factory
@@ -127,6 +130,7 @@ class SeedCacheUseCase:
         self._appearance = appearance_generator or AppearanceGenerator(state_root)
         self._appearance_keep = appearance_keep
         self._generation_store = generation_store or GenerationStore(state_root)
+        self._host_defaults = host_defaults
         # Shared derivation plumbing (Story 1.13): spine discovery + per-layer
         # ensure-entry pattern live in application/derive.py; seed and apply
         # compose the same pipeline so behavior stays identical.
@@ -194,6 +198,7 @@ class SeedCacheUseCase:
     def _seed(self, default_png: Path) -> None:
         """Perform the seeding swap sequence. Caller holds the seed mutex."""
         wallpaper_hash = hash_file(default_png)
+        host = self._host_defaults.read() if self._host_defaults is not None else None
 
         # Monitor names from the injected source when available (real
         # outputs via HyprlandMonitorSource); fall back to the legacy
@@ -219,7 +224,7 @@ class SeedCacheUseCase:
         effects_entry = self._populate_effects(default_png, wallpaper_hash)
         icons_entry = self._populate_icons(palette_entry.entry_hash)
         skin_entry = self._populate_skin()
-        appearance_entry = self._populate_appearance(palette_entry, skin_entry)
+        appearance_entry = self._populate_appearance(palette_entry, skin_entry, host=host)
 
         # 6. Construct domain objects (real hashes from the adapters — the
         # seeded state must agree with the meta.json beside each cache entry)
@@ -267,7 +272,7 @@ class SeedCacheUseCase:
             skin_entry = default_skin_entry(self._state_root, self._seeder)
             state = dataclasses.replace(state, skin=skin_entry)
         if appearance_entry is None:
-            appearance_entry = self._populate_appearance(palette_entry, skin_entry)
+            appearance_entry = self._populate_appearance(palette_entry, skin_entry, host=host)
         if appearance_entry is None:
             raise RuntimeError("seeding refused: the appearance layer is unavailable")
         colors_path = (
@@ -289,9 +294,12 @@ class SeedCacheUseCase:
                     mode=mode,
                     effects=effects_entry.entry_hash if effects_entry else None,
                     icons=icons_entry.entry_hash if icons_entry else None,
+                    host=appearance_entry.host_hash,
                 ),
                 monitor_names=tuple(monitor_names),
                 source_kind="cli",
+                host_hash=appearance_entry.host_hash,
+                host_values=appearance_entry.host_values,
             )
         )
         # 7b. Write current.json via state_repo (atomic tmp + os.replace)
@@ -339,7 +347,11 @@ class SeedCacheUseCase:
             return None
 
     def _populate_appearance(
-        self, palette_entry: PaletteEntry, skin_entry: SkinEntry | None
+        self,
+        palette_entry: PaletteEntry,
+        skin_entry: SkinEntry | None,
+        *,
+        host: HostSnapshot | None = None,
     ) -> AppearanceEntry | None:
         """Compose the v2 appearance generation. Fail-closed on any error."""
         if skin_entry is None:
@@ -356,6 +368,7 @@ class SeedCacheUseCase:
                 manifest_path=manifest_path,
                 templates_dir=templates_dir,
                 keep=self._appearance_keep,
+                host=host,
             )
             return entry
         except Exception as exc:

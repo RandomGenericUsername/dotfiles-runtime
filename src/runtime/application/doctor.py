@@ -40,6 +40,7 @@ from runtime.domain.models import (
     DesktopState,
     HistoryLockError,
 )
+from runtime.ports.host_defaults import IHostDefaults
 from runtime.ports.state_repository import IStateRepository
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,7 @@ class DoctorUseCase:
         state_root: Path,
         install_spine: Path | None = None,
         supervision_probe: AgsSupervisionProbe | None = None,
+        host_probe: IHostDefaults | None = None,
     ) -> None:
         self._state_repo = state_repo
         self._state_root = state_root
@@ -138,6 +140,8 @@ class DoctorUseCase:
         # Optional by default so direct/unit construction stays hermetic; the
         # CLI injects the real live probe.
         self._supervision_probe = supervision_probe
+        # Optional live host read for the committed host-default fingerprint.
+        self._host_probe = host_probe
 
     def check(self) -> DoctorReport:
         """Run the check; return per-item verdicts. Mutates nothing."""
@@ -549,6 +553,7 @@ class DoctorUseCase:
                     ),
                 )
             )
+        items.extend(self._check_host(manifest))
         watch = WatchHealthStore(self._state_root).read()
         items.append(
             DriftItem(
@@ -604,6 +609,74 @@ class DoctorUseCase:
                             )
                         )
         return items
+
+    def _check_host(self, manifest: dict[str, object]) -> list[DriftItem]:
+        """Compare the committed host fingerprint with a fresh live read.
+
+        Only the paths recorded in the generation's host ``defaults`` are
+        compared, so a change to a non-delegated compositor setting is never
+        drift. An unavailable host is reported as unknown, not as drift; the
+        committed generation remains authoritative.
+        """
+        host = manifest.get("host")
+        if not isinstance(host, dict):
+            return []
+        fingerprint = host.get("fingerprint")
+        defaults = host.get("defaults")
+        paths = list(defaults) if isinstance(defaults, dict) else []
+        if self._host_probe is None:
+            return [
+                DriftItem(
+                    "generation:host",
+                    "host",
+                    "ok",
+                    "host probe not wired; committed host fingerprint not verified",
+                )
+            ]
+        snapshot = self._host_probe.read()
+        if snapshot is None:
+            return [
+                DriftItem(
+                    "generation:host",
+                    "host",
+                    "ok",
+                    "live host unavailable; committed host fingerprint unknown",
+                )
+            ]
+        missing = [path for path in paths if path not in snapshot.values]
+        if missing:
+            return [
+                DriftItem(
+                    "generation:host",
+                    "host",
+                    "ok",
+                    (
+                        "live host unavailable for delegated token(s) "
+                        f"{', '.join(sorted(missing))}; committed host fingerprint unknown"
+                    ),
+                )
+            ]
+        live = snapshot.fingerprint(paths)
+        if live != fingerprint:
+            return [
+                DriftItem(
+                    "generation:host",
+                    "host",
+                    "diverged",
+                    (
+                        f"live host fingerprint {(live or 'none')[:12]} differs from "
+                        f"committed {str(fingerprint)[:12]}; delegated host values drifted"
+                    ),
+                )
+            ]
+        return [
+            DriftItem(
+                "generation:host",
+                "host",
+                "ok",
+                f"host fingerprint {str(fingerprint)[:12]} matches the live delegated values",
+            )
+        ]
 
     def _check_supervision(
         self, state: DesktopState

@@ -1003,6 +1003,7 @@ class TestReconcileStructuralScopeLock:
             "converge_lock",
             "source_kind",
             "job_id",
+            "host_defaults",
         }
         assert not any("backend" in p or "factory" in p for p in params)
 

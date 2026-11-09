@@ -5,6 +5,8 @@
 schemaVersion = 2
 name = "flat"
 
+# Host defaults are intentionally not inherited: zero chrome is explicit. No
+# [host] policy is declared for this skin.
 [groups.surface.panel]
 bg = "transparent"
 border = "transparent"
@@ -87,11 +89,6 @@ ink-over = "auto"
 [groups.layout.ags]
 panel-width = 312
 bt-list-spacing = 4
-bar-row-height = 28
-chip-min = 48
-
-[groups.layout.ags-capture]
-panel-width = 560
 
 [groups.layout.ags-clipboard]
 card-width = 260
@@ -100,13 +97,9 @@ card-width = 260
 card-width = 380
 
 [groups.layout.ags-wallpaper-selector]
-root-width = 920
-root-height = 600
+root-width = 960
+root-height = 640
 
 [groups.layout.ags-icme]
-root-width = 960
-root-height = 600
-
-[groups.layout.ags-btop-studio]
-left-width = 280
-right-width = 320
+root-width = 1280
+root-height = 800

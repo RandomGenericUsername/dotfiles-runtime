@@ -1,0 +1,107 @@
+# terminal — the dense-monospace, square/hairline skin. An opaque surface panel,
+# surface-container cards, zero radii and 1px hairlines keep every surface flat
+# and bounded; tight paddings and a 9–14px JetBrainsMono scale make the chrome
+# read like a terminal. Values are palette-role expressions only, so the skin
+# follows the palette family it is generated against. The skin is
+# mode-agnostic: the base groups serve both dark and light, with no overrides.
+schemaVersion = 2
+name = "terminal"
+
+# Host defaults are intentionally not inherited: the square/hairline identity
+# is explicit. No [host] policy is declared for this skin.
+[groups.surface.panel]
+bg = "@surface"
+border = "alpha(@on_surface, 0.22)"
+border-width = 1
+radius = 0
+padding = 9
+shadow = "none"
+blur = "none"
+
+[groups.surface.card]
+bg = "@surface_container"
+border = "alpha(@on_surface, 0.18)"
+border-width = 1
+radius = 0
+padding = 8
+
+[groups.surface.cell]
+bg = "transparent"
+border = "transparent"
+border-width = 0
+radius = 0
+padding = 5
+hover-bg = "alpha(@on_surface, 0.10)"
+
+[groups.surface.control]
+bg = "transparent"
+border = "alpha(@on_surface, 0.30)"
+border-width = 1
+radius = 2
+padding = 3
+font-size = 10
+font-weight = 600
+
+[groups.surface.pill]
+bg = "alpha(@on_surface, 0.12)"
+border = "alpha(@on_surface, 0.18)"
+border-width = 1
+radius = 2
+padding = 1
+font-size = 9
+letter-spacing = 0.04
+
+[groups.state.hover]
+fill = "alpha(@on_surface, 0.10)"
+ink = "@on_surface"
+ring = "@primary"
+
+[groups.state.selected]
+fill = "@primary_container"
+ink = "@on_primary_container"
+ring = "@primary"
+
+[groups.state.focus]
+fill = "transparent"
+ink = "@on_surface"
+ring = "@primary"
+
+[groups.state.disabled]
+fill = "alpha(@on_surface, 0.06)"
+ink = "alpha(@on_surface, 0.38)"
+ring = "transparent"
+
+[groups.type]
+font-family = "JetBrainsMono Nerd Font, monospace"
+font-weight = 500
+letter-spacing = 0
+size-caption = 9
+size-meta = 10
+size-body = 12
+size-title = 13
+size-display = 14
+
+[groups.ink]
+ink = "@on_surface"
+ink-dim = "alpha(@on_surface, 0.62)"
+accent = "@primary"
+accent-muted = "alpha(@primary, 0.5)"
+ink-over = "auto"
+
+[groups.layout.ags]
+panel-width = 312
+bt-list-spacing = 4
+
+[groups.layout.ags-clipboard]
+card-width = 260
+
+[groups.layout.ags-notifications]
+card-width = 380
+
+[groups.layout.ags-wallpaper-selector]
+root-width = 960
+root-height = 640
+
+[groups.layout.ags-icme]
+root-width = 1280
+root-height = 800

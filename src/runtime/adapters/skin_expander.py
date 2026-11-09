@@ -5,7 +5,7 @@ generations are accepted:
 
 * **v1** (``schema_major = 1``): the frozen flat groups ``shape``,
   ``surface``, ``ink``, ``type``, ``rhythm`` and ``layout``.
-* **v2** (``schemaVersion = 2``): the ``contracts v0.7.0`` appearance model with
+* **v2** (``schemaVersion = 2``): the ``contracts v0.9.0`` appearance model with
   nested ``[groups.surface.<role>]`` / ``[groups.state.<state>]`` /
   ``[groups.type]`` / ``[groups.ink]`` / ``[groups.layout.<app>]`` and optional
   ``[mode.dark]`` / ``[mode.light]`` complete same-shape overrides. v2
@@ -45,6 +45,11 @@ from runtime.adapters.contract_schemas import (
     appearance_manifest_validator,
 )
 from runtime.adapters.hashing import hash_file, skin_entry_hash
+from runtime.domain.host_defaults import (
+    HostResolution,
+    HostSnapshot,
+    resolve_host_defaults,
+)
 from runtime.domain.models import SkinArtifacts, SkinEntry
 from runtime.ports.skin_expander import ISkinExpander
 
@@ -98,7 +103,7 @@ _V1_MANIFEST_META_KEYS = frozenset({"schema_major", "name"})
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _TEMPLATE_SUFFIX = ".gtk.css.j2"
 _PLACEHOLDER_RE = re.compile(r"\{\{(.*?)\}\}", re.DOTALL)
-#: v2 templates are unconditional (contracts v0.7.0). GTK has no runtime.
+#: v2 templates are unconditional (contracts v0.9.0). GTK has no runtime.
 _CONDITIONAL_RE = re.compile(r"\{%|%\}|\{\{#|\{\{/")
 
 Scalar = str | int | float
@@ -255,16 +260,10 @@ def validate_v2_manifest(
     return data
 
 
-def resolve_v2_token_document(
+def _resolve_v2_base_tokens(
     manifest: dict[str, Any], mode: str | None
 ) -> dict[str, Any]:
-    """Resolve base v2 groups plus one mode override into the tokens document.
-
-    An override group replaces the base group as a whole (no deep merge). A
-    ``mode=None`` selects the base groups unchanged; callers writing a
-    generation always pass the selected palette mode. The result is validated
-    against the vendored ``appearance-json`` schema.
-    """
+    """Resolve base v2 groups plus one mode override (whole-group replace)."""
     groups = manifest.get("groups")
     if not isinstance(groups, dict):
         raise ValueError("appearance manifest has no 'groups' object")
@@ -279,13 +278,39 @@ def resolve_v2_token_document(
                 if not isinstance(selected, dict):
                     raise ValueError(f"appearance mode.{mode} override must be an object")
                 resolved.update(copy.deepcopy(selected))
-    tokens: dict[str, Any] = {"version": 2, **resolved}
+    return {"version": 2, **resolved}
+
+
+def resolve_v2_token_document_with_host(
+    manifest: dict[str, Any],
+    mode: str | None,
+    host: HostSnapshot | None = None,
+) -> tuple[dict[str, Any], HostResolution]:
+    """Resolve mode groups, then the skin's optional host policy.
+
+    The skin cache's authored-base render passes ``host=None``; generation
+    passes the one snapshot read inside ``converge.lock``. Host values are
+    applied after mode selection, so a complete selected mode group wins.
+    """
+    base = _resolve_v2_base_tokens(manifest, mode)
+    resolution = resolve_host_defaults(base, manifest, mode, host)
+    tokens = resolution.tokens
     try:
         appearance_json_validator()(tokens)
     except fastjsonschema.JsonSchemaValueException as exc:
         raise ValueError(
             f"resolved v2 tokens document is not appearance-json conformant: {exc.message}"
         ) from exc
+    return tokens, resolution
+
+
+def resolve_v2_token_document(
+    manifest: dict[str, Any],
+    mode: str | None,
+    host: HostSnapshot | None = None,
+) -> dict[str, Any]:
+    """Resolve base v2 groups + one mode override + optional host policy."""
+    tokens, _resolution = resolve_v2_token_document_with_host(manifest, mode, host)
     return tokens
 
 
@@ -301,7 +326,7 @@ def _leaves(value: Any, prefix: str) -> list[tuple[str, Any]]:
 
 
 def _css_v2_value(path: str, value: Any) -> str:
-    """Render one v2 token in its CSS position (contracts v0.7.0 unit rule)."""
+    """Render one v2 token in its CSS position (contracts v0.9.0 unit rule)."""
     if isinstance(value, bool):
         return str(value).lower()
     if isinstance(value, (int, float)):

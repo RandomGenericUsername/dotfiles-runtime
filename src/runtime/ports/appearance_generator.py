@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
+from runtime.domain.host_defaults import HostSnapshot
 from runtime.domain.models import AppearanceEntry, PaletteEntry, SkinEntry
 
 
@@ -20,6 +21,7 @@ class IAppearanceGenerator(Protocol):
         manifest_path: Path | None = None,
         templates_dir: Path | None = None,
         keep: int = 5,
+        host: HostSnapshot | None = None,
     ) -> tuple[AppearanceEntry, bool]:
         """Return ``(entry, cache_hit)`` for the composed generation.
 

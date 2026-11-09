@@ -79,7 +79,11 @@ _DOMAIN_ALLOWED_STDLIB = frozenset(
         "typing",
         "collections",
         "collections.abc",
+        "copy",
         "functools",
+        "hashlib",
+        "json",
+        "math",
         "re",
     }
 )

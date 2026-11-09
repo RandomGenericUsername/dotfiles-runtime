@@ -34,7 +34,6 @@ TS = "2026-09-10T00:00:00Z"
 # Live values from the BUG-012 host on 2026-11-07: the committed v3 generation
 # and the v2 recompute it must not be confused with.
 LIVE_GENERATION_HASH = "43d62e17e2da58da2ea43da41bde41fb30e9d0077611a8c34fe30e8d50ef7fc8"
-LIVE_V2_GENERATION_HASH = "09ea6912eae6be3469d972fe1519c1835688e2f495c7318767bd017c3acc69b3"
 LIVE_PALETTE_HASH = "0797efd74520459ec24c15a9f7abbbcb62f34a506f7fe371bda3bfb7cabc8363"
 #: The light palette observed in the BUG-013 live stale tail (2026-11-08T02:49:26Z).
 LIVE_LIGHT_PALETTE_HASH = "35f53fb9bc894bd0186ae4cd8f7969da1ae9aa74af2976f5fee37ee369958eb2"
@@ -1352,11 +1351,10 @@ class TestSupervisionGenerationIdentity:
         _check_with_probe(state_root, probe)
 
         assert probe.calls[0]["expected_appearance_hash"] == LIVE_GENERATION_HASH
-        assert (
-            appearance_generation_hash(LIVE_PALETTE_HASH, LIVE_SKIN_HASH, LIVE_MODE)
-            == LIVE_V2_GENERATION_HASH
+        recomputed = appearance_generation_hash(
+            LIVE_PALETTE_HASH, LIVE_SKIN_HASH, LIVE_MODE
         )
-        assert LIVE_GENERATION_HASH != LIVE_V2_GENERATION_HASH
+        assert recomputed != LIVE_GENERATION_HASH
 
     def test_current_ledger_at_current_generation_is_clean(self, tmp_path: Path) -> None:
         from runtime.adapters.generation_store import GenerationStore

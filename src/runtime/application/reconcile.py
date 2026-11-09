@@ -70,6 +70,7 @@ from runtime.application.monitors import preserve_monitors
 from runtime.application.palette_conformance import require_palette_conformance
 from runtime.domain.ags_apps import AppRefreshRecord, ReloadFailure
 from runtime.domain.history import HISTORY_TRIGGERS
+from runtime.domain.host_defaults import HostSnapshot
 from runtime.domain.models import (
     DEFAULT_MONITOR,
     DEFAULT_SKIN,
@@ -88,6 +89,7 @@ from runtime.ports.appearance_generator import IAppearanceGenerator
 from runtime.ports.color_scheme_generator import IColorSchemeGenerator
 from runtime.ports.desktop_reloader import IDesktopReloader
 from runtime.ports.effects_generator import IEffectsGenerator
+from runtime.ports.host_defaults import IHostDefaults
 from runtime.ports.icon_renderer import IIconRenderer
 from runtime.ports.seed_mutex import ISeedMutex
 from runtime.ports.skin_expander import ISkinExpander
@@ -203,6 +205,7 @@ class ReconcileDesktopStateUseCase:
         converge_lock: ConvergeLock | None = None,
         source_kind: str = "cli",
         job_id: str | None = None,
+        host_defaults: IHostDefaults | None = None,
     ) -> None:
         self._state_repo = state_repo
         self._state_root = state_root
@@ -216,6 +219,9 @@ class ReconcileDesktopStateUseCase:
         self._converge_lock = converge_lock or ConvergeLock(state_root)
         self._source_kind = source_kind
         self._job_id = job_id
+        #: Optional live host read. Production wires the Hyprland adapter; a
+        #: missing port means "host unavailable" and resolves to skin fallbacks.
+        self._host_defaults = host_defaults
         #: The composed v2 appearance plane is part of the normal reconcile
         #: flow; the default is the real generator (tests may inject a fake).
         self._appearance = appearance_generator or AppearanceGenerator(state_root)
@@ -356,6 +362,11 @@ class ReconcileDesktopStateUseCase:
             if state.palette is None and wallpaper_path is None:
                 self._require_palette(state)
 
+            # One host read for the whole generation, inside converge.lock.
+            # Reconcile, seed and doctor use the same resolver; only the
+            # selected skin/mode's delegated values enter the identity.
+            host = self._host_defaults.read() if self._host_defaults is not None else None
+
             # Decision D1: re-derive if state changed while we were outside.
             if state.wallpaper.content_hash != pre_lock_wallpaper_hash:
                 # Re-derive for the authoritative state inside the lock.
@@ -418,7 +429,9 @@ class ReconcileDesktopStateUseCase:
                     f"wallpaper cache entry {state.wallpaper.content_hash} "
                     f"missing: {wallpaper_target}"
                 )
-            appearance_entry = self._compose_appearance(palette, skin, regenerated)
+            appearance_entry = self._compose_appearance(
+                palette, skin, regenerated, host=host
+            )
             if appearance_entry is None or skin is None:
                 raise RuntimeError(
                     "generation refused: the skin/appearance layer is unavailable; "
@@ -441,6 +454,7 @@ class ReconcileDesktopStateUseCase:
                 mode=mode,
                 effects=effects.entry_hash if effects is not None else None,
                 icons=icons.entry_hash if icons is not None else None,
+                host=appearance_entry.host_hash,
             )
             generation = self._generation_store.commit(
                 GenerationSpec(
@@ -462,6 +476,8 @@ class ReconcileDesktopStateUseCase:
                     monitor_names=tuple(monitor_names),
                     source_kind=self._source_kind,
                     job_id=self._job_id,
+                    host_hash=appearance_entry.host_hash,
+                    host_values=appearance_entry.host_values,
                 )
             )
             repointed = self._generation_paths(
@@ -819,6 +835,8 @@ class ReconcileDesktopStateUseCase:
         palette: PaletteEntry,
         skin: SkinEntry | None,
         regenerated: list[str],
+        *,
+        host: HostSnapshot | None = None,
     ) -> AppearanceEntry | None:
         """Compose the generation-local appearance sheets (no publication).
 
@@ -842,6 +860,7 @@ class ReconcileDesktopStateUseCase:
                 manifest_path=manifest_path,
                 templates_dir=templates_dir,
                 keep=self._appearance_keep,
+                host=host,
             )
         except Exception as exc:
             logger.error(

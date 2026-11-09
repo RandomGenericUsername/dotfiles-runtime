@@ -306,6 +306,7 @@ def _run_seed_if_needed(*, producer: str | None = None) -> None:
         from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
         from runtime.adapters.converge_lock import ConvergeLock
         from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
+        from runtime.adapters.hyprland_host_defaults import HyprlandHostDefaults
         from runtime.adapters.hyprland_monitor_source import HyprlandMonitorSource
         from runtime.adapters.itr_adapter import ItrAdapter
         from runtime.adapters.json_state_repository import JsonStateRepository
@@ -367,6 +368,7 @@ def _run_seed_if_needed(*, producer: str | None = None) -> None:
             monitor_source=HyprlandMonitorSource(),
             skin_name=_resolve_skin_name(),
             skin_expander=SkinExpander(),
+            host_defaults=HyprlandHostDefaults(),
         )
         with ConvergeLock(state_root).hold():
             use_case.run()
@@ -1379,7 +1381,9 @@ def _converge_cli_result(
             trigger=trigger,
             source="cli",
             wallpaper_path=wallpaper,
-            intent_hash=intent_hash,
+            # The queue key is host-free; reconcile computes the generation
+            # intent from the snapshot it reads inside converge.lock.
+            intent_hash=None,
         )
     )
     return outcome.reconcile, {
@@ -1461,6 +1465,7 @@ def _build_converge_engine(
     from runtime.adapters.converge_lock import ConvergeLock
     from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
     from runtime.adapters.generation_store import GenerationStore
+    from runtime.adapters.hyprland_host_defaults import HyprlandHostDefaults
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
@@ -1495,6 +1500,7 @@ def _build_converge_engine(
             app_refresher=_build_app_refresher(state_root, install_spine),
             skin_name=_resolve_skin_name(),
             skin_expander=SkinExpander(),
+            host_defaults=HyprlandHostDefaults(),
         )
 
     pre_step = (
@@ -1747,6 +1753,7 @@ def _run_regenerate_stale(
 
     from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
     from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
+    from runtime.adapters.hyprland_host_defaults import HyprlandHostDefaults
     from runtime.adapters.invalidation import InvalidationQueryAdapter
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
@@ -1812,6 +1819,7 @@ def _run_regenerate_stale(
             app_refresher=_build_app_refresher(state_root, install_spine),
             skin_name=_resolve_skin_name(),
             skin_expander=SkinExpander(),
+            host_defaults=HyprlandHostDefaults(),
         ),
         mutex=mutex,
         state_root=state_root,
@@ -1843,6 +1851,7 @@ def _run_doctor_check() -> DoctorReport:
     """
     state_root = _resolve_state_root()
 
+    from runtime.adapters.hyprland_host_defaults import HyprlandHostDefaults
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.application.doctor import DoctorUseCase
 
@@ -1852,6 +1861,7 @@ def _run_doctor_check() -> DoctorReport:
         state_root=state_root,
         install_spine=_resolve_install_spine(),
         supervision_probe=probe,
+        host_probe=HyprlandHostDefaults(),
     )
     return use_case.check()
 
@@ -1873,6 +1883,7 @@ def _run_doctor_repair(*, producer: str | None = None) -> RepairResult:
     from runtime.adapters.cache import quarantine_entry
     from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
     from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
+    from runtime.adapters.hyprland_host_defaults import HyprlandHostDefaults
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
@@ -1899,6 +1910,7 @@ def _run_doctor_repair(*, producer: str | None = None) -> RepairResult:
             state_root=state_root,
             install_spine=install_spine,
             supervision_probe=probe,
+            host_probe=HyprlandHostDefaults(),
         ),
         quarantine=lambda layer, entry_hash: quarantine_entry(state_root, layer, entry_hash),
         reconcile=ReconcileDesktopStateUseCase(
@@ -1915,6 +1927,7 @@ def _run_doctor_repair(*, producer: str | None = None) -> RepairResult:
             app_refresher=_build_app_refresher(state_root, install_spine),
             skin_name=_resolve_skin_name(),
             skin_expander=SkinExpander(),
+            host_defaults=HyprlandHostDefaults(),
         ),
         state_root=state_root,
         heal_history_tail=seeder.heal_torn_history_tail,
@@ -2482,7 +2495,9 @@ def _daemon_converge_worker(intent_hash: str, job_id: str):
             source="daemon",
             job_id=job_id,
             wallpaper_path=wallpaper_path,
-            intent_hash=intent_hash,
+            # The daemon queue key is host-free; the job computes the
+            # generation intent from the snapshot read under converge.lock.
+            intent_hash=None,
         )
     )
     return ConvergeQueueResult(

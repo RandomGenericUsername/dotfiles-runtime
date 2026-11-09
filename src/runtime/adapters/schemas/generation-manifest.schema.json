@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://dotfiles.local/schemas/generation-manifest.schema.json",
   "title": "Generation manifest (version 3)",
-  "description": "The manifest written last inside state/generations/<generationHash>/manifest.json. The directory name and the state/current target basename are the generationHash. Layers are immutable content-addressed entries referenced by relative generation-local paths; appearance is the one composed token document plus one CSS sheet per target config dir. A consumer rejects a manifest whose generationHash, layer hashes, relative paths, mode or appearance targets do not validate. Manifest values are opaque hashes and identities only: no literal colours, no structure and no variants.",
+  "description": "The manifest written last inside state/generations/<generationHash>/manifest.json. The directory name and the state/current target basename are the generationHash. Layers are immutable content-addressed entries referenced by relative generation-local paths; appearance is the one composed token document plus one CSS sheet per target config dir. An optional host block records only the delegated host values that participated, and intent.host must equal its fingerprint. A consumer rejects a manifest whose generationHash, layer hashes, relative paths, mode or appearance targets do not validate. Manifest values are opaque hashes and identities only: no literal colours, no structure and no variants.",
   "status": "frozen",
   "type": "object",
   "additionalProperties": false,
@@ -48,6 +48,9 @@
     "mode": {
       "$ref": "#/definitions/mode"
     },
+    "host": {
+      "$ref": "#/definitions/host"
+    },
     "intent": {
       "$ref": "#/definitions/intent"
     },
@@ -55,6 +58,35 @@
       "$ref": "#/definitions/source"
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "host"
+        ]
+      },
+      "then": {
+        "properties": {
+          "intent": {
+            "required": [
+              "host"
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "intent": {
+            "not": {
+              "required": [
+                "host"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
   "definitions": {
     "hash": {
       "type": "string",
@@ -245,6 +277,60 @@
         }
       }
     },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "required": [
+        "source",
+        "version",
+        "fingerprint",
+        "defaults"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": [
+            "hyprland"
+          ],
+          "description": "Host source for Phase 1. Other compositor sources require a later contract enum addition."
+        },
+        "version": {
+          "const": 1,
+          "description": "Host mapping version; 1 is hyprland.paint.v1. A mapping change bumps this value and therefore hostHash."
+        },
+        "fingerprint": {
+          "$ref": "#/definitions/hash",
+          "description": "hostHash over the mapping version and only the values that actually participated. It excludes the instance signature, timestamps and set flags."
+        },
+        "defaults": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/definitions/forbiddenName"
+          },
+          "properties": {
+            "surface.panel.radius": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 64,
+              "description": "Resolved host value for the delegated panel radius."
+            },
+            "surface.panel.border-width": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 16,
+              "description": "Resolved host value for the delegated panel border width."
+            }
+          },
+          "description": "Only the delegated host values that participated in this generation, keyed by logical appearance token path. Omit the whole host block when no value participated."
+        }
+      },
+      "description": "Optional resolved host snapshot. Present only when at least one delegated token used the host. intent.host must equal fingerprint; JSON Schema cannot express that equality, so runtime validation enforces it."
+    },
     "intent": {
       "type": "object",
       "additionalProperties": false,
@@ -275,6 +361,10 @@
         },
         "icons": {
           "$ref": "#/definitions/hash"
+        },
+        "host": {
+          "$ref": "#/definitions/hash",
+          "description": "Must equal host.fingerprint when the host block is present. Present only for a host-participating generation."
         }
       }
     },

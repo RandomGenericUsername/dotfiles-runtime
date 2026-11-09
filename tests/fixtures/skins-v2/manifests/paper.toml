@@ -7,6 +7,13 @@
 schemaVersion = 2
 name = "paper"
 
+# Host defaults: only the outer panel geometry follows the compositor. The
+# authored mode.light surface group remains an explicit override and wins over
+# the host in light mode.
+[host]
+inherit = ["surface.panel.radius", "surface.panel.border-width"]
+fallback = "skin"
+
 [groups.surface.panel]
 bg = "@surface_container_lowest"
 border = "alpha(@on_surface, 0.22)"
@@ -89,11 +96,6 @@ ink-over = "auto"
 [groups.layout.ags]
 panel-width = 312
 bt-list-spacing = 6
-bar-row-height = 30
-chip-min = 52
-
-[groups.layout.ags-capture]
-panel-width = 560
 
 [groups.layout.ags-clipboard]
 card-width = 260
@@ -102,16 +104,12 @@ card-width = 260
 card-width = 380
 
 [groups.layout.ags-wallpaper-selector]
-root-width = 920
-root-height = 600
+root-width = 960
+root-height = 640
 
 [groups.layout.ags-icme]
-root-width = 960
-root-height = 600
-
-[groups.layout.ags-btop-studio]
-left-width = 280
-right-width = 320
+root-width = 1280
+root-height = 800
 
 # Authored light branch: explicit same-shape groups, not a palette guess.
 [mode.light.surface.panel]

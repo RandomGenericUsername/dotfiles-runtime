@@ -113,23 +113,34 @@ def appearance_hash(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def appearance_generation_hash(palette_hash: str, skin_hash: str, mode: str) -> str:
-    """Canonical v2 appearance hash: ``f(palette, skin, mode)``.
+def appearance_generation_hash(
+    palette_hash: str,
+    skin_hash: str,
+    mode: str,
+    *,
+    host_hash: str | None = None,
+) -> str:
+    """Canonical v3 appearance hash: ``f(palette, skin, mode, hostHash)``.
 
-    Canonical form from the frozen ``contracts`` v0.7.0 appearance contract::
+    Canonical form from the frozen ``contracts`` v0.9.0 appearance contract::
 
-        sha256("appearance.v2\\n" + paletteHash + "\\n" + skinHash + "\\n" + mode)
+        sha256("appearance.v3\\n" + paletteHash + "\\n" + skinHash + "\\n" + mode
+               + "\\n" + (hostHash or "-"))
 
     Mode is part of the identity on purpose (RFC risk R-2): a mode flip must
     produce a new generation even when the palette and skin entry hashes are
-    unchanged. Effects/icons are content layers, not appearance layers, so
-    they are deliberately absent (RFC R-5).
+    unchanged. ``hostHash`` is present only when a delegated host value actually
+    participated; otherwise the literal ``-`` placeholder is used. Effects and
+    icons are content layers, not appearance layers, so they are deliberately
+    absent (RFC R-5).
     """
     _validate_hex64("palette_hash", palette_hash)
     _validate_hex64("skin_hash", skin_hash)
     if mode not in ("dark", "light"):
         raise ValueError(f"mode must be 'dark' or 'light', got {mode!r}")
-    material = f"appearance.v2\n{palette_hash}\n{skin_hash}\n{mode}"
+    if host_hash is not None:
+        _validate_hex64("host_hash", host_hash)
+    material = f"appearance.v3\n{palette_hash}\n{skin_hash}\n{mode}\n{host_hash or '-'}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 

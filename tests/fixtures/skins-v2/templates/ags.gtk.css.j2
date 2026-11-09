@@ -23,10 +23,11 @@
  * :378-387); a transparent border would change its allocated height
  * (measured 54px instead of 50px).
  *
- * LAYOUT IS TSX-OWNED. `panel-width`, `bt-list-spacing`, `bar-row-height` and
- * `chip-min` remain in the manifest and resolved tokens.json for `skinValue()`,
- * but this template MUST NOT expand them into CSS. The widgets set the panel
- * width (SettingsPanel.tsx), list spacing (BluetoothContent.tsx) and row/chip
+ * LAYOUT IS TSX-OWNED. `panel-width` and `bt-list-spacing` remain in the
+ * manifest and resolved tokens.json for `skinValue()`, but this template MUST
+ * NOT expand them into CSS. (`bar-row-height`/`chip-min` were retired in
+ * v0.12.2; no app reads them.) The widgets set the panel width
+ * (SettingsPanel.tsx), list spacing (BluetoothContent.tsx) and row/chip
  * geometry; emitting min-width, margin or min-height here would be a second
  * owner and break parity when either side changes. The template uses the
  * source's literal component measurements instead (for example the 30px

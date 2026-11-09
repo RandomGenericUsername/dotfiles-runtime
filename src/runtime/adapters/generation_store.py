@@ -1,4 +1,4 @@
-"""v3 committed generation store (contracts v0.8.0 ``generations.md``).
+"""v3 committed generation store (contracts v0.9.0 ``generations.md``).
 
 One immutable generation directory, one atomic ``state/current`` symlink, and
 one compatibility ``current.json`` view. Everything the runtime publishes for
@@ -50,6 +50,7 @@ import fastjsonschema
 
 from runtime.adapters.contract_schemas import generation_manifest_validator
 from runtime.adapters.hashing import appearance_generation_hash
+from runtime.domain.host_defaults import HOST_MAP_VERSION, HOST_SOURCE
 from runtime.domain.models import (
     AppearanceEntry,
     DesktopState,
@@ -158,18 +159,25 @@ def generation_intent_hash(
     mode: str,
     effects: str | None = None,
     icons: str | None = None,
+    host: str | None = None,
 ) -> str:
-    """Canonical hash of the resolved intent snapshot (stable, no timestamps)."""
-    return _canonical_hash(
-        {
-            "wallpaper": wallpaper,
-            "palette": palette,
-            "skin": skin,
-            "mode": mode,
-            "effects": effects,
-            "icons": icons,
-        }
-    )
+    """Canonical hash of the resolved intent snapshot (stable, no timestamps).
+
+    ``host`` is included only when a delegated host value participated. The
+    daemon queue key deliberately never passes it: the host is read inside the
+    converge lock and the executing job computes this generation intent.
+    """
+    payload: dict[str, str | None] = {
+        "wallpaper": wallpaper,
+        "palette": palette,
+        "skin": skin,
+        "mode": mode,
+        "effects": effects,
+        "icons": icons,
+    }
+    if host is not None:
+        payload["host"] = host
+    return _canonical_hash(payload)
 
 
 def compute_generation_hash(
@@ -180,18 +188,20 @@ def compute_generation_hash(
     mode: str,
     appearance_hash: str,
     intent_hash: str,
+    host: str | None = None,
 ) -> str:
     """Canonical generation identity; timestamps and executor are excluded."""
-    return _canonical_hash(
-        {
-            "version": MANIFEST_VERSION,
-            "layers": dict(sorted(layer_hashes.items())),
-            "skin": {"name": skin_name, "entryHash": skin_hash, "mode": mode},
-            "mode": mode,
-            "appearance": {"artifactHash": appearance_hash},
-            "intentHash": intent_hash,
-        }
-    )
+    payload: dict[str, Any] = {
+        "version": MANIFEST_VERSION,
+        "layers": dict(sorted(layer_hashes.items())),
+        "skin": {"name": skin_name, "entryHash": skin_hash, "mode": mode},
+        "mode": mode,
+        "appearance": {"artifactHash": appearance_hash},
+        "intentHash": intent_hash,
+    }
+    if host is not None:
+        payload["host"] = host
+    return _canonical_hash(payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +218,8 @@ class GenerationSpec:
     source_kind: str
     job_id: str | None = None
     created_at: str | None = None
+    host_hash: str | None = None
+    host_values: tuple[tuple[str, int | float], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,6 +329,7 @@ class GenerationStore:
             mode=spec.mode,
             appearance_hash=spec.appearance.appearance_hash,
             intent_hash=spec.intent_hash,
+            host=spec.host_hash,
         )
         target = self.generation_path(generation_hash)
         created = False
@@ -489,6 +502,8 @@ class GenerationStore:
             intent["effects"] = state.effects.entry_hash
         if state.icons is not None:
             intent["icons"] = state.icons.entry_hash
+        if spec.host_hash is not None:
+            intent["host"] = spec.host_hash
 
         source: dict[str, str] = {
             "kind": spec.source_kind,
@@ -521,6 +536,13 @@ class GenerationStore:
             "intent": intent,
             "source": source,
         }
+        if spec.host_hash is not None:
+            manifest["host"] = {
+                "source": HOST_SOURCE,
+                "version": HOST_MAP_VERSION,
+                "fingerprint": spec.host_hash,
+                "defaults": {path: value for path, value in spec.host_values},
+            }
         if spec.job_id is not None:
             manifest["committed"]["jobId"] = spec.job_id
         self._validate_manifest(manifest, generation_hash)
@@ -577,6 +599,16 @@ class GenerationStore:
             raise GenerationManifestError("intent.mode must equal manifest.mode")
         if intent.get("skin") != data.get("skin", {}).get("name"):
             raise GenerationManifestError("intent.skin must equal skin.name")
+        host = data.get("host")
+        if host is None:
+            if "host" in intent:
+                raise GenerationManifestError(
+                    "intent.host must be absent when the generation has no host block"
+                )
+        elif intent.get("host") != host.get("fingerprint"):
+            raise GenerationManifestError(
+                "intent.host must equal host.fingerprint"
+            )
         layers = data.get("layers", {})
         for name, value in layers.items():
             if value.get("path") != name:
@@ -899,8 +931,19 @@ class GenerationStore:
         palette = layers.get("palette") if isinstance(layers, Mapping) else None
         palette_hash = palette.get("entryHash") if isinstance(palette, Mapping) else None
         mode = manifest.get("mode")
+        host = manifest.get("host")
+        host_hash = (
+            host.get("fingerprint")
+            if isinstance(host, Mapping) and _is_hex64(host.get("fingerprint"))
+            else None
+        )
         if _is_hex64(palette_hash) and _is_hex64(skin_hash) and mode in ("dark", "light"):
             refs["appearance"].add(
-                appearance_generation_hash(str(palette_hash), str(skin_hash), str(mode))
+                appearance_generation_hash(
+                    str(palette_hash),
+                    str(skin_hash),
+                    str(mode),
+                    host_hash=host_hash,
+                )
             )
         return refs
