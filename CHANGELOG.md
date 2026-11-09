@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.0.5 — 2026-11-08
+
+Stop generation GC from deleting the committed current generation's cache
+layers (BUG-014).
+
+- The v3 manifest names layers with singular keys (`wallpaper`, `palette`,
+  `effects`, `icons`) while the cache uses plural directories (`wallpapers`,
+  `palettes`, `effects`, `icons`). GC looked manifest keys up by cache name,
+  so `wallpapers` and `palettes` got an empty keep-set; the composed
+  `appearance` cache entry was never referenced at all. A converge could
+  therefore sweep the palette and wallpaper of the generation it had just
+  committed, leaving `current/palette/colors.*` and
+  `current/wallpaper/wallpaper.png` dangling and failing the engine's
+  `state_links` invariant.
+- GC now maps every manifest layer/input key to its cache directory, recomputes
+  the composed appearance hash from `palette/skin/mode` and protects that
+  `cache/appearance/<hash>` entry. It also protects ledger-referenced
+  generations/layers, the newest entry per layer and explicit `gc-pins.json`
+  generations.
+- The GC call moved inside the reconcile commit scope, immediately after the
+  commit, `current.json` save and history append, and receives the
+  just-committed generation explicitly. The protection set is therefore the
+  post-commit current generation under the same `converge.lock`, never a
+  pre-commit snapshot, and a concurrent converge cannot interleave a sweep.
+- If the current generation has no readable manifest, GC skips the cache sweep
+  (fail closed) instead of guessing; generation/staging pruning still runs.
+  Unreferenced cache entries older than the 24 h grace still prune, and the
+  newest-per-layer protection keeps a race-created entry alive.
+- Regression tests cover the live palette `0797efd7…`, wallpaper `fb1c5be6…`,
+  effects `1a3d8368…`, icons `e53912ea…` and composed appearance entry: after
+  GC all current refs resolve and `doctor` is clean, while older unreferenced
+  entries are removed. They also cover pinned generations, ledger generations
+  and layers, newest-per-layer, fail-closed on a corrupt current manifest, and
+  GC running after commit while the converge lock is held.
+
 ## v1.0.4 — 2026-11-08
 
 Make the reactive/CLI mutation path atomic and return committed results

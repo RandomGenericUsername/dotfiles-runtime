@@ -2,7 +2,7 @@
 id: BUG-014
 title: "Converge GC deletes the committed current generation's palette/wallpaper/appearance cache layers"
 kind: bug
-status: in-progress
+status: done
 lane: 2
 severity: critical
 links:
@@ -122,4 +122,85 @@ because their manifest key equals their cache directory name.
 
 ## Outcome
 
-Implementation and release pending.
+Implementation `c2c3d77` (fix + regression tests); release tag `v1.0.5`.
+
+### Exact GC protection fix
+
+`GenerationStore.gc` now derives cache protection from every retained
+generation manifest (including the explicit post-commit
+`current_generation`):
+
+1. **Layer-name mapping.** Singular manifest keys are mapped to plural cache
+   directories: `wallpaper → wallpapers`, `palette → palettes`,
+   `effects → effects`, `icons → icons`. Both `manifest.layers[*].entryHash`
+   and `manifest.intent[*]` are read.
+2. **Composed appearance.** The current generation's appearance cache entry
+   is recomputed as `appearance_generation_hash(layers.palette.entryHash,
+   skin.entryHash, mode)` and added to the `appearance` keep-set. The frozen
+   v3 manifest deliberately has no appearance layer key, so this recompute is
+   the only way to protect that composition input.
+3. **Ledger refs.** `ledger_generations` still protects the v3 ledger's
+   generation hash; the new `ledger_layers` mapping protects a legacy v2
+   composed-appearance hash when present. Reconcile passes both.
+4. **Newest per layer and pins.** The newest entry in each swept layer is
+   protected (race-created derives), and pinned generations keep their
+   manifest-referenced layers.
+5. **Fail closed.** If any current generation (pointer or explicit) has no
+   readable manifest, generation/staging pruning still runs but the cache
+   sweep is skipped.
+6. **Ordering.** The GC call moved inside the reconcile commit scope,
+   immediately after commit → `current.json` save → history append and before
+   releasing `converge.lock`, with `current_generation` passed explicitly.
+   The protected set is therefore post-commit, never a pre-commit snapshot.
+
+### Regression tests
+
+`tests/unit/test_generation_gc.py` (8 tests):
+
+- live palette `0797efd7…`, wallpaper `fb1c5be6…`, effects `1a3d8368…`, icons
+  `e53912ea…` and composed appearance survive GC; all `current/*` links
+  resolve; older unreferenced entries in all five layers prune; doctor clean;
+- pinned generation layers survive `keep=0, grace=0`;
+- ledger-referenced generation and legacy appearance layer survive;
+- newest-per-layer survives while older unreferenced entries prune;
+- a corrupt current manifest fails the cache sweep closed;
+- commit → GC order, `current_generation == current_hash`, GC runs while
+  `converge.lock` is held (a second converge blocks);
+- reconcile wires the previous ledger appearance ref into GC.
+
+```sh
+uv run pytest -q tests/unit/test_generation_gc.py \
+  tests/unit/test_generations_v3.py tests/unit/test_crash_recovery.py \
+  tests/unit/test_reconcile.py tests/unit/test_doctor_check.py \
+  tests/unit/test_regenerate_stale.py tests/unit/test_reactive_converge.py
+# 160 passed
+```
+
+### Gates
+
+```sh
+make gates
+# test: 2431 passed, 3 skipped, 11 deselected
+# lint: All checks passed
+# contracts-check: 58 passed, 1 skipped
+# hermetic: 2431 passed, 3 skipped, 11 deselected
+# lock-check: Resolved 25 packages
+# docs-check: rc 0
+```
+
+### Live read-only evidence (no apply)
+
+`uv run dotfiles-runtime doctor --format json` from the fixed worktree (no
+apply, no repair) reproduces the unrepaired live state on generation
+`43d62e17e2da…`:
+
+```text
+clean=false
+ok=14 dangling=10 missing=2 diverged=1
+missing: cache/wallpapers/fb1c5be6…, cache/palettes/0797efd7…
+dangling: current/wallpaper*.png, current/colors.* (10 links)
+```
+
+`state/current -> generations/43d62e17e2da…` still resolves, but its palette
+and wallpaper cache entries are absent. v1.0.5 prevents new damage; the live
+cache is repaired after installing the tag, as agreed (no apply here).

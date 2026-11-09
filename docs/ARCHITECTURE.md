@@ -314,5 +314,10 @@ the committed state, never a pre-commit snapshot.
 Live apps receive the exact generation in `appearance-refresh <genHash>` and
 must ack that generation. Runtime writes are state-only: no install-spine or
 app-tag artifact is created. `current.json` remains a derived compatibility
-view; `current/manifest.json` is authoritative. GC is part of convergence and
-retains active/newest/pinned/ledger/acknowledged generations.
+view; `current/manifest.json` is authoritative. GC is part of convergence,
+runs under `converge.lock` after the commit, and retains
+active/newest/pinned/ledger/acknowledged generations. Its cache protection set
+comes from the post-commit current manifest: every manifest layer/input mapped
+to its cache directory, the recomputed composed-appearance entry, the newest
+entry per layer, and ledger/pinned refs. A current generation whose manifest
+cannot be read fails the cache sweep closed.
