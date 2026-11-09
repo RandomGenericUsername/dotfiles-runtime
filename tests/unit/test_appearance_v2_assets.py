@@ -2,9 +2,10 @@
 
 The fixtures under ``tests/fixtures/skins-v2`` are byte-identical copies of
 ``dotfiles-assets v0.12.0`` ``skins/manifests/{glass,flat,paper}.toml`` and the
-seven ``skins/templates/*.gtk.css.j2`` targets. They are copied so the suite is
-hermetic; the same files are expanded directly from the sibling assets checkout
-in the ticket evidence.
+seven AGS ``skins/templates/*.gtk.css.j2`` targets, plus the released
+``dotfiles-assets v0.14.0`` ``skins/templates/wlogout.gtk.css.j2``. They are
+copied so the suite is hermetic; the same files are expanded directly from the
+sibling assets checkout in the ticket evidence.
 """
 
 from __future__ import annotations
