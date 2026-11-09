@@ -29,6 +29,7 @@
 
 ## Bugs
 
+- [BUG-015-one-lock-seed-consolidation](./BUG-015-one-lock-seed-consolidation/ticket.md) — First-run seed and icons regenerate still use a second `.seed.lock` instead of the one `converge.lock` | `done` | severity: high | worktree: .worktrees/BUG-015/ | branch: ticket/BUG-015-one-lock-seed-consolidation | tag: v1.0.6
 - [BUG-014-gc-current-layer-protection](./BUG-014-gc-current-layer-protection/ticket.md) — Converge GC deletes the committed current generation's palette/wallpaper/appearance cache layers | `done` | severity: critical | worktree: .worktrees/BUG-014/ | branch: ticket/BUG-014-gc-current-layer-protection | tag: v1.0.5
 - [BUG-013-reactive-history-cli-race](./BUG-013-reactive-history-cli-race/ticket.md) — Reactive mode changes leave a stale history tail, converge slowly, and `reconcile --regenerate-stale` returns a pre-commit snapshot | `done` | severity: high | worktree: .worktrees/BUG-013/ | branch: ticket/BUG-013-reactive-history-cli-race | tag: v1.0.4
 - [BUG-012-doctor-v3-generation-identity](./BUG-012-doctor-v3-generation-identity/ticket.md) — Doctor supervision leg compares v2 appearance hashes against the v3 ledger and reports false drift | `done` | severity: high | worktree: .worktrees/BUG-012/ | branch: ticket/BUG-012-doctor-v3-generation-identity | tag: v1.0.3
