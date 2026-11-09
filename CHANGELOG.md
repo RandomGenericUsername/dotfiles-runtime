@@ -1,5 +1,52 @@
 # Changelog
 
+## v1.1.0 — 2026-11-09
+
+Add Phase 1 host defaults: a skin may delegate panel radius and border width
+to the live compositor, with an explicit allowlist and deterministic fallback
+(REQ-022).
+
+- **Hyprland adapter.** `IHostDefaults`/`HyprlandHostDefaults` read effective
+  `decoration:rounding` and `general:border_size` values via
+  `hyprctl -j getoption`. They prefer `HYPRLAND_INSTANCE_SIGNATURE` and accept
+  exactly one instance from `hyprctl -j instances` when it is absent; zero or
+  multiple instances are unavailable. Values must be finite non-negative
+  scalars in the Phase 1 ranges (radius 0..64, border 0..16); booleans,
+  strings, vectors, negative values and non-finite values are rejected.
+- **Pure resolver.** `domain/host_defaults.py` applies
+  `mode override > host > skin fallback`, reports `host`, `skin-fallback` and
+  `mode-override` provenance, and builds `hostHash` from the mapping version
+  plus only the values that actually participated. `fallback = "error"` raises
+  before an appearance is staged or published.
+- **`appearance.v3`.** `appearance_generation_hash` now accepts an optional
+  `hostHash` and hashes
+  `sha256("appearance.v3\n" + palette + "\n" + skin + "\n" + mode + "\n" +
+  (hostHash or "-"))`. The resolved `tokens.json` and composed CSS use host
+  values after mode selection; the skin cache remains authored-base and host
+  values never enter `skin_entry_hash`.
+- **Generation identity.** The generation manifest records an optional
+  `{source, version, fingerprint, defaults}` host block and `intent.host`;
+  runtime validation requires equality with the fingerprint and omission when
+  no delegated value participated. Host participates in the intent/generation
+  identity. The daemon queue key is host-free; reconcile and seed read the host
+  once inside `converge.lock` and compute the generation intent there.
+- **GC.** Appearance-cache recomputation now includes the manifest host
+  fingerprint, so host-bearing current/retained composed entries stay
+  protected.
+- **Doctor.** A committed host fingerprint is compared only over its recorded
+  participating paths. Changed delegated values report `generation:host`
+  drift; an unavailable host reports unknown (`ok`) rather than drift. The
+  BUG-016 stable provisioning `appearance.css` link remains accepted.
+- **Fixtures/pins.** The hermetic v2 fixtures are byte-identical copies of
+  `dotfiles-assets v0.15.0` (`glass`, `paper`, `terminal`, `flat` plus all
+  eight templates, including wlogout). Embedded schemas and `CONTRACT_PIN`
+  move to `contracts v0.9.0` (tag object
+  `c3b1cc7d3fef36042b00d43ae29e2f80087cb184`, peeled
+  `5c9fd615cae8d6596799bbafaeea93a05b3c3c11`).
+- **Release only.** No composition, provisioning, app, assets or live-state
+  change is in this slice; the composition cutover remains a separate pin
+  bump.
+
 ## v1.0.8 — 2026-11-09
 
 Stop `doctor` from reporting the provisioning-owned stable `appearance.css`

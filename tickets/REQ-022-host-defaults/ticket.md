@@ -2,7 +2,7 @@
 id: REQ-022
 title: "Host defaults: Hyprland adapter, pure resolver, appearance.v3 and generation host identity"
 kind: requirement
-status: in-progress
+status: done
 lane: 2
 links:
   openspec: none
@@ -64,25 +64,25 @@ Scope:
 
 ## Acceptance
 
-- [ ] Host adapter reads both effective options, discovers one instance when
+- [x] Host adapter reads both effective options, discovers one instance when
       the signature is absent, and returns unavailable for 0/>1 instances.
-- [ ] Invalid values (bool/string/vector/negative/NaN/inf/range) are rejected
+- [x] Invalid values (bool/string/vector/negative/NaN/inf/range) are rejected
       or fall back deterministically; `fallback="error"` fails closed.
-- [ ] Resolver precedence/provenance and `hostHash` participation are covered
+- [x] Resolver precedence/provenance and `hostHash` participation are covered
       by tests; non-delegated host changes cause no identity churn.
-- [ ] `appearance.v3` with `-` (no participation) and with a participating
+- [x] `appearance.v3` with `-` (no participation) and with a participating
       `hostHash` is implemented; `appearance.json` remains version 2.
-- [ ] Generation manifests with host validate; `intent.host` equality is
+- [x] Generation manifests with host validate; `intent.host` equality is
       enforced; no-host manifests remain valid.
-- [ ] Reconcile and seed read the host once under `converge.lock`; the queue
+- [x] Reconcile and seed read the host once under `converge.lock`; the queue
       key stays host-free; CLI/daemon paths pass no host-aware queue key.
-- [ ] GC protects a host-bearing appearance cache entry.
-- [ ] Doctor reports host drift only for changed delegated values, reports
+- [x] GC protects a host-bearing appearance cache entry.
+- [x] Doctor reports host drift only for changed delegated values, reports
       unavailable as unknown, and keeps the stable wlogout link accepted.
-- [ ] Assets v0.15.0 fixtures are byte-identical; all existing runtime suites
+- [x] Assets v0.15.0 fixtures are byte-identical; all existing runtime suites
       pass, including appearance v2 assets, generations, GC and doctor.
-- [ ] `make gates`, `make gates-ci` and `make ci-gates-parity` pass.
-- [ ] `v1.1.0` is an annotated tag on the merged release commit; `main` and the
+- [x] `make gates`, `make gates-ci` and `make ci-gates-parity` pass.
+- [x] `v1.1.0` is an annotated tag on the merged release commit; `main` and the
       tag are pushed; the GitHub Release carries the wheel and sdist.
 
 ## Evidence
@@ -107,25 +107,32 @@ implementation.
 
 | Claim | Command | Result |
 | --- | --- | --- |
-| Runtime gates | `make gates` | pending |
-| Runtime CI gate set | `make gates-ci` | pending |
-| Workflow parity | `make ci-gates-parity` | pending |
-| Contracts pin | `make contracts-check` | pending |
-| Cross-repo pin | `make contract-pin-check` | pending |
+| Runtime gates | `make gates` | PASS — `2487 passed, 3 skipped, 11 deselected`; lint/contracts-check/hermetic/lock-check clean |
+| Runtime CI gate set | `make gates-ci` | PASS — same gate set, `2487 passed, 3 skipped, 11 deselected` |
+| Workflow parity | `make ci-gates-parity` | `PASS gates=[...] jobs=[...] exempt=[ci-gates-parity, release]` |
+| Contracts pin | `make contracts-check` | `58 passed, 1 skipped` |
+| Cross-repo pin | `CONTRACTS_REPO=/home/inumaki/Development/dotfiles/contracts make contract-pin-check` | `PASS` at pin `c3b1cc7d3fef36042b00d43ae29e2f80087cb184` |
+| Targeted host suite | `uv run pytest -q tests/unit/test_host_defaults.py` | `30 passed` |
+| Live read-only adapter | `uv run python` adapter read | radius `0`, border `1`, fingerprint `a7d8ba6d…` |
+| Live doctor | `uv run dotfiles-runtime doctor -f plain` | `desktop clean: 27 item(s) checked` |
 
 ### Commits
 
 | Commit | Subject |
 | --- | --- |
-| pending | `docs(REQ-022): plan the host-defaults runtime` |
-| pending | `chore(REQ-022): start — record worktree/branch, move to in-progress` |
-| pending | `feat(REQ-022): implement host-default resolution and identity` |
-| pending | `chore(REQ-022): release v1.1.0` |
+| `741d3fa` | `docs(REQ-022): plan the host-defaults runtime` |
+| `3dd7ae9` | `chore(REQ-022): start — record worktree/branch, move to in-progress` |
+| `f81872d` | `feat(REQ-022): implement host-default resolution and identity` |
+| release commit (the `v1.1.0` tag target) | `chore(REQ-022): release v1.1.0` |
 
 ### Status
 
-**Proposed.** No assets/composition/provisioning/apps/contracts change and no
-live apply is in this slice.
+**Done on `ticket/REQ-022-host-defaults`.** The host port/adapter, pure
+resolver, `appearance.v3` identity, generation host block, GC protection,
+doctor drift and v0.15.0/v0.9.0 fixtures/pins are implemented. Merge to `main`
+fast-forward, create the annotated `v1.1.0` tag on the release commit, push
+`main` + the tag and publish the GitHub Release with the wheel and sdist. No
+composition/provisioning/apps/live-state change is in this slice.
 
 ## Downstream pins (not part of this slice)
 

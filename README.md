@@ -28,6 +28,27 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**1.1.0** — host defaults: `appearance.v3` and generation host identity.
+
+- A read-only Hyprland adapter reads `decoration:rounding` and
+  `general:border_size` via `hyprctl -j getoption`, preferring the instance
+  signature and accepting exactly one discovered instance otherwise. Invalid
+  or unavailable values fall back per token; no polling is used.
+- A pure resolver applies `mode override > host > skin fallback`, records
+  provenance, and hashes only participating delegated values as `hostHash`.
+  `fallback = "error"` fails the generation before publishing.
+- Appearance identity is now `appearance.v3` with `hostHash` (or the `-`
+  placeholder when nothing participated). The generation manifest carries the
+  optional host block plus `intent.host`; GC protects the host-aware composed
+  appearance cache entry.
+- Reconcile and first-run seed read the host once inside `converge.lock`; the
+  daemon queue key stays host-free. `doctor` compares the committed host
+  fingerprint to the live delegated values, reports unavailable as unknown,
+  and keeps the BUG-016 stable `appearance.css` link accepted.
+- Fixtures and embedded schemas move to `dotfiles-assets v0.15.0` and
+  `contracts v0.9.0`; no downstream composition/provisioning/app change is in
+  this release.
+
 **1.0.8** — stable appearance links are not v2 drift.
 
 - `doctor` now accepts the provisioning-owned
