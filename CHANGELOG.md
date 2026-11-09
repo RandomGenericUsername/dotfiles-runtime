@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.0.6 — 2026-11-09
+
+Finish the v3 one-lock architecture by consolidating the legacy `.seed.lock`
+into `converge.lock` (BUG-015).
+
+- First-run seeding now runs as a sub-step of the one `converge.lock` scope.
+  The seed use case receives `PassThroughSeedMutex`; there is no nested flock,
+  so concurrent daemon/CLI convergence serializes instead of deadlocking and a
+  killed holder releases the kernel lock automatically.
+- `icons regenerate` acquired the legacy seed mutex non-blocking and wrote
+  `current.json` + history independently of the committed generation. It now
+  acquires the same `converge.lock` non-blocking (preserving the GUI busy/error
+  contract), forces an icons re-derive through the reconcile commit path, and
+  commits one generation + `current.json` + `trigger="regenerate"` history line
+  + GC + AGS refresh inside that scope. The history tail, `current.json` and
+  `current/manifest.json` always name the same icons entry.
+- `FlockSeedMutex` is removed from the package; the remaining production
+  callers (regenerate pre-step, doctor repair, real prune) use the
+  pass-through or the same `converge.lock`. No runtime command creates
+  `.seed.lock`; `state/converge.lock` is the only state-mutation lock file.
+- Regression tests cover concurrent icons regenerate + wallpaper/mode
+  converge (one writer, tail == current == manifest), first-run seed +
+  concurrent command serialization without deadlock, non-blocking busy
+  reporting, kernel lock release after a killed holder, and the structural
+  absence of `.seed.lock` in production.
+
 ## v1.0.5 — 2026-11-08
 
 Stop generation GC from deleting the committed current generation's cache

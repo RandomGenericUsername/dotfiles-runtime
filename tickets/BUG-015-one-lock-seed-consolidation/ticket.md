@@ -106,5 +106,85 @@ can name an icons entry that `current/manifest.json` does not record.
 
 ## Outcome
 
-Implementation and release recorded in the worktree commit history; tag
-`v1.0.6`.
+Implementation `4b35029` (fix + regression tests); release tag `v1.0.6`.
+
+### Exact lock consolidation
+
+- `ConvergeLock` (`state/converge.lock`) gained a typed non-blocking mode:
+  `hold(blocking=False)` raises `ConvergeLockBusyError` instead of waiting.
+  Ordinary convergence keeps the blocking default.
+- First-run seeding (`_run_seed_if_needed`) now wraps `SeedCacheUseCase.run()`
+  in `ConvergeLock(state_root).hold()` and injects
+  `PassThroughSeedMutex`. No nested acquire, no `.seed.lock`; the kernel
+  flock releases on process death.
+- `icons regenerate` holds the same lock non-blocking (preserving the GUI
+  busy/error contract), then runs `RegenerateIconsUseCase` with
+  `acquire_lock=False`. The use case delegates to
+  `ReconcileDesktopStateUseCase` with `force_icons=True`: one generation
+  commit, `current.json` save, `trigger="regenerate"` history line with
+  `details.layers.icons`, GC, and AGS refresh inside one scope. It never
+  applies wallpaper pixels.
+- `reconcile --regenerate-stale`'s pre-step and `doctor --repair` inject
+  `PassThroughSeedMutex` because the engine/reconcile already owns
+  `converge.lock`; real prune takes `ConvergeLock` directly. The
+  `FlockSeedMutex` class and `state_root / ".seed.lock"` construction are
+  deleted from production; only the pass-through inner mutex remains.
+- History still uses its millisecond-scale `.history.lock`, which is not a
+  convergence lock.
+
+### Tests
+
+New/updated coverage:
+
+- `tests/unit/test_one_lock.py` — structural no-`FlockSeedMutex`/no
+  `.seed.lock` path, non-blocking busy, killed-holder kernel release;
+- `tests/unit/test_regenerate_icons.py` — concurrent icon runs serialize;
+  concurrent icons regenerate + wallpaper reconcile has one writer and the
+  final history tail == `current.json` == `current/manifest.json` on icons;
+- `tests/unit/test_seed_cache.py` — two first-run seeds serialize on the one
+  lock, exactly one save, no `.seed.lock`;
+- `tests/unit/test_cli_icons.py` — the busy contract now pins the held
+  `ConvergeLock` and the use case receives `acquire_lock=False`;
+- existing crash/GC/generation/doctor/prune/reconcile suites run unchanged
+  semantics under the consolidated lock.
+
+Targeted run:
+
+```sh
+uv run pytest -q tests/unit/test_one_lock.py \
+  tests/unit/test_regenerate_icons.py tests/unit/test_cli_icons.py \
+  tests/unit/test_seed_cache.py tests/unit/test_reconcile.py \
+  tests/unit/test_prune_cli.py tests/unit/test_wallpaper_visible_first.py \
+  tests/unit/test_btop_theme_artifacts.py tests/unit/test_crash_recovery.py \
+  tests/unit/test_generation_gc.py tests/unit/test_generations_v3.py \
+  tests/unit/test_regenerate_stale.py tests/unit/test_doctor_repair.py \
+  tests/unit/test_daemon_run.py
+# 294 passed
+```
+
+Affected integration suites:
+
+```sh
+uv run pytest -q tests/integration/test_visible_first_swap_integration.py \
+  tests/integration/test_crash_recovery_integration.py \
+  tests/integration/test_reconcile_integration.py \
+  tests/integration/test_seed_cache_integration.py \
+  tests/integration/test_apply_wallpaper_integration.py \
+  tests/integration/test_wallpaper_set_capstone_integration.py
+# 32 passed
+```
+
+### Gates
+
+```sh
+make gates
+# test: 2435 passed, 3 skipped, 11 deselected
+# lint: All checks passed
+# contracts-check: 58 passed, 1 skipped
+# hermetic: 2435 passed, 3 skipped, 11 deselected
+# lock-check: Resolved 25 packages
+# docs-check: rc 0
+```
+
+`make gates-ci` and `make ci-gates-parity` are recorded on the release
+commit.
