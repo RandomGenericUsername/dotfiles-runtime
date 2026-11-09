@@ -73,17 +73,56 @@ make ci-gates-parity
 
 ## Acceptance
 
-- [ ] The wlogout fixture is byte-identical to the released assets v0.14.0 blob.
-- [ ] The skin `config_dirs` include `wlogout`; `appearance/wlogout.css` exists.
-- [ ] The committed manifest target is exactly
+- [x] The wlogout fixture is byte-identical to the released assets v0.14.0 blob.
+- [x] The skin `config_dirs` include `wlogout`; `appearance/wlogout.css` exists.
+- [x] The committed manifest target is exactly
       `{configDir: "wlogout", path: "appearance/wlogout.css"}`.
-- [ ] The committed manifest validates against the embedded contracts v0.8.0
+- [x] The committed manifest validates against the embedded contracts v0.8.0
       generation schema (W-2.4).
-- [ ] The composed sheet has palette + skin content; the skin section has no
+- [x] The composed sheet has palette + skin content; the skin section has no
       literal hex, transition, structure/variant or layout IDs.
-- [ ] Targeted appearance/generation tests and all gates pass.
-- [ ] Production code is unchanged unless a real gap is proven and explained.
+- [x] Targeted appearance/generation tests and all gates pass.
+- [x] Production code is unchanged unless a real gap is proven and explained.
 
-## Outcome
+## Outcome (2026-11-09)
 
-Pending implementation.
+**Worktree:** `.worktrees/REQ-021/`
+**Branch:** `ticket/REQ-021-wlogout-skin-runtime`
+**Commits:** `f14cd28` (ticket + INDEX plan), `7235e7a` (fixture + regression
+tests), this release commit (version/CHANGELOG/README + ticket close).
+**Tag:** `v1.0.7` (annotated) after green gates.
+**Production code:** unchanged. The existing pipeline already passed; no
+wlogout-specific adapter or gap fix was needed.
+
+### Delivered
+
+| Path | What changed |
+| --- | --- |
+| `tests/fixtures/skins-v2/templates/wlogout.gtk.css.j2` | byte-identical copy of `dotfiles-assets@v0.14.0` blob `e42a44e6…` |
+| `tests/unit/test_wlogout_skin_consumer.py` | W-2.3/W-2.4 regression tests: fixture identity, `config_dirs`/artifact, committed target, embedded schema validation, composed palette+skin sheet with no hex/transition/structure/layout IDs |
+| `tests/unit/test_appearance_v2_assets.py` | fixture docstring names the v0.14.0 wlogout template alongside the v0.12.0 AGS set |
+| `pyproject.toml` / `CHANGELOG.md` / `README.md` | `1.0.7` release metadata |
+
+### Tests
+
+```sh
+uv run pytest -q tests/unit/test_wlogout_skin_consumer.py \
+  tests/unit/test_appearance_v2_assets.py tests/unit/test_appearance.py \
+  tests/unit/test_generations_v3.py tests/unit/test_generation_gc.py \
+  tests/unit/test_skins.py tests/unit/test_regenerate_stale.py
+# 103 passed in 3.47s
+```
+
+### Gates
+
+```sh
+make gates
+# test: 2439 passed, 3 skipped, 11 deselected
+# lint: All checks passed
+# contracts-check: 58 passed, 1 skipped
+# hermetic: 2439 passed, 3 skipped, 11 deselected
+# lock-check: Resolved 25 packages
+# docs-check: rc 0
+```
+
+`make gates-ci` and `make ci-gates-parity` are recorded on the release commit.

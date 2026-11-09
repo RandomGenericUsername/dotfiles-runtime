@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.0.7 — 2026-11-09
+
+Prove wlogout is a generic v2 skin consumer with no runtime production change
+(REQ-021; W-2.3/W-2.4).
+
+- The released `dotfiles-assets v0.14.0`
+  `skins/templates/wlogout.gtk.css.j2` (sha256 `e42a44e6…`) is copied
+  byte-for-byte into `tests/fixtures/skins-v2/templates/`. The existing
+  seven-target v2 fixture now expands eight targets, including `wlogout`.
+- Regression tests prove the existing pipeline already derives the new target:
+  skin expansion exposes `wlogout.css`, the appearance entry has `wlogout` in
+  `config_dirs` and an `appearance/wlogout.css` artifact, and a generation
+  commit writes `appearance/wlogout.css` with the manifest target
+  `{configDir: "wlogout", path: "appearance/wlogout.css"}`.
+- The committed manifest validates against the embedded contracts v0.8.0
+  `generation-manifest` schema (W-2.4), and the composed wlogout sheet carries
+  the palette section plus a paint/rhythm-only skin section (no literal hex,
+  transition, structure/variant token or layout ID).
+- No wlogout-specific adapter, contracts change, provisioning change or live
+  state change. Production code is unchanged; this is a regression-proof
+  release.
+
 ## v1.0.6 — 2026-11-09
 
 Finish the v3 one-lock architecture by consolidating the legacy `.seed.lock`

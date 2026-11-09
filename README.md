@@ -28,6 +28,15 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**1.0.7** — wlogout skin target regression proof.
+
+- The released `wlogout.gtk.css.j2` from `dotfiles-assets v0.14.0` is now a
+  hermetic v2 fixture. The existing `<configDir>.gtk.css.j2` derivation already
+  yields `wlogout` in `config_dirs`, `appearance/wlogout.css` in the appearance
+  entry and generation, and the canonical manifest target; the new tests pin
+  that behaviour and validate the committed manifest against the embedded
+  contracts v0.8.0 generation schema. No production code changed.
+
 **1.0.6** — one state-mutation lock.
 
 - `state/converge.lock` is now the only lock file runtime commands create.
