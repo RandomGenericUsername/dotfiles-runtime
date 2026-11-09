@@ -2,7 +2,7 @@
 id: REQ-022
 title: "Host defaults: Hyprland adapter, pure resolver, appearance.v3 and generation host identity"
 kind: requirement
-status: proposed
+status: in-progress
 lane: 2
 links:
   openspec: none

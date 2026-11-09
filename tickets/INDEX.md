@@ -7,7 +7,7 @@
 ## Requirements
 
 - [REQ-021-wlogout-skin-runtime](./REQ-021-wlogout-skin-runtime/ticket.md) — wlogout skin consumer runtime regression (W-2.3/W-2.4) | `done` | worktree: .worktrees/REQ-021/ | branch: ticket/REQ-021-wlogout-skin-runtime | tag: v1.0.7
-- [REQ-022-host-defaults](./REQ-022-host-defaults/ticket.md) — Host defaults: Hyprland adapter, effective precedence, `appearance.v3` and generation host identity | `proposed` | worktree: .worktrees/REQ-022/ | branch: ticket/REQ-022-host-defaults
+- [REQ-022-host-defaults](./REQ-022-host-defaults/ticket.md) — Host defaults: Hyprland adapter, effective precedence, `appearance.v3` and generation host identity | `in-progress` | worktree: .worktrees/REQ-022/ | branch: ticket/REQ-022-host-defaults
 - [REQ-020-generations-v3](./REQ-020-generations-v3/ticket.md) — Generations v3: one committed generation and one `converge(intent)` | `done` | worktree: .worktrees/REQ-020/ | branch: ticket/REQ-020-generations-v3 | tag: v1.0.0
 - [REQ-019-palette-mode-intent](./REQ-019-palette-mode-intent/ticket.md) — Desired palette mode (dark/light/smart) -> tpr settings env -> palette cache identity | `done` | worktree: .worktrees/REQ-019/ | branch: ticket/REQ-019-palette-mode-intent | tag: v0.9.5
 - [REQ-018-systemd-aware-restart](./REQ-018-systemd-aware-restart/ticket.md) — Systemd-aware AGS restart lane and the v2 pointer cutover | `done` | worktree: .worktrees/REQ-018/ | branch: ticket/REQ-018-systemd-aware-restart | tag: v0.9.3, v0.9.4
