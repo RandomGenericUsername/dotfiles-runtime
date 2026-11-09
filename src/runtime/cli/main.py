@@ -278,8 +278,11 @@ def _run_seed_if_needed(*, producer: str | None = None) -> None:
     """Run first-run seeding if current.json is absent.
 
     Validates provisioning output before constructing the use case, then
-    runs it. Failures are logged loudly (error level) but do not prevent
-    CLI commands from executing.
+    runs it under the same ``converge.lock`` as every other mutation. The
+    use case's inner seed mutex is a pass-through, so there is no nested
+    flock and a killed process releases the kernel lock automatically.
+    Failures are logged loudly (error level) but do not prevent CLI commands
+    from executing.
     """
     state_root = _resolve_state_root()
     install_spine = _resolve_install_spine()
@@ -301,7 +304,8 @@ def _run_seed_if_needed(*, producer: str | None = None) -> None:
 
     try:
         from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
-        from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+        from runtime.adapters.converge_lock import ConvergeLock
+        from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
         from runtime.adapters.hyprland_monitor_source import HyprlandMonitorSource
         from runtime.adapters.itr_adapter import ItrAdapter
         from runtime.adapters.json_state_repository import JsonStateRepository
@@ -310,7 +314,6 @@ def _run_seed_if_needed(*, producer: str | None = None) -> None:
         from runtime.adapters.weg_adapter import WegAdapter
         from runtime.application.palette_producer import create_palette_producer
         from runtime.application.seed_cache import SeedCacheUseCase
-        from runtime.ports.seed_mutex import SeedLockedError
         from runtime.ports.wallpaper_backend import IStaticWallpaperBackend, IVideoWallpaperBackend
         from runtime.ports.wallpaper_backend_factory import (
             IWallpaperBackendFactory,
@@ -325,7 +328,10 @@ def _run_seed_if_needed(*, producer: str | None = None) -> None:
         weg = WegAdapter()
         itr = ItrAdapter()
         seeder = CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec())
-        mutex = FlockSeedMutex(state_root / ".seed.lock")
+        # First-run seeding is a sub-step of the one convergence: the outer
+        # ConvergeLock serializes it against daemon/CLI mutations, and the
+        # use case's inner mutex is a pass-through (no nested flock).
+        mutex = PassThroughSeedMutex()
 
         # Factory is not used by SeedCacheUseCase (wallpaper backend deferred to Epic 2).
         # Faithful placeholder: validates backend types per the port contract
@@ -362,10 +368,8 @@ def _run_seed_if_needed(*, producer: str | None = None) -> None:
             skin_name=_resolve_skin_name(),
             skin_expander=SkinExpander(),
         )
-        use_case.run()
-    except SeedLockedError as exc:
-        # Another process is seeding right now — its result is authoritative.
-        logger.info("seed skipped: %s", exc)
+        with ConvergeLock(state_root).hold():
+            use_case.run()
     except (ValueError, RuntimeError) as exc:
         # Corrupt state, palette generation failure, provisioning contract
         # violations — must be observable (debug-level hid real failures).
@@ -963,29 +967,31 @@ def _run_icons_regenerate(
     """Compose the icons-only ``icons regenerate`` pipeline (D3).
 
     The GUI's live-toggle path: re-derives ONLY the icons layer from the
-    CURRENT palette, repoints the
-    ``current/icons`` symlink (+ spine consumer pointers), appends one
-    ``history.jsonl`` line (trigger ``"regenerate"``), and reloads AGS
-    only — wallpaper/palette/effects bytes are never touched (no
-    flicker), pixels are never re-set.
+    CURRENT palette and commits it through the same one
+    ``converge.lock``/generation scope as wallpaper/skin/mode changes.
+    That scope saves ``current.json``, appends one ``history.jsonl`` line
+    (trigger ``"regenerate"``, icons detail), refreshes AGS only, and runs
+    GC — wallpaper/palette/effects bytes are never touched (no flicker),
+    pixels are never re-set.
 
-    Same outer-mutex pattern as :func:`_run_wallpaper_set`: ONE state
-    mutex (``FlockSeedMutex``) acquired non-blocking up front and held
-    across the use case (wired with a pass-through mutex inside); a
-    second command arriving mid-flight fails busy (``SeedLockedError``
-    → non-zero exit, ``error`` event with an empty hash).
+    Concurrency contract: the one lock is acquired non-blocking up front.
+    A convergence already in progress surfaces the existing GUI busy error
+    (``SeedLockedError`` → non-zero exit, ``error`` event with an empty
+    hash) instead of queuing or interleaving. Kernel ``flock`` releases on
+    process death, so a crashed holder never wedges the next command.
 
     Events: ``applying`` at start, ``done``/``error`` at finish on
     ``wallpaper.state`` — never ``visible``. Absent/corrupt
     ``current.json`` fails loud before mutating anything (cache,
-    symlinks, and history untouched).
+    symlinks, history, and generation untouched).
 
     ``client`` (tests): an injected :class:`IJobClient` recording the
     transitions; the CLI passes none and the production client is built.
     """
     from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
+    from runtime.adapters.converge_lock import ConvergeLock, ConvergeLockBusyError
     from runtime.adapters.dbus_job_client import DbusJobClient
-    from runtime.adapters.flock_seed_mutex import FlockSeedMutex, PassThroughSeedMutex
+    from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
@@ -1015,8 +1021,9 @@ def _run_icons_regenerate(
 
     inner_mutex = PassThroughSeedMutex()
     palette_producer = create_palette_producer(install_spine, producer=producer)
+    lock = ConvergeLock(state_root)
     try:
-        with FlockSeedMutex(state_root / ".seed.lock").hold(blocking=False):
+        with lock.hold(blocking=False):
             result = RegenerateIconsUseCase(
                 state_repo=JsonStateRepository(state_root=state_root),
                 palette_producer=palette_producer,
@@ -1028,11 +1035,11 @@ def _run_icons_regenerate(
                 mutex=inner_mutex,
                 reloaders=[],
                 app_refresher=_build_app_refresher(state_root, install_spine),
-            ).run()
-    except SeedLockedError as exc:
+            ).run(acquire_lock=False)
+    except ConvergeLockBusyError as exc:
         _publish_wallpaper_state(client, "error", "", "regenerate")
         raise SeedLockedError(
-            f"icons regenerate already in progress (lock held): {state_root / '.seed.lock'}"
+            f"icons regenerate already in progress (lock held): {lock.path}"
         ) from exc
     except Exception:
         _publish_wallpaper_state(client, "error", pending_hash, "regenerate")
@@ -1696,7 +1703,8 @@ def _run_regenerate_stale(
 
     Mirrors ``_run_wallpaper_set``'s construction: resolve state_root /
     install_spine (both absolute), build one shared set of adapters
-    (``CacheSeeder``, palette/WEG/ITR, ``FlockSeedMutex``), resolve the four spine
+    (``CacheSeeder``, palette/WEG/ITR, pass-through inner mutex; the engine
+    owns ``converge.lock``), resolve the four spine
     inputs via ``derive.find_*`` (composition owns discovery), then wire
     ``CheckInputsUseCase`` + ``DerivationPipeline`` + ``ReconcileDesktopState-
     UseCase`` (with ``_build_reloaders``) into ``RegenerateStaleUseCase``.
@@ -1738,7 +1746,7 @@ def _run_regenerate_stale(
     install_spine = _resolve_install_spine()
 
     from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
-    from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+    from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
     from runtime.adapters.invalidation import InvalidationQueryAdapter
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
@@ -1760,7 +1768,9 @@ def _run_regenerate_stale(
     seeder = CacheSeeder(
         state_root, consumer_spec=StaticConsumerPathSpec(), suppress_history=suppress_history
     )
-    mutex = FlockSeedMutex(state_root / ".seed.lock")
+    # The regenerate-only pre-step runs inside the ConvergenceEngine's
+    # converge.lock scope; a nested real lock would deadlock.
+    mutex = PassThroughSeedMutex()
     palette_producer = create_palette_producer(
         install_spine, producer=producer, mode=_resolve_desired_mode()
     )
@@ -1862,7 +1872,7 @@ def _run_doctor_repair(*, producer: str | None = None) -> RepairResult:
 
     from runtime.adapters.cache import quarantine_entry
     from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
-    from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+    from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
     from runtime.adapters.itr_adapter import ItrAdapter
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.seeder import CacheSeeder
@@ -1874,7 +1884,9 @@ def _run_doctor_repair(*, producer: str | None = None) -> RepairResult:
 
     state_repo = JsonStateRepository(state_root=state_root)
     seeder = CacheSeeder(state_root, consumer_spec=StaticConsumerPathSpec())
-    mutex = FlockSeedMutex(state_root / ".seed.lock")
+    # Reconcile acquires converge.lock itself; this inner mutex is a
+    # pass-through so doctor --repair creates no second lock file.
+    mutex = PassThroughSeedMutex()
     palette_producer = create_palette_producer(
         install_spine, producer=producer, mode=_resolve_desired_mode()
     )
@@ -2573,10 +2585,11 @@ def _run_daemon_run(
        watchdog threads, sends ``STOPPING=1``, closes the source, and
        returns → exit 0.
 
-    The daemon holds NO lock across a use-case call (AD-35): every use case
-    acquires and releases ``.seed.lock``/``.history.lock`` internally and
-    sequentially; the coordinator's callback never pre-holds one. The daemon
-    never writes a watched root (AD-36).
+    The daemon holds NO lock across a use-case call (AD-35): every mutation
+    acquires and releases the one ``converge.lock`` (plus the millisecond-scale
+    ``.history.lock`` append scope) internally and sequentially; the
+    coordinator's callback never pre-holds one. There is no `.seed.lock`. The
+    daemon never writes a watched root (AD-36).
 
     Tests inject ``owner``/``converge``/``watch_source``/``notifier``/
     ``subscriber_factory``; with neither converge nor watch nor subscriber
@@ -4586,15 +4599,15 @@ def _run_prune(
     """Compose + run prune (Story 3.3).
 
     Fails closed when ``current.json`` is absent (refuse to prune without the
-    active set). Real removal holds the seed mutex across plan + deletions so
-    a concurrent ``wallpaper set``/reconcile cannot activate an entry
-    mid-prune; dry-run is read-only and takes no lock. Returns the plan, the
-    number actually removed (0 for dry-run), and the removed ``(layer, hash)``
-    pairs.
+    active set). Real removal holds the one ``converge.lock`` across plan +
+    deletions so a concurrent ``wallpaper set``/reconcile cannot activate an
+    entry mid-prune; dry-run is read-only and takes no lock. Returns the plan,
+    the number actually removed (0 for dry-run), and the removed
+    ``(layer, hash)`` pairs.
     """
     state_root = _resolve_state_root()
 
-    from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+    from runtime.adapters.converge_lock import ConvergeLock
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.prune_source import remove_entry
 
@@ -4614,10 +4627,10 @@ def _run_prune(
         )
         return plan, 0, []
 
-    mutex = FlockSeedMutex(state_root / ".seed.lock")
+    lock = ConvergeLock(state_root)
     removed: list[tuple[str, str]] = []
     failures: list[str] = []
-    with mutex.hold(blocking=True):
+    with lock.hold():
         plan = _build_prune_plan(state_root, keep, prune_pinned)
         for layer, hashes in plan.removals.items():
             for entry_hash in hashes:
@@ -4627,7 +4640,7 @@ def _run_prune(
                 except (OSError, ValueError) as exc:
                     failures.append(f"{layer}/{entry_hash}")
                     logger.error("prune: failed cache/%s/%s: %s", layer, entry_hash, exc)
-    # One audit line per real execution (AD-30 / R-1), after the seed mutex is
+    # One audit line per real execution (AD-30 / R-1), after converge.lock is
     # released so no two flock files are held at once. An append failure must
     # not mask a removal failure: report both.
     append_error: str | None = None

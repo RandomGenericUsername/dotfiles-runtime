@@ -1,14 +1,15 @@
-"""State mutex port — exclusive cross-process guard for state-creation critical sections.
+"""Inner state mutex port — dependency-inversion seam for use case composition.
 
-Protects the once-only seeding invariant (AD-11): exactly one process may
-perform first-run seeding per state_root. Acquire before the
-``load_current()`` double-check inside ``SeedCacheUseCase.run()`` so that
-concurrent CLI invocations serialize instead of double-seeding.
+v3 has ONE cross-process state-mutation lock: ``ConvergeLock`` over
+``state/converge.lock``. Composition roots hold it while running the use case,
+so the injected inner mutex is a pass-through
+(``runtime.adapters.flock_seed_mutex.PassThroughSeedMutex``). There is no
+``.seed.lock`` and no second lock file.
 
-The same mutex also serializes ``ApplyWallpaperUseCase``'s read-modify-write
-of ``current.json`` against a concurrently running seed (Story 1.13 review):
-apply holds it blocking around load→save, so a first-run seed can never be
-overtaken by an applier that observed absent state.
+The port remains so use cases keep no concrete adapter dependency and can be
+tested with a fake. First-run seeding is a sub-step of the one convergence and
+uses the same pass-through (no nested flock/deadlock); ``converge.lock``'s
+kernel flock releases on process death.
 
 Domain purity (AD-1, AD-14):
 - This module is a port: ABC only, no I/O.
@@ -25,7 +26,7 @@ __all__ = ["ISeedMutex", "SeedLockedError"]
 
 
 class ISeedMutex(ABC):
-    """Exclusive, crash-safe, cross-process mutex for state critical sections."""
+    """Inner state mutex seam; production passes through the held converge lock."""
 
     @abstractmethod
     def hold(self, blocking: bool = False) -> AbstractContextManager[None]:

@@ -434,7 +434,8 @@ def test_wallpaper_set_exposes_the_three_btop_current_symlinks(
     ``resolve().is_relative_to(entry_dir)`` is the assertion that matters: a
     symlink that merely exists could point anywhere.
     """
-    from runtime.adapters.flock_seed_mutex import FlockSeedMutex, PassThroughSeedMutex
+    from runtime.adapters.converge_lock import ConvergeLock
+    from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.application.apply_wallpaper import ApplyWallpaperUseCase
     from runtime.application.reconcile import ReconcileDesktopStateUseCase
@@ -448,7 +449,7 @@ def test_wallpaper_set_exposes_the_three_btop_current_symlinks(
     img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
 
     producer, weg, itr = _FakeProducer(), _FakeWeg(), _FakeItr()
-    with FlockSeedMutex(state_root / ".seed.lock").hold(blocking=False):
+    with ConvergeLock(state_root).hold(blocking=False):
         ApplyWallpaperUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
             palette_producer=producer,
@@ -469,7 +470,7 @@ def test_wallpaper_set_exposes_the_three_btop_current_symlinks(
             seeder=CacheSeeder(state_root),
             mutex=PassThroughSeedMutex(),
             reloaders=[],
-        ).run(trigger="set")
+        ).run(trigger="set", acquire_lock=False)
 
     assert producer.calls == 1, "the palette must be derived once"
 

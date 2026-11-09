@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.json_state_repository import JsonStateRepository
 from runtime.adapters.seeder import CacheSeeder
@@ -162,7 +162,7 @@ class TestSeedCacheIntegration:
             install_spine=install_spine,
             state_root=state_root,
             seeder=CacheSeeder(state_root),
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         )
         return install_spine, state_root, state_repo, use_case
 

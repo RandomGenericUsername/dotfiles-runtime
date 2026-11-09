@@ -54,6 +54,9 @@ not import `os`, `pathlib`, `io`, `subprocess`, `socket` or `shutil`.
 6. **Persist** `current.json` and append a `history.jsonl` record inside the
    same `converge.lock` scope, from the committed generation snapshot, so the
    tail can never describe an older palette than `current.json`/`manifest.json`.
+   First-run seeding and `icons regenerate` are sub-steps of this same scope:
+   they never create a second lock file, and their use cases receive a
+   pass-through inner mutex.
 
 A cache hit is detected before the subprocess spawn and must invoke **zero** `tpr`/`weg`/`itr`
 processes. Incomplete legacy entries are evicted and regenerated at the same key
@@ -198,7 +201,11 @@ request also carries the caller's `suppressHistory`/`includeTerminal`/`regenerat
 optional regenerate pre-step and the reconcile commit run under the same `converge.lock`; the
 reconcile append is the single `reactive` line, written from the committed snapshot. A CLI
 `reconcile --regenerate-stale` submits the same job and returns its committed result instead of a
-pre-commit cache snapshot.
+pre-commit cache snapshot. `icons regenerate` uses the same lock directly: it acquires
+`converge.lock` non-blocking, re-derives only icons through a forced-icons reconcile, commits one
+generation + `current.json` + `history` line, and surfaces the existing GUI busy error when a
+convergence already holds the lock. First-run seeding takes the same blocking lock with a
+pass-through inner mutex, so it is serialized against the daemon without nested-flock deadlock.
 `wallpaper.state` is a compact, contract-valid payload: only the contract's stage enum, bounded
 error/reload-failure summaries, and a hard fit below the hub's 64 KiB cap. A publish failure is a
 warning and never changes the convergence result.
@@ -309,7 +316,11 @@ blocking `converge.lock` across intent → (optional regenerate) → derive → 
 queue and CLI fallback run that same function. The daemon allocates
 `converge:<intentHash>` jobs on the existing event surface; the CLI subscribes
 before submitting and waits on `JobFinished`. A mutating CLI therefore returns
-the committed state, never a pre-commit snapshot.
+the committed state, never a pre-commit snapshot. There is no `.seed.lock` or
+appearance lock: first-run seeding and `icons regenerate` enter this same
+`converge.lock`; their inner state mutex is a pass-through. `icons regenerate`
+takes the lock non-blocking to keep the GUI busy/error contract, while ordinary
+convergence blocks.
 
 Live apps receive the exact generation in `appearance-refresh <genHash>` and
 must ack that generation. Runtime writes are state-only: no install-spine or

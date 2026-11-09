@@ -195,14 +195,14 @@ class _Env:
         (self.install / "config" / "rofi").mkdir(parents=True, exist_ok=True)
 
     def apply(self) -> None:
-        from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+        from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
         from runtime.adapters.json_state_repository import JsonStateRepository
         from runtime.adapters.seeder import CacheSeeder
         from runtime.application.apply_wallpaper import ApplyWallpaperUseCase
 
         self.repo = JsonStateRepository(state_root=self.state_root)
         self.seeder = CacheSeeder(self.state_root)
-        self.mutex = FlockSeedMutex(self.state_root / ".seed.lock")
+        self.mutex = PassThroughSeedMutex()
         self.img.write_bytes(b"wallpaper bytes")
         ApplyWallpaperUseCase(
             state_repo=self.repo,

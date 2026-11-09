@@ -9,11 +9,14 @@ regression that the spine mappings are rendered verbatim (no retargeting).
 from __future__ import annotations
 
 import json
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+from tests.support.palette_fakes import v1_colors_yaml, v1_gtk_css
 
 from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
 from runtime.adapters.hashing import canonical_hash_dir, hash_file, icons_entry_hash
@@ -115,7 +118,16 @@ def _setup(tmp_path: Path) -> dict[str, Any]:
     peh = "1a" * 32
     palette_dir = state_root / "cache" / "palettes" / peh
     palette_dir.mkdir(parents=True)
-    (palette_dir / "colors.yaml").write_text(LIGHT_PALETTE)
+    # A complete, conforming palette entry: the one convergence validates it
+    # before committing the generation.
+    (palette_dir / "colors.yaml").write_text(v1_colors_yaml())
+    (palette_dir / "colors.conf").write_text("colors {}")
+    (palette_dir / "colors.gtk.css").write_text(v1_gtk_css())
+    (palette_dir / "colors.adw.css").write_text("colors {}")
+    (palette_dir / "colors.sequences").write_bytes(b"\x1b]4;0;#000\x1b\\")
+    (palette_dir / "colors.rasi").write_text("* { background: #000; }")
+    (palette_dir / "colors.kitty").write_text("* { background: #000; }")
+    (palette_dir / "colors.btop.theme").write_text("theme[colors.main_bg]=#000000\n")
     seeder.write_palette_meta_in(
         palette_dir,
         entry_hash=peh,
@@ -309,26 +321,88 @@ class TestRegenerateIconsUseCase:
         # Convergence still persisted + recorded.
         assert _history_lines(ctx["state_root"])[0]["trigger"] == "regenerate"
 
-    def test_concurrent_modification_aborts_loud(self, tmp_path: Path) -> None:
-        import dataclasses
+    def test_concurrent_runs_serialize_on_the_one_lock(self, tmp_path: Path) -> None:
+        from runtime.adapters.generation_store import GenerationStore
 
         ctx = _setup(tmp_path)
-        real_load = ctx["repo"].load_current
-        calls = {"n": 0}
+        errors: list[Exception] = []
 
-        def _flapping_load() -> Any:
-            calls["n"] += 1
-            state = real_load()
-            if calls["n"] == 2 and state is not None:
-                # A concurrent `wallpaper set` lands between derivation and save.
-                return dataclasses.replace(
-                    state, wallpaper=dataclasses.replace(state.wallpaper, content_hash="d" * 64)
-                )
-            return state
-
-        ctx["repo"].load_current = _flapping_load  # type: ignore[method-assign]
-        try:
-            with pytest.raises(RuntimeError, match="concurrent modification"):
+        def _run() -> None:
+            try:
                 ctx["use_case"].run()
-        finally:
-            ctx["repo"].load_current = real_load  # type: ignore[method-assign]
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_run) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        assert not errors
+        state = ctx["repo"].load_current()
+        assert state is not None and state.icons is not None
+        lines = _history_lines(ctx["state_root"])
+        assert lines and lines[-1]["trigger"] == "regenerate"
+        assert lines[-1]["icons"] == state.icons.entry_hash
+        manifest = GenerationStore(ctx["state_root"]).current_manifest()
+        assert manifest is not None
+        assert manifest["layers"]["icons"]["entryHash"] == state.icons.entry_hash
+        assert not (ctx["state_root"] / ".seed.lock").exists()
+
+    def test_icons_regenerate_and_wallpaper_converge_share_one_lock(
+        self, tmp_path: Path
+    ) -> None:
+        """A concurrent icons regenerate + reconcile has exactly one writer.
+
+        Both enter the same ``converge.lock``; whichever runs second sees the
+        first committed result. The final history tail, ``current.json`` and
+        ``current/manifest.json`` agree on the icons entry.
+        """
+        from runtime.adapters.generation_store import GenerationStore
+        from runtime.application.reconcile import ReconcileDesktopStateUseCase
+
+        ctx = _setup(tmp_path)
+        reconcile = ReconcileDesktopStateUseCase(
+            state_repo=ctx["repo"],
+            palette_producer=None,  # type: ignore[arg-type]
+            weg=None,  # type: ignore[arg-type]
+            itr=ctx["itr"],  # type: ignore[arg-type]
+            install_spine=ctx["install_spine"],
+            state_root=ctx["state_root"],
+            seeder=ctx["seeder"],
+            mutex=PassThroughSeedMutex(),
+            reloaders=[],
+        )
+        errors: list[Exception] = []
+        start = threading.Barrier(2)
+
+        def _icons() -> None:
+            start.wait()
+            try:
+                ctx["use_case"].run()
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        def _converge() -> None:
+            start.wait()
+            try:
+                reconcile.run(trigger="reconcile")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_icons), threading.Thread(target=_converge)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        assert not errors
+        state = ctx["repo"].load_current()
+        assert state is not None and state.icons is not None
+        lines = _history_lines(ctx["state_root"])
+        assert lines and lines[-1]["icons"] == state.icons.entry_hash
+        manifest = GenerationStore(ctx["state_root"]).current_manifest()
+        assert manifest is not None
+        assert manifest["layers"]["icons"]["entryHash"] == state.icons.entry_hash
+        assert not (ctx["state_root"] / ".seed.lock").exists()

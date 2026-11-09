@@ -1,11 +1,15 @@
-"""flock-based state mutex adapters.
+"""flock-based history mutex plus the already-held pass-through mutex.
 
-``FlockSeedMutex`` implements ``ISeedMutex`` on ``state_root/.seed.lock`` —
-non-blocking by default, blocking when requested for apply's
-read-modify-write. ``FlockHistoryMutex`` implements ``IHistoryMutex`` on
-``state_root/.history.lock`` — blocking by default (append critical
-sections are millisecond-scale). Both share :func:`_flock_hold`: one flock
-implementation, two files, two error types (Story 4.6, AC 3).
+There is ONE state-mutation lock in v3: ``state_root/converge.lock``
+(:class:`runtime.adapters.converge_lock.ConvergeLock`). Use cases still accept
+an ``ISeedMutex`` for dependency inversion, but production wires
+:class:`PassThroughSeedMutex` because the composition root already holds the
+one convergence lock. No runtime command creates ``.seed.lock``.
+
+``FlockHistoryMutex`` implements ``IHistoryMutex`` on
+``state_root/.history.lock`` — blocking by default (append critical sections
+are millisecond-scale). The history append lock is a separate, short-lived
+critical section, not a second convergence lock.
 
 flock is kernel-owned: the lock is released automatically when the holding
 process exits or dies — no stale-lockfile cleanup logic is needed, which is
@@ -24,7 +28,7 @@ from collections.abc import Callable, Generator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 
-from runtime.domain.models import HistoryLockError, SeedLockedError
+from runtime.domain.models import HistoryLockError
 from runtime.ports.history_mutex import IHistoryMutex
 from runtime.ports.seed_mutex import ISeedMutex
 
@@ -74,20 +78,6 @@ def _acquire(
             pass
 
 
-class FlockSeedMutex(ISeedMutex):
-    """Exclusive seeding mutex backed by a flock'd lock file."""
-
-    def __init__(self, lock_path: Path) -> None:
-        self._lock_path = lock_path
-
-    def hold(self, blocking: bool = False) -> AbstractContextManager[None]:
-        return _flock_hold(
-            self._lock_path,
-            blocking,
-            lambda p: SeedLockedError(f"seeding already in progress (lock held): {p}"),
-        )
-
-
 class FlockHistoryMutex(IHistoryMutex):
     """Exclusive history-append mutex backed by a flock'd lock file."""
 
@@ -103,15 +93,14 @@ class FlockHistoryMutex(IHistoryMutex):
 
 
 class PassThroughSeedMutex(ISeedMutex):
-    """No-op seed mutex for use when the real mutex is already held.
+    """No-op inner mutex for a use case already inside ``converge.lock``.
 
-    The visible-first ``wallpaper set`` composition root holds ONE
-    ``FlockSeedMutex`` across BOTH phases (swap + derive/converge, D1):
-    re-acquiring the same flock file inside the composed use cases would
-    fail (non-blocking, same process) or deadlock (blocking), so the
-    inner use cases are wired with this pass-through — the outer hold is
-    the single serialization point. Never use outside an already-held
-    critical section.
+    Every production mutation composition root holds the one
+    :class:`~runtime.adapters.converge_lock.ConvergeLock`. Re-acquiring the
+    same kernel flock inside the composed use case would fail (non-blocking)
+    or deadlock (blocking), so inner use cases are wired with this
+    pass-through — the outer ``converge.lock`` is the single serialization
+    point. Never use outside an already-held critical section.
     """
 
     def hold(self, blocking: bool = False) -> AbstractContextManager[None]:

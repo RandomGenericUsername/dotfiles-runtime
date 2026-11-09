@@ -28,6 +28,14 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**1.0.6** — one state-mutation lock.
+
+- `state/converge.lock` is now the only lock file runtime commands create.
+  First-run seeding is a sub-step of that lock with a pass-through inner
+  mutex, and `icons regenerate` commits a generation through the same scope
+  (non-blocking, preserving the GUI busy/error contract). The legacy
+  `.seed.lock` is gone.
+
 **1.0.1** — valid daemon converge triggers and a contract-safe `wallpaper.state`.
 
 - Daemon queue jobs preserve the originating intent trigger (`set` for

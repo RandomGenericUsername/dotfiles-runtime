@@ -252,6 +252,8 @@ class ReconcileDesktopStateUseCase:
         wallpaper_path: Path | None = None,
         intent_hash: str | None = None,
         acquire_lock: bool = True,
+        force_icons: bool = False,
+        history_details: dict[str, object] | None = None,
     ) -> ReconcileResult:
         """The one v3 mutation scope: intent → derive → stage → commit → apply.
 
@@ -260,6 +262,9 @@ class ReconcileDesktopStateUseCase:
         ``acquire_lock=False`` is only for :class:`ConvergenceEngine`, which
         holds the same lock across an optional regenerate pre-step so the
         commit, current.json save, and history append stay one atomic scope.
+        ``force_icons`` re-derives the icons layer even on a recorded cache
+        hit (the GUI live-toggle path); the commit itself is still the one
+        generation transaction.
         """
         # Validate the enum before acquiring the lock: a bad caller argument
         # must fail without touching the filesystem.
@@ -272,6 +277,8 @@ class ReconcileDesktopStateUseCase:
                 wallpaper_already_applied=wallpaper_already_applied,
                 wallpaper_path=wallpaper_path,
                 intent_hash=intent_hash,
+                force_icons=force_icons,
+                history_details=history_details,
             )
         with self._converge_lock.hold():
             return self._run(
@@ -279,6 +286,8 @@ class ReconcileDesktopStateUseCase:
                 wallpaper_already_applied=wallpaper_already_applied,
                 wallpaper_path=wallpaper_path,
                 intent_hash=intent_hash,
+                force_icons=force_icons,
+                history_details=history_details,
             )
 
     def _run(
@@ -288,6 +297,8 @@ class ReconcileDesktopStateUseCase:
         wallpaper_already_applied: bool,
         wallpaper_path: Path | None,
         intent_hash: str | None,
+        force_icons: bool,
+        history_details: dict[str, object] | None,
     ) -> ReconcileResult:
         """Reconcile: entries → generation commit → current.json → apply/ledger.
 
@@ -324,7 +335,9 @@ class ReconcileDesktopStateUseCase:
         # Derivation (step 1) happens OUTSIDE the lock (staging is race-
         # safe; tool invocations stay parallel — same split as apply).
         regenerated: list[str] = []
-        palette, effects, icons, skin = self._ensure_entries(state, regenerated)
+        palette, effects, icons, skin = self._ensure_entries(
+            state, regenerated, force_icons=force_icons
+        )
         pre_lock_wallpaper_hash = state.wallpaper.content_hash
 
         # Re-read after derivation: state may have changed concurrently
@@ -347,7 +360,9 @@ class ReconcileDesktopStateUseCase:
             if state.wallpaper.content_hash != pre_lock_wallpaper_hash:
                 # Re-derive for the authoritative state inside the lock.
                 # This serializes tool invocations only on contention.
-                palette, effects, icons, skin = self._ensure_entries(state, regenerated)
+                palette, effects, icons, skin = self._ensure_entries(
+                    state, regenerated, force_icons=force_icons
+                )
             else:
                 # Re-validate palette/effects/icons hashes against reloaded
                 # state to catch stale derivation even when wallpaper hash
@@ -487,6 +502,7 @@ class ReconcileDesktopStateUseCase:
                 icons_hash=saved.icons.entry_hash if saved.icons else None,
                 skin_hash=saved.skin.entry_hash if saved.skin else None,
                 source_path=saved.wallpaper.source_path,
+                details=history_details,
             )
 
             # Step 5 — GC under the same lock, immediately after the commit.
@@ -643,6 +659,8 @@ class ReconcileDesktopStateUseCase:
         self,
         state: DesktopState,
         regenerated: list[str],
+        *,
+        force_icons: bool = False,
     ) -> tuple[PaletteEntry, EffectsEntry | None, IconsEntry | None, SkinEntry | None]:
         """Ensure every cache entry referenced by the state exists.
 
@@ -733,7 +751,16 @@ class ReconcileDesktopStateUseCase:
                 regenerated.append("effects")
 
         icons = state.icons
-        if (
+        if force_icons:
+            # The GUI live-toggle path asks for the icons layer explicitly:
+            # re-derive it even when the recorded entry still exists. The
+            # result is still committed through the one generation scope
+            # below, so the tail can never describe an uncommitted icons key.
+            entry_i, cache_hit = self._pipeline.ensure_icons(palette.entry_hash)
+            icons = entry_i
+            if not cache_hit:
+                regenerated.append("icons")
+        elif (
             icons is not None
             and not cache_entry_path(self._state_root, "icons", icons.entry_hash).exists()
         ):

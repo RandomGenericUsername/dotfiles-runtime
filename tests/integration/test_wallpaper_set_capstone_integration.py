@@ -675,7 +675,7 @@ class TestCapstoneCliExitCode:
     ) -> None:
         from typer.testing import CliRunner
 
-        from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+        from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
         from runtime.cli.main import app
         from runtime.application.apply_wallpaper import ApplyWallpaperUseCase
 
@@ -697,7 +697,7 @@ class TestCapstoneCliExitCode:
             install_spine=install_spine,
             state_root=state_root,
             seeder=CacheSeeder(state_root),
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         ).run(img)
 
         monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(install_spine))

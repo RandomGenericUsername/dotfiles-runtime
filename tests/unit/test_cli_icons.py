@@ -174,7 +174,8 @@ class TestIconsRegenerateEmission:
             def __init__(self, **kwargs: Any) -> None:
                 captured["kwargs"] = kwargs
 
-            def run(self) -> RegenerateIconsResult:
+            def run(self, *, acquire_lock: bool = True) -> RegenerateIconsResult:
+                captured["acquire_lock"] = acquire_lock
                 return _regenerate_result()
 
         monkeypatch.setattr(
@@ -213,6 +214,8 @@ class TestIconsRegenerateEmission:
 
         assert captured["kwargs"]["reloaders"] == []
         assert type(captured["kwargs"]["app_refresher"]) is AgsAppRefreshCoordinator
+        # The CLI holds the one non-blocking converge lock around the use case.
+        assert captured["acquire_lock"] is False
 
     def test_absent_state_publishes_error_without_mutation(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -242,7 +245,7 @@ class TestIconsRegenerateEmission:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         import runtime.cli.main as cli_main
-        from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+        from runtime.adapters.converge_lock import ConvergeLock
         from runtime.domain.models import SeedLockedError
 
         self._save_live_state(tmp_path)
@@ -256,9 +259,11 @@ class TestIconsRegenerateEmission:
 
         state_root = tmp_path / "state-home" / "dotfiles"
         state_root.mkdir(parents=True, exist_ok=True)
-        with FlockSeedMutex(state_root / ".seed.lock").hold(blocking=False):
+        with ConvergeLock(state_root).hold(blocking=False):
             with pytest.raises(SeedLockedError, match="already in progress"):
                 cli_main._run_icons_regenerate(client=_Client())  # type: ignore[arg-type]
+
+        assert not (state_root / ".seed.lock").exists()
 
         assert published == [
             (

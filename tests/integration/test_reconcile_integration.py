@@ -16,7 +16,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.json_state_repository import JsonStateRepository
 from runtime.adapters.seeder import CacheSeeder
@@ -171,7 +171,7 @@ class TestReconcileIntegration:
             install_spine=install_spine,
             state_root=state_root,
             seeder=seeder,
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         ).run()
 
         # apply a NEW wallpaper → ahead-of-symlinks current.json
@@ -185,7 +185,7 @@ class TestReconcileIntegration:
             install_spine=install_spine,
             state_root=state_root,
             seeder=seeder,
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         ).run(img)
 
         # Seeded + applied consumed derivations; counters count RECONCILE
@@ -214,7 +214,7 @@ class TestReconcileIntegration:
             install_spine=install_spine,
             state_root=state_root,
             seeder=CacheSeeder(state_root),
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         )
         result = use_case.run()
 
@@ -260,7 +260,7 @@ class TestReconcileIntegration:
             install_spine=install_spine,
             state_root=state_root,
             seeder=seeder,
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         )
 
         use_case.run()
@@ -292,7 +292,7 @@ class TestReconcileIntegration:
             install_spine=install_spine,
             state_root=state_root,
             seeder=CacheSeeder(state_root),
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         )
         result = use_case.run()
 
@@ -319,7 +319,7 @@ class TestReconcileIntegration:
             install_spine=install_spine,
             state_root=state_root,
             seeder=CacheSeeder(state_root),
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         )
         result = use_case.run()
 

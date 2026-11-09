@@ -10,7 +10,7 @@ import threading
 from pathlib import Path
 
 from runtime.adapters.cache import cache_entry_path
-from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.json_state_repository import JsonStateRepository
 from runtime.adapters.seeder import CacheSeeder, _repoint_symlink
@@ -145,7 +145,7 @@ def _setup(tmp_path: Path) -> tuple[JsonStateRepository, Path, Path, _FakeCsg, _
         install_spine=install_spine,
         state_root=state_root,
         seeder=seeder,
-        mutex=FlockSeedMutex(state_root / ".seed.lock"),
+        mutex=PassThroughSeedMutex(),
     ).run()
     img = tmp_path / "wall.png"
     img.write_bytes(b"user wallpaper bytes")
@@ -157,7 +157,7 @@ def _setup(tmp_path: Path) -> tuple[JsonStateRepository, Path, Path, _FakeCsg, _
         install_spine=install_spine,
         state_root=state_root,
         seeder=seeder,
-        mutex=FlockSeedMutex(state_root / ".seed.lock"),
+        mutex=PassThroughSeedMutex(),
     ).run(img)
     csg.calls = weg.calls = itr.calls = 0
     return repo, state_root, install_spine, csg, weg, itr
@@ -177,7 +177,7 @@ class TestCrashRecoveryIntegration:
             install_spine=install_spine,
             state_root=state_root,
             seeder=CacheSeeder(state_root),
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         ).run()
         csg.calls = weg.calls = itr.calls = 0
         loaded = repo.load_current()
@@ -214,7 +214,7 @@ class TestCrashRecoveryIntegration:
             install_spine=install_spine,
             state_root=state_root,
             seeder=CacheSeeder(state_root),
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         ).run()
 
         # Symlinks match current.json
@@ -242,7 +242,7 @@ class TestCrashRecoveryIntegration:
             install_spine=install_spine,
             state_root=state_root,
             seeder=CacheSeeder(state_root),
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         ).run()
         csg.calls = weg.calls = itr.calls = 0
         # corrupt one symlink to force recovery
@@ -264,7 +264,7 @@ class TestCrashRecoveryIntegration:
             install_spine=install_spine,
             state_root=state_root,
             seeder=CacheSeeder(state_root),
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         ).run()
 
         history_after = (state_root / "history.jsonl").read_text().splitlines()
@@ -297,7 +297,7 @@ class TestCrashRecoveryIntegration:
             install_spine=install_spine,
             state_root=state_root,
             seeder=fresh_seeder,
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         ).run()
 
         after_raw = (state_root / "history.jsonl").read_text()
@@ -324,7 +324,7 @@ class TestCrashRecoveryIntegration:
             install_spine=install_spine,
             state_root=state_root,
             seeder=CacheSeeder(state_root),
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         ).run()
         before = (state_root / "history.jsonl").read_text().splitlines()
         assert before
@@ -342,7 +342,7 @@ class TestCrashRecoveryIntegration:
             install_spine=install_spine,
             state_root=state_root,
             seeder=CacheSeeder(state_root),
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         ).run()
 
         after = (state_root / "history.jsonl").read_text().splitlines()
@@ -383,7 +383,7 @@ class TestCrashRecoveryIntegration:
             install_spine=install_spine,
             state_root=state_root,
             seeder=CacheSeeder(state_root),
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         ).run()
         # No-op pinned behaviorally: zero tool invocations on the re-run
         # (not just "no seed line in the file", which would be vacuous over
@@ -404,7 +404,7 @@ class TestCrashRecoveryIntegration:
             install_spine=install_spine,
             state_root=state_root,
             seeder=CacheSeeder(state_root),
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         ).run()
         final = (state_root / "history.jsonl").read_text().splitlines()
         assert json.loads(final[-1])["trigger"] == "reconcile"
@@ -421,7 +421,7 @@ class TestCrashRecoveryIntegration:
             install_spine=install_spine,
             state_root=state_root,
             seeder=CacheSeeder(state_root),
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         ).run()
         loaded = repo.load_current()
         assert loaded is not None
@@ -444,7 +444,7 @@ class TestCrashRecoveryIntegration:
                     install_spine=install_spine,
                     state_root=state_root,
                     seeder=CacheSeeder(state_root),
-                    mutex=FlockSeedMutex(state_root / ".seed.lock"),
+                    mutex=PassThroughSeedMutex(),
                 ).run()
             except Exception as exc:  # noqa: BLE001
                 errors.append(exc)

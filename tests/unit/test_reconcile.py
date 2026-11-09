@@ -30,7 +30,7 @@ from typing import Any
 
 import pytest
 
-from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.json_state_repository import JsonStateRepository
 from runtime.adapters.seeder import CacheSeeder
@@ -1057,14 +1057,13 @@ class TestReconcileMutex:
         assert events.index("save") < events.index("history") < events.index("release")
         assert events.count("history") == 1
 
-    def test_real_flock_mutex_is_usable(self, tmp_path: Path) -> None:
+    def test_real_converge_lock_is_usable(self, tmp_path: Path) -> None:
         applied = _apply_state(tmp_path)
-        use_case = _make_reconcile(
-            applied, mutex=FlockSeedMutex(applied.state_root / ".seed.lock")
-        )
+        use_case = _make_reconcile(applied, mutex=PassThroughSeedMutex())
 
         result = use_case.run()
 
         assert result.state.applied_at
-        # lock file is the SAME one apply/seeder serialize on
-        assert (applied.state_root / ".seed.lock").exists()
+        # The one lock file is converge.lock; the legacy seed lock is gone.
+        assert (applied.state_root / "converge.lock").exists()
+        assert not (applied.state_root / ".seed.lock").exists()

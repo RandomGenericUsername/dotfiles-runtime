@@ -266,7 +266,8 @@ class TestCliPrune:
 
     def test_mutex_held(self) -> None:
         source = __import__("inspect").getsource(cli_main._run_prune)
-        assert "hold(blocking=True)" in source
+        assert "ConvergeLock(state_root)" in source
+        assert ".seed.lock" not in source
 
     def test_removed_count_key(self, tmp_path: Path) -> None:
         _seed(tmp_path)
@@ -341,12 +342,12 @@ class TestPruneAuditLine:
         # the prune still deleted the planned entries
         assert not (state_root / "cache" / "palettes" / _h(2)).exists()
 
-    def test_audit_append_happens_after_seed_mutex_released(
+    def test_audit_append_happens_after_converge_lock_released(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import contextlib
 
-        import runtime.adapters.flock_seed_mutex as fsm
+        import runtime.adapters.converge_lock as converge_lock_mod
         import runtime.adapters.seeder as seeder_mod
 
         _seed(tmp_path)
@@ -366,7 +367,7 @@ class TestPruneAuditLine:
         def _append(self: object, *args: object, **kwargs: object) -> None:
             order.append("append")
 
-        monkeypatch.setattr(fsm.FlockSeedMutex, "hold", _hold)
+        monkeypatch.setattr(converge_lock_mod.ConvergeLock, "hold", _hold)
         monkeypatch.setattr(seeder_mod.CacheSeeder, "append_history", _append)
         result = runner.invoke(app, ["inspect", "cache", "prune"])
         assert result.exit_code == 0

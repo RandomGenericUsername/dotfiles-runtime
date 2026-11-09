@@ -497,13 +497,15 @@ class TestPassThroughSeedMutex:
             with mutex.hold(blocking=True):
                 pass
 
-    def test_nests_inside_a_held_flock(self, tmp_path: Path) -> None:
-        """The production shape: outer flock held, inners pass through."""
-        from runtime.adapters.flock_seed_mutex import FlockSeedMutex, PassThroughSeedMutex
+    def test_nests_inside_the_held_converge_lock(self, tmp_path: Path) -> None:
+        """The production shape: outer converge.lock held, inners pass through."""
+        from runtime.adapters.converge_lock import ConvergeLock
+        from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
 
-        with FlockSeedMutex(tmp_path / ".seed.lock").hold(blocking=False):
+        with ConvergeLock(tmp_path).hold(blocking=False):
             with PassThroughSeedMutex().hold(blocking=True):
                 pass
+        assert not (tmp_path / ".seed.lock").exists()
 
 
 class TestConvergeCompositionRegression:

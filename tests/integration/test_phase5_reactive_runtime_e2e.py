@@ -230,7 +230,7 @@ class _Sandbox:
                 "DOTFILES_INSTALL_SPINE": str(self.spine),
             }
         )
-        from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+        from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
         from runtime.adapters.json_state_repository import JsonStateRepository
         from runtime.adapters.seeder import CacheSeeder
         from runtime.application.seed_cache import SeedCacheUseCase
@@ -245,7 +245,7 @@ class _Sandbox:
             install_spine=self.spine,
             state_root=self.state_root,
             seeder=CacheSeeder(self.state_root),
-            mutex=FlockSeedMutex(self.state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         ).run()
 
         self._make_derivations_fresh(state_repo)

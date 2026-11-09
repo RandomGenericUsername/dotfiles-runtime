@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.json_state_repository import JsonStateRepository
 from runtime.adapters.seeder import CacheSeeder
@@ -168,7 +168,7 @@ class TestApplyWallpaperIntegration:
             install_spine=install_spine,
             state_root=state_root,
             seeder=seeder,
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         ).run()
 
         use_case = ApplyWallpaperUseCase(
@@ -179,7 +179,7 @@ class TestApplyWallpaperIntegration:
             install_spine=install_spine,
             state_root=state_root,
             seeder=seeder,
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
         )
         # Seeding consumed one derivation per layer; counters count APPLY
         # invocations only.

@@ -1,31 +1,31 @@
 """Icons-only regeneration use case.
 
-``RegenerateIconsUseCase`` is the GUI's live-toggle path: it re-derives
-ONLY the icons layer from the CURRENT palette and reconverges (repoint +
-AGS-only reload) — without touching wallpaper/palette/effects or re-setting
-pixels (no flicker). Icons render exactly what the manifest resolves; no
-runtime retargeting happens here or anywhere else.
+``RegenerateIconsUseCase`` is the GUI's live-toggle path: it re-derives ONLY
+the icons layer from the CURRENT palette and reconverges through the same v3
+generation commit as every other mutation. It does not touch wallpaper bytes
+or re-set pixels (no flicker). Icons render exactly what the manifest resolves;
+no runtime retargeting happens here or anywhere else.
 
 Scope boundary vs ``RegenerateStaleUseCase`` (which reconverges ALL stale
-layers + full reloads): this command is single-layer by construction.
-Palette/effects layers are never touched; wallpaper pixels are never
-re-set. History uses the EXISTING closed-enum trigger ``"regenerate"``
-plus ``details: {layers: {icons: 1}}`` (both schema-valid today — no
-enum change). Events (published by the CLI composition root, not here)
-are ``applying`` at start and ``done``/``error`` at finish on
+layers + full reloads): this command is single-layer by derivation. The
+underlying :class:`ReconcileDesktopStateUseCase` still owns the one
+intent → derive → stage → commit → current.json → history → GC scope, so the
+icons key, generation manifest and history tail are committed together.
+
+History uses the EXISTING closed-enum trigger ``"regenerate"`` plus
+``details: {layers: {icons: 1}}``. Events (published by the CLI composition
+root, not here) are ``applying`` at start and ``done``/``error`` at finish on
 ``wallpaper.state`` — never ``visible`` (pixels never change).
 """
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 
 from runtime.adapters.seeder import CacheSeeder
-from runtime.application.derive import DerivationPipeline
+from runtime.application.reconcile import ReconcileDesktopStateUseCase
 from runtime.domain.ags_apps import AppRefreshRecord, ReloadFailure
 from runtime.domain.models import DesktopState, IconsEntry
 from runtime.ports.ags_app_refresher import IAgsAppRefresher
@@ -58,20 +58,16 @@ class RegenerateIconsUseCase:
     Steps:
     1. Load ``current.json`` (fail loud on absent/corrupt — mutating
        nothing).
-    2. Ensure the icons entry via ``DerivationPipeline.ensure_icons``
-       (same manifest path as a full set, so results are identical).
-    3. Under the state mutex (blocking): re-load (concurrent-modification
-       guard — a ``wallpaper set`` landing mid-run aborts loud instead of
-       clobbering), repoint ONLY the ``current/icons`` symlink, refresh
-       the spine consumer pointers, and save ``current.json`` with the
-       new icons entry.
-    4. Append one ``history.jsonl`` line (trigger ``"regenerate"``,
-       ``details.layers == {icons: 1}``).
-    5. Reload the injected reloaders (the CLI wires AGS only).
+    2. Reconcile with ``force_icons``: ensure the icons entry via
+       ``DerivationPipeline.ensure_icons`` (same manifest path as a full
+       set), then commit one generation, save ``current.json``, append one
+       ``history.jsonl`` line (trigger ``"regenerate"``,
+       ``details.layers == {icons: 1}``), and refresh the injected consumers.
+    3. Return the committed state.
 
-    Constructor receives ports, the injected ``CacheSeeder`` adapter, the
-    state mutex, and ``IDesktopReloader`` instances (dependency inversion
-    — the use case wires no concrete adapters itself).
+    The caller may already hold ``converge.lock`` (the CLI busy contract)
+    and pass ``acquire_lock=False``; otherwise the use case acquires the same
+    one lock itself. It never acquires a second state lock.
     """
 
     def __init__(
@@ -87,28 +83,33 @@ class RegenerateIconsUseCase:
         reloaders: list[IDesktopReloader] | None = None,
         app_refresher: IAgsAppRefresher | None = None,
     ) -> None:
-        self._state_repo = state_repo
-        self._install_spine = install_spine
         self._state_root = state_root
-        self._seeder = seeder
-        self._mutex = mutex
-        self._reloaders: list[IDesktopReloader] = list(reloaders) if reloaders is not None else []
-        self._app_refresher = app_refresher
-        self._pipeline = DerivationPipeline(
-            state_root=state_root,
-            seeder=seeder,
+        self._state_repo = state_repo
+        #: The one convergence implementation. The inner state mutex is the
+        #: injected pass-through; ``converge.lock`` is the only real lock.
+        self._reconcile = ReconcileDesktopStateUseCase(
+            state_repo=state_repo,
             palette_producer=palette_producer,
             weg=weg,
             itr=itr,
             install_spine=install_spine,
+            state_root=state_root,
+            seeder=seeder,
+            mutex=mutex,
+            reloaders=list(reloaders) if reloaders is not None else [],
+            # Icons-only means no wallpaper re-apply and no ordinary reloaders
+            # unless the caller injected them; AGS refresh is manifest-driven.
+            wallpaper_applier=None,
+            app_refresher=app_refresher,
+            source_kind="cli",
         )
 
-    def run(self) -> RegenerateIconsResult:
-        """Regenerate icons from the live palette and reconverge.
+    def run(self, *, acquire_lock: bool = True) -> RegenerateIconsResult:
+        """Regenerate icons from the live palette and commit one generation.
 
         Raises:
             RuntimeError: when ``current.json`` is absent, the palette layer
-                is missing, or a concurrent writer won the race mid-run.
+                is missing, or the generation cannot be committed.
             OSError: on filesystem failures.
         """
         state = self._state_repo.load_current()
@@ -120,73 +121,25 @@ class RegenerateIconsUseCase:
         if state.palette is None:
             raise RuntimeError("icons regenerate needs a palette layer but none is recorded")
 
-        icons, cache_hit = self._pipeline.ensure_icons(state.palette.entry_hash)
-
-        with self._mutex.hold(blocking=True):
-            current = self._state_repo.load_current()
-            if current is None or current.wallpaper.content_hash != state.wallpaper.content_hash:
-                raise RuntimeError(
-                    "concurrent modification detected during icons regeneration "
-                    "(another writer won the race); re-run the command"
-                )
-            now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-            saved = dataclasses.replace(current, icons=icons, applied_at=now)
-            # v3: state is an input to the next converge. Never repoint a
-            # per-family current/ link or write into the install spine.
-            repointed: list[Path] = []
-            consumer_symlinks: list[Path] = []
-            self._state_repo.save(saved)
-
-        self._seeder.append_history(
+        reconciled = self._reconcile.run(
             trigger="regenerate",
-            wallpaper_hash=saved.wallpaper.content_hash,
-            palette_hash=saved.palette.entry_hash if saved.palette else None,
-            effects_hash=saved.effects.entry_hash if saved.effects else None,
-            icons_hash=saved.icons.entry_hash if saved.icons else None,
-            skin_hash=saved.skin.entry_hash if saved.skin else None,
-            source_path=saved.wallpaper.source_path,
-            details={"layers": {"icons": 1}},
+            acquire_lock=acquire_lock,
+            force_icons=True,
+            history_details={"layers": {"icons": 1}},
         )
-
-        reload_failures: list[ReloadFailure] = []
-        app_results: list[AppRefreshRecord] = []
-        if self._app_refresher is not None:
-            from runtime.adapters.generation_store import GenerationStore
-
-            generation_hash = GenerationStore(self._state_root).current_hash()
-            try:
-                if generation_hash is None:
-                    raise RuntimeError("no committed generation")
-                outcome = self._app_refresher.refresh(
-                    saved, generation_hash=generation_hash, trigger="regenerate"
-                )
-            except Exception as exc:
-                logger.warning("AGS app refresh failed unexpectedly: %s", exc)
-                reload_failures.append(
-                    ReloadFailure(
-                        "AgsAppRefresh",
-                        status="failed",
-                        reason=f"unexpected refresh failure: {exc}",
-                    )
-                )
-            else:
-                app_results = list(outcome.records)
-                reload_failures.extend(outcome.failures)
-        for reloader in self._reloaders:
-            try:
-                ok = reloader.reload()
-            except Exception as exc:
-                logger.warning("desktop reload failed for %s: %s", type(reloader).__name__, exc)
-                ok = False
-            if not ok:
-                reload_failures.append(ReloadFailure(type(reloader).__name__))
-
+        icons = reconciled.state.icons
+        if icons is None:
+            raise RuntimeError(
+                "icons regenerate did not commit an icons layer; the previous "
+                "generation remains current"
+            )
         return RegenerateIconsResult(
             icons=icons,
-            cache_hit=cache_hit,
-            state=saved,
-            repointed=repointed,
-            consumer_symlinks=consumer_symlinks,
-            reload_failures=reload_failures,
-            app_refresh_results=app_results,
+            cache_hit="icons" not in reconciled.cache_regenerated,
+            state=reconciled.state,
+            # v3 has no per-family current/ links to report.
+            repointed=[],
+            consumer_symlinks=[],
+            reload_failures=list(reconciled.reload_failures),
+            app_refresh_results=list(reconciled.app_refresh_results),
         )

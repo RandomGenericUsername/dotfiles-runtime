@@ -19,7 +19,6 @@ from pathlib import Path
 import pytest
 
 from runtime.adapters.cache import cache_entry_path
-from runtime.adapters.flock_seed_mutex import FlockSeedMutex
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.json_state_repository import JsonStateRepository
 from runtime.adapters.seeder import CacheSeeder, _repoint_symlink

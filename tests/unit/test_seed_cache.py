@@ -12,13 +12,15 @@ from tests.support.palette_fakes import PaletteProducerStub, v1_colors_yaml, v1_
 import json
 import logging
 import os
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+from runtime.adapters.converge_lock import ConvergeLock
+from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.seeder import CacheSeeder
 from runtime.domain.models import (
@@ -30,8 +32,6 @@ from runtime.domain.models import (
     PaletteEntry,
     WallpaperEntry,
 )
-from runtime.ports.seed_mutex import SeedLockedError
-
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 WALLPAPER_PNG = FIXTURES / "wallpaper.png"
 
@@ -237,7 +237,7 @@ def _make_use_case(
         install_spine=install_spine,
         state_root=state_root,
         seeder=CacheSeeder(state_root),
-        mutex=FlockSeedMutex(state_root / ".seed.lock"),
+        mutex=PassThroughSeedMutex(),
         monitor_source=monitor_source,
     )
 
@@ -877,20 +877,34 @@ class TestSeedFailurePolicy:
 
 
 class TestSeedMutex:
-    """Single-flight seeding: concurrent runs serialize via the mutex."""
+    """Single-flight seeding: concurrent runs serialize via converge.lock."""
 
-    def test_second_process_gets_seed_locked(self, tmp_path: Path) -> None:
+    def test_concurrent_first_runs_serialize_on_the_one_lock(self, tmp_path: Path) -> None:
         install_spine = tmp_path / "install"
         _setup_install_spine(install_spine)
         repo = _FakeStateRepo()
-        use_case = _make_use_case(tmp_path, repo, install_spine)
-        lock_path = tmp_path / ".seed.lock"
-        with FlockSeedMutex(lock_path).hold():
-            with pytest.raises(SeedLockedError):
-                use_case.run()
-        # After release, seeding proceeds
-        use_case.run()
+        errors: list[Exception] = []
+
+        def _run() -> None:
+            try:
+                # Production shape: the composition root holds the one
+                # converge lock; the use case inner mutex is a pass-through.
+                with ConvergeLock(tmp_path).hold():
+                    _make_use_case(tmp_path, repo, install_spine).run()
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_run) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        assert not errors
+        # Exactly one seed committed; the loser observed the winner's state.
         assert len(repo.saved) == 1
+        assert (tmp_path / "converge.lock").exists()
+        assert not (tmp_path / ".seed.lock").exists()
 
 
 class TestReseedAfterCrashedRun:

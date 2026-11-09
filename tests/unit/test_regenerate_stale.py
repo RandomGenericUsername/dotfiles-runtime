@@ -525,7 +525,7 @@ class TestRegenerateEndToEnd:
         from datetime import UTC, datetime
 
         from runtime.adapters.cache import cache_entry_path
-        from runtime.adapters.flock_seed_mutex import FlockSeedMutex
+        from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
         from runtime.adapters.invalidation import InvalidationQueryAdapter
         from runtime.adapters.json_state_repository import JsonStateRepository
         from runtime.adapters.seeder import CacheSeeder
@@ -661,7 +661,7 @@ class TestRegenerateEndToEnd:
             "helpers": {
                 "CacheSeeder": CacheSeeder,
                 "JsonStateRepository": JsonStateRepository,
-                "FlockSeedMutex": FlockSeedMutex,
+                "PassThroughSeedMutex": PassThroughSeedMutex,
                 "InvalidationQueryAdapter": InvalidationQueryAdapter,
                 "CheckInputsUseCase": CheckInputsUseCase,
                 "DerivationPipeline": DerivationPipeline,
@@ -684,7 +684,7 @@ class TestRegenerateEndToEnd:
 
         repo = helpers["JsonStateRepository"](state_root=state_root)
         seeder = helpers["CacheSeeder"](state_root)
-        mutex = helpers["FlockSeedMutex"](state_root / ".seed.lock")
+        mutex = helpers["PassThroughSeedMutex"]()
         helpers["ApplyWallpaperUseCase"](
             state_repo=repo,
             palette_producer=env["csg"],

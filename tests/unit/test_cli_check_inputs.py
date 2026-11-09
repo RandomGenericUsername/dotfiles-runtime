@@ -486,7 +486,14 @@ def test_wiring_contains_no_derivation_adapters() -> None:
     import inspect
 
     source = inspect.getsource(cli_main._run_check_inputs)
-    for name in ("TprAdapter", "WegAdapter", "ItrAdapter", "CacheSeeder", "FlockSeedMutex"):
+    for name in (
+        "TprAdapter",
+        "WegAdapter",
+        "ItrAdapter",
+        "CacheSeeder",
+        "ConvergeLock",
+        "FlockSeedMutex",
+    ):
         assert name not in source
 
 

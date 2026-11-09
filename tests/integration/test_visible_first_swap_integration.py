@@ -23,7 +23,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from runtime.adapters.flock_seed_mutex import FlockSeedMutex, PassThroughSeedMutex
+from runtime.adapters.converge_lock import ConvergeLock
+from runtime.adapters.flock_seed_mutex import PassThroughSeedMutex
 from runtime.adapters.hashing import hash_file
 from runtime.adapters.json_state_repository import JsonStateRepository
 from runtime.adapters.seeder import CacheSeeder
@@ -187,7 +188,7 @@ def _run_swap(
     from runtime.application.apply_wallpaper import ApplyWallpaperUseCase
     from runtime.application.swap_visible import SwapVisibleUseCase
 
-    with FlockSeedMutex(state_root / ".seed.lock").hold(blocking=False):
+    with ConvergeLock(state_root).hold(blocking=False):
         apply = ApplyWallpaperUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
             palette_producer=palette_producer or _FakeCsg(),
@@ -223,7 +224,7 @@ def _run_themed(
     """Phase 2 only, under the real outer flock (the composition shape)."""
     from runtime.application.apply_wallpaper import ApplyWallpaperUseCase
 
-    with FlockSeedMutex(state_root / ".seed.lock").hold(blocking=False):
+    with ConvergeLock(state_root).hold(blocking=False):
         apply_result = ApplyWallpaperUseCase(
             state_repo=JsonStateRepository(state_root=state_root),
             palette_producer=palette_producer or _FakeCsg(),
@@ -244,7 +245,7 @@ def _run_themed(
             seeder=CacheSeeder(state_root),
             mutex=PassThroughSeedMutex(),
             reloaders=reloaders if reloaders is not None else [],
-        ).run(trigger="set")
+        ).run(trigger="set", acquire_lock=False)
     return apply_result, reconcile_result
 
 
@@ -277,7 +278,7 @@ class TestCrashSafety:
             install_spine=install_spine,
             state_root=state_root,
             seeder=CacheSeeder(state_root),
-            mutex=FlockSeedMutex(state_root / ".seed.lock"),
+            mutex=PassThroughSeedMutex(),
             reloaders=[_RecordingReloader("Reloader0", invoked)],
         ).run(trigger="reconcile")
 
