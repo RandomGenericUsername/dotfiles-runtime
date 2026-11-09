@@ -74,6 +74,45 @@ class DriftItem:
     entry_hash: str | None = None
 
 
+def _normalized_link_target(link: Path) -> Path | None:
+    """Return the link's lexical target, resolved relative to its parent.
+
+    Deliberately does not resolve the ``current`` generation hop: a stable
+    link and a generation-specific link must stay distinguishable.
+    """
+    try:
+        raw = os.readlink(link)
+    except OSError:
+        return None
+    target = Path(raw)
+    if not target.is_absolute():
+        target = link.parent / target
+    return Path(os.path.normpath(os.path.abspath(target)))
+
+
+def _stable_appearance_link_target(state_root: Path, config_name: str) -> Path:
+    """Return the provisioning-owned stable target for one config dir."""
+    target = state_root / "current" / "appearance" / f"{config_name}.css"
+    return Path(os.path.normpath(os.path.abspath(target)))
+
+
+def _is_stable_appearance_link(link: Path, state_root: Path) -> bool:
+    """True when ``link`` names exactly the live stable appearance target.
+
+    The link target must be ``<state_root>/current/appearance/<config>.css``
+    (absolute or relative, lexically normalized) and that target must exist
+    through the ``current`` generation hop. A generation path, app tag, v2
+    cache target, wrong basename or dangling link is not stable.
+    """
+    if not link.is_symlink():
+        return False
+    target = _normalized_link_target(link)
+    if target is None:
+        return False
+    expected = _stable_appearance_link_target(state_root, link.parent.name)
+    return target == expected and expected.exists()
+
+
 @dataclass(frozen=True, slots=True)
 class DoctorReport:
     """Outcome of one three-way drift check. Read-only; mutates nothing."""
@@ -441,8 +480,10 @@ class DoctorUseCase:
 
         Read-only. ``current/manifest.json`` is authoritative; the recorded
         state is compared against the manifest intent (palette/skin/mode/
-        wallpaper), never against the pointer it resolves to. No runtime
-        ``config/<app>/appearance.css`` link is expected in v3.
+        wallpaper), never against the pointer it resolves to. A real config
+        dir may carry the provisioning-owned stable ``appearance.css`` link to
+        ``current/appearance/<configDir>.css``; only links that resolve
+        elsewhere are retired drift.
         """
         from runtime.adapters.generation_store import GenerationStore
 
@@ -538,7 +579,7 @@ class DoctorUseCase:
                 if config_dir.is_symlink():
                     continue
                 legacy = config_dir / "appearance.css"
-                if legacy.is_symlink():
+                if legacy.is_symlink() and not _is_stable_appearance_link(legacy, self._state_root):
                     items.append(
                         DriftItem(
                             f"consumer/config/{config_dir.name}/appearance.css",

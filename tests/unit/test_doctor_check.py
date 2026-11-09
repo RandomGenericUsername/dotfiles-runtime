@@ -424,6 +424,16 @@ def _by_name(report: DoctorReport) -> dict[str, str]:
     return {item.name: item.status for item in report.items}
 
 
+def _check_with_spine(state_root: Path) -> DoctorReport:
+    from runtime.adapters.json_state_repository import JsonStateRepository
+
+    return DoctorUseCase(
+        state_repo=JsonStateRepository(state_root=state_root),
+        state_root=state_root,
+        install_spine=state_root.parent / "install",
+    ).check()
+
+
 class TestCleanMachine:
     def test_consistent_state_reports_clean(self, tmp_path: Path) -> None:
         state_root = tmp_path / "state"
@@ -431,6 +441,122 @@ class TestCleanMachine:
         report = _check(state_root)
         assert report.clean is True
         assert report.items and all(item.status == "ok" for item in report.items)
+
+
+class TestStableAppearanceConsumerLink:
+    """BUG-016: the provisioning-owned stable appearance link is not drift."""
+
+    def _config_dir(self, state_root: Path) -> Path:
+        config_dir = state_root.parent / "install" / "config" / "wlogout"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        return config_dir
+
+    def _stable_target(self, state_root: Path) -> Path:
+        target = state_root / "current" / "appearance" / "wlogout.css"
+        target.write_text("/* live wlogout appearance */\n", encoding="utf-8")
+        return target
+
+    def test_real_config_dir_with_stable_link_is_clean(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        target = self._stable_target(state_root)
+        link = self._config_dir(state_root) / "appearance.css"
+        # Live shape: an absolute link through the one stable current hop.
+        link.symlink_to(target)
+        report = _check_with_spine(state_root)
+        assert report.clean is True
+        assert "consumer/config/wlogout/appearance.css" not in _by_name(report)
+
+    def test_relative_stable_link_is_clean(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        self._stable_target(state_root)
+        link = self._config_dir(state_root) / "appearance.css"
+        link.symlink_to(
+            os.path.relpath(state_root / "current" / "appearance" / "wlogout.css", link.parent)
+        )
+        report = _check_with_spine(state_root)
+        assert report.clean is True
+        assert "consumer/config/wlogout/appearance.css" not in _by_name(report)
+
+    def test_wrong_target_is_retired_drift(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        wrong = state_root / "current" / "appearance" / "ags.css"
+        assert wrong.exists()
+        link = self._config_dir(state_root) / "appearance.css"
+        link.symlink_to(wrong)
+        report = _check_with_spine(state_root)
+        item = {item.name: item for item in report.items}["consumer/config/wlogout/appearance.css"]
+        assert item.status == "diverged"
+        assert "retired v2 convenience link" in item.detail
+
+    def test_dangling_stable_path_is_retired_drift(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        link = self._config_dir(state_root) / "appearance.css"
+        link.symlink_to(state_root / "current" / "appearance" / "wlogout.css")
+        assert not (state_root / "current" / "appearance" / "wlogout.css").exists()
+        report = _check_with_spine(state_root)
+        assert _by_name(report)["consumer/config/wlogout/appearance.css"] == "diverged"
+
+    def test_generation_specific_path_is_retired_drift(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        generation_target = self._stable_target(state_root).resolve()
+        assert "generations" in generation_target.parts
+        link = self._config_dir(state_root) / "appearance.css"
+        link.symlink_to(generation_target)
+        report = _check_with_spine(state_root)
+        assert _by_name(report)["consumer/config/wlogout/appearance.css"] == "diverged"
+
+    def test_app_tag_path_is_retired_drift(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        app_tag_file = tmp_path / "apps" / "wlogout@v1" / "appearance.css"
+        app_tag_file.parent.mkdir(parents=True)
+        app_tag_file.write_text("/* immutable app tag */\n", encoding="utf-8")
+        link = self._config_dir(state_root) / "appearance.css"
+        link.symlink_to(app_tag_file)
+        report = _check_with_spine(state_root)
+        assert _by_name(report)["consumer/config/wlogout/appearance.css"] == "diverged"
+
+    def test_wrong_basename_is_retired_drift(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        other = state_root / "current" / "appearance" / "other.css"
+        other.write_text("/* wrong config dir */\n", encoding="utf-8")
+        link = self._config_dir(state_root) / "appearance.css"
+        link.symlink_to(other)
+        report = _check_with_spine(state_root)
+        assert _by_name(report)["consumer/config/wlogout/appearance.css"] == "diverged"
+
+    def test_v2_cache_target_is_retired_drift(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        cache_target = state_root / "cache" / "appearance" / ("a" * 64) / "wlogout.css"
+        cache_target.parent.mkdir(parents=True)
+        cache_target.write_text("/* old v2 cache target */\n", encoding="utf-8")
+        link = self._config_dir(state_root) / "appearance.css"
+        link.symlink_to(cache_target)
+        report = _check_with_spine(state_root)
+        assert _by_name(report)["consumer/config/wlogout/appearance.css"] == "diverged"
+
+    def test_ags_config_symlink_is_still_skipped(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        app_tag = tmp_path / "apps" / "ags"
+        app_tag.mkdir(parents=True)
+        (app_tag / "appearance.css").symlink_to(
+            state_root / "cache" / "appearance" / ("b" * 64) / "ags.css"
+        )
+        (app_tag / "skin.css").symlink_to(state_root / "current" / "skins" / "ags.css")
+        config_root = state_root.parent / "install" / "config"
+        config_root.mkdir(parents=True, exist_ok=True)
+        (config_root / "ags").symlink_to(app_tag, target_is_directory=True)
+        report = _check_with_spine(state_root)
+        names = _by_name(report)
+        assert not any(name.startswith("consumer/config/ags/") for name in names)
 
 
 class TestDivergenceClasses:
