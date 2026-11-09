@@ -28,6 +28,15 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**1.0.8** — stable appearance links are not v2 drift.
+
+- `doctor` now accepts the provisioning-owned
+  `config/<configDir>/appearance.css` link when it names exactly
+  `<stateRoot>/current/appearance/<configDir>.css` and the target exists.
+  Generation paths, app tags, old v2 targets, wrong basenames and dangling
+  links still report retired drift. The live wlogout link is clean, and the
+  AGS app-symlink skip plus the `skin.css`/`skin.json` checks are unchanged.
+
 **1.0.7** — wlogout skin target regression proof.
 
 - The released `wlogout.gtk.css.j2` from `dotfiles-assets v0.14.0` is now a

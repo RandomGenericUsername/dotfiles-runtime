@@ -2,7 +2,7 @@
 id: BUG-016
 title: "Doctor flags the legitimate stable wlogout appearance.css link as a retired v2 convenience link"
 kind: bug
-status: in-progress
+status: done
 lane: 2
 severity: high
 links:
@@ -90,3 +90,80 @@ to the link target lexically after `normpath` (so a stable link is not
 mistaken for a generation path, and `/current/` is not resolved away), and
 require `.exists()` for the target. Anything else is drift. No app-name
 hardcoding, no provisioning or live-state edits.
+
+## Outcome (2026-11-09)
+
+**Worktree:** `.worktrees/BUG-016/`
+**Branch:** `ticket/BUG-016-doctor-stable-appearance-link`
+**Commits:** `8106196` (ticket + INDEX plan), `2882c19` (fix + regression
+tests), this release commit (version/CHANGELOG/README + ticket close).
+**Tag:** `v1.0.8` (annotated) after green gates.
+
+### Exact rule
+
+For each real (non-symlink) `config/*` dir, `appearance.css` is clean only
+when `_is_stable_appearance_link` holds:
+
+- the raw link target (absolute, or relative to the link's parent) is
+  lexically normalized with `normpath`/`abspath` — the `current` hop is
+  deliberately **not** resolved;
+- the normalized target equals
+  `<state_root>/current/appearance/<config_dir.name>.css`; and
+- that stable target exists through the `current` generation hop.
+
+Everything else is `diverged | retired v2 convenience link`: generation
+paths, app-tag paths, old v2 cache targets, wrong basenames and dangling
+stable paths. A config dir that is itself a symlink is still skipped before
+the rule runs, and `skin.css`/`skin.json` still report retired v1 skin
+pointers.
+
+### Delivered
+
+| Path | What changed |
+| --- | --- |
+| `src/runtime/application/doctor.py` | `_normalized_link_target`, `_stable_appearance_link_target`, `_is_stable_appearance_link`; `_check_appearance` uses them for `appearance.css` |
+| `tests/unit/test_doctor_check.py` | `TestStableAppearanceConsumerLink`: live-shaped absolute and relative wlogout links clean; wrong target, dangling, generation path, app-tag path, wrong basename and v2 cache target drill; AGS config symlink still skipped |
+| `pyproject.toml` / `src/runtime/__init__.py` / `uv.lock` / `CHANGELOG.md` / `README.md` | `1.0.8` release metadata and notes |
+
+### Tests
+
+```sh
+uv run pytest -q tests/unit/test_doctor_check.py \
+  tests/unit/test_doctor_repair.py tests/unit/test_appearance.py \
+  tests/unit/test_skins.py tests/unit/test_appearance_v2_assets.py \
+  tests/unit/test_generations_v3.py
+# 164 passed in 5.56s
+```
+
+### Gates
+
+```sh
+make gates
+# test: 2448 passed, 3 skipped, 11 deselected
+# lint: All checks passed
+# contracts-check: 58 passed, 1 skipped
+# hermetic: 2448 passed, 3 skipped, 11 deselected
+# lock-check: Resolved 25 packages
+# docs-check: rc 0
+
+make gates-ci
+# same six gates: 2448 passed, 3 skipped, 11 deselected
+make ci-gates-parity
+# PASS gates=[...] jobs=[...] exempt=['ci-gates-parity', 'release']
+```
+
+### Live read-only check (fixed worktree)
+
+```sh
+uv run dotfiles-runtime doctor -f plain
+# exit=0
+# desktop clean: 27 item(s) checked; watch health: ok; ...
+# no `consumer/config/wlogout/appearance.css` row
+```
+
+The live link
+`~/.local/share/dotfiles/config/wlogout/appearance.css ->
+~/.local/state/dotfiles/current/appearance/wlogout.css` is now accepted.
+No `apply` was run and no live state, provisioning, composition, app or
+contract content was changed.
+

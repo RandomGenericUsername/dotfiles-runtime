@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.0.8 — 2026-11-09
+
+Stop `doctor` from reporting the provisioning-owned stable `appearance.css`
+link as retired v2 drift (BUG-016).
+
+- After the SKIN-WLOGOUT cutover, provisioning's `state_links` role creates
+  `config/<configDir>/appearance.css -> state/current/appearance/<configDir>.css`
+  for every real (non-symlink) config dir. The doctor flagged every such link
+  as a retired v2 convenience link, so a clean desktop reported perpetual
+  drift.
+- The rule is now generic (no app name): a real config dir's `appearance.css`
+  symlink is clean only when its lexically normalized target is exactly
+  `<state_root>/current/appearance/<config_dir.name>.css` and that target
+  exists through the `current` generation hop. Generation-specific paths, app
+  tags, old v2 cache targets, wrong basenames and dangling links remain
+  retired drift.
+- The AGS app-symlink skip and the `skin.css`/`skin.json` retired v1 pointer
+  checks are unchanged. Regression tests use the live wlogout shape plus each
+  drift class; a read-only live doctor check reports the desktop clean with no
+  wlogout consumer row.
+
 ## v1.0.7 — 2026-11-09
 
 Prove wlogout is a generic v2 skin consumer with no runtime production change
