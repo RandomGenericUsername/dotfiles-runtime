@@ -16,6 +16,13 @@ History uses the EXISTING closed-enum trigger ``"regenerate"`` plus
 ``details: {layers: {icons: 1}}``. Events (published by the CLI composition
 root, not here) are ``applying`` at start and ``done``/``error`` at finish on
 ``wallpaper.state`` — never ``visible`` (pixels never change).
+
+Strict idempotence: when the resolved icons entry (and every other generation
+input) equals ``current``, the reconcile layer returns ``no_op=True`` without
+committing, moving ``current``, saving ``current.json``, appending history,
+touching the appearance ledger or refreshing/reloading consumers. A no-op is
+therefore *not* recorded as a history line; history describes committed
+content changes only.
 """
 
 from __future__ import annotations
@@ -50,6 +57,10 @@ class RegenerateIconsResult:
     consumer_symlinks: list[Path]
     reload_failures: list[ReloadFailure]
     app_refresh_results: list[AppRefreshRecord] = field(default_factory=list)
+    no_op: bool = False
+    """``True`` when the icons cache hit resolves to the current generation
+    content: no generation, pointer, history, appearance ledger, app refresh
+    or reloader was touched."""
 
 
 class RegenerateIconsUseCase:
@@ -125,6 +136,7 @@ class RegenerateIconsUseCase:
             trigger="regenerate",
             acquire_lock=acquire_lock,
             force_icons=True,
+            idempotent=True,
             history_details={"layers": {"icons": 1}},
         )
         icons = reconciled.state.icons
@@ -142,4 +154,5 @@ class RegenerateIconsUseCase:
             consumer_symlinks=[],
             reload_failures=list(reconciled.reload_failures),
             app_refresh_results=list(reconciled.app_refresh_results),
+            no_op=reconciled.no_op,
         )

@@ -135,6 +135,23 @@ class TestIconsRegenerateCli:
         assert obj["repointed"] == ["/state/current/icons"]
         assert obj["reload_failures"] == []
 
+    def test_no_op_renders_unchanged_without_repoint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _fake_regenerate(
+            monkeypatch,
+            lambda client: _regenerate_result(
+                cache_hit=True, no_op=True, repointed=[]
+            ),
+        )
+        result = runner.invoke(app, ["icons", "regenerate", "--format", "json"])
+
+        assert result.exit_code == 0
+        obj = json.loads(result.output)
+        assert obj["no_op"] is True
+        assert obj["cache_hit"] is True
+        assert obj["repointed"] == []
+
     def test_absent_state_maps_to_exit_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(*, client: Any = None) -> Any:
             raise RuntimeError("nothing to regenerate: no runtime state recorded yet")

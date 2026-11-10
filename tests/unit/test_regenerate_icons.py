@@ -275,13 +275,59 @@ class TestRegenerateIconsUseCase:
         assert not (ctx["state_root"] / "icon-contrast.json").exists()
 
     def test_second_run_is_cache_hit(self, tmp_path: Path) -> None:
+        from runtime.adapters.generation_store import GenerationStore
+
         ctx = _setup(tmp_path)
         first = ctx["use_case"].run()
+        store = GenerationStore(ctx["state_root"])
+        generation = store.current_hash()
+        assert generation is not None
+        manifest_bytes = (store.generation_path(generation) / "manifest.json").read_bytes()
+        current_bytes = (ctx["state_root"] / "current.json").read_bytes()
+        history = _history_lines(ctx["state_root"])
+
         second = ctx["use_case"].run()
 
         assert second.cache_hit is True
+        assert second.no_op is True
         assert second.icons.entry_hash == first.icons.entry_hash
         assert ctx["itr"].calls == 1
+        # Strict idempotence: the pointer, current.json and manifest are
+        # byte-identical, no history line is appended and no consumer reloads.
+        assert store.current_hash() == generation
+        assert (store.generation_path(generation) / "manifest.json").read_bytes() == manifest_bytes
+        assert (ctx["state_root"] / "current.json").read_bytes() == current_bytes
+        assert _history_lines(ctx["state_root"]) == history
+        assert len(history) == 1
+        assert ctx["reloader"].calls == 1
+
+    def test_changed_icons_still_commits_a_new_generation(self, tmp_path: Path) -> None:
+        from runtime.adapters.generation_store import GenerationStore
+
+        ctx = _setup(tmp_path)
+        first = ctx["use_case"].run()
+        store = GenerationStore(ctx["state_root"])
+        before = store.current_hash()
+        history_before = len(_history_lines(ctx["state_root"]))
+
+        # Change the icon mapping input so the icons layer hash changes.
+        ctx["mappings_file"].write_text(SPINE_ICONS + "  COLOR_ACCENT: color14\n")
+        second = ctx["use_case"].run()
+
+        assert second.cache_hit is False
+        assert second.no_op is False
+        assert second.icons.entry_hash != first.icons.entry_hash
+        assert store.current_hash() != before
+        assert store.current_manifest() is not None
+        assert (
+            store.current_manifest()["layers"]["icons"]["entryHash"]  # type: ignore[index]
+            == second.icons.entry_hash
+        )
+        lines = _history_lines(ctx["state_root"])
+        assert len(lines) == history_before + 1
+        assert lines[-1]["trigger"] == "regenerate"
+        assert lines[-1]["icons"] == second.icons.entry_hash
+        assert ctx["reloader"].calls == 2
 
     def test_absent_state_fails_loud_without_mutation(self, tmp_path: Path) -> None:
         ctx = _setup(tmp_path)

@@ -365,3 +365,111 @@ def test_generation_spec_requires_a_palette(tmp_path: Path) -> None:
                 source_kind="cli",
             )
         )
+
+
+def _content_spec(
+    state_root: Path,
+    *,
+    intent_hash: str,
+    source_kind: str = "cli",
+    job_id: str | None = None,
+    state: object | None = None,
+) -> GenerationSpec:
+    from runtime.adapters.appearance import load_appearance_entry
+    from runtime.adapters.hashing import appearance_generation_hash
+    from runtime.adapters.json_state_repository import JsonStateRepository
+
+    store = GenerationStore(state_root)
+    current = state or JsonStateRepository(state_root=state_root).load_current()
+    assert current is not None
+    assert current.palette is not None and current.skin is not None
+    manifest = store.current_manifest()
+    assert manifest is not None
+    appearance_hash = appearance_generation_hash(
+        current.palette.entry_hash,
+        current.skin.entry_hash,
+        manifest["mode"],
+        host_hash=(
+            manifest.get("host", {}).get("fingerprint")
+            if isinstance(manifest.get("host"), dict)
+            else None
+        ),
+    )
+    entry = load_appearance_entry(
+        state_root / "cache" / "appearance" / appearance_hash
+    )
+    return GenerationSpec(
+        state=current,
+        appearance=entry,
+        mode=manifest["mode"],
+        skin_name=current.skin.name,
+        skin_hash=current.skin.entry_hash,
+        intent_hash=intent_hash,
+        monitor_names=tuple(current.monitors),
+        source_kind=source_kind,  # type: ignore[arg-type]
+        job_id=job_id,
+    )
+
+
+def test_generation_identity_ignores_operational_source_metadata(tmp_path: Path) -> None:
+    from tests.unit.test_doctor_check import _seed_state
+
+    state_root = tmp_path / "state"
+    _seed_state(state_root)
+    store = GenerationStore(state_root)
+    before = store.current_hash()
+    assert before is not None
+
+    first = store.commit(
+        _content_spec(
+            state_root,
+            intent_hash="a" * 64,
+            source_kind="cli",
+        )
+    )
+    second = store.commit(
+        _content_spec(
+            state_root,
+            intent_hash="b" * 64,
+            source_kind="daemon",
+            job_id="operational-job",
+        )
+    )
+
+    assert first.unchanged is True
+    assert second.unchanged is True
+    assert first.generation_hash == before
+    assert second.generation_hash == before
+    assert store.current_hash() == before
+
+
+def test_generation_identity_changes_with_icons_content(tmp_path: Path) -> None:
+    import dataclasses
+
+    from tests.unit.test_doctor_check import _seed_state
+    from runtime.adapters.json_state_repository import JsonStateRepository
+
+    state_root = tmp_path / "state"
+    _seed_state(state_root)
+    store = GenerationStore(state_root)
+    before = store.current_hash()
+    assert before is not None
+    state = JsonStateRepository(state_root=state_root).load_current()
+    assert state is not None and state.icons is not None
+    changed = dataclasses.replace(
+        state,
+        icons=dataclasses.replace(state.icons, entry_hash="f" * 64),
+    )
+
+    result = store.commit(
+        _content_spec(
+            state_root,
+            intent_hash="a" * 64,
+            state=changed,
+        )
+    )
+
+    assert result.unchanged is False
+    assert result.generation_hash != before
+    assert store.current_hash() == result.generation_hash
+    assert result.manifest["layers"]["icons"]["entryHash"] == "f" * 64

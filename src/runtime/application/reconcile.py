@@ -159,6 +159,10 @@ class ReconcileResult:
     appearance_mode: str | None = None
     generation_hash: str | None = None
     generation_path: Path | None = None
+    no_op: bool = False
+    """``True`` when the resolved content already equals ``current`` and the
+    caller opted into strict idempotence: nothing was written, moved,
+    recorded or reloaded."""
 
 
 class ReconcileDesktopStateUseCase:
@@ -259,6 +263,7 @@ class ReconcileDesktopStateUseCase:
         intent_hash: str | None = None,
         acquire_lock: bool = True,
         force_icons: bool = False,
+        idempotent: bool = False,
         history_details: dict[str, object] | None = None,
     ) -> ReconcileResult:
         """The one v3 mutation scope: intent → derive → stage → commit → apply.
@@ -270,7 +275,10 @@ class ReconcileDesktopStateUseCase:
         commit, current.json save, and history append stay one atomic scope.
         ``force_icons`` re-derives the icons layer even on a recorded cache
         hit (the GUI live-toggle path); the commit itself is still the one
-        generation transaction.
+        generation transaction. ``idempotent`` additionally skips the
+        current.json save, history append, GC, apply and reload when the
+        committed content already equals ``current``; the GUI icons path
+        opts in, ordinary converge keeps its ledger/apply semantics.
         """
         # Validate the enum before acquiring the lock: a bad caller argument
         # must fail without touching the filesystem.
@@ -284,6 +292,7 @@ class ReconcileDesktopStateUseCase:
                 wallpaper_path=wallpaper_path,
                 intent_hash=intent_hash,
                 force_icons=force_icons,
+                idempotent=idempotent,
                 history_details=history_details,
             )
         with self._converge_lock.hold():
@@ -293,6 +302,7 @@ class ReconcileDesktopStateUseCase:
                 wallpaper_path=wallpaper_path,
                 intent_hash=intent_hash,
                 force_icons=force_icons,
+                idempotent=idempotent,
                 history_details=history_details,
             )
 
@@ -304,6 +314,7 @@ class ReconcileDesktopStateUseCase:
         wallpaper_path: Path | None,
         intent_hash: str | None,
         force_icons: bool,
+        idempotent: bool,
         history_details: dict[str, object] | None,
     ) -> ReconcileResult:
         """Reconcile: entries → generation commit → current.json → apply/ledger.
@@ -398,7 +409,13 @@ class ReconcileDesktopStateUseCase:
                         )
                 if effects is not None and state.effects is not None:
                     self._assert_hash_matches(state.effects.entry_hash, effects.entry_hash)
-                if icons is not None and state.icons is not None:
+                if (
+                    icons is not None
+                    and state.icons is not None
+                    and not force_icons
+                ):
+                    # The GUI live-toggle path intentionally re-derives icons;
+                    # only the ordinary path must reproduce the recorded hash.
                     self._assert_hash_matches(state.icons.entry_hash, icons.entry_hash)
 
             state = DesktopState(
@@ -480,6 +497,31 @@ class ReconcileDesktopStateUseCase:
                     host_values=appearance_entry.host_values,
                 )
             )
+            if idempotent and generation.unchanged:
+                # The resolved content already equals ``current``. Leave
+                # current.json, history, GC, the ledger, app refresh and
+                # reloaders untouched: an unchanged icons toggle is a no-op.
+                logger.info(
+                    "reconcile: generation %s unchanged; strict no-op",
+                    generation.generation_hash[:12],
+                )
+                return ReconcileResult(
+                    repointed=[],
+                    skipped=self._derive_skipped(
+                        state, monitor_names, [], log=False
+                    ),
+                    state=state,
+                    cache_regenerated=regenerated,
+                    reload_failures=[],
+                    consumer_symlinks=[],
+                    app_refresh_results=[],
+                    appearance_hash=appearance_entry.appearance_hash,
+                    appearance_skin=appearance_entry.skin,
+                    appearance_mode=appearance_entry.mode,
+                    generation_hash=generation.generation_hash,
+                    generation_path=generation.path,
+                    no_op=True,
+                )
             repointed = self._generation_paths(
                 generation.path, monitor_names, palette, effects, icons
             )

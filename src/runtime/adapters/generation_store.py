@@ -65,6 +65,7 @@ __all__ = [
     "GENERATIONS_DIR",
     "GenerationManifestError",
     "GenerationStore",
+    "compute_generation_content_hash",
     "compute_generation_hash",
     "generation_intent_hash",
 ]
@@ -204,6 +205,49 @@ def compute_generation_hash(
     return _canonical_hash(payload)
 
 
+def compute_generation_content_hash(
+    *,
+    layer_hashes: Mapping[str, str],
+    skin_name: str,
+    skin_hash: str,
+    mode: str,
+    appearance_hash: str,
+    host: str | None = None,
+) -> str:
+    """Canonical generation identity from content inputs only.
+
+    Operational metadata (``source.kind``, ``jobId``, timestamps and a
+    caller-supplied queue/trigger intent hash) is deliberately absent. The
+    intent component is recomputed from the resolved content snapshot, so an
+    unchanged desktop always maps to the same generation even when the
+    executor or trigger differs.
+    """
+    wallpaper = layer_hashes.get("wallpaper")
+    palette = layer_hashes.get("palette")
+    if wallpaper is None or palette is None:
+        raise GenerationManifestError(
+            "a generation requires wallpaper and palette content hashes"
+        )
+    intent_hash = generation_intent_hash(
+        wallpaper=wallpaper,
+        palette=palette,
+        skin=skin_name,
+        mode=mode,
+        effects=layer_hashes.get("effects"),
+        icons=layer_hashes.get("icons"),
+        host=host,
+    )
+    return compute_generation_hash(
+        layer_hashes=layer_hashes,
+        skin_name=skin_name,
+        skin_hash=skin_hash,
+        mode=mode,
+        appearance_hash=appearance_hash,
+        intent_hash=intent_hash,
+        host=host,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class GenerationSpec:
     """Everything one converge commit needs; no filesystem object is embedded."""
@@ -230,6 +274,9 @@ class GenerationResult:
     path: Path
     manifest: dict[str, Any]
     created: bool
+    unchanged: bool = False
+    """``True`` when the resolved content already equals ``current``; the
+    pointer, the ``current.json`` view and all consumers are left alone."""
 
 
 class GenerationStore:
@@ -322,16 +369,42 @@ class GenerationStore:
         published.
         """
         layer_hashes = self._layer_hashes(spec.state)
-        generation_hash = compute_generation_hash(
+        generation_hash = compute_generation_content_hash(
             layer_hashes=layer_hashes,
             skin_name=spec.skin_name,
             skin_hash=spec.skin_hash,
             mode=spec.mode,
             appearance_hash=spec.appearance.appearance_hash,
-            intent_hash=spec.intent_hash,
             host=spec.host_hash,
         )
         target = self.generation_path(generation_hash)
+
+        # Idempotence: the manifest's operational fields (source kind/job,
+        # timestamps and a caller-supplied intent hash) are not identity.
+        # When the current generation resolves to the same content, keep it
+        # byte-for-byte: no new directory, no pointer move, no re-stage.
+        current = self.current_hash()
+        if current is not None:
+            current_manifest = self.load_manifest(current)
+            if (
+                current_manifest is not None
+                and self._manifest_content_hash(current_manifest) == generation_hash
+            ):
+                try:
+                    self.verify(current)
+                except GenerationManifestError:
+                    # A broken current is never preserved as a no-op; the
+                    # normal commit path below rebuilds/repoints it.
+                    pass
+                else:
+                    return GenerationResult(
+                        generation_hash=current,
+                        path=self.generation_path(current),
+                        manifest=current_manifest,
+                        created=False,
+                        unchanged=True,
+                    )
+
         created = False
         if target.is_dir():
             try:
@@ -409,6 +482,53 @@ class GenerationStore:
         if state.icons is not None:
             layers["icons"] = state.icons.entry_hash
         return layers
+
+    def _manifest_content_hash(self, manifest: Mapping[str, Any]) -> str | None:
+        """Recompute a manifest's content identity, ignoring operational data.
+
+        Returns ``None`` when the manifest lacks the content fields needed for
+        a stable comparison; callers then fall back to a normal commit.
+        """
+        layers = manifest.get("layers")
+        skin = manifest.get("skin")
+        if not isinstance(layers, Mapping) or not isinstance(skin, Mapping):
+            return None
+        layer_hashes: dict[str, str] = {}
+        for name in ("wallpaper", "palette", "effects", "icons"):
+            entry = layers.get(name)
+            if isinstance(entry, Mapping) and _is_hex64(entry.get("entryHash")):
+                layer_hashes[name] = str(entry["entryHash"])
+        palette_hash = layer_hashes.get("palette")
+        skin_hash = skin.get("entryHash")
+        skin_name = skin.get("name")
+        mode = manifest.get("mode")
+        if (
+            palette_hash is None
+            or not _is_hex64(skin_hash)
+            or not isinstance(skin_name, str)
+            or mode not in ("dark", "light")
+        ):
+            return None
+        host = manifest.get("host")
+        host_hash = (
+            host.get("fingerprint")
+            if isinstance(host, Mapping) and _is_hex64(host.get("fingerprint"))
+            else None
+        )
+        try:
+            appearance_hash = appearance_generation_hash(
+                palette_hash, str(skin_hash), str(mode), host_hash=host_hash
+            )
+            return compute_generation_content_hash(
+                layer_hashes=layer_hashes,
+                skin_name=skin_name,
+                skin_hash=str(skin_hash),
+                mode=str(mode),
+                appearance_hash=appearance_hash,
+                host=host_hash,
+            )
+        except (GenerationManifestError, ValueError):
+            return None
 
     def _populate(
         self,

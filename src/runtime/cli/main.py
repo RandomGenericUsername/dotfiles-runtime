@@ -1098,21 +1098,28 @@ def icons_regenerate(
         )
         raise typer.Exit(code=1) from None
 
-    summary = (
-        f"icons regenerated: {result.icons.entry_hash[:12]}"
-        f", {len(result.repointed)} symlink(s) repointed"
-        + (
-            f", {len(result.consumer_symlinks)} consumer link(s)"
-            if result.consumer_symlinks
-            else ""
+    if result.no_op:
+        summary = (
+            f"icons unchanged: {result.icons.entry_hash[:12]}"
+            ", current generation kept"
         )
-    )
+    else:
+        summary = (
+            f"icons regenerated: {result.icons.entry_hash[:12]}"
+            f", {len(result.repointed)} symlink(s) repointed"
+            + (
+                f", {len(result.consumer_symlinks)} consumer link(s)"
+                if result.consumer_symlinks
+                else ""
+            )
+        )
     renderer.custom(
         CustomView(
             plain=summary,
             object={
                 "icons": result.icons.entry_hash,
                 "cache_hit": result.cache_hit,
+                "no_op": result.no_op,
                 "repointed": [str(p) for p in result.repointed],
                 "consumer_symlinks": [str(p) for p in result.consumer_symlinks],
                 "reload_failures": list(result.reload_failures),
