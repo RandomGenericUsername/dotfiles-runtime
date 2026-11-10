@@ -2,7 +2,7 @@
 id: BUG-017
 title: "Runtime appearance prune deletes the provisioning-owned wlogout stable link"
 kind: bug
-status: in-progress
+status: done
 lane: 2
 severity: high
 links:
@@ -81,6 +81,76 @@ wlogout after v3 prune: False
 - `doctor` remains clean for the stable wlogout link (BUG-016 behaviour).
 - No `.seed.lock` is introduced; state mutation still uses the one
   `converge.lock`.
+
+## Outcome (2026-11-10)
+
+**Worktree:** `.worktrees/BUG-017/`
+**Branch:** `ticket/BUG-017-appearance-consumer-ownership`
+**Commits:** `56c4bb1` (ticket + INDEX plan), `5e22784` (fix + regression
+tests), this release commit (version/CHANGELOG/README + ticket close).
+**Tag:** `v1.1.1` (annotated) after green gates.
+
+### Exact prune change
+
+The appearance adapter now derives the runtime-owned consumer names from the
+published appearance target set (`appearance.config_dirs`) using the repo-wide
+AGS config-dir identity (`ags`, `ags-*`). Both `prune_stale_appearance_consumers`
+and `CacheSeeder.prune_runtime_spine_pointers` prune `appearance.css` only for
+those owned names. Reconcile passes the committed appearance's
+`config_dirs` into the v3 cleanup. The existing rules stay: symlink-only,
+raw target must name `current/appearance`, and AGS links with a stale target
+still retire. No `wlogout` constant was added.
+
+### Delivered
+
+| Path | What changed |
+| --- | --- |
+| `src/runtime/adapters/appearance.py` | `is_ags_appearance_consumer`, `runtime_appearance_consumer_names`; ownership-aware `prune_stale_appearance_consumers` |
+| `src/runtime/adapters/seeder.py` | `publish_appearance` passes `published`; `prune_runtime_spine_pointers` applies the same ownership filter |
+| `src/runtime/application/reconcile.py` | passes the committed `appearance_entry.config_dirs` to the converge prune |
+| `tests/unit/test_appearance.py` | wlogout-like stable survival, AGS stale prune, symlink-dir skip, non-current target preservation |
+| `tests/unit/test_wlogout_skin_consumer.py` | wlogout link survives a dark→light appearance reconverge + doctor consumer row absent |
+| `tests/unit/test_reconcile.py` | full v3 reconcile keeps a non-AGS stable appearance link |
+| `pyproject.toml` / `src/runtime/__init__.py` / `uv.lock` / `CHANGELOG.md` / `README.md` | `1.1.1` release metadata and notes |
+
+### Targeted tests
+
+```sh
+uv run pytest -q tests/unit/test_appearance.py \
+  tests/unit/test_appearance_v2_assets.py \
+  tests/unit/test_wlogout_skin_consumer.py \
+  tests/unit/test_seed_cache.py tests/unit/test_generations_v3.py \
+  tests/unit/test_reconcile.py tests/unit/test_doctor_check.py \
+  tests/unit/test_doctor_repair.py tests/unit/test_one_lock.py
+# 260 passed
+```
+
+### Gates
+
+```sh
+make gates
+# test: 2492 passed, 3 skipped, 11 deselected
+# lint: All checks passed
+# contracts-check: 58 passed, 1 skipped
+# hermetic: 2492 passed, 3 skipped, 11 deselected
+# lock-check: Resolved 25 packages
+# docs-check: rc 0
+
+make gates-ci
+# same six gates, all green
+make ci-gates-parity
+# PASS gates=[...] jobs=[...] exempt=['ci-gates-parity', 'release']
+```
+
+### Live read-only confirmation
+
+The live wlogout link is currently absent (the bug already fired), so the
+survival proof is the dark→light reconverge test above:
+`config/wlogout/appearance.css` keeps the exact raw target
+`current/appearance/wlogout.css` across two appearance generations and the v3
+cleanup, and doctor reports no
+`consumer/config/wlogout/appearance.css` row. No `apply` was run and no live
+state, provisioning, composition, app or contract content was changed.
 
 ## Fix notes
 

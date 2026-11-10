@@ -28,6 +28,15 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**1.1.1** — ownership-aware appearance consumer prune.
+
+- The runtime prunes only its own AGS appearance convenience links. A
+  provisioning-owned non-AGS stable link such as wlogout's
+  `appearance.css -> current/appearance/wlogout.css` survives seed and
+  converge, including skin/mode reconverges.
+- The v3 converge cleanup applies the same rule; stale AGS links still retire,
+  symlinked config dirs are still skipped and `doctor` stays clean.
+
 **1.1.0** — host defaults: `appearance.v3` and generation host identity.
 
 - A read-only Hyprland adapter reads `decoration:rounding` and

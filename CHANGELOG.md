@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.1.1 — 2026-11-10
+
+Fix the appearance consumer prune so it is ownership-aware and preserves the
+provisioning-owned wlogout stable link across seed/converge (BUG-017).
+
+- **Ownership-aware prune.** `prune_stale_appearance_consumers` now prunes
+  only runtime-owned AGS appearance consumers (`ags`, `ags-*`), derived from
+  the appearance target set. A provisioning-owned non-AGS stable link such as
+  `config/wlogout/appearance.css -> current/appearance/wlogout.css` is kept.
+  The narrow `current/appearance` target check, symlink-only scope and AGS
+  retirement cleanup are unchanged.
+- **v3 converge cleanup.** `CacheSeeder.prune_runtime_spine_pointers` applies
+  the same ownership rule, and reconcile passes the committed appearance
+  target set. The v3 converge path no longer deletes the wlogout link.
+- **Regression coverage.** wlogout survives a skin/mode reconverge; a real
+  AGS-like dir with a stale link is still pruned; symlinked config dirs are
+  skipped; non-`current/appearance` links are preserved; doctor stays clean
+  and no `.seed.lock` is introduced.
+
 ## v1.1.0 — 2026-11-09
 
 Add Phase 1 host defaults: a skin may delegate panel radius and border width
