@@ -28,6 +28,25 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**1.3.0** — format-aware non-CSS appearance artifacts (Phase 3A-3).
+
+- Template discovery now maps suffixes to a manifest family and format:
+  `<consumer>.gtk.css.j2` → `appearance.targets` CSS,
+  `<consumer>.rasi.j2` → `appearance.artifacts` `rasi`,
+  `<consumer>.conf.j2` → `conf`, and `<consumer>.theme.j2` → `theme`. Any
+  other `*.j2` file fails closed instead of being silently ignored.
+- The format-aware renderer keeps the CSS pipeline byte-identical, aliases
+  rasi palette roles with hyphens, emits no `alpha()`/literal hex for
+  non-CSS artifacts, and fails closed when a reserved `conf`/`theme` shape
+  references paint.
+- The appearance cache and v3 generation carry
+  `appearance/<consumer>.<ext>`; the generation manifest publishes the
+  optional `appearance.artifacts` family without changing frozen
+  `appearance.targets`. Copy, verify and GC protection cover the artifact.
+- Contracts pin moves to `v0.10.0`; the embedded and conformance
+  `generation-manifest` schemas now accept the additive artifact family.
+  No downstream assets/provisioning/composition/app change is in this slice.
+
 **1.2.0** — Hyprland host defaults converge on `configreloaded`.
 
 - A read-only socket2 watcher resolves the Hyprland instance and coalesces a

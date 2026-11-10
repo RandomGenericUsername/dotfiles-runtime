@@ -1,3 +1,45 @@
+## v1.3.0 — 2026-11-10
+
+Add format-aware non-CSS appearance artifacts for the runtime Phase 3A-3
+slice (REQ-024, contracts `v0.10.0`).
+
+- **Contract pin.** `CONTRACT_PIN` moves to the contracts `v0.10.0` annotated
+  tag object (`5c7e133eb86dcd8883626db418dca4c8933da653`, peeled
+  `8af8aca54e7107617c4d31655a6eed2665f9b751`). The vendored generated binding
+  header and the embedded/conformance `generation-manifest.schema.json`
+  copies move with it. `contract-pin-check` now also diffs the embedded
+  generation manifest against the sibling `contracts/schemas/` copy.
+- **Fail-closed discovery.** `discover_templates` returns a
+  `(family, format, consumer, output)` spec for every template:
+  `.gtk.css.j2` → CSS target, `.rasi.j2` → `rasi`, `.conf.j2` → `conf`,
+  `.theme.j2` → `theme`. Any other `*.j2` suffix is an explicit error.
+  Consumers are unique across both families, so a CSS target and artifact
+  cannot collide.
+- **Format-aware renderer.** CSS delegates to the unchanged value/unit rule
+  and stays byte-identical to `v1.2.0`. Rasi values use hyphenated palette
+  role aliases and never emit `alpha()`, literal hex or layout placeholders;
+  `conf`/`theme` are reserved paint-free shapes and fail closed if a template
+  references a paint token. Conditionals and unknown/unresolved placeholders
+  remain fail-closed.
+- **Appearance publication.** `AppearanceGenerator` writes
+  `appearance/<consumer>.<ext>` into the composed cache entry and derives the
+  artifact list from those files; `appearance.json` remains the frozen v2
+  artifact. `appearance.targets` stays CSS-only and unchanged.
+- **Generation store.** The v3 generation copies every declared artifact under
+  `appearance/`, writes optional `appearance.artifacts` entries
+  `{consumer, path, format}`, and validates consumer/path uniqueness and
+  `path == appearance/<consumer>.<format>`. `verify()` requires every
+  artifact file. Generation identity continues to move through the skin hash:
+  adding an artifact template changes the skin/appearance/generation identity.
+  The existing composed-appearance GC protection covers the current artifact.
+- **Regression coverage.** CSS-only generation and target bytes are
+  unchanged; valid rasi and reserved conf/theme shapes publish and verify;
+  unknown suffix, duplicate consumer/path, extension mismatch, missing
+  artifact, artifact GC protection, non-CSS hex/alpha/structure absence and
+  AGS CSS consumers are covered.
+- **Release only.** No contracts/assets/provisioning/composition/apps edit
+  and no live apply is in this slice.
+
 # Changelog
 
 ## v1.2.0 — 2026-11-10
