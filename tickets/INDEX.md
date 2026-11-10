@@ -31,6 +31,7 @@
 
 ## Bugs
 
+- [BUG-017-appearance-consumer-ownership](./BUG-017-appearance-consumer-ownership/ticket.md) — Runtime appearance prune deletes the provisioning-owned wlogout stable link | `in-progress` | severity: high | worktree: .worktrees/BUG-017/ | branch: ticket/BUG-017-appearance-consumer-ownership
 - [BUG-016-doctor-stable-appearance-link](./BUG-016-doctor-stable-appearance-link/ticket.md) — Doctor flags the legitimate stable wlogout `appearance.css` link as a retired v2 convenience link | `done` | severity: high | worktree: .worktrees/BUG-016/ | branch: ticket/BUG-016-doctor-stable-appearance-link | tag: v1.0.8
 - [BUG-015-one-lock-seed-consolidation](./BUG-015-one-lock-seed-consolidation/ticket.md) — First-run seed and icons regenerate still use a second `.seed.lock` instead of the one `converge.lock` | `done` | severity: high | worktree: .worktrees/BUG-015/ | branch: ticket/BUG-015-one-lock-seed-consolidation | tag: v1.0.6
 - [BUG-014-gc-current-layer-protection](./BUG-014-gc-current-layer-protection/ticket.md) — Converge GC deletes the committed current generation's palette/wallpaper/appearance cache layers | `done` | severity: critical | worktree: .worktrees/BUG-014/ | branch: ticket/BUG-014-gc-current-layer-protection | tag: v1.0.5
