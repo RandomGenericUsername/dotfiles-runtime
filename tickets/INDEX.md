@@ -6,6 +6,7 @@
 
 ## Requirements
 
+- [REQ-024-format-aware-runtime-artifacts](./REQ-024-format-aware-runtime-artifacts/ticket.md) — Format-aware runtime skin consumers (Phase 3A-3: F-3.1–F-3.5) | `proposed` | worktree: .worktrees/REQ-024/ | branch: ticket/REQ-024-format-aware-runtime-artifacts
 - [REQ-021-wlogout-skin-runtime](./REQ-021-wlogout-skin-runtime/ticket.md) — wlogout skin consumer runtime regression (W-2.3/W-2.4) | `done` | worktree: .worktrees/REQ-021/ | branch: ticket/REQ-021-wlogout-skin-runtime | tag: v1.0.7
 - [REQ-023-hyprland-configreloaded](./REQ-023-hyprland-configreloaded/ticket.md) — Hyprland host defaults converge on socket2 `configreloaded` (H-3.4) | `done` | worktree: .worktrees/REQ-023/ | branch: ticket/REQ-023-hyprland-configreloaded | tag: v1.2.0
 - [REQ-022-host-defaults](./REQ-022-host-defaults/ticket.md) — Host defaults: Hyprland adapter, effective precedence, `appearance.v3` and generation host identity | `done` | worktree: .worktrees/REQ-022/ | branch: ticket/REQ-022-host-defaults | tag: v1.1.0
