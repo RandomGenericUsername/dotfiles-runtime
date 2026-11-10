@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.2.0 — 2026-11-10
+
+Converge Hyprland host defaults automatically on the socket2
+`configreloaded` event (REQ-023, H-3.4), with no polling and a strict no-op
+when the participating host values did not change.
+
+- **Read-only event source.** `HyprlandConfigSocketSource` resolves
+  `$XDG_RUNTIME_DIR/hypr/<signature>/.socket2.sock` from
+  `HYPRLAND_INSTANCE_SIGNATURE` or exactly one `hyprctl -j instances`
+  discovery (0/>1 is unavailable, never guessed). It parses
+  `configreloaded>>` protocol lines; a missing/closed socket is degraded
+  watch health, never a daemon crash.
+- **Event-driven convergence.** A 0.25 s quiet-window debounce coalesces a
+  reload burst into one trigger. The daemon runs the same single
+  `ConvergenceEngine` / `converge.lock` path; host values are still read by
+  `HyprlandHostDefaults` only inside the lock. No timer polls host state.
+- **Strict host no-op.** The host path opts into the idempotent generation
+  boundary: a changed participating `hostHash` commits a new generation and
+  refreshes consumers, while an unchanged host or a change only to
+  non-delegated Hyprland settings leaves `current`, `current.json`, history,
+  AGS/bar and reloaders untouched.
+- **Health + lifecycle.** Watch health now merges the inotify and host
+  sources into the one `watch-health.json`; an unavailable socket is visible
+  as degraded without becoming desktop drift. SIGTERM shutdown wakes a
+  blocked socket read; queue and one-lock behavior are unchanged.
+- **Regression coverage.** A fake AF_UNIX socket2 server covers burst
+  coalescing, delegated radius/border generation + doctor, malformed lines,
+  missing socket, multiple instances, source shutdown during read, and a
+  static no-polling/no-sleep guard.
+
 ## v1.1.2 — 2026-11-10
 
 Make `icons regenerate` a strict no-op when the resolved generation content

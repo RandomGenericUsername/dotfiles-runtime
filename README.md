@@ -28,6 +28,16 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**1.2.0** — Hyprland host defaults converge on `configreloaded`.
+
+- A read-only socket2 watcher resolves the Hyprland instance and coalesces a
+  reload burst into one event-driven convergence (0.25 s debounce, no poll).
+- Only a changed participating `hostHash` commits a new generation and
+  refreshes consumers; unchanged or non-delegated Hyprland settings are a
+  strict no-op with no history/restart.
+- A missing socket is degraded watch health, never a daemon crash; SIGTERM
+  wakes a blocked read and the one `converge.lock` remains the only lock.
+
 **1.1.2** — `icons regenerate` is idempotent when the content is current.
 
 - A cache-hit regenerate no longer commits a new generation, moves
