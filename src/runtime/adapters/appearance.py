@@ -45,6 +45,7 @@ from runtime.adapters.contract_schemas import (
 from runtime.adapters.hashing import appearance_generation_hash, hash_file
 from runtime.adapters.skin_expander import (
     MANIFEST_V2,
+    discover_templates,
     load_skin_manifest,
     manifest_schema_version,
     render_v2_templates,
@@ -54,6 +55,7 @@ from runtime.adapters.skin_expander import (
 )
 from runtime.domain.host_defaults import HostSnapshot
 from runtime.domain.models import (
+    AppearanceArtifact,
     AppearanceEntry,
     PaletteEntry,
     SkinEntry,
@@ -74,6 +76,8 @@ APPEARANCE_KEEP = 5
 APPEARANCE_GRACE_SECONDS = 900
 
 _HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+_CONSUMER_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
+_ARTIFACT_FORMATS = frozenset({"rasi", "conf", "theme"})
 _TOP_KEY_RE = re.compile(r"^([A-Za-z0-9_][A-Za-z0-9_.\-]*):(?:[ \t]+(.*?))?[ \t]*$")
 #: Optional palette metadata that selects the mode. The palette producer is
 #: not required to emit one; the fallback is documented (``dark``).
@@ -463,6 +467,28 @@ def load_appearance_entry(entry_dir: Path) -> AppearanceEntry:
     config_dirs = tuple(
         sorted(name[: -len(".css")] for name in files if name.endswith(".css"))
     )
+    artifacts: list[AppearanceArtifact] = []
+    consumers: set[str] = set(config_dirs)
+    for name in files:
+        consumer, dot, extension = name.rpartition(".")
+        if not dot or extension not in _ARTIFACT_FORMATS:
+            continue
+        if not _CONSUMER_RE.fullmatch(consumer):
+            raise ValueError(
+                f"appearance artifact {name!r} has an unsafe consumer {consumer!r}"
+            )
+        if consumer in consumers:
+            raise ValueError(
+                f"appearance consumer {consumer!r} is duplicated across CSS and artifacts"
+            )
+        consumers.add(consumer)
+        artifacts.append(
+            AppearanceArtifact(
+                consumer=consumer,
+                path=f"appearance/{name}",
+                format=cast("Any", extension),
+            )
+        )
     return AppearanceEntry(
         version=2,
         appearance_hash=appearance_hash,
@@ -473,6 +499,7 @@ def load_appearance_entry(entry_dir: Path) -> AppearanceEntry:
         generation_hash=cast("str", data["generationHash"]),
         token_ref=cast("Any", data["tokenRef"]),
         config_dirs=config_dirs,
+        artifacts=tuple(sorted(artifacts, key=lambda item: item.consumer)),
     )
 
 
@@ -708,6 +735,7 @@ class AppearanceGenerator:
         if not config_dirs:
             raise ValueError(f"appearance skin {skin_entry.name!r} has no <configDir>.css targets")
         rendered: dict[str, str] | None = None
+        artifact_specs = ()
         if manifest is not None:
             # v2 templates must be expanded AFTER the mode override and host
             # policy are applied. The skin cache's base render is migration-only.
@@ -716,6 +744,8 @@ class AppearanceGenerator:
                     "appearance v2 manifest requires a skin templates dir to "
                     f"expand mode={mode!r}: {templates_dir}"
                 )
+            specs = discover_templates(templates_dir)
+            artifact_specs = tuple(spec for spec in specs if spec.family == "artifacts")
             rendered = render_v2_templates(templates_dir, tokens)
 
         root = appearance_cache_root(self._state_root)
@@ -754,6 +784,15 @@ class AppearanceGenerator:
                         f"appearance CSS composition failed for {config_dir!r}: {exc}"
                     ) from exc
                 (staging / f"{config_dir}.css").write_text(css, encoding="utf-8")
+            for spec in artifact_specs:
+                assert rendered is not None
+                artifact = rendered.get(spec.output)
+                if artifact is None:
+                    raise ValueError(
+                        f"appearance skin {skin_entry.name!r} has no rendered "
+                        f"{spec.output}"
+                    )
+                (staging / spec.output).write_text(artifact, encoding="utf-8")
             generation_hash = _generation_hash(staging, _artifact_names(staging))
             manifest = {
                 "version": 2,

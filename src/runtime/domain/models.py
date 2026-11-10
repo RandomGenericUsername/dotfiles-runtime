@@ -221,14 +221,30 @@ DEFAULT_DESIRED_MODE: Final[DesiredMode] = "smart"
 
 
 @dataclass(frozen=True, slots=True)
+class AppearanceArtifact:
+    """One non-CSS appearance artifact (contracts v0.10.0).
+
+    ``path`` is ``appearance/<consumer>.<format>``; CSS is deliberately not a
+    format here because every CSS consumer belongs to ``config_dirs``. The
+    format/extension pair is enforced at discovery, generated-manifest
+    validation and generation-store verification.
+    """
+
+    consumer: str
+    path: str
+    format: Literal["rasi", "conf", "theme"]
+
+
+@dataclass(frozen=True, slots=True)
 class AppearanceEntry:
-    """One immutable composed appearance generation (contracts v0.9.0).
+    """One immutable composed appearance generation (contracts v0.9.0/v0.10.0).
 
     ``appearance_hash`` is the cache directory name and the appearance.v3
     identity: ``f(palette_entry_hash, skin_entry_hash, mode, hostHash)``. The
     palette and skin caches stay independent inputs; this type never mutates
     either entry. ``config_dirs`` is derived from the skin's ``<configDir>.css``
-    artifacts, never a fixed app list.
+    artifacts; ``artifacts`` is the separate non-CSS family. Neither is a fixed
+    app list.
     """
 
     version: Literal[2]
@@ -240,6 +256,7 @@ class AppearanceEntry:
     generation_hash: str
     token_ref: Literal["tokens.json"]
     config_dirs: tuple[str, ...]
+    artifacts: tuple[AppearanceArtifact, ...] = ()
     #: Host participation is carried in memory for the generation manifest;
     #: appearance.json remains the frozen v2 artifact (no host field).
     host_hash: str | None = None

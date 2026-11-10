@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://dotfiles.local/schemas/generation-manifest.schema.json",
   "title": "Generation manifest (version 3)",
-  "description": "The manifest written last inside state/generations/<generationHash>/manifest.json. The directory name and the state/current target basename are the generationHash. Layers are immutable content-addressed entries referenced by relative generation-local paths; appearance is the one composed token document plus one CSS sheet per target config dir. An optional host block records only the delegated host values that participated, and intent.host must equal its fingerprint. A consumer rejects a manifest whose generationHash, layer hashes, relative paths, mode or appearance targets do not validate. Manifest values are opaque hashes and identities only: no literal colours, no structure and no variants.",
+  "description": "The manifest written last inside state/generations/<generationHash>/manifest.json. The directory name and the state/current target basename are the generationHash. Layers are immutable content-addressed entries referenced by relative generation-local paths; appearance is the one composed token document, one CSS sheet per target config dir, and an optional separate family of non-CSS consumer artifacts. An optional host block records only the delegated host values that participated, and intent.host must equal its fingerprint. A consumer rejects a manifest whose generationHash, layer hashes, relative paths, mode, appearance targets or appearance artifacts do not validate. Manifest values are opaque hashes and identities only: no literal colours, no structure and no variants.",
   "status": "frozen",
   "type": "object",
   "additionalProperties": false,
@@ -252,6 +252,39 @@
         }
       }
     },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "required": [
+        "consumer",
+        "path",
+        "format"
+      ],
+      "properties": {
+        "consumer": {
+          "$ref": "#/definitions/configDir",
+          "description": "The non-CSS consumer alias; the same safe lowercase segment as configDir. Consumers are unique across artifacts and CSS targets."
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^appearance/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.(?:rasi|conf|theme)$",
+          "description": "The generation-local artifact path. Runtime validation requires exactly appearance/<consumer>.<format>; draft-07 cannot compare properties."
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "rasi",
+            "conf",
+            "theme"
+          ],
+          "description": "The artifact format. CSS is deliberately excluded and belongs only to appearance.targets. rasi ships first; conf and theme are reserved."
+        }
+      },
+      "description": "One non-CSS consumer artifact: consumer, path and format only. No colours, structure, variants or app list."
+    },
     "appearance": {
       "type": "object",
       "additionalProperties": false,
@@ -273,7 +306,16 @@
           "items": {
             "$ref": "#/definitions/target"
           },
-          "description": "One composed sheet per app config dir. Config dirs are unique; the generation is the only app-list input."
+          "description": "One composed CSS sheet per app config dir. Config dirs are unique; the generation is the only app-list input. This family is unchanged by the additive artifacts extension."
+        },
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/definitions/artifact"
+          },
+          "description": "Optional non-CSS consumer artifacts. Consumers and paths are unique across artifacts and CSS targets; path must equal appearance/<consumer>.<format>. Those cross-property rules are enforced by runtime validation and the contract fixture gate because draft-07 cannot express them."
         }
       }
     },

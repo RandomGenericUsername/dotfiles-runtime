@@ -597,6 +597,27 @@ class GenerationStore:
                     "path": f"appearance/{config_dir}.css",
                 }
             )
+        artifacts: list[dict[str, str]] = []
+        for artifact in sorted(
+            spec.appearance.artifacts, key=lambda item: (item.consumer, item.format)
+        ):
+            filename = f"{artifact.consumer}.{artifact.format}"
+            source = source_dir / filename
+            if not source.is_file():
+                raise GenerationManifestError(
+                    f"composed appearance artifact missing for {artifact.consumer!r}: "
+                    f"{source}"
+                )
+            destination = appearance_dir / filename
+            shutil.copyfile(source, destination)
+            _fsync_file(destination)
+            artifacts.append(
+                {
+                    "consumer": artifact.consumer,
+                    "path": f"appearance/{filename}",
+                    "format": artifact.format,
+                }
+            )
         _fsync_dir(appearance_dir)
 
         created_at = spec.created_at or _now_z()
@@ -656,6 +677,8 @@ class GenerationStore:
             "intent": intent,
             "source": source,
         }
+        if artifacts:
+            manifest["appearance"]["artifacts"] = artifacts
         if spec.host_hash is not None:
             manifest["host"] = {
                 "source": HOST_SOURCE,
@@ -739,17 +762,43 @@ class GenerationStore:
                 raise GenerationManifestError(
                     f"intent.{name} must equal layers.{name}.entryHash"
                 )
-        targets = data.get("appearance", {}).get("targets", [])
-        seen: set[str] = set()
+        appearance = data.get("appearance", {})
+        targets = appearance.get("targets", [])
+        seen_consumers: set[str] = set()
+        seen_paths: set[str] = set()
         for target in targets:
             config_dir = target.get("configDir")
-            if config_dir in seen:
+            path = target.get("path")
+            if config_dir in seen_consumers:
                 raise GenerationManifestError(f"duplicate appearance configDir {config_dir!r}")
-            seen.add(config_dir)
-            if target.get("path") != f"appearance/{config_dir}.css":
+            if path in seen_paths:
+                raise GenerationManifestError(f"duplicate appearance path {path!r}")
+            seen_consumers.add(config_dir)
+            seen_paths.add(path)
+            if path != f"appearance/{config_dir}.css":
                 raise GenerationManifestError(
                     f"appearance target path for {config_dir!r} is not canonical"
                 )
+        for artifact in appearance.get("artifacts", []):
+            consumer = artifact.get("consumer")
+            format = artifact.get("format")
+            path = artifact.get("path")
+            if consumer in seen_consumers:
+                raise GenerationManifestError(
+                    f"appearance consumer {consumer!r} is duplicated across targets/artifacts"
+                )
+            if path in seen_paths:
+                raise GenerationManifestError(f"duplicate appearance path {path!r}")
+            if format not in ("rasi", "conf", "theme"):
+                raise GenerationManifestError(
+                    f"appearance artifact {consumer!r} has unknown format {format!r}"
+                )
+            if path != f"appearance/{consumer}.{format}":
+                raise GenerationManifestError(
+                    f"appearance artifact path for {consumer!r} does not match its format"
+                )
+            seen_consumers.add(consumer)
+            seen_paths.add(path)
 
     def verify(self, generation_hash: str) -> dict[str, Any]:
         """Fail closed unless the generation is complete and self-consistent."""
@@ -768,6 +817,12 @@ class GenerationStore:
             if not path.is_file():
                 raise GenerationManifestError(
                     f"generation {generation_hash} appearance target missing: {path}"
+                )
+        for artifact in manifest["appearance"].get("artifacts", []):
+            path = root / artifact["path"]
+            if not path.is_file():
+                raise GenerationManifestError(
+                    f"generation {generation_hash} appearance artifact missing: {path}"
                 )
         tokens = root / manifest["appearance"]["tokensPath"]
         if not tokens.is_file():

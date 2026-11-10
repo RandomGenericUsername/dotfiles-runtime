@@ -28,6 +28,13 @@ the gate diffs against. Its entry uses an empty header, so the comparison is the
 raw byte-for-byte diff -- still a tamper check, just with nothing to prepend. The
 pin for it lives in `CONTRACT_PIN` (shared with the header-carrying copies).
 
+EMBEDDED STATE SCHEMAS. The generation manifest is the one state schema whose
+v0.10.0 change is a runtime contract (the optional non-CSS artifact family). It
+is embedded byte-for-byte under `src/runtime/adapters/schemas/`; the same gate
+diffs it against `contracts/schemas/` so an off-pin copy fails as loudly as a
+hand-edited generated binding. Other runtime schemas carry local runtime
+extensions and are covered by the hermetic conformance gate instead.
+
 THE PIN IS A COMMIT, NOT A SUBMODULE. `CONTRACTS_REPO` names the sibling
 checkout (default: `../contracts` beside this repo). When that directory is
 absent the gate SKIPS with a clear message and exits 0: the contracts repo is a
@@ -67,6 +74,14 @@ PY_VENDORED = Path("src/runtime/domain/contract_generated.py")
 #: lives in `adapters/` beside the runtime's other embedded schemas.
 SCHEMA_VENDORED = Path("src/runtime/adapters/contract_generated.schema.json")
 PIN_FILE = Path("src/runtime/adapters/CONTRACT_PIN")
+#: (embedded runtime copy, canonical path under the contracts repo). Only the
+#: schema whose contract change this gate must prove is listed here.
+EMBEDDED_SCHEMAS: tuple[tuple[Path, Path], ...] = (
+    (
+        Path("src/runtime/adapters/schemas/generation-manifest.schema.json"),
+        Path("schemas/generation-manifest.schema.json"),
+    ),
+)
 
 
 def _py_header(pin: str) -> bytes:
@@ -143,6 +158,22 @@ def check(repo_root: Path, contracts_repo: Path, pin: str) -> list[str]:
         actual = vendored_path.read_bytes()
         if actual != expected:
             errors.append(_diff_message(vendored_rel, actual, expected))
+    for embedded_rel, canonical_rel in EMBEDDED_SCHEMAS:
+        embedded_path = repo_root / embedded_rel
+        canonical_path = contracts_repo / canonical_rel
+        if not embedded_path.is_file():
+            errors.append(f"embedded schema missing: {embedded_rel}")
+            continue
+        if not canonical_path.is_file():
+            errors.append(
+                f"contracts schema missing: {canonical_path} "
+                f"(CONTRACTS_REPO is present but its schemas/ is incomplete)"
+            )
+            continue
+        actual = embedded_path.read_bytes()
+        expected = canonical_path.read_bytes()
+        if actual != expected:
+            errors.append(_diff_message(embedded_rel, actual, expected))
     return errors
 
 

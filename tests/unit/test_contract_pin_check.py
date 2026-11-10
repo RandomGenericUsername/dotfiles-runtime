@@ -35,6 +35,10 @@ SYNTHETIC_GENERATED = {
     "contract.py": b'"""synthetic generated binding"""\nVALUE = 1\n',
     "events.schema.json": b'{"$defs": {"Topic_x": {"type": "object"}}}\n',
 }
+#: Byte bodies for the embedded state schemas the gate cross-repo checks.
+SYNTHETIC_SCHEMAS = {
+    "generation-manifest.schema.json": b'{"synthetic": "generation-manifest"}\n',
+}
 
 
 def _load_gate(repo_root: Path) -> ModuleType:
@@ -60,6 +64,14 @@ def _build_synthetic_tree(gate: ModuleType, tmp_path: Path) -> tuple[Path, Path]
         target = repo_root / vendored_rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(header(SYNTHETIC_PIN) + SYNTHETIC_GENERATED[generated_name])
+
+    for embedded_rel, canonical_rel in gate.EMBEDDED_SCHEMAS:
+        embedded = repo_root / embedded_rel
+        embedded.parent.mkdir(parents=True, exist_ok=True)
+        embedded.write_bytes(SYNTHETIC_SCHEMAS[canonical_rel.name])
+        canonical = contracts_repo / canonical_rel
+        canonical.parent.mkdir(parents=True, exist_ok=True)
+        canonical.write_bytes(SYNTHETIC_SCHEMAS[canonical_rel.name])
 
     pin_path = repo_root / gate.PIN_FILE
     pin_path.parent.mkdir(parents=True, exist_ok=True)

@@ -11,9 +11,11 @@ generations are accepted:
   ``[mode.dark]`` / ``[mode.light]`` complete same-shape overrides. v2
   documents are validated against the vendored ``appearance-manifest`` schema.
 
-The shared template set holds one ``<configDir>.gtk.css.j2`` per target config
-dir. The expander discovers every ``*.gtk.css.j2`` and renders
-``<configDir>.css``.
+The shared template set holds one ``<configDir>.gtk.css.j2`` per CSS target
+config dir plus optional non-CSS artifacts. Discovery maps a suffix to
+``(family, format, output)``: ``.gtk.css.j2`` → CSS target, ``.rasi.j2`` →
+``rasi`` artifact, ``.conf.j2`` → ``conf`` artifact and ``.theme.j2`` →
+``theme`` artifact. Any other ``*.j2`` file fails closed.
 
 Placeholders are the token path uppercased with every non-alphanumeric run
 replaced by ``_``: v1 ``radius-panel`` → ``{{SKIN_RADIUS_PANEL}}``; v2
@@ -34,9 +36,10 @@ import json
 import math
 import re
 import tomllib
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import fastjsonschema
 
@@ -102,11 +105,33 @@ _NUMERIC_TOKENS = frozenset(
 _V1_MANIFEST_META_KEYS = frozenset({"schema_major", "name"})
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _TEMPLATE_SUFFIX = ".gtk.css.j2"
+_ARTIFACT_SUFFIXES: dict[str, Literal["rasi", "conf", "theme"]] = {
+    ".rasi.j2": "rasi",
+    ".conf.j2": "conf",
+    ".theme.j2": "theme",
+}
+_CONSUMER_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 _PLACEHOLDER_RE = re.compile(r"\{\{(.*?)\}\}", re.DOTALL)
+_ROLE_REF_RE = re.compile(r"@([a-z0-9_]+)")
+_ALPHA_RE = re.compile(r"alpha\(\s*(@[a-z0-9_]+)\s*,[^)]*\)")
+_PAINT_UNREPRESENTABLE = "\x00SKIN_PAINT_UNREPRESENTABLE:"
 #: v2 templates are unconditional (contracts v0.9.0). GTK has no runtime.
 _CONDITIONAL_RE = re.compile(r"\{%|%\}|\{\{#|\{\{/")
 
 Scalar = str | int | float
+TemplateFormat = Literal["css", "rasi", "conf", "theme"]
+TemplateFamily = Literal["targets", "artifacts"]
+
+
+@dataclass(frozen=True, slots=True)
+class TemplateSpec:
+    """One discovered template and the manifest family it publishes."""
+
+    path: Path
+    family: TemplateFamily
+    format: TemplateFormat
+    consumer: str
+    output: str
 
 
 def _now_z() -> str:
@@ -339,8 +364,58 @@ def _css_v2_value(path: str, value: Any) -> str:
     return cast("str", value)
 
 
+def _is_paint_token(path: str) -> bool:
+    """Whether a v2 token is paint (and therefore not representable in conf/theme)."""
+    group, _, leaf = path.partition(".")
+    if group == "surface":
+        return leaf.rsplit(".", 1)[-1] in {"bg", "border", "shadow", "blur", "hover-bg"}
+    if group == "state":
+        return leaf.rsplit(".", 1)[-1] in {"fill", "ink", "ring"}
+    return group == "ink"
+
+
+def _rasi_value(path: str, value: Any) -> str:
+    """Render a v2 token for rofi rasi: solid, hyphenated palette roles only."""
+    text = _css_v2_value(path, value)
+    if not isinstance(value, str) or not _is_paint_token(path):
+        return text
+    # rasi has no alpha(); the nearest honest solid is the referenced role.
+    text = _ALPHA_RE.sub(lambda match: match.group(1), text)
+    if "color-mix(" in text:
+        raise ValueError(
+            f"skin token {path!r} uses color-mix() which cannot be represented in rasi"
+        )
+    text = _ROLE_REF_RE.sub(
+        lambda match: "@" + match.group(1).replace("_", "-"), text
+    )
+    if "#" in text:
+        raise ValueError(f"skin token {path!r} is a literal hex paint, invalid in rasi")
+    return text
+
+
+def _format_v2_value(path: str, value: Any, format: TemplateFormat) -> str:
+    """Render one v2 token for its consumer format.
+
+    CSS intentionally delegates to the frozen ``_css_v2_value`` rule so every
+    existing sheet stays byte-identical. ``rasi`` aliases palette roles with
+    hyphens and never emits ``alpha()`` or hex. ``conf``/``theme`` are reserved
+    shapes with no palette variables, so a paint token fails closed instead of
+    becoming a false CSS/role claim.
+    """
+    if format == "css":
+        return _css_v2_value(path, value)
+    if format == "rasi":
+        return _rasi_value(path, value)
+    if _is_paint_token(path):
+        # Defer the error until substitution: an unreferenced paint token is
+        # harmless, while a template that actually uses it must fail closed.
+        return f"{_PAINT_UNREPRESENTABLE}{path}\x00"
+    return _css_v2_value(path, value)
+
+
 def _v2_placeholder_values(
     resolved: dict[str, Any],
+    format: TemplateFormat = "css",
 ) -> tuple[dict[str, str], frozenset[str]]:
     """Flatten the CSS token leaves and record the forbidden layout placeholders."""
     values: dict[str, str] = {}
@@ -349,7 +424,7 @@ def _v2_placeholder_values(
             placeholder = _flatten_placeholder(path)
             if placeholder in values:
                 raise ValueError(f"skin tokens collide on placeholder {placeholder!r}")
-            values[placeholder] = _css_v2_value(path, value)
+            values[placeholder] = _format_v2_value(path, value, format)
     layout = frozenset(
         _flatten_placeholder(path)
         for path, _value in _leaves(resolved.get("layout", {}), "layout")
@@ -362,15 +437,17 @@ def expand_v2_template(
     resolved: dict[str, Any],
     *,
     template: Path | str = "<template>",
+    format: TemplateFormat = "css",
 ) -> str:
     """Expand a v2 template with mode-resolved tokens, fail-closed."""
-    values, layout = _v2_placeholder_values(resolved)
+    values, layout = _v2_placeholder_values(resolved, format)
     return _substitute(
         text,
         values,
         template,
         layout_placeholders=layout,
         reject_conditionals=True,
+        format=format,
     )
 
 
@@ -379,12 +456,17 @@ def render_v2_templates(
 ) -> dict[str, str]:
     """Render every discovered v2 template with one resolved token document."""
     rendered: dict[str, str] = {}
-    for template, output in _discover_templates(templates_dir):
+    for template in discover_templates(templates_dir):
         try:
-            source = template.read_text(encoding="utf-8")
+            source = template.path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
-            raise ValueError(f"cannot read skin template {template}: {exc}") from exc
-        rendered[output] = expand_v2_template(source, resolved, template=template)
+            raise ValueError(f"cannot read skin template {template.path}: {exc}") from exc
+        rendered[template.output] = expand_v2_template(
+            source,
+            resolved,
+            template=template.path,
+            format=template.format,
+        )
     return rendered
 
 
@@ -405,33 +487,77 @@ def _placeholder_values(groups: dict[str, dict[str, Scalar]]) -> dict[str, str]:
     return values
 
 
-def _discover_templates(templates_dir: Path) -> list[tuple[Path, str]]:
+def discover_templates(templates_dir: Path) -> tuple[TemplateSpec, ...]:
+    """Map every template file to its family/format/output, fail-closed.
+
+    Any ``*.j2`` file whose suffix is not in the frozen table is an error, not
+    an ignored file: an assets template shipped ahead of the runtime would
+    otherwise vanish silently. Consumers are unique across both families so a
+    CSS target and a non-CSS artifact can never race for the same name.
+    """
     try:
-        candidates = sorted(
-            path
-            for path in templates_dir.iterdir()
-            if path.is_file() and path.name.endswith(_TEMPLATE_SUFFIX)
-        )
+        candidates = sorted(path for path in templates_dir.iterdir() if path.is_file())
     except OSError as exc:
         raise ValueError(f"cannot read skin templates dir {templates_dir}: {exc}") from exc
-    if not candidates:
-        raise ValueError(
-            f"skin templates dir has no '*{_TEMPLATE_SUFFIX}' files: {templates_dir}"
-        )
-    templates: list[tuple[Path, str]] = []
+    templates: list[TemplateSpec] = []
+    consumers: dict[str, str] = {}
     outputs: set[str] = set()
     for path in candidates:
-        config_dir = path.name[: -len(_TEMPLATE_SUFFIX)]
-        if not _NAME_RE.match(config_dir):
-            raise ValueError(
-                f"skin template {path.name!r} has an unsafe config dir {config_dir!r}"
+        name = path.name
+        if not name.endswith(".j2"):
+            continue
+        if name.endswith(_TEMPLATE_SUFFIX):
+            family: TemplateFamily = "targets"
+            format: TemplateFormat = "css"
+            suffix = _TEMPLATE_SUFFIX
+        else:
+            match = next(
+                (candidate for candidate in _ARTIFACT_SUFFIXES if name.endswith(candidate)),
+                None,
             )
-        output = f"{config_dir}.css"
+            if match is None:
+                raise ValueError(
+                    f"skin template {name!r} has an unknown suffix; expected "
+                    f"{_TEMPLATE_SUFFIX!r}, {sorted(_ARTIFACT_SUFFIXES)}"
+                )
+            family = "artifacts"
+            format = _ARTIFACT_SUFFIXES[match]
+            suffix = match
+        consumer = name[: -len(suffix)]
+        if family == "targets":
+            if not _NAME_RE.match(consumer):
+                raise ValueError(
+                    f"skin template {name!r} has an unsafe config dir {consumer!r}"
+                )
+        elif not _CONSUMER_RE.match(consumer):
+            raise ValueError(
+                f"skin template {name!r} has an unsafe artifact consumer {consumer!r}"
+            )
+        if consumer in consumers:
+            raise ValueError(
+                f"skin templates collide on consumer {consumer!r}: "
+                f"{consumers[consumer]!r} and {name!r}"
+            )
+        output = f"{consumer}.{format}"
         if output in outputs:
             raise ValueError(f"skin templates collide on output {output!r}")
+        consumers[consumer] = name
         outputs.add(output)
-        templates.append((path, output))
-    return templates
+        templates.append(
+            TemplateSpec(
+                path=path,
+                family=family,
+                format=format,
+                consumer=consumer,
+                output=output,
+            )
+        )
+    if not templates:
+        raise ValueError(
+            f"skin templates dir has no '*{_TEMPLATE_SUFFIX}' files "
+            f"and no known artifact templates: {templates_dir}"
+        )
+    return tuple(templates)
 
 
 def _substitute(
@@ -441,6 +567,7 @@ def _substitute(
     *,
     layout_placeholders: frozenset[str] = frozenset(),
     reject_conditionals: bool = False,
+    format: TemplateFormat | None = None,
 ) -> str:
     if reject_conditionals and _CONDITIONAL_RE.search(text):
         raise ValueError(
@@ -464,6 +591,11 @@ def _substitute(
     rendered = _PLACEHOLDER_RE.sub(_replace, text)
     if "{{" in rendered or "}}" in rendered:
         raise ValueError(f"skin template {template} has an unresolved placeholder")
+    if _PAINT_UNREPRESENTABLE in rendered:
+        raise ValueError(
+            f"skin template {template} uses a paint token that cannot be "
+            f"projected into {format}"
+        )
     return rendered
 
 
@@ -497,7 +629,7 @@ class SkinExpander(ISkinExpander):
             values, layout_placeholders = _v2_placeholder_values(token_doc)
             reject_conditionals = True
 
-        templates = _discover_templates(templates_dir)
+        templates = discover_templates(templates_dir)
 
         templates_hash = _canonical_templates_hash(templates_dir)
         manifest_hash = hash_file(manifest_path)
@@ -508,17 +640,25 @@ class SkinExpander(ISkinExpander):
             )
 
         rendered: dict[str, str] = {}
-        for template, output in templates:
+        for template in templates:
             try:
-                source = template.read_text(encoding="utf-8")
+                source = template.path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError) as exc:
-                raise ValueError(f"cannot read skin template {template}: {exc}") from exc
-            rendered[output] = _substitute(
+                raise ValueError(
+                    f"cannot read skin template {template.path}: {exc}"
+                ) from exc
+            template_values = values
+            if version == MANIFEST_V2:
+                template_values, _layout = _v2_placeholder_values(
+                    token_doc, template.format
+                )
+            rendered[template.output] = _substitute(
                 source,
-                values,
-                template,
+                template_values,
+                template.path,
                 layout_placeholders=layout_placeholders,
                 reject_conditionals=reject_conditionals,
+                format=template.format,
             )
 
         token_map = json.dumps(token_doc, indent=2, ensure_ascii=False) + "\n"
