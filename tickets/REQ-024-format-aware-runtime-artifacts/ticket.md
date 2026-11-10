@@ -2,7 +2,7 @@
 id: REQ-024
 title: "Format-aware runtime skin consumers (Phase 3A-3: F-3.1–F-3.5)"
 kind: requirement
-status: proposed
+status: in-progress
 lane: 2
 links:
   design: dotfiles-v3/docs/110-format-aware-skin-consumers.md
