@@ -2,7 +2,7 @@
 id: BUG-018
 title: "`icons regenerate` commits a new generation when the content is already current"
 kind: bug
-status: in-progress
+status: done
 lane: 2
 severity: high
 links:
@@ -93,3 +93,97 @@ reuse `current` when its manifest resolves to the same content identity.
 reconcile keeps its history/apply semantics but also avoids re-creating an
 identical generation. No-op runs append no history line and never touch the
 appearance ledger.
+
+## Outcome (2026-11-10)
+
+**Worktree:** `.worktrees/BUG-018/`
+**Branch:** `ticket/BUG-018-icons-regenerate-idempotent`
+**Commits:** `71ff322` (ticket + INDEX plan), `1e306e5` (fix + regression
+tests), this release commit (version/CHANGELOG/README + ticket close).
+**Tag:** `v1.1.2` (annotated) after green gates.
+
+### Exact idempotency rule
+
+- Generation identity is
+  `compute_generation_content_hash(layerHashes[wallpaper, palette, effects?,
+  icons?], skinName, skinHash, mode, appearanceHash, hostHash?)`; its intent
+  component is recomputed from those content inputs. `source.kind`, `jobId`,
+  `created`/`committed` timestamps and any caller-supplied operational/queue
+  intent hash are **not** identity.
+- `GenerationStore.commit` recomputes the content identity of the verified
+  `current` manifest and returns `unchanged=True` (same `current` hash, no
+  staging, no pointer move) when it equals the prospective identity. A
+  legacy current generation with a different stored intent hash is still
+  recognised as the same content.
+- `icons regenerate` opts into `idempotent=True` at the reconcile boundary.
+  On `generation.unchanged` it returns `cache_hit=True`, `no_op=True` and the
+  current icons entry **without** saving `current.json`, appending history,
+  running GC, touching the appearance ledger, refreshing AGS/bar or running
+  reloaders. A no-op therefore records no history line.
+- Any changed content input (notably a changed icons entry) misses the
+  equality check and follows the normal commit → `current.json` → history →
+  refresh path.
+
+### Delivered
+
+| Path | What changed |
+| --- | --- |
+| `src/runtime/adapters/generation_store.py` | content-only `compute_generation_content_hash`; `GenerationResult.unchanged`; verified `current` reuse in `commit`; manifest content recompute ignoring operational fields |
+| `src/runtime/application/reconcile.py` | `idempotent` opt-in, `ReconcileResult.no_op`, strict unchanged short-circuit, force-icons hash assertion only on the ordinary path |
+| `src/runtime/application/regenerate_icons.py` | passes `idempotent=True`, exposes `RegenerateIconsResult.no_op`, documents no-history no-op |
+| `src/runtime/cli/main.py` | renders `icons unchanged: … current generation kept` + JSON `no_op` |
+| `tests/unit/test_regenerate_icons.py` | cache-hit no-op byte-identity/no history/no reload; changed icons still commits |
+| `tests/unit/test_generations_v3.py` | identity equality ignores operational source metadata; changed icons changes identity |
+| `tests/unit/test_cli_icons.py` | no-op CLI rendering/JSON |
+| `pyproject.toml` / `src/runtime/__init__.py` / `uv.lock` / `CHANGELOG.md` / `README.md` | `1.1.2` release metadata and notes |
+
+### Targeted tests
+
+```sh
+uv run pytest -q tests/unit/test_regenerate_icons.py tests/unit/test_generations_v3.py \
+  tests/unit/test_generation_gc.py tests/unit/test_reconcile.py \
+  tests/unit/test_doctor_check.py tests/unit/test_one_lock.py tests/unit/test_cli_icons.py
+# 150 passed
+
+uv run pytest -q tests/unit/test_regenerate_icons.py tests/unit/test_regenerate_stale.py \
+  tests/unit/test_cli_icons.py tests/unit/test_generations_v3.py \
+  tests/unit/test_generation_gc.py tests/unit/test_reconcile.py \
+  tests/unit/test_doctor_check.py tests/unit/test_doctor_repair.py \
+  tests/unit/test_one_lock.py tests/unit/test_wlogout_skin_consumer.py \
+  tests/unit/test_appearance.py tests/unit/test_host_defaults.py \
+  tests/unit/test_converge_job_trigger_payload.py
+# 277 passed
+```
+
+### Gates
+
+```sh
+make gates
+# test: 2496 passed, 3 skipped, 11 deselected
+# lint: All checks passed
+# contracts-check: 58 passed, 1 skipped
+# hermetic: 2496 passed, 3 skipped, 11 deselected
+# lock-check: Resolved 25 packages
+# docs-check: rc 0
+
+make gates-ci
+# same six gates, rc 0
+make ci-gates-parity
+# PASS gates=[...] jobs=[...] exempt=['ci-gates-parity', 'release']
+```
+
+### Live read-only confirmation
+
+```console
+$ uv run python - <<'PY'  # read-only over ~/.local/state/dotfiles
+# current = GenerationStore(root).current_hash(); store.current_manifest()
+PY
+live current generation: fb8392f6ed52c661bc6c1d5c11903021f6177bb9d48d4d32e3f6990d11811f6f
+source metadata: {'intentHash': '8665de40…', 'jobId': '3ce8e187…', 'kind': 'daemon'}
+content identity:    fb8392f6ed52c661bc6c1d5c11903021f6177bb9d48d4d32e3f6990d11811f6f
+content-identical after ignoring source/timestamps: True
+```
+
+The live generation's content identity is reproducible from its manifest
+alone; the new commit would treat it as `unchanged`. No `apply`, generation
+commit, pointer move or downstream edit was performed.

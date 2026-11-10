@@ -28,6 +28,15 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**1.1.2** — `icons regenerate` is idempotent when the content is current.
+
+- A cache-hit regenerate no longer commits a new generation, moves
+  `current`, writes history or restarts the bar/AGS; `current` and
+  `current.json` stay byte-identical.
+- Generation identity is content-only: source kind, job id, timestamps and
+  operational/queue intent hashes do not create a new generation.
+- Changed icons (or any changed generation input) still commit normally.
+
 **1.1.1** — ownership-aware appearance consumer prune.
 
 - The runtime prunes only its own AGS appearance convenience links. A

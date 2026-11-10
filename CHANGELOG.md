@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.1.2 — 2026-11-10
+
+Make `icons regenerate` a strict no-op when the resolved generation content
+already equals `current` (BUG-018).
+
+- **Content-only identity.** Generation identity now recomputes the intent
+  from the resolved content snapshot. `source.kind`, `jobId`, timestamps and
+  caller-supplied operational/queue intent hashes never create a new
+  generation when every content layer, skin, mode, appearance and host value
+  is unchanged.
+- **Strict no-op.** `GenerationStore.commit` reuses a verified `current`
+  generation whose manifest resolves to the same content. The icons-only
+  path then skips the `current` move, the `current.json` write, the history
+  line, GC, the appearance ledger, AGS/bar refresh and every reloader.
+- **Changed inputs.** A changed icons layer (or any changed generation input)
+  keeps the normal commit → `current.json` → history → refresh path. A
+  no-op records no history line.
+- **Regression coverage.** Cache-hit regenerate keeps `current` and
+  `current.json` byte-identical with no new generation, history or reload;
+  changed icons still commit; identity fixtures prove operational metadata is
+  ignored and content changes are not.
+
 ## v1.1.1 — 2026-11-10
 
 Fix the appearance consumer prune so it is ownership-aware and preserves the
