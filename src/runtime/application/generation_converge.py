@@ -35,6 +35,11 @@ class ConvergeIntent:
     skin: str | None = None
     mode: str | None = None
     intent_hash: str | None = None
+    #: Opt into the strict unchanged short-circuit (no current.json write,
+    #: history line, GC, ledger, apply/refresh or reloaders when the resolved
+    #: generation content already equals ``current``). Host config events use
+    #: this so an unchanged/non-delegated host change is a true no-op.
+    idempotent: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +118,7 @@ class ConvergenceEngine:
                 wallpaper_path=intent.wallpaper_path,
                 intent_hash=intent.intent_hash,
                 acquire_lock=False,
+                idempotent=intent.idempotent,
             )
         if result.generation_hash is None:
             raise RuntimeError("converge did not commit a generation")

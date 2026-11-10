@@ -56,6 +56,7 @@ if TYPE_CHECKING:
     from runtime.ports.bus_name_owner import IBusNameOwner
     from runtime.ports.desktop_reloader import IDesktopReloader
     from runtime.ports.event_bus import IJobRegistry
+    from runtime.ports.host_event_source import IHostEventSource
     from runtime.ports.jobs import (
         IControlChannel,
         IControllableJobClient,
@@ -2445,6 +2446,88 @@ def _run_reactive_converge(
     return result
 
 
+def _run_host_converge(
+    *,
+    observe_only: bool = False,
+    source: str = "configreloaded",
+    client: IJobClient | None = None,
+) -> bool:
+    """Converge once after a Hyprland ``configreloaded`` event (H-3.4).
+
+    This is the same single :class:`ConvergenceEngine` used by every other
+    mutation, so host values are read by :class:`HyprlandHostDefaults` only
+    inside ``converge.lock``. The intent opts into the strict idempotent
+    short-circuit: a changed participating ``hostHash`` commits a new
+    generation and refreshes consumers; an unchanged host, or a change only
+    to non-delegated Hyprland settings, keeps ``current``/``current.json``,
+    history and consumers untouched.
+
+    ``observe_only`` preserves the daemon's shipped AD-35/AD-41 default; the
+    event is logged but no use case runs. Returns ``True`` only when a real
+    generation was committed (never for a no-op or observe-only event).
+    """
+    from runtime.adapters.json_state_repository import JsonStateRepository
+    from runtime.application.generation_converge import ConvergeIntent
+
+    if observe_only:
+        logger.info("host events: configreloaded observed; observe-only (no converge)")
+        _log_automatic_action(
+            trigger="reactive",
+            action="converge",
+            outcome="observe-only",
+            source=source,
+        )
+        return False
+
+    state_root = _resolve_state_root()
+    install_spine = _resolve_install_spine()
+    if JsonStateRepository(state_root=state_root).load_current() is None:
+        logger.info("host events: unseeded (no current.json); benign no-op")
+        return False
+    engine = _build_converge_engine(
+        state_root,
+        install_spine,
+        include_terminal=False,
+    )
+    outcome = engine.converge(
+        ConvergeIntent(
+            trigger="reactive",
+            source="daemon",
+            intent_hash=None,
+            idempotent=True,
+        )
+    )
+    no_op = bool(getattr(outcome.reconcile, "no_op", False))
+    _log_automatic_action(
+        trigger="reactive",
+        action="converge",
+        outcome="no-op" if no_op else "converged",
+        source=source,
+        generation=outcome.generation_hash[:12],
+    )
+    if no_op:
+        logger.info(
+            "host events: configreloaded changed no participating host value; "
+            "generation %s kept",
+            outcome.generation_hash[:12],
+        )
+        return False
+
+    try:
+        from runtime.adapters.dbus_job_client import DbusJobClient
+
+        if client is None:
+            client = _build_wallpaper_client()
+        current = JsonStateRepository(state_root=state_root).load_current()
+        done_hash = current.wallpaper.content_hash if current is not None else ""
+        _publish_wallpaper_state(client, "done", done_hash, "reactive")
+        if isinstance(client, DbusJobClient):
+            client.close()
+    except Exception:
+        logger.exception("host events: wallpaper.state publish failed; continuing")
+    return True
+
+
 def _daemon_converge_worker(intent_hash: str, job_id: str):
     """Run one queued daemon converge through the same CLI/daemon function."""
     import json
@@ -2535,6 +2618,23 @@ def _build_watch_source() -> IWatchSource | None:
         return None
 
 
+def _build_host_event_source() -> IHostEventSource | None:
+    """Build the read-only Hyprland socket2 event source.
+
+    Construction only resolves the binary; the socket is opened in ``start``.
+    A missing socket is degraded health, never a crash, so this builder has
+    no failure mode on a headless host. ``None`` is reserved for a truly
+    unexpected adapter import/construction error.
+    """
+    from runtime.adapters.hyprland_event_source import HyprlandConfigSocketSource
+
+    try:
+        return HyprlandConfigSocketSource()
+    except Exception:
+        logger.exception("daemon: host event source unavailable; continuing without it")
+        return None
+
+
 def _build_gtk4_subscriber() -> Gtk4AppSubscriber:
     """Build the daemon's GTK4 restart consumer (its own bus connection).
 
@@ -2566,6 +2666,7 @@ def _run_daemon_run(
     *,
     converge: Callable[[WatchTrigger], None] | None = None,
     watch_source: IWatchSource | None = None,
+    host_event_source: IHostEventSource | None = None,
     notifier: SystemdNotifier | None = None,
     subscriber_factory: Callable[[], Gtk4AppSubscriber] | None = None,
     converge_worker: Callable[[str, str], object] | None = None,
@@ -2623,6 +2724,7 @@ def _run_daemon_run(
     from runtime.adapters.json_state_repository import JsonStateRepository
     from runtime.adapters.systemd_notify import SystemdNotifier
     from runtime.adapters.watch_health import WatchHealthStore
+    from runtime.application.host_watch import HostEventCoordinator, WatchStatusAggregator
     from runtime.application.watch import WatchCoordinator
     from runtime.application.watch import WatchTrigger as _WatchTrigger
     from runtime.domain.models import BusNameError
@@ -2669,12 +2771,15 @@ def _run_daemon_run(
         bus_owner = _build_bus_name_owner(service=service)
     restore_handlers = _install_release_handlers(bus_owner)
     stop_watch = threading.Event()
+    stop_host_watch = threading.Event()
     stop_subscriber = threading.Event()
     watchdog_stop = threading.Event()
     watcher: threading.Thread | None = None
+    host_watcher: threading.Thread | None = None
     subscriber: Gtk4AppSubscriber | None = None
     subscriber_thread: threading.Thread | None = None
     watchdog_thread: threading.Thread | None = None
+    watch_status = WatchStatusAggregator(watch_health.write)
     try:
         try:
             bus_owner.acquire()
@@ -2711,15 +2816,16 @@ def _run_daemon_run(
             except Exception:
                 logger.exception("daemon: converge-on-start failed (recoverable); continuing")
         if watch_source is not None and converge is not None:
-            coordinator = WatchCoordinator(watch_source, converge, on_status=watch_health.write)
+            coordinator = WatchCoordinator(
+                watch_source,
+                converge,
+                on_status=lambda status: watch_status.update("inotify", status),
+            )
             try:
                 watch_source.start()
             except Exception:
                 logger.exception("daemon: watch source start failed; serving without watches")
-                try:
-                    watch_health.write(watch_source.status())
-                except Exception:
-                    logger.exception("daemon: persisting degraded watch health failed")
+                watch_status.update("inotify", watch_source.status())
             else:
                 watcher = threading.Thread(
                     target=coordinator.serve_events,
@@ -2728,6 +2834,27 @@ def _run_daemon_run(
                     daemon=True,
                 )
                 watcher.start()
+        if host_event_source is not None:
+            host_coordinator = HostEventCoordinator(
+                host_event_source,
+                converge if converge is not None else (lambda _trigger: None),
+                on_status=lambda status: watch_status.update("hyprland", status),
+            )
+            try:
+                host_event_source.start()
+            except Exception:
+                logger.exception(
+                    "daemon: host event source start failed; serving without host events"
+                )
+                watch_status.update("hyprland", host_event_source.status())
+            else:
+                host_watcher = threading.Thread(
+                    target=host_coordinator.serve_events,
+                    args=(stop_host_watch,),
+                    name="hyprland-events",
+                    daemon=True,
+                )
+                host_watcher.start()
         if subscriber_factory is not None:
             try:
                 subscriber = subscriber_factory()
@@ -2747,6 +2874,7 @@ def _run_daemon_run(
         bus_owner.wait_until_terminated()
     finally:
         stop_watch.set()
+        stop_host_watch.set()
         stop_subscriber.set()
         watchdog_stop.set()
         if converge_queue is not None:
@@ -2759,8 +2887,15 @@ def _run_daemon_run(
                 watch_source.close()
             except Exception:
                 logger.exception("daemon: closing watch source failed")
+        if host_event_source is not None:
+            try:
+                host_event_source.close()
+            except Exception:
+                logger.exception("daemon: closing host event source failed")
         if watcher is not None:
             watcher.join(timeout=5)
+        if host_watcher is not None:
+            host_watcher.join(timeout=5)
         if subscriber is not None:
             try:
                 subscriber.stop()
@@ -2819,8 +2954,19 @@ def daemon_run(
     stopped with the standard supervisor command.
     """
     watch_source = _build_watch_source()
+    host_event_source = _build_host_event_source()
 
     def _converge(trigger: WatchTrigger) -> None:
+        if trigger.reason == "configreloaded":
+            try:
+                _run_host_converge(observe_only=not activate)
+            except (ValueError, RuntimeError, OSError) as exc:
+                logger.error("daemon: host config converge failed: %s", exc)
+                return
+            except Exception:
+                logger.exception("daemon: host config converge failed unexpectedly")
+                return
+            return
         try:
             _run_reactive_converge(
                 observe_only=not activate,
@@ -2838,6 +2984,7 @@ def daemon_run(
         _run_daemon_run(
             converge=_converge,
             watch_source=watch_source,
+            host_event_source=host_event_source,
             subscriber_factory=_build_gtk4_subscriber,
             converge_worker=_daemon_converge_worker,
         )
@@ -2850,6 +2997,8 @@ def daemon_run(
     finally:
         if watch_source is not None:
             watch_source.close()
+        if host_event_source is not None:
+            host_event_source.close()
 
 
 def _noop() -> None:
