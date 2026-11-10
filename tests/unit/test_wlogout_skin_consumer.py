@@ -21,6 +21,9 @@ from runtime.adapters.generation_store import (
     generation_intent_hash,
 )
 from runtime.adapters.hashing import hash_file
+from runtime.adapters.json_state_repository import JsonStateRepository
+from runtime.adapters.seeder import CacheSeeder
+from runtime.application.doctor import DoctorUseCase
 from runtime.domain.models import (
     AppearanceEntry,
     BackendType,
@@ -193,3 +196,86 @@ def test_composed_wlogout_sheet_is_palette_plus_paint_only_skin(tmp_path: Path) 
         for placeholder in _PLACEHOLDER_RE.findall(skin_section)
         for prefix in _FORBIDDEN_PLACEHOLDER_PREFIXES
     )
+
+
+def test_wlogout_stable_link_survives_skin_and_mode_reconverge(tmp_path: Path) -> None:
+    state_root = tmp_path / "state"
+    spine = tmp_path / "install"
+    (spine / "config" / "wlogout").mkdir(parents=True)
+    palette = _write_palette(state_root, "a" * 64, "dark")
+    skin, manifest_path = _write_skin(state_root, "glass")
+    entry, _hit = AppearanceGenerator(state_root).ensure(
+        palette_entry=palette,
+        skin_entry=skin,
+        install_spine=spine,
+        manifest_path=manifest_path,
+        templates_dir=_TEMPLATES,
+    )
+    assert "wlogout" in entry.config_dirs
+    seeder = CacheSeeder(state_root)
+    seeder.publish_appearance(spine, entry)
+
+    link = spine / "config" / "wlogout" / "appearance.css"
+    stable_target = state_root / "current" / "appearance" / "wlogout.css"
+    assert link.is_symlink()
+    assert link.readlink() == stable_target
+    assert link.resolve().is_file()
+
+    # A mode reconverge produces a new appearance generation; the stable link
+    # text never changes and resolves through the one `current` hop.
+    light_palette = _write_palette(state_root, "b" * 64, "light")
+    light_entry, _hit = AppearanceGenerator(state_root).ensure(
+        palette_entry=light_palette,
+        skin_entry=skin,
+        install_spine=spine,
+        manifest_path=manifest_path,
+        templates_dir=_TEMPLATES,
+    )
+    assert light_entry.mode == "light"
+    assert light_entry.appearance_hash != entry.appearance_hash
+    seeder.publish_appearance(spine, light_entry)
+    assert link.is_symlink()
+    assert link.readlink() == stable_target
+    assert link.resolve() == (
+        state_root / "cache" / "appearance" / light_entry.appearance_hash / "wlogout.css"
+    ).resolve()
+
+    # The v3 converge cleanup must preserve the same provisioning-owned link.
+    seeder.prune_runtime_spine_pointers(
+        spine, published=light_entry.config_dirs
+    )
+    assert link.is_symlink()
+    assert link.resolve().is_file()
+
+    # Commit the light generation so doctor has a current state to check.
+    state = _desktop_state(palette=light_palette, skin=skin)
+    repo = JsonStateRepository(state_root=state_root)
+    repo.save(state)
+    GenerationStore(state_root).commit(
+        GenerationSpec(
+            state=state,
+            appearance=light_entry,
+            mode="light",
+            skin_name=skin.name,
+            skin_hash=skin.entry_hash,
+            intent_hash=generation_intent_hash(
+                wallpaper=_WH,
+                palette=light_palette.entry_hash,
+                skin=skin.name,
+                mode="light",
+            ),
+            monitor_names=("DP-1",),
+            source_kind="cli",
+            created_at="2026-11-09T00:00:00Z",
+        )
+    )
+
+    # BUG-016's doctor rule accepts the stable link: no consumer drift row.
+    items = DoctorUseCase(
+        state_repo=repo,
+        state_root=state_root,
+        install_spine=spine,
+    ).check().items
+    assert "consumer/config/wlogout/appearance.css" not in {
+        item.name for item in items
+    }

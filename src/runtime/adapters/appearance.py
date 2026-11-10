@@ -30,6 +30,7 @@ import re
 import shutil
 import time
 import uuid
+from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -560,19 +561,68 @@ def prune_appearance_entries(
     return removed
 
 
-def prune_stale_appearance_consumers(install_spine: Path, wanted: set[Path]) -> list[Path]:
+AGS_APPEARANCE_CONSUMER_NAME = "ags"
+AGS_APPEARANCE_CONSUMER_PREFIX = f"{AGS_APPEARANCE_CONSUMER_NAME}-"
+
+
+def is_ags_appearance_consumer(name: str) -> bool:
+    """Return whether ``name`` is an AGS app config dir (``ags``/``ags-*``)."""
+    return name == AGS_APPEARANCE_CONSUMER_NAME or name.startswith(
+        AGS_APPEARANCE_CONSUMER_PREFIX
+    )
+
+
+def runtime_appearance_consumer_names(
+    config_root: Path,
+    published: Iterable[str] | None = None,
+) -> set[str]:
+    """Return config-dir names whose appearance links the runtime owns.
+
+    The runtime publishes ``appearance.css`` links only for AGS app config
+    dirs. Non-AGS skin targets (for example a provisioning-owned stable
+    consumer link) are deliberately excluded: they are not runtime-owned even
+    when they are part of the selected skin's target set. ``published`` seeds
+    the set from the current appearance target set; AGS-named dirs present in
+    the root are also included so retirement cleanup still removes an AGS
+    target the current skin no longer emits.
+    """
+    names = {
+        name for name in (published or ()) if is_ags_appearance_consumer(name)
+    }
+    if config_root.is_dir():
+        names.update(
+            child.name
+            for child in config_root.iterdir()
+            if child.is_dir() and is_ags_appearance_consumer(child.name)
+        )
+    return names
+
+
+def prune_stale_appearance_consumers(
+    install_spine: Path,
+    wanted: set[Path],
+    *,
+    published: Iterable[str] | None = None,
+) -> list[Path]:
     """Remove runtime-owned ``appearance.css`` links no longer published.
 
-    Scope is deliberately narrow: only a symlink named ``appearance.css``
-    under an existing ``<install>/config/*`` dir whose raw target names
-    ``current/appearance``. Non-appearance files and user links are kept.
+    Scope is deliberately narrow: only runtime-owned AGS consumers (``ags``,
+    ``ags-*``), only a symlink named ``appearance.css`` under an existing
+    ``<install>/config/*`` dir, and only when its raw target names
+    ``current/appearance``. Provisioning-owned non-AGS stable links (such as
+    wlogout), non-appearance files and user links are kept.
     """
     config_root = install_spine / "config"
     if not config_root.is_dir():
         return []
+    owned = runtime_appearance_consumer_names(config_root, published)
     removed: list[Path] = []
     for config_dir in sorted(config_root.iterdir()):
-        if not config_dir.is_dir() or config_dir.is_symlink():
+        if (
+            config_dir.name not in owned
+            or not config_dir.is_dir()
+            or config_dir.is_symlink()
+        ):
             continue
         link = config_dir / APPEARANCE_CONSUMER_NAME
         if link in wanted or not link.is_symlink():

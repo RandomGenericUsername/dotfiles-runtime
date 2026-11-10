@@ -461,6 +461,25 @@ class TestReconcileHappyPath:
             / "colors.gtk.css"
         ).resolve()
 
+    def test_provisioning_owned_non_ags_appearance_link_survives_converge(
+        self, tmp_path: Path
+    ) -> None:
+        """BUG-017: v3 cleanup keeps a non-AGS stable appearance link."""
+        applied = _apply_state(tmp_path)
+        _make_reconcile(applied).run()
+        current_appearance = applied.state_root / "current" / "appearance"
+        (current_appearance / "wlogout.css").write_text("/* wlogout */\n")
+        wlogout = applied.install_spine / "config" / "wlogout"
+        wlogout.mkdir()
+        link = wlogout / "appearance.css"
+        link.symlink_to(current_appearance / "wlogout.css")
+
+        _make_reconcile(applied).run()
+
+        assert link.is_symlink()
+        assert link.readlink() == current_appearance / "wlogout.css"
+        assert link.resolve().is_file()
+
     def test_no_copy_every_current_entry_is_a_symlink(self, tmp_path: Path) -> None:
         applied = _apply_state(tmp_path)
         use_case = _make_reconcile(applied)

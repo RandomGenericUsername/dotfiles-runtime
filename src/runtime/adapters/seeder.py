@@ -23,13 +23,17 @@ import os
 import shutil
 import stat
 import uuid
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final, cast
 
 import fastjsonschema
 
-from runtime.adapters.appearance import prune_stale_appearance_consumers
+from runtime.adapters.appearance import (
+    prune_stale_appearance_consumers,
+    runtime_appearance_consumer_names,
+)
 from runtime.adapters.cache import CACHE_QUARANTINE_DIR, hardlink_or_copy
 from runtime.adapters.consumer_path_spec import StaticConsumerPathSpec
 from runtime.adapters.contract_schemas import meta_validator, meta_validator_for_kind
@@ -774,10 +778,10 @@ class CacheSeeder:
         ``os.replace`` to ``cache/appearance/<appearanceHash>``. Each existing
         app config dir receives a stable ``appearance.css`` link into that hop;
         absent dirs are skipped (the runtime never creates an app config dir).
-        Runtime-owned links for targets the generation no longer produces are
-        pruned, and the retired v1 ``skin.css``/``skin.json`` convenience links
-        are pruned too (REQ-015/REQ-018). Appearance pointers are untouched by
-        that prune.
+        Runtime-owned AGS links for targets the generation no longer produces
+        are pruned, a provisioning-owned non-AGS stable link is preserved, and
+        the retired v1 ``skin.css``/``skin.json`` convenience links are pruned
+        too (REQ-015/REQ-018). Appearance pointers are untouched by that prune.
         """
         cache_dir = self._state_root / "cache" / "appearance" / appearance.appearance_hash
         if not cache_dir.is_dir():
@@ -802,7 +806,13 @@ class CacheSeeder:
                 _repoint_symlink(dest, target)
                 created.append(dest)
                 wanted.add(dest)
-            created.extend(prune_stale_appearance_consumers(install_spine, wanted))
+            created.extend(
+                prune_stale_appearance_consumers(
+                    install_spine,
+                    wanted,
+                    published=appearance.config_dirs,
+                )
+            )
         created.extend(self.prune_v1_skin_pointers(install_spine))
         return created
 
@@ -908,23 +918,33 @@ class CacheSeeder:
         # entry point for callers that used the v2 name.
         return self.prune_runtime_spine_pointers(install_spine)
 
-    def prune_runtime_spine_pointers(self, install_spine: Path) -> list[Path]:
+    def prune_runtime_spine_pointers(
+        self,
+        install_spine: Path,
+        *,
+        published: Iterable[str] | None = None,
+    ) -> list[Path]:
         """Remove runtime-owned legacy links, writing nothing into app tags.
 
-        v3 has no ``config/<configDir>/appearance.css`` convenience link and no
-        v1 skin pointer. Existing runtime-owned links from those families are
-        pruned. A deployed config dir that is itself a symlink into an app tag
-        is never followed: deleting through it would mutate an immutable tag.
+        v3 has no runtime-owned ``config/<configDir>/appearance.css``
+        convenience link and no v1 skin pointer. Existing runtime-owned AGS
+        links from those families are pruned. A provisioning-owned non-AGS
+        stable appearance link is preserved. A deployed config dir that is
+        itself a symlink into an app tag is never followed: deleting through it
+        would mutate an immutable tag.
         """
         config_root = install_spine / "config"
         if not config_root.is_dir() or config_root.is_symlink():
             return []
+        owned = runtime_appearance_consumer_names(config_root, published)
         removed: list[Path] = []
         for config_dir in sorted(config_root.iterdir()):
             if config_dir.is_symlink() or not config_dir.is_dir():
                 continue
             for name in ("appearance.css", "skin.css", "skin.json"):
                 link = config_dir / name
+                if name == "appearance.css" and config_dir.name not in owned:
+                    continue
                 if not link.is_symlink():
                     continue
                 try:

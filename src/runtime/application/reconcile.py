@@ -485,8 +485,11 @@ class ReconcileDesktopStateUseCase:
             )
             # The runtime never repoints install-spine links (provisioning
             # owns them); it only prunes runtime-owned legacy v2 pointers.
+            # Non-AGS stable links (the provisioning-owned wlogout consumer)
+            # are preserved.
             consumer_repointed = self._seeder.prune_runtime_spine_pointers(
-                self._install_spine
+                self._install_spine,
+                published=appearance_entry.config_dirs,
             )
             skipped = self._derive_skipped(state, monitor_names, repointed, log=False)
 

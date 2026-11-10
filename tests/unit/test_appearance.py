@@ -21,6 +21,7 @@ from runtime.adapters.appearance import (
     detect_palette_mode,
     load_appearance_entry,
     prune_appearance_entries,
+    prune_stale_appearance_consumers,
     read_current_appearance,
     resolve_tokens,
     tokens_from_v1_skin,
@@ -398,15 +399,100 @@ class TestPointerAndConsumers:
         assert (root / entry.appearance_hash).is_dir()  # type: ignore[attr-defined]
         stale = spine / "config" / "ags" / "appearance.css"
         stale.unlink()
-        (spine / "config" / "other").mkdir()
-        stale_other = spine / "config" / "other" / "appearance.css"
-        stale_other.symlink_to(state_root / "current" / "appearance" / "other.css")
-        user = spine / "config" / "other" / "notes.txt"
+        (spine / "config" / "ags-other").mkdir()
+        stale_other = spine / "config" / "ags-other" / "appearance.css"
+        stale_other.symlink_to(state_root / "current" / "appearance" / "ags-other.css")
+        user = spine / "config" / "ags-other" / "notes.txt"
         user.write_text("keep\n", encoding="utf-8")
         seeder.publish_appearance(spine, entry)  # type: ignore[arg-type]
         assert not stale_other.is_symlink()
         assert user.read_text(encoding="utf-8") == "keep\n"
         assert stale.is_symlink()
+
+    def test_non_ags_stable_link_survives_publish_and_converge_prune(
+        self, tmp_path: Path
+    ) -> None:
+        entry, _, state_root = _generate(tmp_path)
+        spine = _spine(tmp_path)
+        seeder = CacheSeeder(state_root)
+        seeder.publish_appearance(spine, entry)  # type: ignore[arg-type]
+        cache_dir = state_root / "cache" / "appearance" / entry.appearance_hash  # type: ignore[attr-defined]
+        target = cache_dir / "wlogout.css"
+        target.write_text("/* wlogout */\n", encoding="utf-8")
+        pointer = state_root / "current" / "appearance"
+        wlogout = spine / "config" / "wlogout"
+        wlogout.mkdir()
+        stable = wlogout / "appearance.css"
+        stable.symlink_to(pointer / "wlogout.css")
+
+        assert stable.resolve() == target.resolve()
+
+        # A second publication (skin/mode reconverge) keeps the stable link.
+        seeder.publish_appearance(spine, entry)  # type: ignore[arg-type]
+        assert stable.is_symlink()
+        assert stable.readlink() == pointer / "wlogout.css"
+
+        # Even if wlogout is part of the published skin target set, it is not
+        # an AGS runtime consumer and its provisioning-owned link is kept.
+        seeder.prune_runtime_spine_pointers(
+            spine, published=(*entry.config_dirs, "wlogout")  # type: ignore[attr-defined]
+        )
+        assert stable.is_symlink()
+        assert stable.readlink() == pointer / "wlogout.css"
+
+    def test_ags_stale_link_is_pruned_while_non_ags_and_non_current_links_survive(
+        self, tmp_path: Path
+    ) -> None:
+        spine = _spine(tmp_path)
+        state_root = tmp_path / "state"
+        appearance_dir = state_root / "current" / "appearance"
+        appearance_dir.mkdir(parents=True)
+        for name in ("ags-stale", "wlogout", "ags-old"):
+            target = appearance_dir / f"{name}.css"
+            target.write_text("/* link */\n", encoding="utf-8")
+            directory = spine / "config" / name
+            directory.mkdir()
+            (directory / "appearance.css").symlink_to(target)
+        legacy_target = state_root / "cache" / "appearance" / ("a" * 64) / "ags-old.css"
+        legacy_target.parent.mkdir(parents=True)
+        legacy_target.write_text("/* old */\n", encoding="utf-8")
+        (spine / "config" / "ags-old" / "appearance.css").unlink()
+        (spine / "config" / "ags-old" / "appearance.css").symlink_to(legacy_target)
+
+        removed = prune_stale_appearance_consumers(
+            spine,
+            set(),
+            published=("ags", "ags-stale", "wlogout", "ags-old"),
+        )
+
+        assert {path.parent.name for path in removed} == {"ags-stale"}
+        assert not (spine / "config" / "ags-stale" / "appearance.css").is_symlink()
+        assert (spine / "config" / "wlogout" / "appearance.css").is_symlink()
+        # The narrow target check still preserves a non-current/appearance link.
+        assert (spine / "config" / "ags-old" / "appearance.css").is_symlink()
+
+    def test_symlink_config_dir_is_never_followed_by_the_prune(
+        self, tmp_path: Path
+    ) -> None:
+        spine = _spine(tmp_path)
+        state_root = tmp_path / "state"
+        target = state_root / "current" / "appearance" / "ags-linked.css"
+        target.parent.mkdir(parents=True)
+        target.write_text("/* link */\n", encoding="utf-8")
+        app_tag = tmp_path / "apps" / "bar" / "v1"
+        app_tag.mkdir(parents=True)
+        app_link = app_tag / "appearance.css"
+        app_link.symlink_to(target)
+        (spine / "config" / "ags-linked").symlink_to(app_tag, target_is_directory=True)
+
+        removed = prune_stale_appearance_consumers(
+            spine,
+            set(),
+            published=("ags-linked",),
+        )
+
+        assert removed == []
+        assert app_link.is_symlink()
 
 
 def _state(state_root: Path) -> DesktopState:
