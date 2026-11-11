@@ -2,7 +2,7 @@
 id: REQ-025
 title: "Host-delegated rectangle radii (panel/card/control/cell, contracts v0.11.0)"
 kind: requirement
-status: proposed
+status: in-progress
 lane: 2
 links:
   contract: contracts/tickets/REQ-019-host-rectangle-radii/ticket.md
