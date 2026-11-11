@@ -33,6 +33,7 @@
 
 ## Bugs
 
+- [BUG-019-doctor-appearance-target-set](./BUG-019-doctor-appearance-target-set/ticket.md) — Doctor flags legitimate stable `appearance.css` links whose consumer alias differs from the config dir name | `in-progress` | severity: high | worktree: .worktrees/BUG-019/ | branch: ticket/BUG-019-doctor-appearance-target-set
 - [BUG-018-icons-regenerate-idempotent](./BUG-018-icons-regenerate-idempotent/ticket.md) — `icons regenerate` commits a new generation when the content is already current | `done` | severity: high | worktree: .worktrees/BUG-018/ | branch: ticket/BUG-018-icons-regenerate-idempotent | tag: v1.1.2
 - [BUG-017-appearance-consumer-ownership](./BUG-017-appearance-consumer-ownership/ticket.md) — Runtime appearance prune deletes the provisioning-owned wlogout stable link | `done` | severity: high | worktree: .worktrees/BUG-017/ | branch: ticket/BUG-017-appearance-consumer-ownership | tag: v1.1.1
 - [BUG-016-doctor-stable-appearance-link](./BUG-016-doctor-stable-appearance-link/ticket.md) — Doctor flags the legitimate stable wlogout `appearance.css` link as a retired v2 convenience link | `done` | severity: high | worktree: .worktrees/BUG-016/ | branch: ticket/BUG-016-doctor-stable-appearance-link | tag: v1.0.8
