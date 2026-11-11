@@ -25,15 +25,26 @@ HOST_SOURCE = "hyprland"
 HOST_MAP_VERSION = 1
 
 #: Phase 1 mapping: logical token path -> Hyprland effective option.
+#:
+#: The outer panel and the inner card/control/cell rectangle radii follow the
+#: one compositor rounding value. ``surface.pill.radius`` is deliberately
+#: absent: a pill is a capsule and its identity must stay explicit. Border
+#: width is delegable only for the outer panel.
 HOST_MAP: Mapping[str, str] = {
     "surface.panel.radius": "decoration:rounding",
     "surface.panel.border-width": "general:border_size",
+    "surface.card.radius": "decoration:rounding",
+    "surface.control.radius": "decoration:rounding",
+    "surface.cell.radius": "decoration:rounding",
 }
 
-#: Valid ranges for the two delegated numeric tokens.
+#: Valid ranges for the five delegated numeric tokens.
 HOST_BOUNDS: Mapping[str, float] = {
     "surface.panel.radius": 64.0,
     "surface.panel.border-width": 16.0,
+    "surface.card.radius": 64.0,
+    "surface.control.radius": 64.0,
+    "surface.cell.radius": 64.0,
 }
 
 HOST_FALLBACKS = frozenset({"skin", "error"})

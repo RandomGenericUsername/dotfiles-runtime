@@ -81,10 +81,13 @@
             "type": "string",
             "enum": [
               "surface.panel.radius",
-              "surface.panel.border-width"
+              "surface.panel.border-width",
+              "surface.card.radius",
+              "surface.control.radius",
+              "surface.cell.radius"
             ]
           },
-          "description": "Allowlist of logical appearance token paths that may follow the live host. This is not a token group: it cannot name layout, padding, gap, type, paint or colour paths."
+          "description": "Allowlist of logical appearance token paths that may follow the live host. It delegates the outer panel plus the inner card/control/cell rectangle radii. `surface.pill.radius` is deliberately absent: the pill's capsule identity stays explicit. This is not a token group: it cannot name layout, padding, gap, type, paint or colour paths, and it cannot delegate a card/control/cell border width."
         },
         "fallback": {
           "type": "string",
@@ -96,7 +99,7 @@
           "description": "Headless or invalid-host policy: use the skin's concrete value, or fail the generation before publishing."
         }
       },
-      "description": "Optional per-skin host-default policy. Only the explicit allowlist may inherit a host value; every other token stays explicit. No host value is a colour and no host value may inject structure."
+      "description": "Optional per-skin host-default policy. It may delegate only the outer panel plus the inner card/control/cell rectangle radii and the panel border width; the pill radius stays explicit. Every other token stays explicit. No host value is a colour and no host value may inject structure."
     },
     "paletteRole": {
       "type": "string",

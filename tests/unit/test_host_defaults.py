@@ -20,14 +20,26 @@ from runtime.adapters.generation_store import (
     GenerationStore,
     generation_intent_hash,
 )
-from runtime.adapters.hashing import appearance_generation_hash
+from runtime.adapters.hashing import (
+    appearance_generation_hash,
+    canonical_hash_dir,
+    hash_file,
+    skin_entry_hash,
+)
 from runtime.adapters.hyprland_host_defaults import HyprlandHostDefaults
 from runtime.adapters.json_state_repository import JsonStateRepository
 from runtime.adapters.seeder import CacheSeeder
-from runtime.adapters.skin_expander import load_skin_manifest, resolve_v2_token_document_with_host
+from runtime.adapters.skin_expander import (
+    SkinExpander,
+    expand_v2_template,
+    load_skin_manifest,
+    resolve_v2_token_document_with_host,
+    validate_v2_manifest,
+)
 from runtime.application.doctor import DoctorUseCase
 from runtime.domain.host_defaults import (
     HOST_MAP,
+    HOST_MAP_VERSION,
     HostDefaultsError,
     HostSnapshot,
     resolve_host_defaults,
@@ -50,6 +62,12 @@ from tests.unit.test_appearance_v2_assets import (
 
 _MANIFESTS = Path(__file__).resolve().parents[1] / "fixtures" / "skins-v2" / "manifests"
 _HOST_PATHS = ("surface.panel.radius", "surface.panel.border-width")
+_RECT_PATHS = (
+    "surface.card.radius",
+    "surface.control.radius",
+    "surface.cell.radius",
+)
+_ALL_HOST_PATHS = (*_HOST_PATHS, *_RECT_PATHS)
 _TS = "2026-11-09T00:00:00Z"
 
 
@@ -73,17 +91,71 @@ def _ok(payload: object) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess([], 0, json.dumps(payload), "")
 
 
-def _snapshot(radius: int = 8, border: int = 2) -> HostSnapshot:
+def _snapshot(
+    radius: int = 8,
+    border: int = 2,
+    *,
+    card: int | None = None,
+    control: int | None = None,
+    cell: int | None = None,
+) -> HostSnapshot:
     return HostSnapshot(
         values={
             "surface.panel.radius": radius,
             "surface.panel.border-width": border,
+            "surface.card.radius": radius if card is None else card,
+            "surface.control.radius": radius if control is None else control,
+            "surface.cell.radius": radius if cell is None else cell,
         }
     )
 
 
 def _manifest(name: str) -> dict[str, object]:
     return load_skin_manifest(_MANIFESTS / f"{name}.toml")
+
+
+def _manifest_with_inherit(name: str, paths: tuple[str, ...]) -> dict[str, object]:
+    manifest = json.loads(json.dumps(_manifest(name)))
+    manifest["host"]["inherit"] = list(paths)
+    return manifest
+
+
+def _write_manifest(tmp_path: Path, name: str, paths: tuple[str, ...]) -> Path:
+    source = _MANIFESTS / f"{name}.toml"
+    text = source.read_text(encoding="utf-8")
+    old = 'inherit = ["surface.panel.radius", "surface.panel.border-width"]'
+    new = "inherit = [" + ", ".join(f'"{path}"' for path in paths) + "]"
+    assert old in text
+    manifest_path = tmp_path / f"{name}-host-rectangles.toml"
+    manifest_path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    return manifest_path
+
+
+def _write_skin_with_manifest(
+    state_root: Path, name: str, manifest_path: Path
+) -> tuple[object, Path]:
+    manifest = load_skin_manifest(manifest_path)
+    validate_v2_manifest(manifest, name, manifest_path)
+    expected = skin_entry_hash(canonical_hash_dir(_TEMPLATES), hash_file(manifest_path))
+    work = cache_entry_path(state_root, "skins", expected)
+    entry = SkinExpander().expand(name, manifest_path, _TEMPLATES, work)
+    CacheSeeder(state_root).write_skin_meta(
+        entry_hash=entry.entry_hash,
+        name=entry.name,
+        input_templates_hash=entry.input_templates_hash,
+        input_manifest_hash=entry.input_manifest_hash,
+        artifact_hashes=dict(entry.artifact_hashes),
+        generated_at=entry.generated_at,
+    )
+    return entry, manifest_path
+
+
+def _token(tokens: dict[str, object], path: str) -> object:
+    cursor: object = tokens
+    for part in path.split("."):
+        assert isinstance(cursor, dict)
+        cursor = cursor[part]
+    return cursor
 
 
 # ---------------------------------------------------------------- resolver
@@ -160,6 +232,150 @@ def test_resolver_partial_host_values_fall_back_per_token() -> None:
     )
 
 
+def test_resolver_applies_all_five_rectangle_paths() -> None:
+    manifest = _manifest_with_inherit("glass", _ALL_HOST_PATHS)
+    snapshot = HostSnapshot(
+        values={
+            "surface.panel.radius": 8,
+            "surface.panel.border-width": 2,
+            "surface.card.radius": 12,
+            "surface.control.radius": 10,
+            "surface.cell.radius": 6,
+        }
+    )
+    tokens, resolution = resolve_v2_token_document_with_host(manifest, "dark", snapshot)
+    assert _token(tokens, "surface.panel.radius") == 8
+    assert _token(tokens, "surface.panel.border-width") == 2
+    assert _token(tokens, "surface.card.radius") == 12
+    assert _token(tokens, "surface.control.radius") == 10
+    assert _token(tokens, "surface.cell.radius") == 6
+    assert resolution.provenance == {path: "host" for path in _ALL_HOST_PATHS}
+    assert resolution.defaults == dict(snapshot.values)
+    assert resolution.host_hash == snapshot.fingerprint(_ALL_HOST_PATHS)
+
+
+@pytest.mark.parametrize("path", _RECT_PATHS)
+def test_resolver_applies_each_rectangle_radius_individually(path: str) -> None:
+    manifest = _manifest_with_inherit("glass", (path,))
+    snapshot = HostSnapshot(values={path: 13})
+    tokens, resolution = resolve_v2_token_document_with_host(manifest, "dark", snapshot)
+    assert _token(tokens, path) == 13
+    assert resolution.provenance == {path: "host"}
+    assert resolution.defaults == {path: 13}
+    assert resolution.host_hash == snapshot.fingerprint((path,))
+    # The other rectangle radii keep their skin values.
+    for other in _RECT_PATHS:
+        if other != path:
+            assert _token(tokens, other) == _token(
+                resolve_v2_token_document_with_host(manifest, "dark", None)[0], other
+            )
+
+
+def test_pill_radius_is_not_delegable() -> None:
+    assert "surface.pill.radius" not in HOST_MAP
+    with pytest.raises(ValueError, match="known-path"):
+        resolve_host_defaults(
+            _manifest("glass")["groups"],
+            _manifest_with_inherit("glass", ("surface.pill.radius",)),
+            "dark",
+            _snapshot(),
+        )
+    with pytest.raises(ValueError, match="unknown host token path"):
+        validate_host_value("surface.pill.radius", 20)
+
+
+def test_paper_light_mode_override_wins_for_new_rectangle_paths() -> None:
+    manifest = _manifest_with_inherit("paper", _ALL_HOST_PATHS)
+    tokens, resolution = resolve_v2_token_document_with_host(manifest, "light", _snapshot(16, 4))
+    assert _token(tokens, "surface.card.radius") == 4
+    assert _token(tokens, "surface.control.radius") == 3
+    assert _token(tokens, "surface.cell.radius") == 3
+    assert resolution.provenance == {path: "mode-override" for path in _ALL_HOST_PATHS}
+    assert resolution.host_hash is None
+
+
+def test_new_rectangle_paths_fall_back_per_token_and_headless() -> None:
+    manifest = _manifest_with_inherit("glass", _ALL_HOST_PATHS)
+    tokens, resolution = resolve_v2_token_document_with_host(
+        manifest, "dark", HostSnapshot(values={"surface.card.radius": 12})
+    )
+    assert _token(tokens, "surface.card.radius") == 12
+    assert resolution.provenance == {
+        "surface.panel.radius": "skin-fallback",
+        "surface.panel.border-width": "skin-fallback",
+        "surface.card.radius": "host",
+        "surface.control.radius": "skin-fallback",
+        "surface.cell.radius": "skin-fallback",
+    }
+    assert resolution.host_hash == HostSnapshot(
+        values={"surface.card.radius": 12}
+    ).fingerprint(("surface.card.radius",))
+
+    headless, headless_resolution = resolve_v2_token_document_with_host(
+        manifest, "dark", None
+    )
+    assert headless == resolve_v2_token_document_with_host(manifest, "dark", None)[0]
+    assert headless_resolution.provenance == {
+        path: "skin-fallback" for path in _ALL_HOST_PATHS
+    }
+    assert headless_resolution.host_hash is None
+
+    fallback_error = _manifest_with_inherit("glass", _ALL_HOST_PATHS)
+    fallback_error["host"]["fallback"] = "error"
+    with pytest.raises(HostDefaultsError, match="surface.card.radius"):
+        resolve_host_defaults(
+            fallback_error["groups"],
+            fallback_error,
+            "dark",
+            HostSnapshot(
+                values={
+                    "surface.panel.radius": 8,
+                    "surface.panel.border-width": 2,
+                    "surface.control.radius": 10,
+                    "surface.cell.radius": 6,
+                }
+            ),
+        )
+
+
+def test_new_rectangle_values_do_not_churn_a_panel_only_manifest() -> None:
+    manifest = _manifest("glass")
+    tokens, resolution = resolve_v2_token_document_with_host(manifest, "dark", _snapshot(8, 2))
+    panel_values = {
+        "surface.panel.radius": 8,
+        "surface.panel.border-width": 2,
+    }
+    panel_only = HostSnapshot(values=panel_values)
+    assert resolution.defaults == panel_values
+    assert resolution.host_hash == panel_only.fingerprint(_HOST_PATHS)
+    assert HOST_MAP_VERSION == 1
+    assert tokens == resolve_v2_token_document_with_host(
+        manifest, "dark", panel_only
+    )[0]
+
+
+def test_rofi_like_rectangle_tokens_follow_host_but_pill_stays() -> None:
+    manifest = _manifest_with_inherit("glass", _ALL_HOST_PATHS)
+    snapshot = _snapshot(8, 2, card=12, control=10, cell=6)
+    tokens, _resolution = resolve_v2_token_document_with_host(manifest, "dark", snapshot)
+    template = "\n".join(
+        (
+            "* {",
+            "  card: {{SKIN_SURFACE_CARD_RADIUS}};",
+            "  control: {{SKIN_SURFACE_CONTROL_RADIUS}};",
+            "  cell: {{SKIN_SURFACE_CELL_RADIUS}};",
+            "  pill: {{SKIN_SURFACE_PILL_RADIUS}};",
+            "}",
+        )
+    )
+    rendered = expand_v2_template(template, tokens, format="rasi")
+    assert "card: 12px;" in rendered
+    assert "control: 10px;" in rendered
+    assert "cell: 6px;" in rendered
+    # surface.pill.radius is never inherited: glass keeps its authored 20.
+    assert "pill: 20px;" in rendered
+
+
 def test_resolver_fallback_error_fails_closed() -> None:
     manifest = _manifest("glass")
     manifest = json.loads(json.dumps(manifest))
@@ -184,11 +400,27 @@ def test_resolver_fallback_error_fails_closed() -> None:
         ("surface.panel.border-width", float("inf")),
         ("surface.panel.border-width", []),
         ("surface.panel.border-width", {"css": "5 5 5 5"}),
+        ("surface.card.radius", True),
+        ("surface.card.radius", "8"),
+        ("surface.card.radius", -1),
+        ("surface.card.radius", 65),
+        ("surface.control.radius", float("nan")),
+        ("surface.control.radius", 65),
+        ("surface.cell.radius", -1),
+        ("surface.cell.radius", 65),
     ],
 )
 def test_host_value_validation_rejects_non_scalars(path: str, value: object) -> None:
     with pytest.raises(ValueError):
         validate_host_value(path, value)
+
+
+@pytest.mark.parametrize("path", _RECT_PATHS)
+@pytest.mark.parametrize("value", [0, 64, 7, 7.5])
+def test_new_rectangle_radius_bounds_accept_zero_to_sixty_four(
+    path: str, value: float
+) -> None:
+    assert validate_host_value(path, value) == value
 
 
 def test_appearance_v3_formula_uses_the_dash_placeholder() -> None:
@@ -241,9 +473,14 @@ def test_adapter_reads_effective_values_with_signature() -> None:
     assert snapshot.values == {
         "surface.panel.radius": 0,
         "surface.panel.border-width": 1,
+        "surface.card.radius": 0,
+        "surface.control.radius": 0,
+        "surface.cell.radius": 0,
     }
     assert snapshot.instance_signature == "sig"
     assert not any(call[:2] == ("-j", "instances") for call in runner.calls)
+    # The three inner radii share decoration:rounding, so it is read once.
+    assert runner.calls.count(("-j", "getoption", "decoration:rounding")) == 1
 
 
 def test_adapter_discovers_a_single_instance_when_signature_is_absent() -> None:
@@ -260,6 +497,9 @@ def test_adapter_discovers_a_single_instance_when_signature_is_absent() -> None:
     assert snapshot.values == {
         "surface.panel.radius": 8,
         "surface.panel.border-width": 1.5,
+        "surface.card.radius": 8,
+        "surface.control.radius": 8,
+        "surface.cell.radius": 8,
     }
     assert snapshot.instance_signature == "discovered"
 
@@ -286,7 +526,9 @@ def test_adapter_rejects_invalid_scalars_and_vectors() -> None:
     snapshot = adapter.read()
     assert snapshot is not None
     assert snapshot.values == {}
-    assert len(snapshot.warnings) == 2
+    # One warning per delegated path: four radii all read the invalid
+    # decoration:rounding, plus the panel border width.
+    assert len(snapshot.warnings) == 5
 
 
 def test_adapter_missing_binary_is_unavailable() -> None:
@@ -467,6 +709,45 @@ def test_generation_writes_host_block_and_intent_host(tmp_path: Path) -> None:
     generation_manifest_validator()(manifest)
 
 
+def test_generation_writes_all_rectangle_host_defaults(tmp_path: Path) -> None:
+    from fastjsonschema import JsonSchemaValueException
+
+    state_root = tmp_path / "state"
+    palette = _write_palette(state_root, "a" * 64, "dark")
+    manifest_path = _write_manifest(tmp_path, "glass", _ALL_HOST_PATHS)
+    skin, _path = _write_skin_with_manifest(state_root, "glass", manifest_path)
+    snapshot = HostSnapshot(
+        values={
+            "surface.panel.radius": 8,
+            "surface.panel.border-width": 2,
+            "surface.card.radius": 12,
+            "surface.control.radius": 10,
+            "surface.cell.radius": 6,
+        }
+    )
+    entry, _hit = AppearanceGenerator(state_root).ensure(
+        palette_entry=palette,
+        skin_entry=skin,
+        install_spine=_spine(tmp_path),
+        manifest_path=manifest_path,
+        templates_dir=_TEMPLATES,
+        host=snapshot,
+    )
+    _generation, manifest = _commit(state_root, entry, skin)
+    assert manifest["host"]["version"] == HOST_MAP_VERSION == 1
+    assert manifest["host"]["defaults"] == {
+        path: snapshot.values[path] for path in _ALL_HOST_PATHS
+    }
+    assert manifest["intent"]["host"] == entry.host_hash
+    assert entry.host_hash == snapshot.fingerprint(_ALL_HOST_PATHS)
+    generation_manifest_validator()(manifest)
+
+    pill = json.loads(json.dumps(manifest))
+    pill["host"]["defaults"]["surface.pill.radius"] = 20
+    with pytest.raises(JsonSchemaValueException):
+        generation_manifest_validator()(pill)
+
+
 def test_generation_rejects_intent_host_mismatch(tmp_path: Path) -> None:
     entry, state_root, _spine_path, skin = _compose(tmp_path, "glass", host=_snapshot(8, 2))
     generation, manifest = _commit(state_root, entry, skin)
@@ -555,3 +836,54 @@ def test_doctor_reports_host_drift_only_for_delegated_values(tmp_path: Path) -> 
     by_name = {item.name: item for item in items}
     assert by_name["generation:host"].status == "ok"
     assert "unknown" in by_name["generation:host"].detail
+
+
+def test_doctor_host_drift_covers_new_rectangle_paths_and_ignores_pill(
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "state"
+    palette = _write_palette(state_root, "a" * 64, "dark")
+    manifest_path = _write_manifest(tmp_path, "glass", _ALL_HOST_PATHS)
+    skin, _path = _write_skin_with_manifest(state_root, "glass", manifest_path)
+    spine = _spine(tmp_path)
+    committed = HostSnapshot(
+        values={
+            "surface.panel.radius": 8,
+            "surface.panel.border-width": 2,
+            "surface.card.radius": 12,
+            "surface.control.radius": 10,
+            "surface.cell.radius": 6,
+        }
+    )
+    entry, _hit = AppearanceGenerator(state_root).ensure(
+        palette_entry=palette,
+        skin_entry=skin,
+        install_spine=spine,
+        manifest_path=manifest_path,
+        templates_dir=_TEMPLATES,
+        host=committed,
+    )
+    _commit(state_root, entry, skin)
+
+    def _doctor(snapshot: HostSnapshot) -> dict[str, object]:
+        items = DoctorUseCase(
+            state_repo=JsonStateRepository(state_root=state_root),
+            state_root=state_root,
+            install_spine=spine,
+            host_probe=_FakeHost(snapshot),
+        ).check().items
+        return {item.name: item for item in items}
+
+    drifted = HostSnapshot(values={**dict(committed.values), "surface.cell.radius": 7})
+    assert _doctor(drifted)["generation:host"].status == "diverged"
+
+    # An extra pill or any other non-delegated value is not compared.
+    non_delegated = HostSnapshot(
+        values={
+            **dict(committed.values),
+            "surface.pill.radius": 999,
+            "surface.card.border-width": 3,
+            "decoration:blur:size": 9,
+        }
+    )
+    assert _doctor(non_delegated)["generation:host"].status == "ok"

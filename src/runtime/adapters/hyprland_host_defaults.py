@@ -41,7 +41,7 @@ Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 class HyprlandHostDefaults(IHostDefaults):
-    """Read the two Phase 1 delegated values from the live compositor."""
+    """Read the five Phase 1 delegated values from the live compositor."""
 
     def __init__(
         self,
@@ -127,9 +127,15 @@ class HyprlandHostDefaults(IHostDefaults):
 
         values: dict[str, int | float] = {}
         warnings: list[str] = []
+        # Several logical paths can share one compositor option (the panel and
+        # the card/control/cell radii all follow decoration:rounding). Read each
+        # option once and project it onto every path that names it.
+        option_values: dict[str, object | None] = {}
         for path, option in HOST_MAP.items():
-            payload = self._json(["-j", "getoption", option], env)
-            raw = self._option_value(payload)
+            if option not in option_values:
+                payload = self._json(["-j", "getoption", option], env)
+                option_values[option] = self._option_value(payload)
+            raw = option_values[option]
             if raw is None:
                 warnings.append(f"{path}: {option} is unavailable or non-scalar")
                 continue
