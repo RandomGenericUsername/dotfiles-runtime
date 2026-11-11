@@ -1,3 +1,39 @@
+## v1.5.0 — 2026-11-11
+
+Implement the required `surface.window` role for contracts `v0.12.0`
+(REQ-026).
+
+- **Contract pin.** `CONTRACT_PIN` moves to the contracts `v0.12.0` annotated
+  tag object (`b543573904f5515d8eefb4daf361a388b5228c50`, peeled
+  `a03b5632828df8012c02a6117c3be438eca4264b`). The vendored generated binding
+  header and the embedded/conformance `appearance-manifest`,
+  `appearance-json` and `generation-manifest` schemas move with it.
+- **Required window role.** `surface.window` owns exactly `bg`, `border`,
+  `border-width`, `radius`, `padding`, `shadow`, `blur` and the unitless
+  `opacity` in `[0, 1]`. It is a distinct toplevel role, not a panel alias:
+  the schema and the v1→v2 compatibility translation author the group once,
+  and nothing derives window values from `surface.panel` at runtime.
+- **Host allowlist.** The host map now delegates exactly seven paths. The two
+  window paths are `surface.window.radius` (`decoration:rounding`, `0..64`)
+  and `surface.window.border-width` (`general:border_size`, `0..16`);
+  `surface.window.padding` and `surface.window.opacity` are deliberately
+  absent and rejected as inherit paths.
+- **Opacity rendering.** `surface.window.opacity` renders as a bare unitless
+  number in CSS, rasi, conf and theme output. It is never a length, a unit
+  string, a percentage or an `alpha()` derivation.
+- **Identity and generation.** `HOST_MAP_VERSION` stays `1`; `hostHash`
+  covers only participating values, so a panel-only or headless snapshot is
+  unchanged. `host.defaults`/`intent.host` accept the window geometry paths,
+  while the closed schema rejects window padding/opacity and the pill radius.
+- **Doctor.** Host drift compares committed window radius/border width and
+  ignores window padding/opacity and other non-delegated compositor settings.
+- **Regression coverage.** Window group/required tokens, opacity type and
+  bounds, no panel fallback, all seven host paths and their bounds,
+  fallback/headless/mode-override, unitless opacity across formats,
+  generation defaults/hash and doctor drift.
+- **Release only.** No contracts/assets/provisioning/composition/app edit and
+  no apply in this slice.
+
 ## v1.4.0 — 2026-11-11
 
 Delegate the inner rectangle radii to the live host for contracts `v0.11.0`

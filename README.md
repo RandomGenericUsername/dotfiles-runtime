@@ -28,6 +28,25 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**1.5.0** — required `surface.window` role.
+
+- `surface.window` is a required sixth surface role for the outer/application
+  toplevel with eight tokens: `bg`, `border`, `border-width`, `radius`,
+  `padding`, `shadow`, `blur` and `opacity`. It is never an alias for
+  `surface.panel`; a missing window group fails validation instead of falling
+  back.
+- `surface.window.opacity` is a unitless number in `[0, 1]`. CSS, rasi, conf
+  and theme expansion render it bare (`0.94`, never `0.94px`/`0.94em`), and it
+  is authored rather than derived from an `alpha()` paint.
+- The host allowlist adds `surface.window.radius` (`0..64`) and
+  `surface.window.border-width` (`0..16`). Window padding and opacity are not
+  delegable and are never recorded in `host.defaults`; only participating
+  values enter `hostHash`.
+- `doctor` reports drift for committed window radius/border width and ignores
+  window padding/opacity and other non-delegated settings.
+- Contracts pin moves to `v0.12.0`. No
+  assets/provisioning/composition/app change is in this slice.
+
 **1.4.0** — host-delegated inner rectangle radii.
 
 - The host allowlist now covers the outer panel plus the inner

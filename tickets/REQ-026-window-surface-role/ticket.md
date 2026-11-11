@@ -2,7 +2,7 @@
 id: REQ-026
 title: "Required surface.window role (contracts v0.12.0)"
 kind: requirement
-status: in-progress
+status: done
 lane: 2
 links:
   contract: contracts/tickets/REQ-020-window-role/ticket.md
@@ -51,21 +51,21 @@ Scope:
 
 ## Acceptance
 
-- [ ] `CONTRACT_PIN` is the contracts `v0.12.0` tag object; embedded and
+- [x] `CONTRACT_PIN` is the contracts `v0.12.0` tag object; embedded and
       conformance schemas agree.
-- [ ] The host map adds exactly the two window geometry paths and rejects
+- [x] The host map adds exactly the two window geometry paths and rejects
       window padding/opacity.
-- [ ] Window radius/border width participate in `hostHash`; only participating
+- [x] Window radius/border width participate in `hostHash`; only participating
       values count and `HOST_MAP_VERSION` stays `1`.
-- [ ] `surface.window.opacity` renders unitless (`0.94`, never `0.94px` or
+- [x] `surface.window.opacity` renders unitless (`0.94`, never `0.94px` or
       `0.94em`) and is never derived from an alpha paint.
-- [ ] Generation `host.defaults`/`intent.host` accept the window paths and the
+- [x] Generation `host.defaults`/`intent.host` accept the window paths and the
       closed defaults schema rejects padding/opacity.
-- [ ] Doctor reports drift only for committed window geometry paths and
+- [x] Doctor reports drift only for committed window geometry paths and
       ignores padding/opacity and other non-delegated values.
-- [ ] Targeted host/skin/generation/doctor suites and `make gates`,
+- [x] Targeted host/skin/generation/doctor suites and `make gates`,
       `make gates-ci`, `make ci-gates-parity` pass.
-- [ ] `v1.5.0` is an annotated tag on the merged release commit; `main` and the
+- [x] `v1.5.0` is an annotated tag on the merged release commit; `main` and the
       tag are pushed; the GitHub Release carries only the wheel and sdist.
 
 ## Evidence
@@ -98,7 +98,48 @@ Commands run from the worktree root (`.worktrees/REQ-026/`), base `v1.4.0`
 
 | Claim | Command | Result |
 | --- | --- | --- |
-| Pending | — | — |
+| Full gate set | `make gates` | PASS — `2580 passed, 3 skipped, 11 deselected`; lint, contracts-check (`58 passed, 1 skipped`), hermetic, lock-check and docs-check clean |
+| CI gate set | `make gates-ci` | PASS — same six gates, `2580 passed, 3 skipped, 11 deselected` |
+| Workflow parity | `make ci-gates-parity` | `PASS gates=[...] jobs=[...] exempt=['ci-gates-parity', 'release']` |
+| Cross-repo pin | `CONTRACTS_REPO=/home/inumaki/Development/dotfiles/contracts make contract-pin-check` | `PASS` at pin `b543573904f5515d8eefb4daf361a388b5228c50` |
+| Targeted host/skin/generation/doctor | `uv run pytest -q tests/unit/test_host_defaults.py tests/unit/test_skin_expander.py tests/unit/test_skins.py tests/unit/test_appearance.py tests/unit/test_appearance_v2_assets.py tests/unit/test_format_aware_artifacts.py tests/unit/test_generations_v3.py tests/unit/test_generation_gc.py tests/unit/test_doctor_check.py tests/unit/test_host_configreloaded.py tests/unit/test_contract_schema_conformance.py tests/unit/test_contract_pin_check.py` | `323 passed, 1 skipped` |
+
+### Window host paths, bounds and opacity rules
+
+| Host path | Hyprland option | Bounds |
+| --- | --- | --- |
+| `surface.window.radius` | `decoration:rounding` | `0..64` |
+| `surface.window.border-width` | `general:border_size` | `0..16` |
+| `surface.panel.radius` | `decoration:rounding` | `0..64` |
+| `surface.panel.border-width` | `general:border_size` | `0..16` |
+| `surface.card.radius` | `decoration:rounding` | `0..64` |
+| `surface.control.radius` | `decoration:rounding` | `0..64` |
+| `surface.cell.radius` | `decoration:rounding` | `0..64` |
+
+`surface.window.padding`, `surface.window.opacity` and `surface.pill.radius`
+are not in `HOST_MAP`/`HOST_BOUNDS`, are rejected as inherit paths, and are
+rejected by the closed generation `host.defaults` schema. Opacity is an
+authored unitless `[0, 1]` number: CSS/rasi/conf/theme expansion renders a bare
+decimal, never `px`/`em`, a percentage or an `alpha()` derivation.
+
+### Commits
+
+| Commit | Subject |
+| --- | --- |
+| `bcb01d4` | `docs(REQ-026): plan the required surface.window role` |
+| `6da2c40` | `chore(REQ-026): start — record worktree/branch, move to in-progress` |
+| `7c467c7` | `feat(REQ-026): implement the required surface.window role` |
+| release commit (the `v1.5.0` tag target) | `chore(REQ-026): release v1.5.0` |
+
+### Status
+
+**Done on `ticket/REQ-026-window-surface-role`.** The required window role,
+eight-token schema, unitless opacity, two-path host allowlist, generation host
+defaults and doctor drift are implemented against contracts `v0.12.0`. Merge to
+`main` fast-forward, create the annotated `v1.5.0` tag on the release commit,
+push `main` + the tag and publish the GitHub Release with only the wheel and
+sdist. No apply and no contracts/assets/provisioning/composition/app edit
+occurred in this slice.
 
 ## Downstream pins needed (not changed here)
 

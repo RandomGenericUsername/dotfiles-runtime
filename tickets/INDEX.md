@@ -6,7 +6,7 @@
 
 ## Requirements
 
-- [REQ-026-window-surface-role](./REQ-026-window-surface-role/ticket.md) — Required `surface.window` role (contracts v0.12.0) | `in-progress` | worktree: .worktrees/REQ-026/ | branch: ticket/REQ-026-window-surface-role
+- [REQ-026-window-surface-role](./REQ-026-window-surface-role/ticket.md) — Required `surface.window` role (contracts v0.12.0) | `done` | worktree: .worktrees/REQ-026/ | branch: ticket/REQ-026-window-surface-role | tag: v1.5.0
 - [REQ-025-host-rectangle-radii](./REQ-025-host-rectangle-radii/ticket.md) — Host-delegated rectangle radii (panel/card/control/cell, contracts v0.11.0) | `done` | worktree: .worktrees/REQ-025/ | branch: ticket/REQ-025-host-rectangle-radii | tag: v1.4.0
 - [REQ-024-format-aware-runtime-artifacts](./REQ-024-format-aware-runtime-artifacts/ticket.md) — Format-aware runtime skin consumers (Phase 3A-3: F-3.1–F-3.5) | `done` | worktree: .worktrees/REQ-024/ | branch: ticket/REQ-024-format-aware-runtime-artifacts | tag: v1.3.0
 - [REQ-021-wlogout-skin-runtime](./REQ-021-wlogout-skin-runtime/ticket.md) — wlogout skin consumer runtime regression (W-2.3/W-2.4) | `done` | worktree: .worktrees/REQ-021/ | branch: ticket/REQ-021-wlogout-skin-runtime | tag: v1.0.7
