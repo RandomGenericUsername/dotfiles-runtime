@@ -28,6 +28,17 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**1.3.1** — accept committed appearance aliases for stable consumer links.
+
+- `doctor` accepts a real config dir's `appearance.css` link when its
+  normalized target is exactly `current/appearance/<name>` and `<name>` is
+  published by the committed generation's `appearance.targets` (or a
+  non-CSS `appearance.artifacts` path). No config-dir alias table.
+- `gtk-3.0 → gtk3.css` and `gtk-4.0 → gtk4.css` are clean; generation
+  paths, app tags, old v2 cache targets, dangling targets and unpublished
+  names still diverge. The wlogout stable link, AGS symlink skip and
+  `skin.css`/`skin.json` checks are unchanged.
+
 **1.3.0** — format-aware non-CSS appearance artifacts (Phase 3A-3).
 
 - Template discovery now maps suffixes to a manifest family and format:

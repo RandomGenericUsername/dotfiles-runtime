@@ -1,3 +1,27 @@
+## v1.3.1 — 2026-11-11
+
+Accept the provisioning-owned stable `appearance.css` links whose committed
+consumer alias differs from the config dir name (BUG-019).
+
+- **Manifest-driven acceptance.** A real config dir's `appearance.css` is
+  clean when its lexically normalized raw target is exactly
+  `current/appearance/<name>` and `<name>` is one of the committed
+  generation's `appearance.targets` paths (or a published
+  `appearance.artifacts` path for non-CSS formats). `gtk-3.0 → gtk3.css` and
+  `gtk-4.0 → gtk4.css` are accepted without a gtk/wlogout alias table.
+- **Drift unchanged.** Generation-specific paths, app tags, old v2 cache
+  targets, dangling targets and names absent from the committed set still
+  report `retired v2 convenience link`. The BUG-016 wlogout stable link, AGS
+  config-symlink skip and `skin.css`/`skin.json` retired-pointer checks are
+  unchanged.
+- **Regression coverage.** gtk3/gtk4 alias links and the exact wlogout link
+  are clean; wrong, missing, generation-specific, app-tag, old-v2 and
+  unpublished-name targets diverge; removing/adding a committed target flips
+  acceptance, proving the manifest set (not a config-dir name) is the
+  authority.
+- **Release only.** No provisioning, composition, assets, contracts, app or
+  live-state edit and no apply in this slice.
+
 ## v1.3.0 — 2026-11-10
 
 Add format-aware non-CSS appearance artifacts for the runtime Phase 3A-3

@@ -2,7 +2,7 @@
 id: BUG-019
 title: "Doctor flags legitimate stable appearance.css links whose consumer alias differs from the config dir name"
 kind: bug
-status: in-progress
+status: done
 lane: 2
 severity: high
 links:
@@ -92,3 +92,85 @@ and the `current` hop non-resolved. Add regression tests for gtk3/gtk4 alias
 links and for the manifest-driven acceptance (a name is accepted only when
 the committed target set contains it). No provisioning, live-state or
 downstream edit.
+
+## Outcome (2026-11-11)
+
+**Worktree:** `.worktrees/BUG-019/`
+**Branch:** `ticket/BUG-019-doctor-appearance-target-set`
+**Commits:** `4b9a504` (ticket + INDEX plan), `6420a9a` (fix + regression
+tests), this release commit (version/CHANGELOG/README + ticket close).
+**Tag:** `v1.3.1` (annotated) after green gates.
+
+### Exact rule
+
+For each real (non-symlink) `config/*` dir, `appearance.css` is clean only
+when `_is_stable_appearance_link` holds:
+
+- the raw link target (absolute, or relative to the link's parent) is
+  lexically normalized with `normpath`/`abspath` — the `current` hop is
+  deliberately **not** resolved;
+- the normalized target's parent is exactly
+  `<state_root>/current/appearance`;
+- the target basename is one of the filenames published by the verified
+  committed generation — `appearance.targets[].path` for CSS, plus
+  `appearance.artifacts[].path` for non-CSS formats
+  (`_appearance_acceptance_names`); and
+- that stable target exists through the `current` generation hop.
+
+No config-dir-to-alias constant exists. Everything else is
+`diverged | retired v2 convenience link`: generation paths, app-tag paths,
+old v2 cache targets, wrong targets, dangling links and names absent from
+the committed target/artifact set. A config dir that is itself a symlink is
+skipped before the rule runs, and `skin.css`/`skin.json` still report
+retired v1 skin pointers.
+
+### Delivered
+
+| Path | What changed |
+| --- | --- |
+| `src/runtime/application/doctor.py` | `_stable_appearance_dir`, `_appearance_acceptance_names`; `_check_appearance` passes the verified manifest's target/artifact names into `_is_stable_appearance_link` |
+| `tests/unit/test_doctor_check.py` | `TestStableAppearanceConsumerLink`: gtk3/gtk4 alias links clean; wlogout exact and relative links clean; committed artifact clean; adding a manifest target flips a link from drift to clean; wrong, dangling, generation, app-tag, unpublished-name and v2 cache targets diverge; AGS config symlink still skipped |
+| `pyproject.toml` / `src/runtime/__init__.py` / `uv.lock` / `CHANGELOG.md` / `README.md` | `1.3.1` release metadata and notes |
+
+### Tests
+
+```sh
+uv run pytest -q tests/unit/test_doctor_check.py \
+  tests/unit/test_doctor_repair.py tests/unit/test_appearance.py \
+  tests/unit/test_skins.py tests/unit/test_appearance_v2_assets.py \
+  tests/unit/test_generations_v3.py tests/unit/test_format_aware_artifacts.py \
+  tests/unit/test_wlogout_skin_consumer.py
+# 196 passed in 4.77s
+```
+
+### Gates
+
+```sh
+make gates
+# test: 2532 passed, 3 skipped, 11 deselected
+# lint: All checks passed
+# contracts-check: 58 passed, 1 skipped
+# hermetic: 2532 passed, 3 skipped, 11 deselected
+# lock-check: Resolved 25 packages
+# docs-check: rc 0
+
+make gates-ci
+# same six gates: 2532 passed, 3 skipped, 11 deselected
+make ci-gates-parity
+# PASS gates=[...] jobs=[...] exempt=['ci-gates-parity', 'release']
+```
+
+### Live read-only check (fixed worktree)
+
+```sh
+uv run dotfiles-runtime doctor -f json
+# exit=0, clean=true
+# no `consumer/config/gtk-3.0/appearance.css` row
+# no `consumer/config/gtk-4.0/appearance.css` row
+```
+
+The live links
+`config/gtk-3.0/appearance.css -> current/appearance/gtk3.css` and
+`config/gtk-4.0/appearance.css -> current/appearance/gtk4.css` are now
+accepted, as is the BUG-016 wlogout stable link. No `apply` was run and no
+provisioning, composition, asset, contract, app or live state was changed.
