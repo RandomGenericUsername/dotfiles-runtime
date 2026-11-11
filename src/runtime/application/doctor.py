@@ -17,9 +17,9 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import cast
 
 from runtime.adapters.ags_supervision import (
@@ -91,27 +91,62 @@ def _normalized_link_target(link: Path) -> Path | None:
     return Path(os.path.normpath(os.path.abspath(target)))
 
 
-def _stable_appearance_link_target(state_root: Path, config_name: str) -> Path:
-    """Return the provisioning-owned stable target for one config dir."""
-    target = state_root / "current" / "appearance" / f"{config_name}.css"
+def _stable_appearance_dir(state_root: Path) -> Path:
+    """Return the one stable, generation-independent appearance directory."""
+    target = state_root / "current" / "appearance"
     return Path(os.path.normpath(os.path.abspath(target)))
 
 
-def _is_stable_appearance_link(link: Path, state_root: Path) -> bool:
-    """True when ``link`` names exactly the live stable appearance target.
+def _appearance_acceptance_names(manifest: Mapping[str, object]) -> frozenset[str]:
+    """Return the appearance filenames the committed generation publishes.
 
-    The link target must be ``<state_root>/current/appearance/<config>.css``
-    (absolute or relative, lexically normalized) and that target must exist
-    through the ``current`` generation hop. A generation path, app tag, v2
-    cache target, wrong basename or dangling link is not stable.
+    ``appearance.targets`` is the CSS authority and ``appearance.artifacts``
+    the non-CSS authority; both are read from the verified manifest so a
+    consumer alias (``gtk3``) need not equal its config dir (``gtk-3.0``).
+    """
+    appearance = manifest.get("appearance")
+    if not isinstance(appearance, dict):
+        return frozenset()
+    names: set[str] = set()
+    for key in ("targets", "artifacts"):
+        rows = appearance.get(key, [])
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            path = row.get("path")
+            if not isinstance(path, str):
+                continue
+            name = PurePosixPath(path).name
+            if name and name not in (".", ".."):
+                names.add(name)
+    return frozenset(names)
+
+
+def _is_stable_appearance_link(
+    link: Path,
+    state_root: Path,
+    acceptance_names: frozenset[str],
+) -> bool:
+    """True when ``link`` names a published stable appearance target.
+
+    The link target must be ``<state_root>/current/appearance/<name>``
+    (absolute or relative, lexically normalized), ``<name>`` must belong to
+    the committed generation's appearance targets/artifacts, and that target
+    must exist through the ``current`` generation hop. A generation path, app
+    tag, v2 cache target, unpublished name or dangling link is not stable.
     """
     if not link.is_symlink():
         return False
     target = _normalized_link_target(link)
     if target is None:
         return False
-    expected = _stable_appearance_link_target(state_root, link.parent.name)
-    return target == expected and expected.exists()
+    if target.parent != _stable_appearance_dir(state_root):
+        return False
+    if target.name not in acceptance_names:
+        return False
+    return target.exists()
 
 
 @dataclass(frozen=True, slots=True)
@@ -486,8 +521,8 @@ class DoctorUseCase:
         state is compared against the manifest intent (palette/skin/mode/
         wallpaper), never against the pointer it resolves to. A real config
         dir may carry the provisioning-owned stable ``appearance.css`` link to
-        ``current/appearance/<configDir>.css``; only links that resolve
-        elsewhere are retired drift.
+        a committed ``current/appearance/<name>`` target; only links that
+        resolve elsewhere are retired drift.
         """
         from runtime.adapters.generation_store import GenerationStore
 
@@ -572,6 +607,7 @@ class DoctorUseCase:
             )
         )
         if self._install_spine is not None:
+            acceptance_names = _appearance_acceptance_names(manifest)
             config_root = self._install_spine / "config"
             candidates = (
                 sorted(path for path in config_root.iterdir() if path.is_dir())
@@ -584,7 +620,9 @@ class DoctorUseCase:
                 if config_dir.is_symlink():
                     continue
                 legacy = config_dir / "appearance.css"
-                if legacy.is_symlink() and not _is_stable_appearance_link(legacy, self._state_root):
+                if legacy.is_symlink() and not _is_stable_appearance_link(
+                    legacy, self._state_root, acceptance_names
+                ):
                     items.append(
                         DriftItem(
                             f"consumer/config/{config_dir.name}/appearance.css",
@@ -592,8 +630,8 @@ class DoctorUseCase:
                             "diverged",
                             (
                                 f"retired v2 convenience link: {legacy}; v3 apps read "
+                                "the committed appearance target under "
                                 "$XDG_STATE_HOME/dotfiles/current/appearance/"
-                                f"{config_dir.name}.css"
                             ),
                         )
                     )

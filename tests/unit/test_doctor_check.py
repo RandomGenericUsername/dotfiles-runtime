@@ -443,23 +443,58 @@ class TestCleanMachine:
 
 
 class TestStableAppearanceConsumerLink:
-    """BUG-016: the provisioning-owned stable appearance link is not drift."""
+    """BUG-016/019: stable links are accepted only for committed targets."""
 
-    def _config_dir(self, state_root: Path) -> Path:
-        config_dir = state_root.parent / "install" / "config" / "wlogout"
+    def _config_dir(self, state_root: Path, name: str) -> Path:
+        config_dir = state_root.parent / "install" / "config" / name
         config_dir.mkdir(parents=True, exist_ok=True)
         return config_dir
 
-    def _stable_target(self, state_root: Path) -> Path:
-        target = state_root / "current" / "appearance" / "wlogout.css"
-        target.write_text("/* live wlogout appearance */\n", encoding="utf-8")
+    def _stable_target(self, state_root: Path, name: str) -> Path:
+        target = state_root / "current" / "appearance" / f"{name}.css"
+        target.write_text(f"/* live {name} appearance */\n", encoding="utf-8")
         return target
+
+    def _manifest_path(self, state_root: Path) -> Path:
+        from runtime.adapters.generation_store import GenerationStore
+
+        store = GenerationStore(state_root)
+        generation = store.current_hash()
+        assert generation is not None
+        return store.generation_path(generation) / "manifest.json"
+
+    def _publish_target(self, state_root: Path, name: str) -> None:
+        manifest_path = self._manifest_path(state_root)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        targets = manifest["appearance"]["targets"]
+        path = f"appearance/{name}.css"
+        if not any(target.get("path") == path for target in targets):
+            targets.append({"configDir": name, "path": path})
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+        )
+
+    def _publish_artifact(self, state_root: Path, consumer: str, format: str) -> None:
+        manifest_path = self._manifest_path(state_root)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        artifacts = manifest["appearance"].setdefault("artifacts", [])
+        artifacts.append(
+            {
+                "consumer": consumer,
+                "path": f"appearance/{consumer}.{format}",
+                "format": format,
+            }
+        )
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+        )
 
     def test_real_config_dir_with_stable_link_is_clean(self, tmp_path: Path) -> None:
         state_root = tmp_path / "state"
         _seed_state(state_root)
-        target = self._stable_target(state_root)
-        link = self._config_dir(state_root) / "appearance.css"
+        target = self._stable_target(state_root, "wlogout")
+        self._publish_target(state_root, "wlogout")
+        link = self._config_dir(state_root, "wlogout") / "appearance.css"
         # Live shape: an absolute link through the one stable current hop.
         link.symlink_to(target)
         report = _check_with_spine(state_root)
@@ -469,8 +504,9 @@ class TestStableAppearanceConsumerLink:
     def test_relative_stable_link_is_clean(self, tmp_path: Path) -> None:
         state_root = tmp_path / "state"
         _seed_state(state_root)
-        self._stable_target(state_root)
-        link = self._config_dir(state_root) / "appearance.css"
+        self._stable_target(state_root, "wlogout")
+        self._publish_target(state_root, "wlogout")
+        link = self._config_dir(state_root, "wlogout") / "appearance.css"
         link.symlink_to(
             os.path.relpath(state_root / "current" / "appearance" / "wlogout.css", link.parent)
         )
@@ -478,12 +514,53 @@ class TestStableAppearanceConsumerLink:
         assert report.clean is True
         assert "consumer/config/wlogout/appearance.css" not in _by_name(report)
 
+    def test_gtk3_and_gtk4_alias_links_are_clean(self, tmp_path: Path) -> None:
+        """Phase 3A-4: the committed alias (gtk3) need not equal the dir (gtk-3.0)."""
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        for config_dir, name in (("gtk-3.0", "gtk3"), ("gtk-4.0", "gtk4")):
+            target = self._stable_target(state_root, name)
+            self._publish_target(state_root, name)
+            (self._config_dir(state_root, config_dir) / "appearance.css").symlink_to(
+                target
+            )
+        report = _check_with_spine(state_root)
+        assert report.clean is True
+        names = _by_name(report)
+        assert "consumer/config/gtk-3.0/appearance.css" not in names
+        assert "consumer/config/gtk-4.0/appearance.css" not in names
+
+    def test_committed_artifact_path_is_clean(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        artifact = state_root / "current" / "appearance" / "rofi.rasi"
+        artifact.write_text("* theme\n", encoding="utf-8")
+        self._publish_artifact(state_root, "rofi", "rasi")
+        (self._config_dir(state_root, "rofi") / "appearance.css").symlink_to(artifact)
+        report = _check_with_spine(state_root)
+        assert report.clean is True
+        assert "consumer/config/rofi/appearance.css" not in _by_name(report)
+
+    def test_manifest_target_set_drives_acceptance(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        target = self._stable_target(state_root, "gtk3")
+        link = self._config_dir(state_root, "gtk-3.0") / "appearance.css"
+        link.symlink_to(target)
+        # A real file under appearance/ is not enough: the generation must
+        # publish that name as a target (no config-dir alias table).
+        assert _by_name(_check_with_spine(state_root))[
+            "consumer/config/gtk-3.0/appearance.css"
+        ] == "diverged"
+        self._publish_target(state_root, "gtk3")
+        assert _check_with_spine(state_root).clean is True
+
     def test_wrong_target_is_retired_drift(self, tmp_path: Path) -> None:
         state_root = tmp_path / "state"
         _seed_state(state_root)
-        wrong = state_root / "current" / "appearance" / "ags.css"
+        wrong = state_root / "current" / "colors.conf"
         assert wrong.exists()
-        link = self._config_dir(state_root) / "appearance.css"
+        link = self._config_dir(state_root, "wlogout") / "appearance.css"
         link.symlink_to(wrong)
         report = _check_with_spine(state_root)
         item = {item.name: item for item in report.items}["consumer/config/wlogout/appearance.css"]
@@ -493,7 +570,7 @@ class TestStableAppearanceConsumerLink:
     def test_dangling_stable_path_is_retired_drift(self, tmp_path: Path) -> None:
         state_root = tmp_path / "state"
         _seed_state(state_root)
-        link = self._config_dir(state_root) / "appearance.css"
+        link = self._config_dir(state_root, "wlogout") / "appearance.css"
         link.symlink_to(state_root / "current" / "appearance" / "wlogout.css")
         assert not (state_root / "current" / "appearance" / "wlogout.css").exists()
         report = _check_with_spine(state_root)
@@ -502,9 +579,9 @@ class TestStableAppearanceConsumerLink:
     def test_generation_specific_path_is_retired_drift(self, tmp_path: Path) -> None:
         state_root = tmp_path / "state"
         _seed_state(state_root)
-        generation_target = self._stable_target(state_root).resolve()
+        generation_target = self._stable_target(state_root, "wlogout").resolve()
         assert "generations" in generation_target.parts
-        link = self._config_dir(state_root) / "appearance.css"
+        link = self._config_dir(state_root, "wlogout") / "appearance.css"
         link.symlink_to(generation_target)
         report = _check_with_spine(state_root)
         assert _by_name(report)["consumer/config/wlogout/appearance.css"] == "diverged"
@@ -515,17 +592,17 @@ class TestStableAppearanceConsumerLink:
         app_tag_file = tmp_path / "apps" / "wlogout@v1" / "appearance.css"
         app_tag_file.parent.mkdir(parents=True)
         app_tag_file.write_text("/* immutable app tag */\n", encoding="utf-8")
-        link = self._config_dir(state_root) / "appearance.css"
+        link = self._config_dir(state_root, "wlogout") / "appearance.css"
         link.symlink_to(app_tag_file)
         report = _check_with_spine(state_root)
         assert _by_name(report)["consumer/config/wlogout/appearance.css"] == "diverged"
 
-    def test_wrong_basename_is_retired_drift(self, tmp_path: Path) -> None:
+    def test_unpublished_basename_is_retired_drift(self, tmp_path: Path) -> None:
         state_root = tmp_path / "state"
         _seed_state(state_root)
         other = state_root / "current" / "appearance" / "other.css"
-        other.write_text("/* wrong config dir */\n", encoding="utf-8")
-        link = self._config_dir(state_root) / "appearance.css"
+        other.write_text("/* not a committed target */\n", encoding="utf-8")
+        link = self._config_dir(state_root, "wlogout") / "appearance.css"
         link.symlink_to(other)
         report = _check_with_spine(state_root)
         assert _by_name(report)["consumer/config/wlogout/appearance.css"] == "diverged"
@@ -536,7 +613,7 @@ class TestStableAppearanceConsumerLink:
         cache_target = state_root / "cache" / "appearance" / ("a" * 64) / "wlogout.css"
         cache_target.parent.mkdir(parents=True)
         cache_target.write_text("/* old v2 cache target */\n", encoding="utf-8")
-        link = self._config_dir(state_root) / "appearance.css"
+        link = self._config_dir(state_root, "wlogout") / "appearance.css"
         link.symlink_to(cache_target)
         report = _check_with_spine(state_root)
         assert _by_name(report)["consumer/config/wlogout/appearance.css"] == "diverged"
