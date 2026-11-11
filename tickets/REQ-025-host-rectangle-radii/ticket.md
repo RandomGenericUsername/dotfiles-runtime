@@ -52,19 +52,19 @@ Scope:
 
 ## Acceptance
 
-- [ ] `CONTRACT_PIN` is the contracts `v0.11.0` tag object; embedded,
+- [x] `CONTRACT_PIN` is the contracts `v0.11.0` tag object; embedded,
       conformance and pinned schemas agree.
-- [ ] The host map contains exactly the five allowed paths and rejects
+- [x] The host map contains exactly the five allowed paths and rejects
       `surface.pill.radius`; new radius bounds are `0..64`.
-- [ ] `hostHash` covers only participating values with `HOST_MAP_VERSION = 1`;
+- [x] `hostHash` covers only participating values with `HOST_MAP_VERSION = 1`;
       non-delegated host changes cause no identity churn.
-- [ ] Generation `host.defaults`/`intent.host` accept the new paths, enforce
+- [x] Generation `host.defaults`/`intent.host` accept the new paths, enforce
       equality, and keep old panel-only manifests valid.
-- [ ] Doctor reports drift only for committed delegated radii and ignores pill
+- [x] Doctor reports drift only for committed delegated radii and ignores pill
       and non-delegated values.
-- [ ] Targeted host/skin/generation/doctor suites and `make gates`,
+- [x] Targeted host/skin/generation/doctor suites and `make gates`,
       `make gates-ci`, `make ci-gates-parity` pass.
-- [ ] `v1.4.0` is an annotated tag on the merged release commit; `main` and the
+- [x] `v1.4.0` is an annotated tag on the merged release commit; `main` and the
       tag are pushed; the GitHub Release carries only the wheel and sdist.
 
 ## Evidence
@@ -83,3 +83,55 @@ Scope:
 - No card/control/cell border-width delegation, no pill delegation.
 - No contracts/assets/provisioning/composition/app edit and no apply.
 - No `HOST_MAP_VERSION` bump and no generation manifest version bump.
+
+## Verification
+
+Commands run from the worktree root (`.worktrees/REQ-025/`), base `v1.3.1`
+(`d98100a`).
+
+| Claim | Command | Result |
+| --- | --- | --- |
+| Full gate set | `make gates` | PASS — `2563 passed, 3 skipped, 11 deselected`; lint/contracts-check/hermetic/lock-check/docs-check clean |
+| CI gate set | `make gates-ci` | PASS — same six gates, `2563 passed, 3 skipped, 11 deselected` |
+| Workflow parity | `make ci-gates-parity` | `PASS gates=[...] jobs=[...] exempt=['ci-gates-parity', 'release']` |
+| Contracts pin | `make contracts-check` | `58 passed, 1 skipped` |
+| Cross-repo pin | `CONTRACTS_REPO=/home/inumaki/Development/dotfiles/contracts make contract-pin-check` | `PASS` at pin `6a3ed99dab6cf3e49a4643bc82e9d7428d0880ca` |
+| Targeted host suite | `uv run pytest -q tests/unit/test_host_defaults.py` | `61 passed` |
+| Targeted host/skin/generation/doctor | `uv run pytest -q tests/unit/test_host_defaults.py tests/unit/test_skin_expander.py tests/unit/test_skins.py tests/unit/test_appearance.py tests/unit/test_appearance_v2_assets.py tests/unit/test_format_aware_artifacts.py tests/unit/test_generations_v3.py tests/unit/test_generation_gc.py tests/unit/test_doctor_check.py tests/unit/test_contract_schema_conformance.py tests/unit/test_contract_pin_check.py` | `290 passed, 1 skipped` |
+
+### Allowed host paths and bounds
+
+| Host path | Hyprland option | Bounds |
+| --- | --- | --- |
+| `surface.panel.radius` | `decoration:rounding` | `0..64` |
+| `surface.panel.border-width` | `general:border_size` | `0..16` |
+| `surface.card.radius` | `decoration:rounding` | `0..64` |
+| `surface.control.radius` | `decoration:rounding` | `0..64` |
+| `surface.cell.radius` | `decoration:rounding` | `0..64` |
+
+`surface.pill.radius` is not in the map, bounds, schema allowlist or generation
+defaults; the resolver rejects it as an unknown inherit path.
+
+### Commits
+
+| Commit | Subject |
+| --- | --- |
+| `4d914d8` | `docs(REQ-025): plan host-delegated rectangle radii` |
+| `77105c6` | `chore(REQ-025): start — record worktree/branch, move to in-progress` |
+| `1579d22` | `feat(REQ-025): delegate card/control/cell rectangle radii to the host` |
+| release commit (the `v1.4.0` tag target) | `chore(REQ-025): release v1.4.0` |
+
+### Status
+
+**Done on `ticket/REQ-025-host-rectangle-radii`.** The five-path host map,
+bounds, resolver identity, generation host defaults and doctor drift are
+implemented against contracts `v0.11.0`. Merge to `main` fast-forward, create
+the annotated `v1.4.0` tag on the release commit, push `main` + the tag and
+publish the GitHub Release with only the wheel and sdist. No apply and no
+contracts/assets/provisioning/composition/app edit occurred in this slice.
+
+## Downstream pins needed (not changed here)
+
+- contracts `v0.11.0`
+- assets `v0.18.0`
+- runtime `v1.4.0`

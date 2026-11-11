@@ -28,6 +28,21 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**1.4.0** — host-delegated inner rectangle radii.
+
+- The host allowlist now covers the outer panel plus the inner
+  `surface.card`, `surface.control` and `surface.cell` radii, alongside the
+  existing `surface.panel.border-width`. All radius bounds are `0..64`; the
+  border-width bound stays `0..16`.
+- `surface.pill.radius` is never delegated: a pill is a capsule, so its
+  authored radius stays explicit. Precedence remains `mode override > host >
+  skin fallback`, and `hostHash` still covers only participating values.
+- `host.defaults`/`intent.host` accept the new paths and keep old panel-only
+  manifests valid. `doctor` reports drift only for committed delegated paths,
+  ignoring pill and non-delegated compositor settings.
+- Contracts pin moves to `v0.11.0`. No
+  assets/provisioning/composition/app change is in this slice.
+
 **1.3.1** — accept committed appearance aliases for stable consumer links.
 
 - `doctor` accepts a real config dir's `appearance.css` link when its

@@ -1,3 +1,36 @@
+## v1.4.0 — 2026-11-11
+
+Delegate the inner rectangle radii to the live host for contracts `v0.11.0`
+(REQ-025).
+
+- **Contract pin.** `CONTRACT_PIN` moves to the contracts `v0.11.0` annotated
+  tag object (`6a3ed99dab6cf3e49a4643bc82e9d7428d0880ca`, peeled
+  `9f1c259e45d7e6f9b7c05c1ed4c98232846e45f1`). The vendored generated binding
+  header and the embedded/conformance `appearance-manifest` and
+  `generation-manifest` schemas move with it.
+- **Host allowlist.** The host map now delegates exactly five paths:
+  `surface.panel.radius` (0..64), `surface.panel.border-width` (0..16),
+  `surface.card.radius` (0..64), `surface.control.radius` (0..64) and
+  `surface.cell.radius` (0..64). The card/control/cell radii follow
+  `decoration:rounding`; the adapter reads that option once and projects it.
+  `surface.pill.radius` is deliberately absent and rejected, because a pill is
+  a capsule rather than a rectangle.
+- **Identity unchanged.** Precedence stays `mode override > host > skin
+  fallback`; `HOST_MAP_VERSION` stays `1`. `hostHash` covers only the values
+  that actually participated, so a panel-only manifest keeps its old hash and
+  a non-delegated compositor change causes no churn.
+- **Generation and doctor.** `host.defaults`/`intent.host` accept the new
+  participating paths, equality remains enforced, and old panel-only
+  snapshots stay valid. Doctor compares only committed delegated paths, so a
+  changed card/control/cell radius is drift while pill and other settings are
+  ignored.
+- **Regression coverage.** All five paths, each inner radius individually,
+  pill rejection, mode override/fallback/headless/range, rofi-like token
+  rendering, generation defaults/hash/doctor drift, and unchanged GC/current
+  references are covered.
+- **Release only.** No contracts/assets/provisioning/composition/app edit and
+  no apply in this slice.
+
 ## v1.3.1 — 2026-11-11
 
 Accept the provisioning-owned stable `appearance.css` links whose committed
