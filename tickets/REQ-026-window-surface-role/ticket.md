@@ -2,14 +2,14 @@
 id: REQ-026
 title: "Required surface.window role (contracts v0.12.0)"
 kind: requirement
-status: proposed
+status: in-progress
 lane: 2
 links:
   contract: contracts/tickets/REQ-020-window-role/ticket.md
   openspec: none
   bmad: none
-worktree: none
-branch: none
+worktree: .worktrees/REQ-026/
+branch: ticket/REQ-026-window-surface-role
 ---
 
 # Required surface.window role
