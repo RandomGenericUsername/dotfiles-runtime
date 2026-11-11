@@ -9,6 +9,16 @@ name = "terminal"
 
 # Host defaults are intentionally not inherited: the square/hairline identity
 # is explicit. No [host] policy is declared for this skin.
+[groups.surface.window]
+bg = "@surface"
+border = "alpha(@on_surface, 0.22)"
+border-width = 1
+radius = 0
+padding = 9
+shadow = "none"
+blur = "none"
+opacity = 1.0
+
 [groups.surface.panel]
 bg = "@surface"
 border = "alpha(@on_surface, 0.22)"

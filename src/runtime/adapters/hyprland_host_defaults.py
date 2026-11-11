@@ -41,7 +41,7 @@ Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 class HyprlandHostDefaults(IHostDefaults):
-    """Read the five Phase 1 delegated values from the live compositor."""
+    """Read the seven Phase 1 delegated values from the live compositor."""
 
     def __init__(
         self,

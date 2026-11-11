@@ -1,4 +1,4 @@
-"""Compose the one v2 appearance generation (contracts v0.9.0).
+"""Compose the one v2 appearance generation (contracts v0.12.0).
 
 The runtime keeps two independent content-addressed caches — palettes and
 skins — and publishes their composition as one immutable generation::
@@ -249,6 +249,20 @@ def tokens_from_v1_skin(skin_json: dict[str, Any]) -> dict[str, Any]:
     return {
         "version": 2,
         "surface": {
+            # The v1 plane has no toplevel surface. This is the explicit
+            # compatibility migration (contracts v0.12.0), authored once here:
+            # copy the outer geometry/paint defaults into a real window group.
+            # A runtime panel→window alias or fallback is forbidden.
+            "window": {
+                "bg": _text(surface.get("bg-panel"), "@surface"),
+                "border": border,
+                "border-width": _number(shape.get("border-w"), 1.5),
+                "radius": _number(shape.get("radius-panel"), 12),
+                "padding": cell_pad,
+                "shadow": _text(surface.get("shadow"), "none"),
+                "blur": _text(surface.get("blur"), "none"),
+                "opacity": 1.0,
+            },
             "panel": {
                 "bg": _text(surface.get("bg-panel"), "@surface"),
                 "border": border,

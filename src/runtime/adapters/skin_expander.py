@@ -20,7 +20,8 @@ config dir plus optional non-CSS artifacts. Discovery maps a suffix to
 Placeholders are the token path uppercased with every non-alphanumeric run
 replaced by ``_``: v1 ``radius-panel`` → ``{{SKIN_RADIUS_PANEL}}``; v2
 ``surface.panel.bg`` → ``{{SKIN_SURFACE_PANEL_BG}}``. v2 lengths render
-``<number>px``, ``letter-spacing`` renders ``<number>em`` and ``font-weight``
+``<number>px``, ``letter-spacing`` renders ``<number>em``,
+``surface.window.opacity`` renders a bare unitless number and ``font-weight``
 stays unitless. Unknown/unresolved placeholders, layout placeholders in CSS and
 conditional syntax fail closed.
 
@@ -351,11 +352,15 @@ def _leaves(value: Any, prefix: str) -> list[tuple[str, Any]]:
 
 
 def _css_v2_value(path: str, value: Any) -> str:
-    """Render one v2 token in its CSS position (contracts v0.9.0 unit rule)."""
+    """Render one v2 token in its CSS position (contracts v0.12.0 unit rule)."""
     if isinstance(value, bool):
         return str(value).lower()
     if isinstance(value, (int, float)):
         number = _format_number(value)
+        if path == "surface.window.opacity":
+            # Unitless [0,1] toplevel opacity, authored and never an alpha()
+            # derivation. It is not a length, so no px suffix.
+            return number
         if path.endswith("letter-spacing"):
             return f"{number}em"
         if path.endswith("font-weight"):

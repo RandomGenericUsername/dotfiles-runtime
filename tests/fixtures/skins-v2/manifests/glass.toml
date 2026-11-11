@@ -7,11 +7,21 @@
 schemaVersion = 2
 name = "glass"
 
-# Host defaults: only the outer panel geometry follows the compositor. Every
-# other token stays explicit; a complete mode override still wins.
+# Host defaults: only the outer window/panel geometry follows the compositor.
+# Every other token stays explicit; a complete mode override still wins.
 [host]
 inherit = ["surface.panel.radius", "surface.panel.border-width"]
 fallback = "skin"
+
+[groups.surface.window]
+bg = "alpha(@surface, 0.94)"
+border = "@primary"
+border-width = 1.5
+radius = 12
+padding = 11
+shadow = "none"
+blur = "none"
+opacity = 0.94
 
 [groups.surface.panel]
 bg = "alpha(@surface, 0.94)"

@@ -38,6 +38,7 @@ from runtime.adapters.skin_expander import (
 )
 from runtime.application.doctor import DoctorUseCase
 from runtime.domain.host_defaults import (
+    HOST_BOUNDS,
     HOST_MAP,
     HOST_MAP_VERSION,
     HostDefaultsError,
@@ -62,12 +63,13 @@ from tests.unit.test_appearance_v2_assets import (
 
 _MANIFESTS = Path(__file__).resolve().parents[1] / "fixtures" / "skins-v2" / "manifests"
 _HOST_PATHS = ("surface.panel.radius", "surface.panel.border-width")
+_WINDOW_PATHS = ("surface.window.radius", "surface.window.border-width")
 _RECT_PATHS = (
     "surface.card.radius",
     "surface.control.radius",
     "surface.cell.radius",
 )
-_ALL_HOST_PATHS = (*_HOST_PATHS, *_RECT_PATHS)
+_ALL_HOST_PATHS = (*_WINDOW_PATHS, *_HOST_PATHS, *_RECT_PATHS)
 _TS = "2026-11-09T00:00:00Z"
 
 
@@ -101,6 +103,8 @@ def _snapshot(
 ) -> HostSnapshot:
     return HostSnapshot(
         values={
+            "surface.window.radius": radius,
+            "surface.window.border-width": border,
             "surface.panel.radius": radius,
             "surface.panel.border-width": border,
             "surface.card.radius": radius if card is None else card,
@@ -232,10 +236,12 @@ def test_resolver_partial_host_values_fall_back_per_token() -> None:
     )
 
 
-def test_resolver_applies_all_five_rectangle_paths() -> None:
+def test_resolver_applies_all_seven_delegated_paths() -> None:
     manifest = _manifest_with_inherit("glass", _ALL_HOST_PATHS)
     snapshot = HostSnapshot(
         values={
+            "surface.window.radius": 14,
+            "surface.window.border-width": 3,
             "surface.panel.radius": 8,
             "surface.panel.border-width": 2,
             "surface.card.radius": 12,
@@ -244,6 +250,8 @@ def test_resolver_applies_all_five_rectangle_paths() -> None:
         }
     )
     tokens, resolution = resolve_v2_token_document_with_host(manifest, "dark", snapshot)
+    assert _token(tokens, "surface.window.radius") == 14
+    assert _token(tokens, "surface.window.border-width") == 3
     assert _token(tokens, "surface.panel.radius") == 8
     assert _token(tokens, "surface.panel.border-width") == 2
     assert _token(tokens, "surface.card.radius") == 12
@@ -284,6 +292,65 @@ def test_pill_radius_is_not_delegable() -> None:
         validate_host_value("surface.pill.radius", 20)
 
 
+def test_window_geometry_is_delegable_and_padding_opacity_are_not() -> None:
+    assert HOST_MAP["surface.window.radius"] == "decoration:rounding"
+    assert HOST_MAP["surface.window.border-width"] == "general:border_size"
+    assert "surface.window.padding" not in HOST_MAP
+    assert "surface.window.opacity" not in HOST_MAP
+    assert "surface.window.padding" not in HOST_BOUNDS
+    assert "surface.window.opacity" not in HOST_BOUNDS
+
+    for path in ("surface.window.padding", "surface.window.opacity"):
+        with pytest.raises(ValueError, match="known-path"):
+            resolve_host_defaults(
+                _manifest("glass")["groups"],
+                _manifest_with_inherit("glass", (path,)),
+                "dark",
+                _snapshot(),
+            )
+        with pytest.raises(ValueError, match="unknown host token path"):
+            validate_host_value(path, 1)
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        ("surface.window.radius", 0),
+        ("surface.window.radius", 64),
+        ("surface.window.radius", 7.5),
+        ("surface.window.border-width", 0),
+        ("surface.window.border-width", 16),
+        ("surface.window.border-width", 1.5),
+    ],
+)
+def test_window_host_bounds_accept_their_ranges(path: str, value: float) -> None:
+    assert validate_host_value(path, value) == value
+
+
+def test_window_only_policy_falls_back_or_uses_host_without_panel() -> None:
+    manifest = _manifest_with_inherit("glass", _WINDOW_PATHS)
+    tokens, resolution = resolve_v2_token_document_with_host(
+        manifest, "dark", HostSnapshot(values={"surface.window.radius": 10})
+    )
+    assert _token(tokens, "surface.window.radius") == 10
+    assert _token(tokens, "surface.window.border-width") == 1.5
+    assert resolution.provenance == {
+        "surface.window.radius": "host",
+        "surface.window.border-width": "skin-fallback",
+    }
+    assert resolution.defaults == {"surface.window.radius": 10}
+    assert resolution.host_hash == HostSnapshot(
+        values={"surface.window.radius": 10}
+    ).fingerprint(("surface.window.radius",))
+
+    headless, headless_resolution = resolve_v2_token_document_with_host(
+        manifest, "dark", None
+    )
+    assert _token(headless, "surface.window.radius") == 12
+    assert headless_resolution.host_hash is None
+    assert headless_resolution.defaults == {}
+
+
 def test_paper_light_mode_override_wins_for_new_rectangle_paths() -> None:
     manifest = _manifest_with_inherit("paper", _ALL_HOST_PATHS)
     tokens, resolution = resolve_v2_token_document_with_host(manifest, "light", _snapshot(16, 4))
@@ -301,6 +368,8 @@ def test_new_rectangle_paths_fall_back_per_token_and_headless() -> None:
     )
     assert _token(tokens, "surface.card.radius") == 12
     assert resolution.provenance == {
+        "surface.window.radius": "skin-fallback",
+        "surface.window.border-width": "skin-fallback",
         "surface.panel.radius": "skin-fallback",
         "surface.panel.border-width": "skin-fallback",
         "surface.card.radius": "host",
@@ -329,6 +398,8 @@ def test_new_rectangle_paths_fall_back_per_token_and_headless() -> None:
             "dark",
             HostSnapshot(
                 values={
+                    "surface.window.radius": 14,
+                    "surface.window.border-width": 3,
                     "surface.panel.radius": 8,
                     "surface.panel.border-width": 2,
                     "surface.control.radius": 10,
@@ -408,6 +479,12 @@ def test_resolver_fallback_error_fails_closed() -> None:
         ("surface.control.radius", 65),
         ("surface.cell.radius", -1),
         ("surface.cell.radius", 65),
+        ("surface.window.radius", True),
+        ("surface.window.radius", "8"),
+        ("surface.window.radius", -1),
+        ("surface.window.radius", 65),
+        ("surface.window.border-width", float("nan")),
+        ("surface.window.border-width", 17),
     ],
 )
 def test_host_value_validation_rejects_non_scalars(path: str, value: object) -> None:
@@ -471,6 +548,8 @@ def test_adapter_reads_effective_values_with_signature() -> None:
     snapshot = adapter.read()
     assert snapshot is not None
     assert snapshot.values == {
+        "surface.window.radius": 0,
+        "surface.window.border-width": 1,
         "surface.panel.radius": 0,
         "surface.panel.border-width": 1,
         "surface.card.radius": 0,
@@ -495,6 +574,8 @@ def test_adapter_discovers_a_single_instance_when_signature_is_absent() -> None:
     snapshot = adapter.read()
     assert snapshot is not None
     assert snapshot.values == {
+        "surface.window.radius": 8,
+        "surface.window.border-width": 1.5,
         "surface.panel.radius": 8,
         "surface.panel.border-width": 1.5,
         "surface.card.radius": 8,
@@ -526,9 +607,9 @@ def test_adapter_rejects_invalid_scalars_and_vectors() -> None:
     snapshot = adapter.read()
     assert snapshot is not None
     assert snapshot.values == {}
-    # One warning per delegated path: four radii all read the invalid
-    # decoration:rounding, plus the panel border width.
-    assert len(snapshot.warnings) == 5
+    # One warning per delegated path: five radii all read the invalid
+    # decoration:rounding, plus the window and panel border widths.
+    assert len(snapshot.warnings) == 7
 
 
 def test_adapter_missing_binary_is_unavailable() -> None:
@@ -718,6 +799,8 @@ def test_generation_writes_all_rectangle_host_defaults(tmp_path: Path) -> None:
     skin, _path = _write_skin_with_manifest(state_root, "glass", manifest_path)
     snapshot = HostSnapshot(
         values={
+            "surface.window.radius": 14,
+            "surface.window.border-width": 3,
             "surface.panel.radius": 8,
             "surface.panel.border-width": 2,
             "surface.card.radius": 12,
@@ -738,14 +821,23 @@ def test_generation_writes_all_rectangle_host_defaults(tmp_path: Path) -> None:
     assert manifest["host"]["defaults"] == {
         path: snapshot.values[path] for path in _ALL_HOST_PATHS
     }
+    assert manifest["host"]["defaults"]["surface.window.radius"] == 14
+    assert manifest["host"]["defaults"]["surface.window.border-width"] == 3
+    assert "surface.window.padding" not in manifest["host"]["defaults"]
+    assert "surface.window.opacity" not in manifest["host"]["defaults"]
     assert manifest["intent"]["host"] == entry.host_hash
     assert entry.host_hash == snapshot.fingerprint(_ALL_HOST_PATHS)
     generation_manifest_validator()(manifest)
 
-    pill = json.loads(json.dumps(manifest))
-    pill["host"]["defaults"]["surface.pill.radius"] = 20
-    with pytest.raises(JsonSchemaValueException):
-        generation_manifest_validator()(pill)
+    for path in (
+        "surface.pill.radius",
+        "surface.window.padding",
+        "surface.window.opacity",
+    ):
+        forbidden = json.loads(json.dumps(manifest))
+        forbidden["host"]["defaults"][path] = 1
+        with pytest.raises(JsonSchemaValueException):
+            generation_manifest_validator()(forbidden)
 
 
 def test_generation_rejects_intent_host_mismatch(tmp_path: Path) -> None:
@@ -848,6 +940,8 @@ def test_doctor_host_drift_covers_new_rectangle_paths_and_ignores_pill(
     spine = _spine(tmp_path)
     committed = HostSnapshot(
         values={
+            "surface.window.radius": 14,
+            "surface.window.border-width": 3,
             "surface.panel.radius": 8,
             "surface.panel.border-width": 2,
             "surface.card.radius": 12,
@@ -876,13 +970,20 @@ def test_doctor_host_drift_covers_new_rectangle_paths_and_ignores_pill(
 
     drifted = HostSnapshot(values={**dict(committed.values), "surface.cell.radius": 7})
     assert _doctor(drifted)["generation:host"].status == "diverged"
+    window_drifted = HostSnapshot(
+        values={**dict(committed.values), "surface.window.border-width": 4}
+    )
+    assert _doctor(window_drifted)["generation:host"].status == "diverged"
 
-    # An extra pill or any other non-delegated value is not compared.
+    # An extra pill, window padding/opacity or any other non-delegated value is
+    # not compared.
     non_delegated = HostSnapshot(
         values={
             **dict(committed.values),
             "surface.pill.radius": 999,
             "surface.card.border-width": 3,
+            "surface.window.padding": 4,
+            "surface.window.opacity": 0.5,
             "decoration:blur:size": 9,
         }
     )

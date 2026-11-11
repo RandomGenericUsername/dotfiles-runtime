@@ -14,6 +14,16 @@ name = "paper"
 inherit = ["surface.panel.radius", "surface.panel.border-width"]
 fallback = "skin"
 
+[groups.surface.window]
+bg = "@surface_container_lowest"
+border = "alpha(@on_surface, 0.22)"
+border-width = 1
+radius = 6
+padding = 11
+shadow = "0 10px 28px rgba(0,0,0,0.22)"
+blur = "none"
+opacity = 1.0
+
 [groups.surface.panel]
 bg = "@surface_container_lowest"
 border = "alpha(@on_surface, 0.22)"
@@ -112,6 +122,16 @@ root-width = 1280
 root-height = 800
 
 # Authored light branch: explicit same-shape groups, not a palette guess.
+[mode.light.surface.window]
+bg = "@surface_container_lowest"
+border = "alpha(@on_surface, 0.16)"
+border-width = 1
+radius = 6
+padding = 11
+shadow = "0 8px 22px alpha(@shadow, 0.16)"
+blur = "none"
+opacity = 1.0
+
 [mode.light.surface.panel]
 bg = "@surface_container_lowest"
 border = "alpha(@on_surface, 0.16)"

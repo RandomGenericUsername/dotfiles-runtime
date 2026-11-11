@@ -138,14 +138,16 @@ identity: flipping it produces a new generation even with unchanged
 palette/skin hashes.
 
 **Manifest input.** `SkinExpander` accepts both the frozen v1
-(`schema_major = 1`, flat groups) and the contracts v0.7.0 v2
+(`schema_major = 1`, flat groups) and the contracts v0.12.0 v2
 (`schemaVersion = 2`, nested `groups`, optional `mode.dark`/`mode.light`)
 TOML/JSON manifests. The v1 path and its `skin.json` translation stay until the
 assets tuple bump. For v2, appearance generation validates the authored
 manifest against the vendored `appearance-manifest` schema, applies the whole
 selected override group, then expands the flattened placeholders
 (`surface.panel.bg` → `{{SKIN_SURFACE_PANEL_BG}}`) with lengths as `px`,
-`letter-spacing` as `em` and `font-weight` unitless.
+`letter-spacing` as `em`, `font-weight` unitless and
+`surface.window.opacity` a bare unitless `[0, 1]` number (never an `alpha()`
+derivation).
 
 **Retention.** Publication keeps the active generation, the newest keep-N and
 entries inside the grace window; older `cache/appearance/*` directories are

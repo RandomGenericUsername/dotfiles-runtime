@@ -7,6 +7,16 @@ name = "flat"
 
 # Host defaults are intentionally not inherited: zero chrome is explicit. No
 # [host] policy is declared for this skin.
+[groups.surface.window]
+bg = "transparent"
+border = "transparent"
+border-width = 0
+radius = 0
+padding = 11
+shadow = "none"
+blur = "none"
+opacity = 1.0
+
 [groups.surface.panel]
 bg = "transparent"
 border = "transparent"

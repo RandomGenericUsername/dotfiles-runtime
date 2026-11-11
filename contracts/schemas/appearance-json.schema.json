@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://dotfiles.local/schemas/appearance-json.schema.json",
   "title": "Resolved appearance token map (version 2)",
-  "description": "A runtime-resolved tokens.json: version 2 plus the five fully resolved v2 token groups. Mode overrides are already applied, so this document has no mode or palette fields. All lengths are unitless JSON numbers; letter-spacing renders as em and font-weight stays unitless. No structure/variant keys and no literal hex.",
+  "description": "A runtime-resolved tokens.json: version 2 plus the six fully resolved surface roles (window, panel, card, cell, control, pill) and the state/type/ink/layout groups. surface.window is required and is never aliased from surface.panel. Mode overrides are already applied, so this document has no mode or palette fields. All lengths are unitless JSON numbers; letter-spacing renders as em, font-weight stays unitless and only surface.window.opacity is a unitless [0,1] number. No structure/variant keys and no literal hex.",
   "status": "frozen",
   "type": "object",
   "additionalProperties": false,
@@ -20,7 +20,7 @@
   "properties": {
     "version": {
       "const": 2,
-      "description": "Resolved appearance token map version; exactly 2."
+      "description": "Resolved appearance token map version; exactly 2. The window role is required inside this version."
     },
     "surface": {
       "$ref": "#/definitions/surfaceGroup"
@@ -213,6 +213,17 @@
         312
       ]
     },
+    "opacityValue": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "A unitless opacity in the inclusive range [0, 1]. It is never a length, a unit string or a percentage, and it is never derived from an alpha() paint. CSS expansion renders a bare number; a conf renderer renders a bare decimal.",
+      "examples": [
+        0,
+        0.94,
+        1
+      ]
+    },
     "fontFamily": {
       "type": "string",
       "minLength": 1,
@@ -294,6 +305,50 @@
         0.05,
         0.08
       ]
+    },
+    "windowRole": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "$ref": "#/definitions/forbiddenName"
+      },
+      "properties": {
+        "bg": {
+          "$ref": "#/definitions/paint"
+        },
+        "border": {
+          "$ref": "#/definitions/borderPaint"
+        },
+        "border-width": {
+          "$ref": "#/definitions/nonNegativeNumber"
+        },
+        "radius": {
+          "$ref": "#/definitions/nonNegativeNumber"
+        },
+        "padding": {
+          "$ref": "#/definitions/nonNegativeNumber"
+        },
+        "shadow": {
+          "$ref": "#/definitions/shadowValue"
+        },
+        "blur": {
+          "$ref": "#/definitions/blurValue"
+        },
+        "opacity": {
+          "$ref": "#/definitions/opacityValue"
+        }
+      },
+      "required": [
+        "bg",
+        "border",
+        "border-width",
+        "radius",
+        "padding",
+        "shadow",
+        "blur",
+        "opacity"
+      ],
+      "description": "The outer/application toplevel surface: the compositor-managed window (rofi/wlogout/GTK outer slots, kitty terminal window). It owns the outer paint, frame, corner geometry, inner window padding, shadow, blur and unitless toplevel opacity. It is a distinct required role and is never populated from surface.panel."
     },
     "panelRole": {
       "type": "object",
@@ -485,6 +540,9 @@
         "$ref": "#/definitions/forbiddenName"
       },
       "properties": {
+        "window": {
+          "$ref": "#/definitions/windowRole"
+        },
         "panel": {
           "$ref": "#/definitions/panelRole"
         },
@@ -502,6 +560,7 @@
         }
       },
       "required": [
+        "window",
         "panel",
         "card",
         "cell",

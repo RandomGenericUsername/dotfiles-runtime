@@ -1,7 +1,7 @@
 """Real v2 appearance assets: TOML manifests, nested groups, modes, units.
 
 The fixtures under ``tests/fixtures/skins-v2`` are byte-identical copies of
-``dotfiles-assets v0.15.0`` ``skins/manifests/{glass,flat,paper,terminal}.toml``
+``dotfiles-assets v0.19.0`` ``skins/manifests/{glass,flat,paper,terminal}.toml``
 and all eight ``skins/templates/*.gtk.css.j2`` targets, including wlogout.
 They are copied so the suite is hermetic; the same files are expanded directly
 from the sibling assets checkout in the ticket evidence.
@@ -365,3 +365,91 @@ def test_palette_mode_defaults_to_dark_when_absent() -> None:
     assert detect_palette_mode('scheme: "light"\n' + v1_colors_yaml()) == "light"
     assert detect_palette_mode("is_dark: false\n" + v1_colors_yaml()) == "light"
     assert detect_palette_mode("dark: false\n" + v1_colors_yaml()) == "light"
+
+
+def test_window_role_is_required_with_exactly_eight_tokens() -> None:
+    manifest, manifest_path = _manifest("glass")
+    validate_v2_manifest(manifest, "glass", manifest_path)
+    window = manifest["groups"]["surface"]["window"]  # type: ignore[index]
+    assert set(window) == {
+        "bg",
+        "border",
+        "border-width",
+        "radius",
+        "padding",
+        "shadow",
+        "blur",
+        "opacity",
+    }
+    assert window["opacity"] == 0.94
+    assert window["radius"] == 12
+    assert window["padding"] == 11
+
+    for name in _NAMES:
+        candidate, path = _manifest(name)
+        validate_v2_manifest(candidate, name, path)
+        tokens = resolve_v2_token_document(candidate, "dark")
+        role = tokens["surface"]["window"]  # type: ignore[index]
+        assert set(role) == set(window)
+        assert isinstance(role["opacity"], (int, float))
+        assert 0 <= role["opacity"] <= 1
+        appearance_json_validator()(tokens)
+
+
+def test_missing_window_group_or_token_never_falls_back_to_panel() -> None:
+    manifest, manifest_path = _manifest("glass")
+    for mutate in (
+        lambda d: d["groups"]["surface"].pop("window"),
+        lambda d: d["groups"]["surface"]["window"].pop("opacity"),
+        lambda d: d["groups"]["surface"]["window"].pop("padding"),
+        lambda d: d["groups"]["surface"]["window"].__setitem__("margin", 4),
+        lambda d: d["groups"]["surface"]["window"].__setitem__("opacity", "0.94"),
+        lambda d: d["groups"]["surface"]["window"].__setitem__("opacity", 1.5),
+        lambda d: d["groups"]["surface"]["window"].__setitem__("radius", "12px"),
+    ):
+        broken = copy.deepcopy(manifest)
+        mutate(broken)
+        with pytest.raises(ValueError):
+            validate_v2_manifest(broken, "glass", manifest_path)
+
+
+def test_window_opacity_renders_unitless_and_is_not_derived_from_alpha() -> None:
+    manifest, manifest_path = _manifest("glass")
+    validate_v2_manifest(manifest, "glass", manifest_path)
+    tokens = resolve_v2_token_document(manifest, "dark")
+    # The authored value is 0.94 even though the window bg alpha is also 0.94;
+    # the renderer uses the token, never an alpha() parse/derivation.
+    assert tokens["surface"]["window"]["opacity"] == 0.94  # type: ignore[index]
+    assert tokens["surface"]["window"]["bg"] == "alpha(@surface, 0.94)"  # type: ignore[index]
+
+    template = (
+        "opacity: {{SKIN_SURFACE_WINDOW_OPACITY}};\n"
+        "radius: {{SKIN_SURFACE_WINDOW_RADIUS}};\n"
+        "padding: {{SKIN_SURFACE_WINDOW_PADDING}};\n"
+        "border-width: {{SKIN_SURFACE_WINDOW_BORDER_WIDTH}};\n"
+    )
+    rendered = expand_v2_template(template, tokens)
+    assert "opacity: 0.94;" in rendered
+    assert "opacity: 0.94px;" not in rendered
+    assert "radius: 12px;" in rendered
+    assert "padding: 11px;" in rendered
+    assert "border-width: 1.5px;" in rendered
+    assert "opacity: 0.94em;" not in rendered
+    assert "alpha(" not in rendered.splitlines()[0]
+
+    neutral = copy.deepcopy(tokens)
+    neutral["surface"]["window"]["opacity"] = 1.0  # type: ignore[index]
+    assert "opacity: 1;" in expand_v2_template("opacity: {{SKIN_SURFACE_WINDOW_OPACITY}};", neutral)
+    # The independence proof: changing the paint does not change opacity.
+    neutral["surface"]["window"]["bg"] = "transparent"  # type: ignore[index]
+    assert "opacity: 1;" in expand_v2_template("opacity: {{SKIN_SURFACE_WINDOW_OPACITY}};", neutral)
+
+    for output_format in ("rasi", "conf", "theme"):
+        assert (
+            expand_v2_template(
+                "opacity={{SKIN_SURFACE_WINDOW_OPACITY}}",
+                tokens,
+                format=output_format,  # type: ignore[arg-type]
+            )
+            == "opacity=0.94"
+        )

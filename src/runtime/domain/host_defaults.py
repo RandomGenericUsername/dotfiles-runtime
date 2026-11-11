@@ -26,11 +26,16 @@ HOST_MAP_VERSION = 1
 
 #: Phase 1 mapping: logical token path -> Hyprland effective option.
 #:
-#: The outer panel and the inner card/control/cell rectangle radii follow the
-#: one compositor rounding value. ``surface.pill.radius`` is deliberately
-#: absent: a pill is a capsule and its identity must stay explicit. Border
-#: width is delegable only for the outer panel.
+#: The outer window/toplevel and panel geometry and the inner card/control/cell
+#: rectangle radii follow the one compositor rounding value.
+#: ``surface.pill.radius`` is deliberately absent: a pill is a capsule and its
+#: identity must stay explicit. ``surface.window.padding`` and
+#: ``surface.window.opacity`` are absent too: the host has no honest toplevel
+#: padding or opacity source. Border width is delegable only for the window and
+#: the panel.
 HOST_MAP: Mapping[str, str] = {
+    "surface.window.radius": "decoration:rounding",
+    "surface.window.border-width": "general:border_size",
     "surface.panel.radius": "decoration:rounding",
     "surface.panel.border-width": "general:border_size",
     "surface.card.radius": "decoration:rounding",
@@ -38,8 +43,10 @@ HOST_MAP: Mapping[str, str] = {
     "surface.cell.radius": "decoration:rounding",
 }
 
-#: Valid ranges for the five delegated numeric tokens.
+#: Valid ranges for the seven delegated numeric tokens.
 HOST_BOUNDS: Mapping[str, float] = {
+    "surface.window.radius": 64.0,
+    "surface.window.border-width": 16.0,
     "surface.panel.radius": 64.0,
     "surface.panel.border-width": 16.0,
     "surface.card.radius": 64.0,

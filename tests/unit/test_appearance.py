@@ -231,6 +231,18 @@ class TestGeneration:
             "tokenRef": "tokens.json",
         }
         assert tokens["surface"]["panel"]["bg"] == "alpha(@surface, 0.94)"
+        window = tokens["surface"]["window"]
+        assert set(window) == {
+            "bg",
+            "border",
+            "border-width",
+            "radius",
+            "padding",
+            "shadow",
+            "blur",
+            "opacity",
+        }
+        assert window["opacity"] == 1.0
         composed = (entry_dir / "ags.css").read_text(encoding="utf-8")
         legacy = v1_gtk_css().rstrip("\n")
         assert composed.startswith(legacy)

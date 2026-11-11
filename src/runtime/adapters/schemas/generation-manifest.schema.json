@@ -355,6 +355,18 @@
             "$ref": "#/definitions/forbiddenName"
           },
           "properties": {
+            "surface.window.radius": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 64,
+              "description": "Resolved host value for the delegated window/toplevel radius."
+            },
+            "surface.window.border-width": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 16,
+              "description": "Resolved host value for the delegated window/toplevel border width."
+            },
             "surface.panel.radius": {
               "type": "number",
               "minimum": 0,
@@ -386,7 +398,7 @@
               "description": "Resolved host value for the delegated cell rectangle radius."
             }
           },
-          "description": "Only the delegated host values that participated in this generation, keyed by logical appearance token path. It records the outer panel plus the inner card/control/cell rectangle radii and the panel border width; the pill radius is never recorded. Omit the whole host block when no value participated."
+          "description": "Only the delegated host values that participated in this generation, keyed by logical appearance token path. It records the window/toplevel and panel geometry, plus the inner card/control/cell rectangle radii. Window padding and window opacity are never recorded, and the pill radius is never recorded. Omit the whole host block when no value participated."
         }
       },
       "description": "Optional resolved host snapshot. Present only when at least one delegated token used the host. intent.host must equal fingerprint; JSON Schema cannot express that equality, so runtime validation enforces it."
