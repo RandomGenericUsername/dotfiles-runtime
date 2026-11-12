@@ -10,6 +10,7 @@ import pytest
 
 from runtime.adapters.hashing import (
     HASH_ALGORITHM,
+    SKIN_RENDERER_VERSION,
     canonical_hash_dir,
     canonical_hash_file,
     effects_entry_hash,
@@ -17,6 +18,7 @@ from runtime.adapters.hashing import (
     hash_file_bytes,
     icons_entry_hash,
     palette_entry_hash,
+    skin_entry_hash,
 )
 from runtime.domain.models import WallpaperEntry
 
@@ -114,6 +116,35 @@ def test_icons_entry_hash_deterministic() -> None:
     assert icons_entry_hash(ph, th, mh) != icons_entry_hash("d" * 64, th, mh)
     assert icons_entry_hash(ph, th, mh) != icons_entry_hash(ph, "e" * 64, mh)
     assert icons_entry_hash(ph, th, mh) != icons_entry_hash(ph, th, "f" * 64)
+
+
+def test_skin_entry_hash_includes_renderer_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from runtime.adapters import hashing as hashing_module
+
+    templates_hash = "a" * 64
+    manifest_hash = "b" * 64
+    current = skin_entry_hash(templates_hash, manifest_hash)
+    assert current == skin_entry_hash(
+        templates_hash, manifest_hash, renderer_version=SKIN_RENDERER_VERSION
+    )
+    assert len(current) == 64
+    assert current == current.lower()
+    assert current != skin_entry_hash(
+        templates_hash, manifest_hash, renderer_version=SKIN_RENDERER_VERSION + 1
+    )
+
+    # The module constant is the runtime identity, not a caller default.
+    monkeypatch.setattr(
+        hashing_module, "SKIN_RENDERER_VERSION", SKIN_RENDERER_VERSION + 1
+    )
+    assert skin_entry_hash(templates_hash, manifest_hash) != current
+
+    with pytest.raises(ValueError, match="renderer_version"):
+        skin_entry_hash(templates_hash, manifest_hash, renderer_version=0)
+    with pytest.raises(ValueError, match="renderer_version"):
+        skin_entry_hash(templates_hash, manifest_hash, renderer_version=True)  # type: ignore[arg-type]
 
 
 def test_canonical_hash_dir_unreadable_graceful(

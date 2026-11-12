@@ -195,8 +195,10 @@ class SkinEntry:
     resolved token map for ``skinValue`` consumers. It deliberately carries no
     structure or variant tokens.
 
-    ``entry_hash`` is ``sha256(templates_hash ‖ manifest_hash)``: wallpaper and
-    palette changes never invalidate a skin.
+    ``entry_hash`` is ``sha256("skin.v2\nrendererVersion=<n>\n" ‖
+    templates_hash ‖ manifest_hash)``: wallpaper and palette changes never
+    invalidate a skin, while a renderer/artifact-format bump does
+    (``SKIN_RENDERER_VERSION``) without changing rendered bytes.
     """
 
     hash_algorithm: Literal["sha256"]

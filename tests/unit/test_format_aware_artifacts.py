@@ -87,8 +87,9 @@ def _skin(
     templates: Path,
     *,
     name: str = "glass",
+    manifest_path: Path | None = None,
 ) -> tuple[SkinEntry, Path]:
-    manifest_path = _MANIFEST
+    manifest_path = _MANIFEST if manifest_path is None else manifest_path
     manifest = load_skin_manifest(manifest_path)
     validate_v2_manifest(manifest, name, manifest_path)
     work = cache_entry_path(
@@ -137,16 +138,22 @@ def _palette(state_root: Path, mode: str = "dark") -> PaletteEntry:
 
 
 def _appearance(
-    tmp_path: Path, templates: Path
+    tmp_path: Path,
+    templates: Path,
+    *,
+    name: str = "glass",
+    manifest_path: Path | None = None,
 ) -> tuple[object, Path, SkinEntry]:
     state_root = tmp_path / "state"
     palette = _palette(state_root)
-    skin, manifest_path = _skin(state_root, templates)
+    skin, resolved_manifest = _skin(
+        state_root, templates, name=name, manifest_path=manifest_path
+    )
     entry, _hit = AppearanceGenerator(state_root).ensure(
         palette_entry=palette,
         skin_entry=skin,
         install_spine=tmp_path / "install",
-        manifest_path=manifest_path,
+        manifest_path=resolved_manifest,
         templates_dir=templates,
     )
     return entry, state_root, skin
@@ -372,6 +379,86 @@ def test_artifact_template_participates_in_skin_and_generation_identity(
     assert css_generation != art_generation
     assert (css_store.generation_path(css_generation) / "appearance" / "rofi.rasi").exists() is False
     assert (art_store.generation_path(art_generation) / "appearance" / "rofi.rasi").is_file()
+
+
+def test_renderer_version_bump_invalidates_skin_appearance_and_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from runtime.adapters import hashing as hashing_module
+
+    templates = _templates(tmp_path, "kitty.conf.j2")
+    (templates / "kitty.conf.j2").write_text(
+        "font_family {{SKIN_TYPE_FONT_FAMILY}}\n"
+        "font_size {{SKIN_TYPE_SIZE_BODY}}\n"
+        "window_padding_width {{SKIN_SURFACE_WINDOW_PADDING}}\n"
+        "background_opacity {{SKIN_SURFACE_WINDOW_OPACITY}}\n",
+        encoding="utf-8",
+    )
+    terminal_host = _V2 / "manifests" / "terminal-host.toml"
+
+    monkeypatch.setattr(hashing_module, "SKIN_RENDERER_VERSION", 1)
+    old_entry, _state_root, old_skin = _appearance(
+        tmp_path, templates, name="terminal-host", manifest_path=terminal_host
+    )
+    old_store, old_generation = _commit(tmp_path, old_entry, old_skin)
+    old_generation_dir = old_store.generation_path(old_generation)
+    old_conf = (old_generation_dir / "appearance" / "kitty.conf").read_text(
+        encoding="utf-8"
+    )
+    old_css = {
+        path.name: path.read_bytes()
+        for path in (old_generation_dir / "appearance").glob("*.css")
+    }
+    assert old_css
+
+    # Only the renderer identity changed; authored inputs are untouched.
+    monkeypatch.setattr(hashing_module, "SKIN_RENDERER_VERSION", 2)
+    new_entry, _same_state_root, new_skin = _appearance(
+        tmp_path, templates, name="terminal-host", manifest_path=terminal_host
+    )
+    new_store, new_generation = _commit(tmp_path, new_entry, new_skin)
+    new_generation_dir = new_store.generation_path(new_generation)
+
+    assert old_skin.entry_hash != new_skin.entry_hash
+    assert old_skin.input_templates_hash == new_skin.input_templates_hash
+    assert old_skin.input_manifest_hash == new_skin.input_manifest_hash
+    assert cast("object", old_entry).appearance_hash != cast(  # type: ignore[attr-defined]
+        "object", new_entry
+    ).appearance_hash  # type: ignore[attr-defined]
+    assert old_generation != new_generation
+    assert old_generation_dir.is_dir() and new_generation_dir.is_dir()
+
+    # The fresh generation carries the bare-point kitty artifact.
+    conf = (new_generation_dir / "appearance" / "kitty.conf").read_text(
+        encoding="utf-8"
+    )
+    assert conf == (
+        "font_family JetBrainsMono Nerd Font\n"
+        "font_size 9\n"
+        "window_padding_width 6.75\n"
+        "background_opacity 1\n"
+    )
+    assert "px" not in conf and "pt" not in conf
+    assert conf == old_conf  # identity-only version bump
+
+    # CSS artifacts stay byte-identical for unchanged inputs.
+    assert {
+        path.name: path.read_bytes()
+        for path in (new_generation_dir / "appearance").glob("*.css")
+    } == old_css
+
+    # Applying again at the same version reuses the new skin/appearance/generation.
+    repeated_entry, hit = AppearanceGenerator(_same_state_root).ensure(
+        palette_entry=_palette(_same_state_root),
+        skin_entry=new_skin,
+        install_spine=tmp_path / "install",
+        manifest_path=terminal_host,
+        templates_dir=templates,
+    )
+    assert hit is True
+    repeated_store, repeated_generation = _commit(tmp_path, repeated_entry, new_skin)
+    assert repeated_generation == new_generation
+    assert repeated_store is not None
 
 
 def test_manifest_rejects_duplicate_consumer_and_path(tmp_path: Path) -> None:

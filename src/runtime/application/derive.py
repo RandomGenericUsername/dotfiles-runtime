@@ -606,9 +606,12 @@ class DerivationPipeline:
     def ensure_skin(self, name: str) -> tuple[SkinEntry, bool]:
         """Ensure the selected skin cache entry (FROZEN SKIN SPEC v1).
 
-        Identity is ``sha256(templates_hash ‖ manifest_hash)`` — palette- and
-        wallpaper-independent by construction, so changing either never
-        re-expands a skin.
+        Identity is ``sha256("skin.v2\nrendererVersion=<n>\n" ‖ templates_hash
+        ‖ manifest_hash)`` — palette- and wallpaper-independent by construction,
+        so changing either never re-expands a skin. ``rendererVersion`` is the
+        artifact-format version (``SKIN_RENDERER_VERSION``): bumping it
+        invalidates old skin/appearance/generation entries after a renderer
+        behavior change without changing rendered bytes for the same inputs.
 
         Raises:
             SkinUnavailableError: when the manifest/templates are missing,

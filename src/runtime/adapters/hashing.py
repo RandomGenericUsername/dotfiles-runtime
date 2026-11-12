@@ -41,6 +41,16 @@ from typing import Final, Literal
 
 HASH_ALGORITHM: Final[Literal["sha256"]] = "sha256"
 
+#: Renderer/artifact-format version folded into skin entry identity.
+#:
+#: Authored inputs (templates + manifest) do not change when the runtime
+#: renderer changes, so without this constant a renderer-only fix is a cache
+#: hit on the old artifacts. Bumping the version changes the skin entry hash
+#: and, through ``skinHash``, the appearance and generation hashes; it never
+#: changes rendered bytes for unchanged inputs. ``2`` is the first versioned
+#: identity and covers the v1.5.1 conf px→pt renderer.
+SKIN_RENDERER_VERSION: Final[int] = 2
+
 # Build noise that must not pollute canonical_hash_dir. All real
 # derivation inputs are *.j2 / *.yaml / *.svg / generic files; these
 # patterns are explicitly not derivation inputs.
@@ -406,14 +416,32 @@ def icons_entry_hash(
     return hashlib.sha256(base.encode("utf-8")).hexdigest()
 
 
-def skin_entry_hash(templates_hash: str, manifest_hash: str) -> str:
+def skin_entry_hash(
+    templates_hash: str,
+    manifest_hash: str,
+    *,
+    renderer_version: int | None = None,
+) -> str:
     """Entry hash for ``cache/skins/<sh>/`` (FROZEN SKIN SPEC v1).
 
-    ``sha256(templates_hash ‖ manifest_hash)``. Wallpaper and palette hashes are
-    deliberately absent: a skin expansion is palette-independent and must stay
-    a cache hit across wallpaper changes.
+    ``sha256("skin.v2\\nrendererVersion=<n>\\n" + templates_hash + "\\n" +
+    manifest_hash)``. Wallpaper and palette hashes are deliberately absent: a
+    skin expansion is palette-independent and must stay a cache hit across
+    wallpaper changes.
+
+    ``renderer_version`` defaults to :data:`SKIN_RENDERER_VERSION`. The
+    version is identity-only: it invalidates cached skin/appearance/generation
+    artifacts when renderer behavior changes, while rendered CSS bytes for the
+    same authored inputs stay identical. Callers may pass an explicit version
+    only for tests/migration identity checks.
     """
 
     _validate_hex64("templates_hash", templates_hash)
     _validate_hex64("manifest_hash", manifest_hash)
-    return hashlib.sha256(f"{templates_hash}{manifest_hash}".encode()).hexdigest()
+    version = SKIN_RENDERER_VERSION if renderer_version is None else renderer_version
+    if type(version) is not int or version < 1:
+        raise ValueError(f"renderer_version must be a positive int, got {version!r}")
+    material = (
+        f"skin.v2\nrendererVersion={version}\n{templates_hash}\n{manifest_hash}"
+    )
+    return hashlib.sha256(material.encode()).hexdigest()

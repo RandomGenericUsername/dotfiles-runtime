@@ -47,8 +47,10 @@ not import `os`, `pathlib`, `io`, `subprocess`, `socket` or `shutil`.
      `<configDir>.gtk.css.j2` templates (`{{SKIN_*}}` expansion, palette-independent).
 3. **Cache** every artifact by its content hash under
    `$XDG_STATE_HOME/dotfiles/cache/<layer>/<sha256>/`, with a co-located `meta.json`.
-   The skin layer is palette-independent: its key is `sha256(templates_hash ‖ manifest_hash)`, so
-   wallpaper/palette changes never re-expand CSS.
+   The skin layer is palette-independent: its key is
+   `sha256("skin.v2\nrendererVersion=<n>\n" ‖ templates_hash ‖ manifest_hash)`, where the
+   renderer version invalidates cached artifacts after a renderer-only change but never
+   changes rendered bytes. Wallpaper/palette changes never re-expand CSS.
 4. **Swap** `current/*` atomically (tmp link + `os.replace`).
 5. **Reload** Hyprland, AGS, kitty and the terminal palette.
 6. **Persist** `current.json` and append a `history.jsonl` record inside the

@@ -315,6 +315,49 @@ def test_skin_cache_miss_on_template_and_manifest_change(tmp_path: Path) -> None
     assert after_manifest.input_manifest_hash != after_template.input_manifest_hash
 
 
+def test_renderer_version_bump_regenerates_skin_with_identical_css(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from runtime.adapters import hashing as hashing_module
+
+    spine = tmp_path / "install"
+    _write_skin_assets(spine)
+    expander = _CountingExpander()
+    pipeline = _pipeline(tmp_path, spine, expander)
+    state_root = tmp_path / "state"
+
+    monkeypatch.setattr(hashing_module, "SKIN_RENDERER_VERSION", 1)
+    old_entry, hit = pipeline.ensure_skin("glass")
+    assert hit is False and expander.calls == 1
+    old_dir = cache_entry_path(state_root, "skins", old_entry.entry_hash)
+    old_css = (old_dir / "ags.css").read_bytes()
+
+    # Same renderer version: the cache entry is reused, no re-expansion.
+    same_entry, hit = pipeline.ensure_skin("glass")
+    assert hit is True and expander.calls == 1
+    assert same_entry.entry_hash == old_entry.entry_hash
+
+    # A renderer-only version bump invalidates the old entry without touching
+    # authored inputs, so the new entry is built from a fresh expansion.
+    monkeypatch.setattr(hashing_module, "SKIN_RENDERER_VERSION", 2)
+    new_entry, hit = pipeline.ensure_skin("glass")
+    assert hit is False and expander.calls == 2
+    assert new_entry.entry_hash != old_entry.entry_hash
+    assert new_entry.input_templates_hash == old_entry.input_templates_hash
+    assert new_entry.input_manifest_hash == old_entry.input_manifest_hash
+    new_dir = cache_entry_path(state_root, "skins", new_entry.entry_hash)
+    assert old_dir.is_dir()
+    assert new_dir.is_dir()
+    # Identity-only version: the rendered CSS is byte-identical.
+    assert (new_dir / "ags.css").read_bytes() == old_css
+    assert new_entry.artifact_hashes == old_entry.artifact_hashes
+
+    # Repeated apply at the bumped version is a no-op.
+    again, hit = pipeline.ensure_skin("glass")
+    assert hit is True and expander.calls == 2
+    assert again.entry_hash == new_entry.entry_hash
+
+
 def test_invalid_manifest_keeps_previous_skin_and_never_touches_css(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
