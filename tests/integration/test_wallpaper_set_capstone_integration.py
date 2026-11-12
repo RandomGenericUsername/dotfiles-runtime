@@ -569,7 +569,7 @@ class TestCapstoneGoldenSchema:
         '"icons": "1e60f93c2e0ab87daa0bd7192f19d1fbe8f52a5cbfd9f0b875dc8c637e6db0c5", '
         '"source_path": "'
         + str(FIXTURES / "wallpaper.png")
-        + '", "skin": "a47ef887de51e05792942dbb838cba413bc36f0932bf36fa7285d04325aa33fc"}'
+        + '", "skin": "effc8d753099c85ceba567de391ab4406cfe302562cd561dbeaff41b71aca1f4"}'
     )
     GOLDEN_CURRENT = """{
   "applied_at": "<TS>",
@@ -602,7 +602,7 @@ class TestCapstoneGoldenSchema:
       "skin.json"
     ],
     "generated_at": "<TS>",
-    "hash": "a47ef887de51e05792942dbb838cba413bc36f0932bf36fa7285d04325aa33fc",
+    "hash": "effc8d753099c85ceba567de391ab4406cfe302562cd561dbeaff41b71aca1f4",
     "name": "default"
   },
   "wallpaper": {
