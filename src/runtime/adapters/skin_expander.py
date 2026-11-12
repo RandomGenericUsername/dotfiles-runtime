@@ -22,8 +22,10 @@ replaced by ``_``: v1 ``radius-panel`` → ``{{SKIN_RADIUS_PANEL}}``; v2
 ``surface.panel.bg`` → ``{{SKIN_SURFACE_PANEL_BG}}``. v2 lengths render
 ``<number>px``, ``letter-spacing`` renders ``<number>em``,
 ``surface.window.opacity`` renders a bare unitless number and ``font-weight``
-stays unitless. Unknown/unresolved placeholders, layout placeholders in CSS and
-conditional syntax fail closed.
+stays unitless. ``conf`` artifacts render lengths as bare points (``value *
+0.75``, round half up to two decimals, clamped per option), project the first
+usable font family and never emit a ``px``/``pt`` suffix. Unknown/unresolved
+placeholders, layout placeholders in CSS and conditional syntax fail closed.
 
 Validation is fail-closed: unknown keys, unsafe paths, non-scalar tokens and
 unresolved placeholders raise ``ValueError`` naming the manifest/template and
@@ -39,6 +41,7 @@ import re
 import tomllib
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -118,6 +121,23 @@ _ALPHA_RE = re.compile(r"alpha\(\s*(@[a-z0-9_]+)\s*,[^)]*\)")
 _PAINT_UNREPRESENTABLE = "\x00SKIN_PAINT_UNREPRESENTABLE:"
 #: v2 templates are unconditional (contracts v0.9.0). GTK has no runtime.
 _CONDITIONAL_RE = re.compile(r"\{%|%\}|\{\{#|\{\{/")
+
+#: ``conf`` lengths render as bare points (CSS reference pixel, docs/113 §7.3).
+_CONF_PT_SCALE = Decimal("0.75")
+_CONF_PT_QUANTUM = Decimal("0.01")
+#: Kitty presentation clamps: font_size 6–36, window_padding_width 0–32.
+_CONF_PT_CLAMPS: dict[str, tuple[Decimal, Decimal]] = {
+    "type.size-body": (Decimal("6"), Decimal("36")),
+    "surface.window.padding": (Decimal("0"), Decimal("32")),
+}
+_CONF_CSS_WIDE_FAMILIES = frozenset(
+    {"inherit", "initial", "unset", "revert", "revert-layer"}
+)
+_CONF_NON_PORTABLE_FAMILIES = frozenset(
+    {"system-ui", "ui-sans-serif", "ui-monospace", "ui-serif"}
+)
+_CONF_FALLBACK_FONT_FAMILY = "monospace"
+_CSS_ESCAPE_RE = re.compile(r"\\(.)")
 
 Scalar = str | int | float
 TemplateFormat = Literal["css", "rasi", "conf", "theme"]
@@ -369,6 +389,96 @@ def _css_v2_value(path: str, value: Any) -> str:
     return cast("str", value)
 
 
+def _format_conf_number(value: Decimal) -> str:
+    """Render a decimal without an exponent or redundant trailing zeros."""
+    text = format(value.normalize(), "f")
+    return "0" if text == "-0" else text
+
+
+def _conf_pt_value(path: str, value: int | float) -> str:
+    """Render one ``conf`` length as a bare point number (docs/113 §7.3).
+
+    Kitty accepts a bare number only: ``px``/``pt`` suffixes are a parse
+    error. The conversion is the CSS reference pixel (``1px = 0.75pt``), round
+    half up to two decimals, then the per-option presentation clamp.
+    """
+    points = (Decimal(str(value)) * _CONF_PT_SCALE).quantize(
+        _CONF_PT_QUANTUM, rounding=ROUND_HALF_UP
+    )
+    bounds = _CONF_PT_CLAMPS.get(path)
+    if bounds is not None:
+        low, high = bounds
+        points = min(max(points, low), high)
+    return _format_conf_number(points)
+
+
+def _split_font_families(value: str) -> list[str]:
+    """Split a CSS family list on commas outside quotes and escapes."""
+    families: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    escaped = False
+    for char in value:
+        if escaped:
+            current.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            current.append(char)
+            escaped = True
+            continue
+        if quote is not None:
+            current.append(char)
+            if char == quote:
+                quote = None
+            continue
+        if char in ('"', "'"):
+            current.append(char)
+            quote = char
+            continue
+        if char == ",":
+            families.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    families.append("".join(current))
+    return families
+
+
+def _first_usable_font_family(value: str) -> str:
+    """Project a CSS family list to the first kitty-usable family (docs/113 §7.4)."""
+    for raw in _split_font_families(value):
+        family = raw.strip()
+        if len(family) >= 2 and family[0] == family[-1] and family[0] in ('"', "'"):
+            family = family[1:-1]
+        family = _CSS_ESCAPE_RE.sub(lambda match: match.group(1), family).strip()
+        if not family:
+            continue
+        lowered = family.lower()
+        if lowered in _CONF_CSS_WIDE_FAMILIES or lowered in _CONF_NON_PORTABLE_FAMILIES:
+            continue
+        return family
+    return _CONF_FALLBACK_FONT_FAMILY
+
+
+def _conf_value(path: str, value: Any) -> str:
+    """Render one non-paint v2 token for a paint-free ``conf`` artifact."""
+    if path == "type.font-family":
+        return _first_usable_font_family(cast("str", value))
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, (int, float)):
+        number = _format_number(value)
+        if path.endswith(".opacity"):
+            return number
+        if path.endswith("letter-spacing"):
+            return f"{number}em"
+        if path.endswith("font-weight"):
+            return number
+        return _conf_pt_value(path, value)
+    return cast("str", value)
+
+
 def _is_paint_token(path: str) -> bool:
     """Whether a v2 token is paint (and therefore not representable in conf/theme)."""
     group, _, leaf = path.partition(".")
@@ -415,6 +525,9 @@ def _format_v2_value(path: str, value: Any, format: TemplateFormat) -> str:
         # Defer the error until substitution: an unreferenced paint token is
         # harmless, while a template that actually uses it must fail closed.
         return f"{_PAINT_UNREPRESENTABLE}{path}\x00"
+    if format == "conf":
+        # ``conf`` is a bare-number format: lengths are points, never px/pt.
+        return _conf_value(path, value)
     return _css_v2_value(path, value)
 
 
