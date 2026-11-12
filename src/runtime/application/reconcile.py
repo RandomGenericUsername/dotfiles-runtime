@@ -394,29 +394,67 @@ class ReconcileDesktopStateUseCase:
                 if palette is not None and state.palette is not None:
                     # A mode-aware producer may have deliberately moved the
                     # palette key to the current intent; that is not a spine
-                    # hash mismatch.
+                    # hash mismatch. A changed source wallpaper is likewise a
+                    # legitimate rebuild, never a reproducibility failure.
                     expected_palette = (
                         self._pipeline.expected_palette_hash(state.wallpaper.content_hash)
                         if self._mode_key_applies(state.palette)
                         else None
                     )
                     if (
-                        expected_palette is None
-                        or expected_palette == state.palette.entry_hash
+                        state.palette.source_wallpaper_hash
+                        == state.wallpaper.content_hash
+                        and (
+                            expected_palette is None
+                            or expected_palette == state.palette.entry_hash
+                        )
                     ):
                         self._assert_hash_matches(
                             state.palette.entry_hash, palette.entry_hash
                         )
-                if effects is not None and state.effects is not None:
-                    self._assert_hash_matches(state.effects.entry_hash, effects.entry_hash)
+                if (
+                    effects is not None
+                    and state.effects is not None
+                    and state.effects.source_wallpaper_hash
+                    == state.wallpaper.content_hash
+                ):
+                    try:
+                        expected_effects = self._pipeline.expected_effects_hash(
+                            state.wallpaper.content_hash
+                        )
+                    except Exception:
+                        expected_effects = None
+                    if (
+                        expected_effects is None
+                        or expected_effects == state.effects.entry_hash
+                    ):
+                        self._assert_hash_matches(
+                            state.effects.entry_hash, effects.entry_hash
+                        )
                 if (
                     icons is not None
                     and state.icons is not None
                     and not force_icons
+                    and state.icons.source_palette_hash == palette.entry_hash
                 ):
                     # The GUI live-toggle path intentionally re-derives icons;
                     # only the ordinary path must reproduce the recorded hash.
-                    self._assert_hash_matches(state.icons.entry_hash, icons.entry_hash)
+                    # A palette/template/mapping change rebuilds a new key, so
+                    # the reproducibility guard applies only when the current
+                    # input key still equals the recorded icons key.
+                    try:
+                        expected_icons = self._pipeline.expected_icons_hash(
+                            palette.entry_hash
+                        )
+                    except Exception:
+                        expected_icons = None
+                    if (
+                        expected_icons is None
+                        or expected_icons == state.icons.entry_hash
+                    ):
+                        self._assert_hash_matches(
+                            state.icons.entry_hash, icons.entry_hash
+                        )
 
             state = DesktopState(
                 schema_version=2,
@@ -775,7 +813,18 @@ class ReconcileDesktopStateUseCase:
             mode_changed = (
                 expected_palette is not None and expected_palette != palette.entry_hash
             )
-            if mode_changed or not ensure_palette_entry_complete(palette_dir, self._seeder):
+            # The palette is derived from the current wallpaper; a recorded
+            # entry whose source wallpaper hash moved is stale even when its
+            # directory still exists. This is the same AD-2 invalidation rule
+            # the mode-key check applies, independent of producer features.
+            wallpaper_changed = (
+                palette.source_wallpaper_hash != state.wallpaper.content_hash
+            )
+            if (
+                mode_changed
+                or wallpaper_changed
+                or not ensure_palette_entry_complete(palette_dir, self._seeder)
+            ):
                 try:
                     entry, _cache_hit = self._pipeline.ensure_palette(
                         cached_wallpaper_img, state.wallpaper.content_hash
@@ -786,32 +835,102 @@ class ReconcileDesktopStateUseCase:
                     raise
                 except Exception as exc:
                     raise RuntimeError(f"palette reconcile failed: {exc}") from exc
-                if not mode_changed:
-                    # Same recorded identity: a divergent rebuild means the
-                    # spine inputs moved under us and the state must not
+                if not mode_changed and not wallpaper_changed:
+                    # Same recorded identity/inputs: a divergent rebuild means
+                    # the spine inputs moved under us and the state must not
                     # silently change.
                     self._assert_hash_matches(palette.entry_hash, entry.entry_hash)
                 palette = entry
                 regenerated.append("palette")
 
         effects = state.effects
-        if (
+        effects_source_changed = (
+            effects is not None
+            and effects.source_wallpaper_hash != state.wallpaper.content_hash
+        )
+        expected_effects: str | None = None
+        if effects is not None:
+            try:
+                expected_effects = self._pipeline.expected_effects_hash(
+                    state.wallpaper.content_hash
+                )
+            except Exception as exc:
+                logger.warning(
+                    "reconcile: effects input probe failed; keeping source check only: %s",
+                    exc,
+                )
+        effects_key_changed = (
+            effects is not None
+            and expected_effects is not None
+            and effects.entry_hash != expected_effects
+        )
+        effects_cache_missing = (
             effects is not None
             and not cache_entry_path(self._state_root, "effects", effects.entry_hash).exists()
+        )
+        if (
+            effects is None
+            or effects_source_changed
+            or effects_key_changed
+            or effects_cache_missing
         ):
             try:
                 entry_e, _cache_hit = self._pipeline.ensure_effects(
                     cached_wallpaper_img, state.wallpaper.content_hash
                 )
             except Exception as exc:
-                logger.warning("reconcile: effects regeneration failed; continuing: %s", exc)
+                if effects_source_changed or effects_key_changed:
+                    logger.error(
+                        "reconcile: effects inputs changed (wallpaper %s -> %s, "
+                        "recorded source %s); regeneration failed; dropping stale "
+                        "effects layer: %s",
+                        effects.source_wallpaper_hash if effects is not None else "<none>",
+                        state.wallpaper.content_hash,
+                        effects.entry_hash if effects is not None else "<none>",
+                        exc,
+                    )
+                else:
+                    logger.warning(
+                        "reconcile: effects regeneration failed; continuing: %s", exc
+                    )
                 effects = None
             else:
-                self._assert_hash_matches(effects.entry_hash, entry_e.entry_hash)
+                if (
+                    effects is not None
+                    and not effects_source_changed
+                    and not effects_key_changed
+                ):
+                    # Same source/inputs: a divergent rebuild means the spine
+                    # inputs moved under us and the state must not silently
+                    # change. A wallpaper/catalog change is a legitimate rebuild.
+                    self._assert_hash_matches(effects.entry_hash, entry_e.entry_hash)
                 effects = entry_e
                 regenerated.append("effects")
 
         icons = state.icons
+        icons_source_changed = (
+            icons is not None and icons.source_palette_hash != palette.entry_hash
+        )
+        expected_icons: str | None = None
+        if icons is not None:
+            try:
+                expected_icons = self._pipeline.expected_icons_hash(palette.entry_hash)
+            except Exception as exc:
+                # The strong key probe needs the spine inputs. If they cannot
+                # be read, leave a same-source cached entry alone; a source
+                # change or missing cache still attempts the rebuild below.
+                logger.warning(
+                    "reconcile: icons input probe failed; keeping source check only: %s", exc
+                )
+        icons_key_changed = (
+            icons is not None
+            and expected_icons is not None
+            and icons.entry_hash != expected_icons
+        )
+        icons_cache_missing = (
+            icons is not None
+            and not cache_entry_path(self._state_root, "icons", icons.entry_hash).exists()
+        )
         if force_icons:
             # The GUI live-toggle path asks for the icons layer explicitly:
             # re-derive it even when the recorded entry still exists. The
@@ -822,16 +941,39 @@ class ReconcileDesktopStateUseCase:
             if not cache_hit:
                 regenerated.append("icons")
         elif (
-            icons is not None
-            and not cache_entry_path(self._state_root, "icons", icons.entry_hash).exists()
+            icons is None
+            or icons_source_changed
+            or icons_key_changed
+            or icons_cache_missing
         ):
             try:
                 entry_i, _cache_hit = self._pipeline.ensure_icons(palette.entry_hash)
             except Exception as exc:
-                logger.warning("reconcile: icons regeneration failed; continuing: %s", exc)
+                if icons_source_changed or icons_key_changed:
+                    # Never publish a successful generation whose consumers
+                    # still read the old palette's icon colors. Follow the
+                    # existing graceful-degradation policy: drop the stale
+                    # layer (the generation omits current/icons) and log it.
+                    logger.error(
+                        "reconcile: icons inputs changed (palette %s -> %s, "
+                        "recorded source %s); regeneration failed; dropping stale "
+                        "icons layer: %s",
+                        icons.source_palette_hash if icons is not None else "<none>",
+                        palette.entry_hash,
+                        icons.entry_hash if icons is not None else "<none>",
+                        exc,
+                    )
+                else:
+                    logger.warning(
+                        "reconcile: icons regeneration failed; continuing: %s", exc
+                    )
                 icons = None
             else:
-                self._assert_hash_matches(icons.entry_hash, entry_i.entry_hash)
+                if icons is not None and not icons_source_changed and not icons_key_changed:
+                    # Same source/inputs: a divergent rebuild means the spine
+                    # inputs moved under us and the state must not silently
+                    # change. A palette/template/mapping change is legitimate.
+                    self._assert_hash_matches(icons.entry_hash, entry_i.entry_hash)
                 icons = entry_i
                 regenerated.append("icons")
 

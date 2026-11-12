@@ -412,6 +412,28 @@ class DerivationPipeline:
         """
         return self._palette_producer.expected_entry_hash(wallpaper_hash)
 
+    def expected_effects_hash(self, wallpaper_hash: str) -> str:
+        """The effects entry key for ``wallpaper_hash`` from current spine inputs."""
+        catalog_path = require_input("weg_effects", self._install_spine)
+        return effects_entry_hash(wallpaper_hash, hash_file(catalog_path))
+
+    def expected_icons_hash(self, palette_entry_hash: str) -> str:
+        """The icons entry key for ``palette_entry_hash`` from current spine inputs.
+
+        Internal invalidation helper: the same palette/templates/mappings
+        inputs that :meth:`ensure_icons` hashes, without invoking the renderer.
+        Reconcile uses it to distinguish a legitimate input-change rebuild
+        (palette or icon templates/mappings moved) from a true cache miss that
+        must reproduce the recorded key.
+        """
+        templates_dir = require_input("icon_templates", self._install_spine)
+        mappings_path = require_input("icon_mappings", self._install_spine)
+        return icons_entry_hash(
+            palette_entry_hash,
+            _hash_path_input(templates_dir, "icon templates"),
+            _hash_path_input(mappings_path, "icon mappings"),
+        )
+
     def ensure_palette(
         self, wallpaper_path: Path, wallpaper_hash: str
     ) -> tuple[PaletteEntry, bool]:

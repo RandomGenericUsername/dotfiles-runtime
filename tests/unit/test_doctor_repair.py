@@ -367,6 +367,45 @@ class TestRepairHeals:
         assert env.check_clean() is True
         assert "wallpaper" in result.repopulated
 
+    def test_stale_source_hashes_repaired_by_quarantine_and_rebuild(
+        self, tmp_path: Path
+    ) -> None:
+        env = _setup(tmp_path)
+        state = env.repo.load_current()
+        assert state is not None and state.icons is not None and state.effects is not None
+        old_icons = state.icons.entry_hash
+        old_effects = state.effects.entry_hash
+        icons_meta = env.state_root / "cache" / "icons" / old_icons / "meta.json"
+        effects_meta = env.state_root / "cache" / "effects" / old_effects / "meta.json"
+        icons_payload = json.loads(icons_meta.read_text(encoding="utf-8"))
+        effects_payload = json.loads(effects_meta.read_text(encoding="utf-8"))
+        icons_payload["source_palette_hash"] = "ee" * 32
+        effects_payload["source_wallpaper_hash"] = "ee" * 32
+        icons_meta.write_text(json.dumps(icons_payload), encoding="utf-8")
+        effects_meta.write_text(json.dumps(effects_payload), encoding="utf-8")
+        assert env.check_clean() is False
+
+        result = env.repair()
+
+        after = env.repo.load_current()
+        assert after is not None and after.icons is not None
+        assert after.effects is not None and after.palette is not None
+        assert after.icons.source_palette_hash == after.palette.entry_hash
+        assert after.effects.source_wallpaper_hash == after.wallpaper.content_hash
+        healed_icons_meta = json.loads(
+            (env.state_root / "cache" / "icons" / after.icons.entry_hash / "meta.json")
+            .read_text(encoding="utf-8")
+        )
+        healed_effects_meta = json.loads(
+            (env.state_root / "cache" / "effects" / after.effects.entry_hash / "meta.json")
+            .read_text(encoding="utf-8")
+        )
+        assert healed_icons_meta["source_palette_hash"] == after.palette.entry_hash
+        assert healed_effects_meta["source_wallpaper_hash"] == after.wallpaper.content_hash
+        assert result.quarantined
+        assert "icons" in result.repopulated and "effects" in result.repopulated
+        assert env.check_clean() is True
+
     def test_missing_wallpaper_and_source_gone_fails_loud(self, tmp_path: Path) -> None:
         import shutil
 

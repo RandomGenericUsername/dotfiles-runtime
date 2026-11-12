@@ -628,6 +628,111 @@ class TestCapstoneGoldenSchema:
         assert norm_current == self.GOLDEN_CURRENT
 
 
+class _ProductionPathTrackingItr(_FakeItr):
+    instances: list[_ProductionPathTrackingItr] = []
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.instances.append(self)
+
+
+class _ProductionPathTrackingWeg(_FakeWeg):
+    instances: list[_ProductionPathTrackingWeg] = []
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.instances.append(self)
+
+
+class _ProductionPathTrackingCsg(_FakeCsg):
+    instances: list[_ProductionPathTrackingCsg] = []
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self.instances.append(self)
+
+
+class _ProductionPathNoopClient:
+    def publish(self, topic: str, payload: object) -> None:
+        return None
+
+
+class TestProductionWallpaperSetCascade:
+    """BUG-022: the real ``_run_wallpaper_set`` composition root cascades icons.
+
+    The older capstone helper chains ``ApplyWallpaperUseCase`` then reconcile;
+    this test deliberately starts from the production ``_run_wallpaper_set``
+    entry point so the fix is exercised on the CLI/engine path that ships.
+    """
+
+    def test_wallpaper_set_cli_rebuilds_palette_and_icons(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from runtime.adapters.generation_store import GenerationStore
+        from runtime.adapters.json_state_repository import JsonStateRepository
+        import runtime.cli.main as cli_main
+
+        install_spine = tmp_path / "install"
+        _setup_spine(install_spine)
+        state_root = tmp_path / "dotfiles"
+        img_a = tmp_path / "a.png"
+        img_a.write_bytes(b"wallpaper A")
+        img_b = tmp_path / "b.png"
+        img_b.write_bytes(b"wallpaper B")
+
+        _ProductionPathTrackingItr.instances = []
+        _ProductionPathTrackingWeg.instances = []
+        _ProductionPathTrackingCsg.instances = []
+        monkeypatch.setenv("DOTFILES_INSTALL_SPINE", str(install_spine))
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        monkeypatch.setattr("runtime.adapters.tpr_adapter.TprAdapter", _ProductionPathTrackingCsg)
+        monkeypatch.setattr("runtime.adapters.weg_adapter.WegAdapter", _ProductionPathTrackingWeg)
+        monkeypatch.setattr("runtime.adapters.itr_adapter.ItrAdapter", _ProductionPathTrackingItr)
+        monkeypatch.setattr(
+            "runtime.adapters.hyprland_reloader.HyprlandReloader", _PassingHostReloader
+        )
+        monkeypatch.setattr("runtime.adapters.ags_reloader.AgsReloader", _PassingHostReloader)
+        monkeypatch.setattr(
+            "runtime.adapters.hyprpaper_reloader.HyprpaperWallpaperApplier",
+            _PassingStatefulReloader,
+        )
+        monkeypatch.setattr(
+            "runtime.adapters.terminal_color_applier.TerminalColorApplier",
+            _PassingStatefulReloader,
+        )
+        client = _ProductionPathNoopClient()
+
+        cli_main._run_wallpaper_set(img_a, client=client)
+        repo = JsonStateRepository(state_root=state_root)
+        state_a = repo.load_current()
+        assert state_a is not None and state_a.palette is not None
+        assert state_a.icons is not None
+        icons_a = state_a.icons.entry_hash
+        itr_calls_after_a = sum(
+            instance.calls for instance in _ProductionPathTrackingItr.instances
+        )
+
+        cli_main._run_wallpaper_set(img_b, client=client)
+
+        state_b = repo.load_current()
+        assert state_b is not None and state_b.palette is not None
+        assert state_b.icons is not None
+        assert state_b.palette.entry_hash != state_a.palette.entry_hash
+        assert state_b.icons.entry_hash != icons_a
+        assert state_b.icons.source_palette_hash == state_b.palette.entry_hash
+        icons_dir = state_root / "cache" / "icons" / state_b.icons.entry_hash
+        assert icons_dir.is_dir()
+        assert (state_root / "current" / "icons").resolve() == icons_dir.resolve()
+        manifest = GenerationStore(state_root).current_manifest()
+        assert manifest is not None
+        assert manifest["intent"]["icons"] == state_b.icons.entry_hash
+        assert manifest["layers"]["icons"]["entryHash"] == state_b.icons.entry_hash
+        itr_calls_after_b = sum(
+            instance.calls for instance in _ProductionPathTrackingItr.instances
+        )
+        assert itr_calls_after_b > itr_calls_after_a
+
+
 class _PassingHostReloader:
     """Isolation stub for HyprlandReloader/AgsReloader (no constructor args)."""
 

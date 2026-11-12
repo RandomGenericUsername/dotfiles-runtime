@@ -429,8 +429,45 @@ class DoctorUseCase:
                     items.append(_item("diverged", f"artifact digest mismatch: {rel}"))
                     break
             else:
-                items.append(_item("ok", f"{entry_dir} healthy"))
+                source_divergence = self._source_divergence(state, layer, meta)
+                if source_divergence is not None:
+                    items.append(_item("diverged", source_divergence))
+                else:
+                    items.append(_item("ok", f"{entry_dir} healthy"))
         return items
+
+    @staticmethod
+    def _source_divergence(
+        state: DesktopState, layer: str, meta: Mapping[str, object]
+    ) -> str | None:
+        """Read-only lineage check for the derived layers that cascade.
+
+        A palette change changes the icons key and a wallpaper change changes
+        the effects key, but an old entry can remain on disk. Compare the
+        cache entry's recorded source identity (meta.json, not the
+        current.json projection which reconstructs it from the current state)
+        with the current state so doctor names the stale layer and repair can
+        quarantine it.
+        """
+        if layer == "icons" and state.icons is not None and state.palette is not None:
+            recorded = meta.get("source_palette_hash")
+            expected = state.palette.entry_hash
+            if recorded != expected:
+                return (
+                    f"icons source_palette_hash {recorded} != current palette "
+                    f"{expected}; stale icon colors; run "
+                    "`dotfiles-runtime doctor --repair` to rebuild the icons layer"
+                )
+        if layer == "effects" and state.effects is not None:
+            recorded = meta.get("source_wallpaper_hash")
+            expected = state.wallpaper.content_hash
+            if recorded != expected:
+                return (
+                    f"effects source_wallpaper_hash {recorded} != current wallpaper "
+                    f"{expected}; stale effects; run "
+                    "`dotfiles-runtime doctor --repair` to rebuild the effects layer"
+                )
+        return None
 
     def _check_vocabulary(self, state: DesktopState) -> list[DriftItem]:
         """REQ-006 leg — live palette vs the declared ``palette.v1`` roles.

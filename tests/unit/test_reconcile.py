@@ -23,7 +23,7 @@ import inspect
 import json
 import logging
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -847,6 +847,177 @@ class TestReconcileCacheMissRegeneration:
         assert "effects" in result.cache_regenerated
         assert applied.weg.calls == 1
         assert (applied.state_root / "cache" / "effects" / eeh).is_dir()
+
+
+class TestReconcileDerivedLayerCascade:
+    """BUG-022: a palette/wallpaper change cascades into icons/effects keys."""
+
+    def test_wallpaper_change_rebuilds_palette_and_icons(self, tmp_path: Path) -> None:
+        from runtime.adapters.generation_store import GenerationStore
+
+        applied = _apply_state(tmp_path)
+        before = applied.repo.load_current()
+        assert before is not None and before.palette is not None and before.icons is not None
+        old_palette = before.palette.entry_hash
+        old_icons = before.icons.entry_hash
+        other = tmp_path / "other.png"
+        other.write_bytes(b"a different wallpaper")
+
+        result = _make_reconcile(applied).run(wallpaper_path=other)
+
+        after = applied.repo.load_current()
+        assert after is not None and after.palette is not None and after.icons is not None
+        assert after.palette.entry_hash != old_palette
+        assert after.icons.entry_hash != old_icons
+        assert after.icons.source_palette_hash == after.palette.entry_hash
+        new_icon_dir = applied.state_root / "cache" / "icons" / after.icons.entry_hash
+        assert new_icon_dir.is_dir()
+        assert (applied.state_root / "current" / "icons").resolve() == new_icon_dir.resolve()
+        manifest = GenerationStore(applied.state_root).current_manifest()
+        assert manifest is not None
+        assert manifest["intent"]["icons"] == after.icons.entry_hash
+        assert manifest["layers"]["icons"]["entryHash"] == after.icons.entry_hash
+        assert result.state.icons is not None
+        assert result.state.icons.entry_hash == after.icons.entry_hash
+        assert applied.itr.calls == 1
+
+    def test_same_wallpaper_reconcile_is_an_icons_cache_hit(self, tmp_path: Path) -> None:
+        applied = _apply_state(tmp_path)
+        _make_reconcile(applied).run()
+        loaded = applied.repo.load_current()
+        assert loaded is not None and loaded.icons is not None
+        icons_hash = loaded.icons.entry_hash
+        applied.palette_producer.calls = applied.weg.calls = applied.itr.calls = 0
+
+        result = _make_reconcile(applied).run()
+
+        after = applied.repo.load_current()
+        assert after is not None and after.icons is not None
+        assert after.icons.entry_hash == icons_hash
+        assert applied.itr.calls == 0
+        assert "icons" not in result.cache_regenerated
+
+    def test_null_icons_heals_from_the_current_palette(self, tmp_path: Path) -> None:
+        applied = _apply_state(tmp_path)
+        loaded = applied.repo.load_current()
+        assert loaded is not None and loaded.palette is not None
+        applied.repo.save(replace(loaded, icons=None))
+        applied.itr.calls = 0
+
+        result = _make_reconcile(applied).run()
+
+        after = applied.repo.load_current()
+        assert after is not None and after.icons is not None
+        assert after.icons.source_palette_hash == loaded.palette.entry_hash
+        assert (
+            applied.state_root / "cache" / "icons" / after.icons.entry_hash
+        ).is_dir()
+        assert (applied.state_root / "current" / "icons").exists()
+        assert result.state.icons is not None
+        # The recorded icons entry is still intact and key-compatible, so the
+        # heal reuses it rather than invoking the renderer.
+        assert applied.itr.calls == 0
+
+    @pytest.mark.parametrize("changed_input", ["templates", "mappings"])
+    def test_icons_template_or_mapping_change_rebuilds_key(
+        self, tmp_path: Path, changed_input: str
+    ) -> None:
+        applied = _apply_state(tmp_path)
+        _make_reconcile(applied).run()
+        loaded = applied.repo.load_current()
+        assert loaded is not None and loaded.icons is not None and loaded.palette is not None
+        old_icons = loaded.icons.entry_hash
+        if changed_input == "templates":
+            (applied.install_spine / "icon-templates" / "terminal.svg").write_text(
+                "<svg id='changed'/>", encoding="utf-8"
+            )
+        else:
+            (applied.install_spine / "icon-mappings" / "icons.yaml").write_text(
+                "icons: {changed: {}}\n", encoding="utf-8"
+            )
+        applied.itr.calls = 0
+
+        _make_reconcile(applied).run()
+
+        after = applied.repo.load_current()
+        assert after is not None and after.icons is not None
+        assert after.icons.entry_hash != old_icons
+        assert after.icons.source_palette_hash == loaded.palette.entry_hash
+        assert (
+            applied.state_root / "cache" / "icons" / after.icons.entry_hash
+        ).is_dir()
+        assert applied.itr.calls == 1
+
+    def test_failed_icons_rebuild_after_palette_change_drops_stale_layer(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from runtime.adapters.generation_store import GenerationStore
+
+        applied = _apply_state(tmp_path)
+        before = applied.repo.load_current()
+        assert before is not None and before.icons is not None
+        stale_icons = before.icons.entry_hash
+        other = tmp_path / "other.png"
+        other.write_bytes(b"a different wallpaper")
+        applied.itr.fail = True
+
+        with caplog.at_level(logging.ERROR, logger="runtime.application.reconcile"):
+            result = _make_reconcile(applied).run(wallpaper_path=other)
+
+        after = applied.repo.load_current()
+        assert after is not None and after.palette is not None
+        # No false success with the old palette's icon colors.
+        assert after.icons is None
+        assert result.state.icons is None
+        manifest = GenerationStore(applied.state_root).current_manifest()
+        assert manifest is not None
+        assert "icons" not in manifest["layers"]
+        assert not (applied.state_root / "current" / "icons").exists()
+        assert stale_icons not in {
+            entry["entryHash"] for entry in manifest["layers"].values()
+        }
+        assert any("dropping stale icons layer" in r.message for r in caplog.records)
+
+    def test_wallpaper_change_rebuilds_effects(self, tmp_path: Path) -> None:
+        applied = _apply_state(tmp_path)
+        before = applied.repo.load_current()
+        assert before is not None and before.effects is not None
+        old_effects = before.effects.entry_hash
+        other = tmp_path / "other.png"
+        other.write_bytes(b"a different wallpaper")
+
+        _make_reconcile(applied).run(wallpaper_path=other)
+
+        after = applied.repo.load_current()
+        assert after is not None and after.effects is not None
+        assert after.effects.entry_hash != old_effects
+        assert after.effects.source_wallpaper_hash == after.wallpaper.content_hash
+        assert (
+            applied.state_root / "cache" / "effects" / after.effects.entry_hash
+        ).is_dir()
+        assert applied.weg.calls == 1
+
+    def test_effects_catalog_change_rebuilds_key(self, tmp_path: Path) -> None:
+        applied = _apply_state(tmp_path)
+        _make_reconcile(applied).run()
+        before = applied.repo.load_current()
+        assert before is not None and before.effects is not None
+        old_effects = before.effects.entry_hash
+        (applied.install_spine / "config" / "weg" / "effects.yaml").write_text(
+            "effects: [{changed: true}]\n", encoding="utf-8"
+        )
+        applied.weg.calls = 0
+
+        _make_reconcile(applied).run()
+
+        after = applied.repo.load_current()
+        assert after is not None and after.effects is not None
+        assert after.effects.entry_hash != old_effects
+        assert after.effects.source_wallpaper_hash == after.wallpaper.content_hash
+        assert (
+            applied.state_root / "cache" / "effects" / after.effects.entry_hash
+        ).is_dir()
+        assert applied.weg.calls == 1
 
 
 class TestReconcileHistory:

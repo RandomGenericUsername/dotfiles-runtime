@@ -743,6 +743,40 @@ class TestDivergenceClasses:
         assert report.clean is False
         assert _by_name(report)["current/effects"] == "missing"
 
+    def test_icons_source_palette_divergence_is_reported(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        meta_path = state_root / "cache" / "icons" / IH / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["source_palette_hash"] = "ee" * 32
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+        report = _check(state_root)
+
+        item = {item.name: item for item in report.items}[f"cache/icons/{IH[:12]}"]
+        assert report.clean is False
+        assert item.status == "diverged"
+        assert "source_palette_hash" in item.detail
+        assert "stale icon colors" in item.detail
+        assert "doctor --repair" in item.detail
+
+    def test_effects_source_wallpaper_divergence_is_reported(self, tmp_path: Path) -> None:
+        state_root = tmp_path / "state"
+        _seed_state(state_root)
+        meta_path = state_root / "cache" / "effects" / EH / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["source_wallpaper_hash"] = "ee" * 32
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+        report = _check(state_root)
+
+        item = {item.name: item for item in report.items}[f"cache/effects/{EH[:12]}"]
+        assert report.clean is False
+        assert item.status == "diverged"
+        assert "source_wallpaper_hash" in item.detail
+        assert "stale effects" in item.detail
+        assert "doctor --repair" in item.detail
+
     def test_absent_state_raises(self, tmp_path: Path) -> None:
         from runtime.adapters.json_state_repository import JsonStateRepository
 
