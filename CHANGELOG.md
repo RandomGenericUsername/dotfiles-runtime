@@ -1,3 +1,32 @@
+## v1.5.2 — 2026-11-11
+
+Make the `conf` renderer fix reach live generations by versioning skin identity
+(`BUG-021`).
+
+- **Renderer version in identity.** `skin_entry_hash` now folds in
+  `SKIN_RENDERER_VERSION` (`2` for the v1.5.1 conf px→pt renderer) ahead of the
+  authored `templates_hash`/`manifest_hash`. A renderer-only change therefore
+  produces a new skin entry hash, which propagates through `skinHash` into
+  `appearance_generation_hash` and the v3 generation content hash.
+- **Fresh kitty artifact.** The next converge after the version bump rebuilds
+  the skin, appearance and generation instead of reusing the v1.5.0 cache
+  entry. The fresh `appearance/kitty.conf` for terminal-host/terminal carries
+  `font_size 9`, `window_padding_width 6.75` and a bare
+  `background_opacity`, with no `px`/`pt`; `kitty +runpy load_config` reports
+  zero bad lines.
+- **Identity-only invalidation.** The version never changes renders: CSS (and
+  every other artifact) for unchanged authored inputs stays byte-identical.
+  Repeated apply at the same renderer version remains a no-op; only a version
+  bump regenerates.
+- **Scope.** No assets, composition, provisioning, contract, app or live-state
+  change and no apply in this slice. The composition pin for `dotfiles-runtime`
+  moves to `v1.5.2`.
+- **Regression coverage.** Renderer version participates in skin identity and
+  appearance/generation identities; an old renderer-version cache/generation
+  is not reused; the fresh generation has the exact bare-point kitty values;
+  CSS bytes are identical; and the existing `kitty +runpy` zero-bad-line probe
+  still passes.
+
 ## v1.5.1 — 2026-11-11
 
 Fix the `conf` renderer so the kitty artifact carries bare points (`BUG-020`).

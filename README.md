@@ -28,6 +28,22 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**1.5.2** — renderer-versioned skin identity so the kitty fix reaches live.
+
+- `skin_entry_hash` now includes `SKIN_RENDERER_VERSION` (`2`) ahead of the
+  authored templates/manifest hashes. A renderer-only change invalidates the
+  old skin entry and, through `skinHash`, the appearance cache entry and the
+  committed generation.
+- On the next converge, the fresh `appearance/kitty.conf` for
+  terminal-host/terminal carries `font_size 9`, `window_padding_width 6.75`
+  and a bare `background_opacity`; no `px`/`pt`, and `kitty +runpy
+  load_config` reports zero bad lines.
+- The version is identity-only: CSS and other artifacts for unchanged inputs
+  are byte-identical. Repeated apply at the same version is a no-op; only a
+  version bump regenerates.
+- No assets, provisioning, composition, contract, app or live-state change is
+  in this slice; the composition pin moves to `v1.5.2`.
+
 **1.5.1** — bare-point kitty `conf` projection.
 
 - The `conf` renderer converts numeric lengths to bare points with the
