@@ -35,7 +35,7 @@
 
 ## Bugs
 
-- [BUG-020-kitty-conf-px-to-pt](./BUG-020-kitty-conf-px-to-pt/ticket.md) — Kitty `conf` artifact keeps `px` suffixes because the conf renderer never applies the px→pt rule | `in-progress` | severity: high | worktree: .worktrees/BUG-020/ | branch: ticket/BUG-020-kitty-conf-px-to-pt
+- [BUG-020-kitty-conf-px-to-pt](./BUG-020-kitty-conf-px-to-pt/ticket.md) — Kitty `conf` artifact keeps `px` suffixes because the conf renderer never applies the px→pt rule | `done` | severity: high | worktree: .worktrees/BUG-020/ | branch: ticket/BUG-020-kitty-conf-px-to-pt | tag: v1.5.1
 - [BUG-019-doctor-appearance-target-set](./BUG-019-doctor-appearance-target-set/ticket.md) — Doctor flags legitimate stable `appearance.css` links whose consumer alias differs from the config dir name | `done` | severity: high | worktree: .worktrees/BUG-019/ | branch: ticket/BUG-019-doctor-appearance-target-set | tag: v1.3.1
 - [BUG-018-icons-regenerate-idempotent](./BUG-018-icons-regenerate-idempotent/ticket.md) — `icons regenerate` commits a new generation when the content is already current | `done` | severity: high | worktree: .worktrees/BUG-018/ | branch: ticket/BUG-018-icons-regenerate-idempotent | tag: v1.1.2
 - [BUG-017-appearance-consumer-ownership](./BUG-017-appearance-consumer-ownership/ticket.md) — Runtime appearance prune deletes the provisioning-owned wlogout stable link | `done` | severity: high | worktree: .worktrees/BUG-017/ | branch: ticket/BUG-017-appearance-consumer-ownership | tag: v1.1.1

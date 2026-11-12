@@ -1,3 +1,26 @@
+## v1.5.1 — 2026-11-11
+
+Fix the `conf` renderer so the kitty artifact carries bare points (`BUG-020`).
+
+- **Lengths.** `conf` numeric length tokens now render as bare points using
+  the docs/113 §7.3 rule: `value * 0.75` (CSS reference pixel), round half up
+  to two decimals, trailing zeros stripped. `font_size` (`type.size-body`) is
+  clamped to `6..36` and `window_padding_width` (`surface.window.padding`) to
+  `0..32`. The generated kitty artifact no longer emits `px` or `pt`; the live
+  `font_size 12px` / `window_padding_width 9px` lines become `9` / `6.75`.
+- **Opacity and family.** `background_opacity` stays `surface.window.opacity`
+  as a bare unitless `[0,1]` number. `font_family` projects the first usable
+  family (CSS-wide and non-portable system keywords dropped, quotes/escapes
+  stripped, `monospace` fallback), so `glass` no longer emits `inherit`.
+- **Scope.** The conf policy is format-local: CSS and rasi output is
+  byte-identical, and paint tokens in a conf template still fail closed. No
+  assets, composition, provisioning, contract, app or live-state change and no
+  apply in this slice.
+- **Regression coverage.** Exact terminal-host/terminal/paper/glass values,
+  clamps and half-up rounding, unitless opacity, first-family projection, the
+  no-`px`/`pt` invariant, CSS/rasi byte identity and a `kitty +runpy`
+  `load_config` probe with zero bad lines (explicit skip without kitty).
+
 ## v1.5.0 — 2026-11-11
 
 Implement the required `surface.window` role for contracts `v0.12.0`

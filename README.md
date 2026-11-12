@@ -28,6 +28,20 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**1.5.1** — bare-point kitty `conf` projection.
+
+- The `conf` renderer converts numeric lengths to bare points with the
+  documented px→pt rule (`value * 0.75`, round half up to two decimals,
+  trailing zeros stripped): `font_size` is clamped to `6..36` and
+  `window_padding_width` to `0..32`. Kitty no longer receives `12px`/`9px`;
+  it receives `9`/`6.75`, so `load_config` has zero bad lines.
+- `background_opacity` remains the authored unitless `surface.window.opacity`
+  in `[0,1]`, and `font_family` is the first usable family (CSS-wide and
+  non-portable system keywords dropped, `monospace` fallback).
+- CSS and rasi artifacts are byte-identical; the conversion is conf-only.
+  Paint tokens in a conf template still fail closed. No assets, provisioning,
+  composition, app or live-state change is in this slice.
+
 **1.5.0** — required `surface.window` role.
 
 - `surface.window` is a required sixth surface role for the outer/application
