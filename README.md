@@ -28,6 +28,26 @@ Global flag: `--format {json,plain,rich}` (via `cli-output`).
 
 ## Release notes
 
+**1.5.3** — palette/wallpaper changes cascade into icons and effects.
+
+- `reconcile`/`wallpaper set` now rebuilds the icons layer when the recorded
+  entry's palette source moved, when the input-derived icons key (palette,
+  templates, mappings) differs, or when `icons` is null; it no longer treats
+  an existing old hash-named directory as a cache hit. Same-input reconciles
+  remain cache hits with no ITR invocation.
+- Effects follows the same structural cascade: a changed wallpaper or effects
+  catalog key, a missing cache entry, or a null layer rebuilds it; a failed
+  rebuild follows the existing graceful-degradation policy.
+- A failed post-palette-change icons rebuild never publishes stale icon
+  colors: it logs loudly and drops the icons layer, so consumers see no stale
+  `current/icons` rather than the previous palette's icons.
+- `doctor` compares the cache entry's recorded `source_palette_hash`/
+  `source_wallpaper_hash` with the current palette/wallpaper and reports
+  divergence with a `doctor --repair` hint; repair quarantines and rebuilds
+  the stale layer.
+- No composition, assets, AGS-bar, provisioning, contract or live-state edit
+  and no apply in this slice; the composition pin moves to `v1.5.3`.
+
 **1.5.2** — renderer-versioned skin identity so the kitty fix reaches live.
 
 - `skin_entry_hash` now includes `SKIN_RENDERER_VERSION` (`2`) ahead of the

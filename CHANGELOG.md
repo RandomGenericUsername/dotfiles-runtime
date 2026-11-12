@@ -1,3 +1,37 @@
+## v1.5.3 — 2026-11-12
+
+Make a palette/wallpaper change cascade into the icons and effects layers
+(`BUG-022`).
+
+- **Icons are key-aware, not existence-aware.** `reconcile`/`wallpaper set`
+  rebuilds icons when the recorded entry's `source_palette_hash` moved, when
+  the current input-derived key (palette + icon templates + mappings) differs
+  from the recorded key, when the cache entry is absent, or when `icons` is
+  null. An old palette's hash-named directory is no longer a valid cache hit.
+  A same-input reconcile is still a zero-invocation cache hit.
+- **Effects cascade.** Effects rebuild on a changed wallpaper source, a
+  changed effects-catalog key, a missing cache entry, or a null layer. The
+  recorded `source_wallpaper_hash` is checked against the current wallpaper.
+- **Failure policy.** A failed icons rebuild after a palette/input change logs
+  an error and drops the layer (the generation omits `current/icons`) instead
+  of publishing a successful generation with the old palette's icon colors.
+  Unchanged-input cache misses keep the existing graceful-degradation and
+  reproducibility-assertion behavior.
+- **Doctor lineage.** The read-only doctor compares the cache entry's recorded
+  `source_palette_hash`/`source_wallpaper_hash` (from `meta.json`, not the
+  reconstructed `current.json` projection) with the current palette/wallpaper,
+  reports a repair hint, and `doctor --repair` quarantines/rebuilds the stale
+  entry.
+- **Regression coverage.** Wallpaper A→B rebuilds palette/icons/effects with a
+  new key, `current/icons` resolves into the new entry and the manifest intent
+  matches; same-wallpaper reconcile invokes no ITR; null icons heals; template
+  and mapping changes rebuild the key; ITR failure after a palette change
+  drops the stale layer; the real `_run_wallpaper_set` composition root covers
+  the cascade; doctor reports and repairs icons/effects lineage divergence.
+- **Scope.** No composition, assets, AGS-bar, provisioning, contract or
+  live-state edit and no apply in this slice. The composition pin for
+  `dotfiles-runtime` moves to `v1.5.3`.
+
 ## v1.5.2 — 2026-11-11
 
 Make the `conf` renderer fix reach live generations by versioning skin identity

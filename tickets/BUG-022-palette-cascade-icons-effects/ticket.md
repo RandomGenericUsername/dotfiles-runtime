@@ -2,7 +2,7 @@
 id: BUG-022
 title: "Wallpaper set keeps stale icons/effects cache entries when a new palette or wallpaper changes their inputs"
 kind: bug
-status: in-progress
+status: done
 lane: 2
 severity: high
 links:
@@ -93,5 +93,71 @@ set.
 
 **Worktree:** `.worktrees/BUG-022/`
 **Branch:** `ticket/BUG-022-palette-cascade-icons-effects`
+**Commits:** `cc237d4` (ticket + INDEX plan), `2d216b5` (reconcile/doctor
+cascade + regression tests), this release commit (version metadata/CHANGELOG/
+README + ticket close).
+**Tag:** `v1.5.3` (annotated) after green gates.
 
-Pending implementation and release; filled in before `done`.
+### Delivered
+
+| Path | What changed |
+| --- | --- |
+| `src/runtime/application/derive.py` | internal `expected_effects_hash` / `expected_icons_hash` probes from the current spine inputs |
+| `src/runtime/application/reconcile.py` | palette source check; icons rebuild on source/key/cache-null divergence; effects rebuild on source/key/cache/null; reproducibility assertion only when inputs are unchanged; failed post-change icon rebuild logs and drops the stale layer |
+| `src/runtime/application/doctor.py` | read-only `source_palette_hash`/`source_wallpaper_hash` lineage leg from cache `meta.json`, with repair hint |
+| `tests/unit/test_reconcile.py` | wallpaper A→B palette/icons/effects cascade, same-wallpaper zero-ITR cache hit, null-icons heal, template/mapping key changes, ITR failure policy |
+| `tests/unit/test_doctor_check.py` | icons and effects lineage divergence reported read-only |
+| `tests/unit/test_doctor_repair.py` | repair quarantines stale entries, rebuilds them, and the post-repair check is clean |
+| `tests/integration/test_wallpaper_set_capstone_integration.py` | production `_run_wallpaper_set` path (not the old apply→reconcile helper) proves the icons cascade, manifest intent and `current/icons` target |
+| `pyproject.toml` / `src/runtime/__init__.py` / `uv.lock` / `CHANGELOG.md` / `README.md` | `1.5.3` release metadata and notes |
+
+### Failure policy
+
+- A failed icon rebuild after a palette/key change logs at error level and
+  sets `icons=None`; the committed generation omits `current/icons`, so the
+  bar cannot read the old palette's icon colors. This matches the existing
+  graceful-degradation contract for optional derived layers.
+- A failed effects rebuild after a wallpaper/catalog change follows the same
+  policy (log and drop).
+- Unchanged-input cache misses keep the reproducibility assertion; changed
+  inputs (palette, wallpaper, templates, mappings, catalog) are legitimate
+  rebuilds and do not assert the old key.
+
+### Targeted evidence
+
+```sh
+uv run pytest -q tests/unit/test_reconcile.py \
+  tests/unit/test_doctor_check.py tests/unit/test_doctor_repair.py \
+  tests/integration/test_wallpaper_set_capstone_integration.py
+# 161 passed
+```
+
+### Gates
+
+```sh
+make gates
+# test: 2607 passed, 3 skipped, 11 deselected
+# lint: All checks passed
+# contracts-check: 58 passed, 1 skipped
+# hermetic: 2607 passed, 3 skipped, 11 deselected
+# lock-check: Resolved 25 packages
+# docs-check: rc 0
+
+make gates-ci
+# same six gates: 2607 passed, 3 skipped, 11 deselected
+
+make ci-gates-parity
+# PASS gates=['contracts-check','docs-check','hermetic','lint','lock-check','test']
+```
+
+`uv run mypy src` is not a repo gate and reports the pre-existing 127-error
+baseline; none of the reported errors are on the new cascade/probe/doctor
+lines.
+
+### Downstream pin needed
+
+- **Composition pin:** `dotfiles-runtime` must move to `v1.5.3` so the next
+  converge rebuilds stale icons/effects on hosts whose current generation was
+  produced before this fix.
+- No composition, assets, AGS-bar, provisioning, contract or live-state edit
+  was made, and no `apply` was run.
