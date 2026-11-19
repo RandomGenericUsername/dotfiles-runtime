@@ -2,7 +2,7 @@
 id: REQ-032
 title: "Include the requested format set in the palette cache identity"
 kind: requirement
-status: in-progress
+status: done
 lane: 2
 links:
   openspec: none
@@ -48,3 +48,6 @@ built the `--format` argv inline and `expected_entry_hash` omitted it.
       reflection of the declared set.
 - [x] Targeted tests, `make lint` and `make gates` pass on the ticket branch.
 - [x] CHANGELOG `Unreleased` documents the change; no version bump.
+
+
+- Release: v1.6.4

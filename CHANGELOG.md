@@ -1,4 +1,4 @@
-## Unreleased
+## v1.6.4 — 2026-11-19
 
 Make the requested palette format set part of the palette cache identity
 (`REQ-032`).
