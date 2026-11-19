@@ -1,3 +1,14 @@
+## v1.6.0 — 2026-11-19
+
+Publish the optional Neovim palette artifact (`REQ-027`).
+
+- `PALETTE_OPTIONAL_ARTIFACT_NAMES` adds `colors.nvim.lua`. The tpr adapter
+  copies it from the producer staging dir when present; absence is not an error.
+- The seeder publishes `current/colors.nvim.lua` when the palette entry has it
+  and skips silently when it does not. The required eight-artifact set,
+  `PaletteArtifacts`, meta schema and cache identity are unchanged.
+- Consumers fall back cleanly until the tpr projection is installed.
+
 ## v1.5.3 — 2026-11-12
 
 Make a palette/wallpaper change cascade into the icons and effects layers

@@ -2,7 +2,7 @@
 id: REQ-027
 title: "Publish the optional colors.nvim.lua palette artifact"
 kind: requirement
-status: in-progress
+status: done
 lane: 2
 links:
   openspec: none
@@ -45,3 +45,6 @@ eight-artifact completeness contract (staged rollout).
   `tests/integration/test_phase5_reactive_runtime_e2e.py`, reproduced on
   untouched `main` (`76f19c0`) as pre-existing flakes.
 - `PALETTE_ARTIFACT_NAMES` still the eight required names.
+
+
+- Release: v1.6.0
