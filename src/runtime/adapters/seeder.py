@@ -40,13 +40,13 @@ from runtime.adapters.contract_schemas import meta_validator, meta_validator_for
 from runtime.adapters.flock_seed_mutex import FlockHistoryMutex
 from runtime.adapters.hashing import HASH_ALGORITHM, hash_file
 from runtime.domain.models import (
+    PALETTE_OPTIONAL_ARTIFACT_NAMES,
     AppearanceEntry,
     EffectsArtifacts,
     EffectsEntry,
     HistoryLockError,
     IconsArtifacts,
     IconsEntry,
-    PALETTE_OPTIONAL_ARTIFACT_NAMES,
     PaletteArtifacts,
     PaletteEntry,
     SkinArtifacts,
