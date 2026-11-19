@@ -6,6 +6,7 @@
 
 ## Requirements
 
+- [REQ-032-palette-identity-formats](./REQ-032-palette-identity-formats/ticket.md) — Include the requested format set in the palette cache identity | `in-progress` | worktree: .worktrees/REQ-032/ | branch: ticket/REQ-032-palette-identity-formats
 - [REQ-031-nvim-reloader](./REQ-031-nvim-reloader/ticket.md) — Add Neovim to the runtime reloader chain (`SIGUSR1`, after btop) | `done` | tag: v1.6.3 | worktree: .worktrees/REQ-031/ | branch: ticket/REQ-031-nvim-reloader
 - [REQ-026-window-surface-role](./REQ-026-window-surface-role/ticket.md) — Required `surface.window` role (contracts v0.12.0) | `done` | worktree: .worktrees/REQ-026/ | branch: ticket/REQ-026-window-surface-role | tag: v1.5.0
 
