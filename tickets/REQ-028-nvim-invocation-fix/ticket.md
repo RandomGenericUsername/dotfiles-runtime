@@ -2,7 +2,7 @@
 id: REQ-028
 title: "Request nvim.lua from tpr and pin the new invocation contract"
 kind: requirement
-status: in-progress
+status: done
 lane: 2
 links:
   openspec: none
@@ -31,3 +31,7 @@ Catppuccin.
 - [x] TprAdapter requests nvim.lua.
 - [x] Tests/gates pass.
 - [x] v1.6.1 tagged/pushed/released.
+
+
+- Contract v0.13.0: https://github.com/RandomGenericUsername/contracts/releases/tag/v0.13.0
+- Release: https://github.com/RandomGenericUsername/dotfiles-runtime/releases/tag/v1.6.1
