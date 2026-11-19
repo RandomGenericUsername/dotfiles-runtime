@@ -1,3 +1,13 @@
+## v1.6.2 — 2026-11-19
+
+Allow the optional `colors.nvim.lua` in palette cache verification
+(`REQ-029`).
+
+- `match_entry_artifacts` accepts an `allowed_extra` set; palette staging and
+  entry verification allow `colors.nvim.lua` while any other unrecorded file
+  stays corrupt.
+- Fixes `wallpaper set` failing with `unrecorded file ... 'colors.nvim.lua'`
+  after the v1.6.1 cutover.
 ## v1.6.1 — 2026-11-19
 
 Request the Neovim projection from tpr (`REQ-028`).

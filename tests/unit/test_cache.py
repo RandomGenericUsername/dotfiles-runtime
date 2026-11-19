@@ -13,11 +13,14 @@ import pytest
 from runtime.adapters.cache import (
     CACHE_LAYERS,
     CACHE_STAGING_PREFIX,
+    CorruptCacheError,
     _staging_dir_for,
     cache_entry_path,
     hardlink_or_copy,
     populate_via_staging,
+    verify_staging,
 )
+from runtime.domain.models import PALETTE_ARTIFACT_NAMES
 from runtime.adapters.hashing import HASH_ALGORITHM, hash_file
 
 
@@ -512,3 +515,28 @@ def test_populate_via_staging_enotempty_handling(tmp_path: Path) -> None:
         result = populate_via_staging(target, populate_fn)
         assert result is False
         assert _no_staging_left(state_root)
+
+
+def test_palette_staging_allows_the_optional_nvim_artifact(tmp_path: Path) -> None:
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    hashes = {}
+    for name in PALETTE_ARTIFACT_NAMES:
+        (staging / name).write_text(f"{name}\n")
+        hashes[name] = hash_file(staging / name)
+    (staging / "colors.nvim.lua").write_text("return {}\n")
+    (staging / "meta.json").write_text(
+        json.dumps(
+            {
+                "hash_algorithm": HASH_ALGORITHM,
+                "kind": "palette",
+                "artifact_hashes": hashes,
+            }
+        )
+    )
+
+    verify_staging(staging)  # optional extra is allowed for palette entries
+
+    (staging / "colors.extra").write_text("nope\n")
+    with pytest.raises(CorruptCacheError, match="unrecorded file"):
+        verify_staging(staging)

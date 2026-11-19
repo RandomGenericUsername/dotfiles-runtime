@@ -296,7 +296,10 @@ def _unsafe_artifact_key(key: str) -> bool:
 
 
 def match_entry_artifacts(
-    root: Path, recorded: Mapping[str, str]
+    root: Path,
+    recorded: Mapping[str, str],
+    *,
+    allowed_extra: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, Path], tuple[str, str] | None]:
     """Resolve every recorded key to its file, enforcing completeness.
 
@@ -326,6 +329,8 @@ def match_entry_artifacts(
     for path in files:
         if path not in covered:
             rel = path.relative_to(root).as_posix()
+            if rel in allowed_extra:
+                continue
             return {}, ("corrupt", f"unrecorded file in {root}: {rel!r}")
     return matched, None
 
@@ -381,7 +386,12 @@ def verify_entry(entry_dir: Path, *, annotate: bool = False) -> EntryHealth:
     for key in recorded:
         if _unsafe_artifact_key(key):
             return EntryHealth("corrupt", f"unsafe artifact key: {key}")
-    matched, error = match_entry_artifacts(entry_dir, recorded)
+    allowed_extra = (
+        frozenset({"colors.nvim.lua"}) if meta.get("kind") == "palette" else frozenset()
+    )
+    matched, error = match_entry_artifacts(
+        entry_dir, recorded, allowed_extra=allowed_extra
+    )
     if error is not None:
         status: Literal["missing", "corrupt"] = "missing" if error[0] == "missing" else "corrupt"
         return EntryHealth(status, error[1])
@@ -502,7 +512,12 @@ def verify_staging(staging: Path) -> None:
     for key in recorded:
         if _unsafe_artifact_key(key):
             raise CorruptCacheError(f"malformed artifact key: {key!r} in {staging}")
-    matched, error = match_entry_artifacts(staging, recorded)
+    allowed_extra = (
+        frozenset({"colors.nvim.lua"}) if meta.get("kind") == "palette" else frozenset()
+    )
+    matched, error = match_entry_artifacts(
+        staging, recorded, allowed_extra=allowed_extra
+    )
     if error is not None:
         raise CorruptCacheError(error[1])
     for key, path in matched.items():
