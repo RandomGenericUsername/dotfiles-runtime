@@ -175,6 +175,7 @@ class TestReconcileCompositionRootWiring:
         from runtime.adapters.hyprland_reloader import HyprlandReloader
         from runtime.adapters.hyprpaper_reloader import HyprpaperWallpaperApplier
         from runtime.adapters.kitty_reloader import KittyReloader
+        from runtime.adapters.nvim_reloader import NvimReloader
         from runtime.adapters.terminal_color_applier import TerminalColorApplier
 
         reloaders = captured["reloaders"]
@@ -184,6 +185,7 @@ class TestReconcileCompositionRootWiring:
             TerminalColorApplier,
             KittyReloader,
             BtopReloader,
+            NvimReloader,
         ]
         assert not any(type(r) is Gtk4AppReloader for r in reloaders)
         assert reloaders[1]._state_root == captured["state_root"]  # type: ignore[attr-defined]
@@ -211,12 +213,17 @@ class TestReconcileCompositionRootWiring:
 
         from runtime.adapters.btop_reloader import BtopReloader
         from runtime.adapters.kitty_reloader import KittyReloader
+        from runtime.adapters.nvim_reloader import NvimReloader
 
         names = [type(r).__name__ for r in captured["reloaders"]]
         assert "TerminalColorApplier" not in names
-        # Kitty before Btop: both read the palette from disk, so the seeder
-        # must already have repointed the consumer pointers.
-        assert names[-2:] == [KittyReloader.__name__, BtopReloader.__name__]
+        # Kitty before Btop before nvim: all read the palette from disk, so
+        # the seeder must already have repointed the consumer pointers.
+        assert names[-3:] == [
+            KittyReloader.__name__,
+            BtopReloader.__name__,
+            NvimReloader.__name__,
+        ]
 
     def test_composition_root_passes_spine_templates_dir_to_producer(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -252,16 +259,18 @@ class TestReconcileCompositionRootWiring:
         from runtime.adapters.btop_reloader import BtopReloader
         from runtime.adapters.gtk4_app_reloader import Gtk4AppReloader
         from runtime.adapters.kitty_reloader import KittyReloader
+        from runtime.adapters.nvim_reloader import NvimReloader
         from runtime.adapters.terminal_color_applier import TerminalColorApplier
 
         with_terminal = cli_main._build_reloaders(Path("/tmp/state"), include_terminal=True)
         without_terminal = cli_main._build_reloaders(Path("/tmp/state"), include_terminal=False)
 
-        assert type(with_terminal[-3]) is TerminalColorApplier
-        assert type(with_terminal[-2]) is KittyReloader
-        assert type(with_terminal[-1]) is BtopReloader
+        assert type(with_terminal[-4]) is TerminalColorApplier
+        assert type(with_terminal[-3]) is KittyReloader
+        assert type(with_terminal[-2]) is BtopReloader
+        assert type(with_terminal[-1]) is NvimReloader
         assert not any(type(r) is TerminalColorApplier for r in without_terminal)
-        assert type(without_terminal[-1]) is BtopReloader
+        assert type(without_terminal[-1]) is NvimReloader
         assert not any(type(r) is Gtk4AppReloader for r in with_terminal)
         assert not any(type(r) is Gtk4AppReloader for r in without_terminal)
 

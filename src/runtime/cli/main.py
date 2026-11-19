@@ -450,8 +450,8 @@ def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list
 
     Shared by ``reconcile`` and ``wallpaper set`` in the same pinned order:
     Hyprland (``hyprctl reload``), then the terminal palette (OSC from
-    ``current/colors.sequences``) when ``include_terminal`` is set, with the
-    kitty reloader (``SIGUSR1``) appended last.
+    ``current/colors.sequences``) when ``include_terminal`` is set, then the
+    kitty, btop and nvim reloaders (each ``SIGUSR*``) last.
 
     AGS is deliberately absent: it is driven by the manifest-discovered
     :class:`AgsAppRefreshCoordinator` (parallel live lane + serialized restart
@@ -467,6 +467,7 @@ def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list
     from runtime.adapters.btop_reloader import BtopReloader
     from runtime.adapters.hyprland_reloader import HyprlandReloader
     from runtime.adapters.kitty_reloader import KittyReloader
+    from runtime.adapters.nvim_reloader import NvimReloader
     from runtime.adapters.terminal_color_applier import TerminalColorApplier
 
     reloaders: list[IDesktopReloader] = [HyprlandReloader()]
@@ -477,6 +478,9 @@ def _build_reloaders(state_root: Path, *, include_terminal: bool = True) -> list
     # pointer must already have been repointed by the seeder. Mirrors the
     # KittyReloader ordering constraint.
     reloaders.append(BtopReloader())
+    # AFTER btop: nvim reads the same on-disk palette artifact, so the
+    # seeder must already have repointed the consumer pointer.
+    reloaders.append(NvimReloader())
     return reloaders
 
 
