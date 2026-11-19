@@ -2,7 +2,7 @@
 id: REQ-029
 title: "Allow colors.nvim.lua in palette cache verification"
 kind: requirement
-status: in-progress
+status: done
 lane: 2
 links:
   openspec: none
@@ -33,3 +33,6 @@ file not in `artifact_hashes` as corrupt, so `wallpaper set` fails with
 - [x] Unit test passes.
 - [x] Full gates pass.
 - [x] v1.6.2 tagged/pushed/released.
+
+
+- Release: https://github.com/RandomGenericUsername/dotfiles-runtime/releases/tag/v1.6.2
