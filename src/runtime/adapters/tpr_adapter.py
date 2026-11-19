@@ -8,9 +8,12 @@ copies exactly those eight files into the palette entry, and leaves
 
 The cache key carries a producer fingerprint: ``tpr`` seeds
 :func:`runtime.adapters.hashing.palette_entry_hash` with
-``sha256("tpr:" + engine + ":" + version + ":" + template_set_hash + ":" + mode)``.
+``sha256("tpr:" + engine + ":" + version + ":" + template_set_hash + ":" +
+mode + ":formats:" + format_set_hash)``.
 The requested mode is also passed to tpr as ``THEME__OUTPUT__DEFAULT_MODE``;
-it is part of the entry key so dark/light/smart palettes cannot collide.
+it is part of the entry key so dark/light/smart palettes cannot collide. The
+requested format set is the single :data:`TPR_FORMATS` constant used both to
+build argv and to seed the key, so adding/removing an artifact is a cache miss.
 """
 
 from __future__ import annotations
@@ -74,6 +77,24 @@ TPR_VERSION_FALLBACK: Final[str] = "v0.1.0"
 #: ``tpr --version`` is a metadata probe, not a generation run.
 _VERSION_TIMEOUT_SECONDS: Final[int] = 10
 
+#: The canonical ``tpr generate --format`` set requested by this adapter.
+#:
+#: Single source of truth: argv construction and the palette cache identity
+#: both read this tuple. Adding, removing or reordering a format therefore
+#: changes the entry key (or, for reordering, leaves the set digest unchanged)
+#: without touching any other call site.
+TPR_FORMATS: Final[tuple[str, ...]] = (
+    "yaml",
+    "conf",
+    "gtk.css",
+    "adw.css",
+    "sequences",
+    "rasi",
+    "kitty",
+    "btop.theme",
+    "nvim.lua",
+)
+
 #: Contracts record timeout for tpr is 60 s, but the runtime keeps its own
 #: graceful-cleanup convention (330 s) so a containerized tpr can tear down.
 DEFAULT_TIMEOUT_SECONDS_TPR: Final[int] = DEFAULT_TIMEOUT_SECONDS
@@ -114,6 +135,10 @@ class TprAdapter(IColorSchemeGenerator):
     """Adapter that invokes ``tpr generate`` with the runtime's env override."""
 
     producer_name: str = "tpr"
+
+    #: Requested ``--format`` set. Part of the palette cache identity; see
+    #: :data:`TPR_FORMATS`.
+    formats: Final[tuple[str, ...]] = TPR_FORMATS
 
     DEFAULT_TIMEOUT: int = DEFAULT_TIMEOUT_SECONDS_TPR
 
@@ -221,7 +246,7 @@ class TprAdapter(IColorSchemeGenerator):
         return self._resolve_template_set_hash()
 
     def expected_entry_hash(self, wallpaper_hash: str) -> str:
-        """TPR's palette entry key, seeded with producer/engine/version."""
+        """TPR's palette entry key, seeded with producer/engine/version/mode/formats."""
         return palette_entry_hash_for_producer(
             self.producer_name,
             wallpaper_hash,
@@ -229,6 +254,7 @@ class TprAdapter(IColorSchemeGenerator):
             engine=self._engine,
             version=self.version(),
             mode=self._mode,
+            formats=self.formats,
         )
 
     def is_available(self) -> bool:
@@ -300,25 +326,9 @@ class TprAdapter(IColorSchemeGenerator):
                 bin_name,
                 "generate",
                 str(wallpaper_path),
-                "--format",
-                "yaml",
-                "--format",
-                "conf",
-                "--format",
-                "gtk.css",
-                "--format",
-                "adw.css",
-                "--format",
-                "sequences",
-                "--format",
-                "rasi",
-                "--format",
-                "kitty",
-                "--format",
-                "btop.theme",
-                "--format",
-                "nvim.lua",
             ]
+            for fmt in self.formats:
+                args.extend(["--format", fmt])
 
             try:
                 result = run_producer(args, env, self._timeout)

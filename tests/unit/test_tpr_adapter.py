@@ -109,6 +109,8 @@ def test_generate_invokes_contract_and_copies_required_and_optional_artifacts(
     env = captured["env"]
     assert isinstance(args, list) and isinstance(env, dict)
     assert args == ["tpr", "generate", str(wallpaper), *_EXPECTED_FORMAT_ARGS]
+    # argv and the cache identity share one declared format set.
+    assert TprAdapter.formats == tuple(_EXPECTED_FORMAT_ARGS[1::2])
     assert "-o" not in args and "--output" not in args
     assert env["THEME__OUTPUT__OVERWRITE"] == "true"
     assert env["THEME__GENERATION__ENGINE"] == "native"
@@ -270,7 +272,12 @@ def test_entry_hash_seed_includes_engine_version_templates_and_mode(
     adapter = _adapter(tmp_path)
     template_hash = adapter.template_set_hash()
     seed = palette_producer_seed(
-        "tpr", template_hash, engine="native", version="v0.1.0", mode="smart"
+        "tpr",
+        template_hash,
+        engine="native",
+        version="v0.1.0",
+        mode="smart",
+        formats=TprAdapter.formats,
     )
     assert seed is not None
     assert adapter.expected_entry_hash(wallpaper_hash) == palette_entry_hash(

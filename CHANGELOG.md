@@ -1,3 +1,18 @@
+## Unreleased
+
+Make the requested palette format set part of the palette cache identity
+(`REQ-032`).
+
+- `TprAdapter.formats` is now the single source of truth for the `--format`
+  argv list. `expected_entry_hash` folds a canonical, order-insensitive digest
+  of that set into the producer seed, so adding/removing a requested artifact
+  is automatically a cache miss.
+- Fixes the stale eight-artifact palette entry reused after runtime v1.6.1
+  started requesting `nvim.lua`: the old entry is no longer a hit and is
+  regenerated with the current artifact set. Ordering `--format` flags does
+  not change the key; changing the set does.
+- No release version bump in this change.
+
 ## v1.6.3 — 2026-11-19
 
 Reload running Neovim sessions after a palette swap (`REQ-031`).

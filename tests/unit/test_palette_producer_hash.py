@@ -11,6 +11,7 @@ from runtime.adapters.hashing import (
     canonical_hash_dir,
     palette_entry_hash,
     palette_entry_hash_for_producer,
+    palette_format_set_hash,
     palette_producer_seed,
 )
 from runtime.adapters.tpr_adapter import TprAdapter
@@ -25,7 +26,7 @@ def _templates(tmp_path: Path) -> Path:
     return tdir
 
 
-def test_tpr_key_includes_engine_version_and_templates(tmp_path: Path) -> None:
+def test_tpr_key_includes_engine_version_templates(tmp_path: Path) -> None:
     templates = _templates(tmp_path)
     template_hash = canonical_hash_dir(templates)
     adapter = TprAdapter(
@@ -33,10 +34,18 @@ def test_tpr_key_includes_engine_version_and_templates(tmp_path: Path) -> None:
     )
 
     seed = hashlib.sha256(
-        f"tpr:native:v0.1.0:{template_hash}:smart".encode("utf-8")
+        (
+            f"tpr:native:v0.1.0:{template_hash}:smart:formats:"
+            + palette_format_set_hash(TprAdapter.formats)
+        ).encode("utf-8")
     ).hexdigest()
     assert palette_producer_seed(
-        "tpr", template_hash, engine="native", version="v0.1.0", mode="smart"
+        "tpr",
+        template_hash,
+        engine="native",
+        version="v0.1.0",
+        mode="smart",
+        formats=TprAdapter.formats,
     ) == seed
     assert adapter.expected_entry_hash(_WALLPAPER_HASH) == palette_entry_hash(
         _WALLPAPER_HASH, template_hash, seed=seed
@@ -48,6 +57,7 @@ def test_tpr_key_includes_engine_version_and_templates(tmp_path: Path) -> None:
         engine="native",
         version="v0.1.0",
         mode="smart",
+        formats=TprAdapter.formats,
     )
 
 
@@ -86,6 +96,87 @@ def test_mode_changes_the_entry_key(tmp_path: Path) -> None:
             engine="native", version="v0.1.0", mode="light",
         )
     )
+
+
+def test_adapter_key_reflects_the_declared_format_set(tmp_path: Path) -> None:
+    templates = _templates(tmp_path)
+    template_hash = canonical_hash_dir(templates)
+    adapter = TprAdapter(templates_dir=templates, engine="native", version="v0.1.0")
+
+    assert adapter.expected_entry_hash(_WALLPAPER_HASH) == palette_entry_hash_for_producer(
+        "tpr",
+        _WALLPAPER_HASH,
+        template_hash,
+        engine="native",
+        version="v0.1.0",
+        mode="smart",
+        formats=TprAdapter.formats,
+    )
+    # A different declared set is a different identity, even with every other
+    # input unchanged.
+    assert adapter.expected_entry_hash(_WALLPAPER_HASH) != palette_entry_hash_for_producer(
+        "tpr",
+        _WALLPAPER_HASH,
+        template_hash,
+        engine="native",
+        version="v0.1.0",
+        mode="smart",
+        formats=(*TprAdapter.formats, "extra.format"),
+    )
+
+
+def test_format_set_changes_the_entry_key(tmp_path: Path) -> None:
+    template_hash = canonical_hash_dir(_templates(tmp_path))
+    base = ("yaml", "conf", "kitty")
+    extended = (*base, "nvim.lua")
+
+    def key(formats: tuple[str, ...]) -> str:
+        return palette_entry_hash_for_producer(
+            "tpr",
+            _WALLPAPER_HASH,
+            template_hash,
+            engine="native",
+            version="v0.1.0",
+            mode="smart",
+            formats=formats,
+        )
+
+    assert key(base) == key(base)
+    assert key(base) != key(extended)
+
+
+def test_format_order_does_not_change_the_entry_key(tmp_path: Path) -> None:
+    template_hash = canonical_hash_dir(_templates(tmp_path))
+
+    def key(formats: tuple[str, ...]) -> str:
+        return palette_entry_hash_for_producer(
+            "tpr",
+            _WALLPAPER_HASH,
+            template_hash,
+            engine="native",
+            version="v0.1.0",
+            mode="smart",
+            formats=formats,
+        )
+
+    formats = (
+        "yaml",
+        "conf",
+        "gtk.css",
+        "adw.css",
+        "sequences",
+        "rasi",
+        "kitty",
+        "btop.theme",
+        "nvim.lua",
+    )
+    assert key(formats) == key(tuple(reversed(formats)))
+    assert palette_format_set_hash(formats) == palette_format_set_hash(reversed(formats))
+
+
+def test_empty_format_set_is_rejected() -> None:
+    with pytest.raises(ValueError, match="must not be empty"):
+        palette_format_set_hash(())
 
 
 @pytest.mark.parametrize("producer", ["csg", "bogus"])

@@ -3,7 +3,7 @@
 Implements shared-data-contract Derivation-input hashing:
 
 - wallpaper = sha256(file_bytes) chunked
-- palette   = sha256(wallpaper_hash || template_set_hash)
+- palette   = sha256(wallpaper_hash || template_set_hash [|| producer_seed])
 - effects   = sha256(wallpaper_hash || catalog_hash)
 - icons     = sha256(palette_hash || templates_hash || mappings_hash)
 
@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Final, Literal
 
@@ -328,6 +329,23 @@ def _validate_palette_mode(mode: str) -> None:
         raise ValueError(f"palette mode must be one of {accepted}, got {mode!r}")
 
 
+def palette_format_set_hash(formats: Iterable[str]) -> str:
+    """Canonical, order-insensitive digest of a requested format set.
+
+    ``sha256("\\x00".join(sorted(set(formats))))`` over the UTF-8 names. Sorting
+    and de-duplicating make the identity a set, not an argv sequence: adding,
+    removing or reordering ``--format`` flags changes the digest only when the
+    set itself changes. An empty set is rejected — a producer asked for no
+    formats cannot own a cache entry.
+    """
+    normalized = sorted({str(fmt) for fmt in formats})
+    if not normalized:
+        raise ValueError("palette format set must not be empty")
+    if any(not fmt for fmt in normalized):
+        raise ValueError("palette format names must be non-empty")
+    return hashlib.sha256("\x00".join(normalized).encode("utf-8")).hexdigest()
+
+
 def palette_producer_seed(
     producer_name: str,
     template_set_hash: str,
@@ -335,21 +353,27 @@ def palette_producer_seed(
     engine: str | None = None,
     version: str | None = None,
     mode: str | None = None,
+    formats: Iterable[str] | None = None,
 ) -> str | None:
     """Seed that folds a palette producer's identity into the entry key.
 
     ``tpr`` adds a 64-char hex fingerprint over its engine, version, template
-    set and requested mode:
+    set, requested mode and requested format set:
 
-    ``sha256("tpr:" + engine + ":" + version + ":" + template_set_hash [":" + mode])``
+    ``sha256("tpr:" + engine + ":" + version + ":" + template_set_hash
+             [":" + mode] [":formats:" + format_set_hash])``
 
     Mode is part of the identity so ``dark``/``light``/``smart`` can never
-    collide on one palette entry. Callers that omit ``mode`` keep the legacy
-    pre-mode formula; every runtime path passes it explicitly.
+    collide on one palette entry. ``formats`` is a canonical set digest (see
+    :func:`palette_format_set_hash`), so a producer that starts requesting a
+    new artifact — e.g. runtime v1.6.1 adding ``nvim.lua`` — is automatically a
+    cache miss instead of reusing an entry with the old artifact set.
 
-    Single source for the seed formula (``TprAdapter`` and any caller that
-    recomputes the key). Unknown producers fail loud rather than silently
-    reusing another producer's key.
+    Callers that omit ``mode``/``formats`` keep the legacy pre-mode/pre-format
+    formula. Every runtime path passes both explicitly. Single source for the
+    seed formula (``TprAdapter`` and any caller that recomputes the key).
+    Unknown producers fail loud rather than silently reusing another producer's
+    key.
     """
     if producer_name == "tpr":
         _validate_hex64("template_set_hash", template_set_hash)
@@ -361,6 +385,8 @@ def palette_producer_seed(
         if mode is not None:
             _validate_palette_mode(mode)
             material = f"{material}:{mode}"
+        if formats is not None:
+            material = f"{material}:formats:{palette_format_set_hash(formats)}"
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
     raise ValueError(f"unknown palette producer: {producer_name!r}")
 
@@ -373,6 +399,7 @@ def palette_entry_hash_for_producer(
     engine: str | None = None,
     version: str | None = None,
     mode: str | None = None,
+    formats: Iterable[str] | None = None,
 ) -> str:
     """Producer-aware palette entry hash.
 
@@ -380,7 +407,12 @@ def palette_entry_hash_for_producer(
     so adapters never re-implement the fingerprint formula.
     """
     seed = palette_producer_seed(
-        producer_name, template_set_hash, engine=engine, version=version, mode=mode
+        producer_name,
+        template_set_hash,
+        engine=engine,
+        version=version,
+        mode=mode,
+        formats=formats,
     )
     return palette_entry_hash(wallpaper_hash, template_set_hash, seed=seed)
 

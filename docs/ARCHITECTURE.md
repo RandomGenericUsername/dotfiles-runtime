@@ -127,9 +127,12 @@ into one immutable generation under `cache/appearance/<appearanceHash>/`:
 to `tpr` as `THEME__OUTPUT__DEFAULT_MODE` (settings
 `output.default_mode`) and folds it into the palette entry seed:
 `sha256("tpr:" + engine + ":" + version + ":" + template_set_hash + ":" +
-mode)`. A mode flip is therefore always a new palette entry and, through the
-palette hash, a new appearance generation. Palettes produced before v0.9.5
-have no mode in their key and are regenerated on the next apply.
+mode + ":formats:" + format_set_hash)`, where `format_set_hash` is the
+order-insensitive digest of the requested `--format` set declared once as
+`TprAdapter.formats`. A mode flip or an artifact-set change is therefore always
+a new palette entry and, through the palette hash, a new appearance generation.
+Palettes produced before v0.9.5 (no mode) or before the format-set identity
+(no `:formats:` segment) are regenerated on the next apply.
 
 Generation still reads the appearance mode from the generated `colors.yaml`
 (`mode`/`scheme`/`appearance`/`variant` scalar or an `is_dark`/`dark` boolean;
