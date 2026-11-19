@@ -6,6 +6,7 @@
 
 ## Requirements
 
+- [REQ-031-nvim-reloader](./REQ-031-nvim-reloader/ticket.md) — Add Neovim to the runtime reloader chain (`SIGUSR1`, after btop) | `in-progress` | worktree: .worktrees/REQ-031/ | branch: ticket/REQ-031-nvim-reloader
 - [REQ-026-window-surface-role](./REQ-026-window-surface-role/ticket.md) — Required `surface.window` role (contracts v0.12.0) | `done` | worktree: .worktrees/REQ-026/ | branch: ticket/REQ-026-window-surface-role | tag: v1.5.0
 
 - [REQ-027-nvim-palette-artifact](./REQ-027-nvim-palette-artifact/ticket.md) — Publish the optional `colors.nvim.lua` palette artifact | `done` | tag: v1.6.0 | worktree: .worktrees/REQ-027/ | branch: ticket/REQ-027-nvim-palette-artifact- [REQ-025-host-rectangle-radii](./REQ-025-host-rectangle-radii/ticket.md) — Host-delegated rectangle radii (panel/card/control/cell, contracts v0.11.0) | `done` | worktree: .worktrees/REQ-025/ | branch: ticket/REQ-025-host-rectangle-radii | tag: v1.4.0
