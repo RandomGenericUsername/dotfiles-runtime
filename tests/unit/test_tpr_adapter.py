@@ -16,7 +16,7 @@ from runtime.adapters.hashing import (
     palette_producer_seed,
 )
 from runtime.adapters.tpr_adapter import TPR_VERSION_FALLBACK, TprAdapter
-from runtime.domain.models import PALETTE_ARTIFACT_NAMES
+from runtime.domain.models import PALETTE_ARTIFACT_NAMES, PALETTE_OPTIONAL_ARTIFACT_NAMES
 
 _EXPECTED_FORMAT_ARGS = [
     "--format",
@@ -35,6 +35,8 @@ _EXPECTED_FORMAT_ARGS = [
     "kitty",
     "--format",
     "btop.theme",
+    "--format",
+    "nvim.lua",
 ]
 
 
@@ -64,7 +66,7 @@ def _runner(
         captured["env"] = dict(env)
         out = Path(env["THEME__OUTPUT__DIRECTORY"])
         out.mkdir(parents=True, exist_ok=True)
-        for name in PALETTE_ARTIFACT_NAMES:
+        for name in (*PALETTE_ARTIFACT_NAMES, *PALETTE_OPTIONAL_ARTIFACT_NAMES):
             if name == skip:
                 continue
             (out / name).write_text(f"{name} from tpr\n")
@@ -91,7 +93,7 @@ def _output_dir(tmp_path: Path, adapter: TprAdapter, wallpaper_hash: str) -> Pat
     return tmp_path / "state" / "cache" / "palettes" / entry_hash
 
 
-def test_generate_invokes_contract_and_copies_only_eight_artifacts(
+def test_generate_invokes_contract_and_copies_required_and_optional_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     wallpaper = _copy_wallpaper_fixture(tmp_path)
@@ -116,8 +118,10 @@ def test_generate_invokes_contract_and_copies_only_eight_artifacts(
     assert env["THEME__TEMPLATES__DIRECTORY"] == str(adapter.templates_dir)
     assert Path(env["THEME__OUTPUT__DIRECTORY"]) != output_dir
 
-    # Exactly the 8 recorded artifacts land in the palette entry.
-    assert sorted(p.name for p in output_dir.iterdir()) == sorted(PALETTE_ARTIFACT_NAMES)
+    # The required eight plus the optional Neovim artifact land in the entry.
+    expected = sorted((*PALETTE_ARTIFACT_NAMES, *PALETTE_OPTIONAL_ARTIFACT_NAMES))
+    assert sorted(p.name for p in output_dir.iterdir()) == expected
+    assert (output_dir / "colors.nvim.lua").is_file()
     assert not (output_dir / "theme.json").exists()
 
     assert entry.entry_hash == adapter.expected_entry_hash(wallpaper_hash)
