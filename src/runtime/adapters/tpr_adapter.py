@@ -42,6 +42,7 @@ from runtime.adapters.producer_process import (
 from runtime.domain.models import (
     DEFAULT_DESIRED_MODE,
     PALETTE_ARTIFACT_NAMES,
+    PALETTE_OPTIONAL_ARTIFACT_NAMES,
     PaletteEntry,
     PaletteUnavailableError,
 )
@@ -248,12 +249,13 @@ class TprAdapter(IColorSchemeGenerator):
             return True
 
     def generate(self, wallpaper_path: Path, output_dir: Path) -> PaletteEntry:
-        """Generate the eight consumer artifacts via ``tpr generate``.
+        """Generate the consumer artifacts via ``tpr generate``.
 
         ``tpr`` runs against a private staging directory under
-        ``output_dir.parent``; only ``PALETTE_ARTIFACT_NAMES`` are copied into
-        ``output_dir``. ``theme.json`` and any other producer-side output are
-        intentionally not part of the palette entry.
+        ``output_dir.parent``; the required ``PALETTE_ARTIFACT_NAMES`` and any
+        optional artifact the producer emits are copied into ``output_dir``.
+        ``theme.json`` and any other producer-side output are intentionally not
+        part of the palette entry.
         """
         wallpaper_hash = validate_wallpaper(wallpaper_path)
         template_set_hash = self._resolve_template_set_hash()
@@ -444,3 +446,7 @@ class TprAdapter(IColorSchemeGenerator):
         """Copy exactly the eight contract artifacts; ignore ``theme.json``."""
         for name in PALETTE_ARTIFACT_NAMES:
             shutil.copyfile(producer_dir / name, output_dir / name)
+        for name in PALETTE_OPTIONAL_ARTIFACT_NAMES:
+            source = producer_dir / name
+            if source.is_file():
+                shutil.copyfile(source, output_dir / name)

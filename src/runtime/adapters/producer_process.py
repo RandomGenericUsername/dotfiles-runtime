@@ -230,7 +230,7 @@ def build_palette_entry(
     template_set_hash: str,
     producer: str,
 ) -> PaletteEntry:
-    """Hash the verified 8-artifact set and build the ``PaletteEntry``."""
+    """Hash the verified palette artifact set and build the ``PaletteEntry``."""
     # Compute artifact hashes via binary chunked hash_file — wrap TOCTOU.
     try:
         artifact_for_entry: PaletteArtifacts = PaletteArtifacts(

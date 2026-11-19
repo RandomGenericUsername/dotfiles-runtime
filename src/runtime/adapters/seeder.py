@@ -46,6 +46,7 @@ from runtime.domain.models import (
     HistoryLockError,
     IconsArtifacts,
     IconsEntry,
+    PALETTE_OPTIONAL_ARTIFACT_NAMES,
     PaletteArtifacts,
     PaletteEntry,
     SkinArtifacts,
@@ -737,13 +738,14 @@ class CacheSeeder:
                 "colors.rasi",
                 "colors.kitty",
                 "colors.btop.theme",
+                "colors.nvim.lua",
             ):
                 target = palette_dir / artifact_name
                 # exists() follows symlinks — a dangling symlink at the target
                 # path is still repointed so it never lingers half-broken.
                 if target.exists() or target.is_symlink():
                     created.append(self.repoint_current_symlink(artifact_name, target))
-                else:
+                elif artifact_name not in PALETTE_OPTIONAL_ARTIFACT_NAMES:
                     logger.warning(
                         "seeding: palette artifact missing, consumer symlink skipped: %s",
                         target,

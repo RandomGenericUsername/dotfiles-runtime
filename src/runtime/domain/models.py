@@ -77,6 +77,12 @@ PALETTE_ARTIFACT_NAMES: Final[tuple[str, ...]] = (
     "colors.btop.theme",
 )
 
+#: Optional palette artifacts: published when the producer emits them, but not
+#: required for a palette cache hit (staged rollout, REQ-123).
+PALETTE_OPTIONAL_ARTIFACT_NAMES: Final[tuple[str, ...]] = (
+    "colors.nvim.lua",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class PaletteEntry:
