@@ -1,3 +1,13 @@
+## v1.6.3 — 2026-11-19
+
+Reload running Neovim sessions after a palette swap (`REQ-031`).
+
+- New `NvimReloader` implements the existing `IDesktopReloader` seam:
+  `pgrep -x nvim` then `SIGUSR1`; no nvim is a vacuous success, a failed
+  signal is surfaced in `reload_failures`.
+- `_build_reloaders()` appends it after `BtopReloader`.
+- The Neovim config handles `SIGUSR1` via a `Signal` autocmd and reloads the
+  generated `dotfiles-palette` module.
 ## v1.6.2 — 2026-11-19
 
 Allow the optional `colors.nvim.lua` in palette cache verification

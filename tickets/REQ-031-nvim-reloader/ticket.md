@@ -2,7 +2,7 @@
 id: REQ-031
 title: "Add Neovim to the runtime reloader chain"
 kind: requirement
-status: in-progress
+status: done
 lane: 2
 links:
   openspec: none
@@ -33,15 +33,18 @@ a running Neovim to re-read it. Only kitty and btop are signalled today.
 
 ## Acceptance
 
-- [ ] No nvim => vacuous `True`; one/many => exactly one `SIGUSR1` each.
-- [ ] Failed signal => `False`; a partial failure fails the whole reload.
-- [ ] Default source runs `pgrep -x nvim` with a bounded timeout and
+- [x] No nvim => vacuous `True`; one/many => exactly one `SIGUSR1` each.
+- [x] Failed signal => `False`; a partial failure fails the whole reload.
+- [x] Default source runs `pgrep -x nvim` with a bounded timeout and
       degrades to `[]` on missing/hung pgrep.
-- [ ] `_build_reloaders()` order ends Hyprland, [terminal], kitty, btop, nvim.
-- [ ] Targeted tests, `make lint`, `make gates` pass.
+- [x] `_build_reloaders()` order ends Hyprland, [terminal], kitty, btop, nvim.
+- [x] Targeted tests, `make lint`, `make gates` pass.
 
 ## Notes
 
 - `REQ-030` worktree/branch was already taken by in-progress work, so this
   ticket uses the next free id.
 - Ticket left `in-progress` per instruction; no release/tag/merge.
+
+
+- Release: v1.6.3
