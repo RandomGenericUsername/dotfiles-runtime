@@ -1,6 +1,6 @@
 [project]
 name = "dotfiles-runtime"
-version = "1.6.0"
+version = "1.6.1"
 description = "Runtime engine for the dotfiles system — wallpaper, state, history, cache"
 readme = "README.md"
 license = "MIT"
@@ -44,7 +44,7 @@ only-include = [
 
 [tool.uv.sources]
 cli-output = { git = "https://github.com/RandomGenericUsername/cli-output", tag = "v0.1.0" }
-cli-invocation-contract = { git = "https://github.com/RandomGenericUsername/contracts", tag = "v0.4.0" }
+cli-invocation-contract = { git = "https://github.com/RandomGenericUsername/contracts", tag = "v0.13.0" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,3 +1,12 @@
+## v1.6.1 — 2026-11-19
+
+Request the Neovim projection from tpr (`REQ-028`).
+
+- Pin `cli-invocation-contract` `v0.13.0`, whose tpr record includes
+  `--format nvim.lua` and requires `colors.nvim.lua`.
+- `TprAdapter` passes `--format nvim.lua`; the optional copy then publishes
+  `colors.nvim.lua`.
+- Fixes the empty palette artifact observed after the v1.6.0 cutover.
 ## v1.6.0 — 2026-11-19
 
 Publish the optional Neovim palette artifact (`REQ-027`).

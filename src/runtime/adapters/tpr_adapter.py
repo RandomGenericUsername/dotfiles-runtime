@@ -316,6 +316,8 @@ class TprAdapter(IColorSchemeGenerator):
                 "kitty",
                 "--format",
                 "btop.theme",
+                "--format",
+                "nvim.lua",
             ]
 
             try:
